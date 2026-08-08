@@ -405,7 +405,8 @@ def api_module_control_get():
         return err
     try:
         ctrl_raw = _read_lower(0x1A, 1)
-        return _ok(cmis.parse_module_control(ctrl_raw[0]))
+        # 'raw' backs the UI hover tooltips, which quote the byte a control maps to
+        return _ok(dict(cmis.parse_module_control(ctrl_raw[0]), raw=ctrl_raw[0]))
     except Exception as e:
         return _err(str(e), 500)
 

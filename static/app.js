@@ -17,6 +17,55 @@ const AppState = {
 const ALARM = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
 
 // ---------------------------------------------------------------------------
+// Register hover tooltips
+//
+// Every setting on screen maps to a byte in the module's memory. These build a
+// consistent hover string naming the CMIS field, its Page and byte address, and
+// what that byte reads right now, so any displayed value can be traced back to
+// the register it came from without cross-referencing the spec.
+// ---------------------------------------------------------------------------
+/** Escape for interpolation into HTML text or a quoted attribute. */
+const esc = s => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+const hex8  = v => '0x' + (v & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+const bin8  = v => '0b' + (v & 0xFF).toString(2).padStart(8, '0');
+const pageName = p => (p === null || p === undefined)
+  ? 'Lower Memory'
+  : `Page ${p.toString(16).toUpperCase().padStart(2, '0')}h`;
+
+/**
+ * @param {object} o
+ * @param {string} o.field  CMIS field name, e.g. "AutoSquelchDisableTx"
+ * @param {?number} o.page  page number, null/undefined for Lower Memory
+ * @param {number} o.addr   byte address
+ * @param {number} [o.value] current raw byte
+ * @param {number} [o.bit]   bit index within the byte, when the control is one bit
+ * @param {string} [o.note]  extra line, e.g. decoded meaning or units
+ */
+function regTip(o) {
+  const lines = [o.field, `${pageName(o.page)} · byte ${o.addr} (${hex8(o.addr)})`];
+  if (o.value !== undefined && o.value !== null && !Number.isNaN(o.value)) {
+    lines.push(`Current byte: ${hex8(o.value)}  ${bin8(o.value)}  (${o.value & 0xFF})`);
+    if (o.bit !== undefined && o.bit !== null) {
+      lines.push(`Bit ${o.bit} = ${(o.value >> o.bit) & 1}`);
+    }
+  }
+  if (o.note) lines.push(o.note);
+  return lines.join('\n');
+}
+
+/** Multi-byte field (e.g. a 16-byte ASCII string or a 2-byte word). */
+function regTipRange(field, page, addr, len, note) {
+  const end = addr + len - 1;
+  const lines = [field,
+    `${pageName(page)} · bytes ${addr}-${end} (${hex8(addr)}-${hex8(end)})`];
+  if (note) lines.push(note);
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
 async function apiFetch(method, path, body) {
@@ -237,8 +286,12 @@ async function loadInfo() {
   if (infoRes.status !== 'ok') { toast(`Info error: ${infoRes.message}`, 'error'); return; }
   if (statusRes.status !== 'ok') { toast(`Status error: ${statusRes.message}`, 'error'); return; }
 
-  const d = infoRes.data;
-  const s = statusRes.data;
+  // Strings here come straight out of module EEPROM, so escape them rather
+  // than trusting a device to hand back clean ASCII.
+  const d = Object.fromEntries(Object.entries(infoRes.data)
+    .map(([k, v]) => [k, typeof v === 'string' ? esc(v) : v]));
+  const s = Object.fromEntries(Object.entries(statusRes.data)
+    .map(([k, v]) => [k, typeof v === 'string' ? esc(v) : v]));
 
   // [field, value, page, address, cmis_definition]
   const rows = [
@@ -269,15 +322,22 @@ async function loadInfo() {
     ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
   ];
 
-  tbody.innerHTML = rows.map(([k, v, pg, addr, def]) =>
-    `<tr>
+  tbody.innerHTML = rows.map(([k, v, pg, addr, def]) => {
+    const plain = String(v).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    const tip = esc([
+      k,
+      `${pg === 'Lower' ? 'Lower Memory' : 'Page ' + pg} · byte ${addr}`,
+      `Current: ${plain}`,
+      def,
+    ].join('\n'));
+    return `<tr title="${tip}">
       <td style="color:var(--text-muted);width:140px">${k}</td>
       <td>${v}</td>
       <td class="td-page">${pg}</td>
       <td class="td-addr">${addr}</td>
       <td class="td-def">${def}</td>
-    </tr>`
-  ).join('');
+    </tr>`;
+  }).join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -380,18 +440,47 @@ async function loadDatapath() {
   const tbody = document.getElementById('tbl-datapath');
   if (!tbody) return;
 
-  tbody.innerHTML = res.data.lanes.map(lane => {
-    const appOpts = Array.from({length: 16}, (_, i) =>
-      `<option value="${i}" ${lane.app_select === i ? 'selected' : ''}>App ${i}</option>`
+  const d = res.data;
+  tbody.innerHTML = d.lanes.map(lane => {
+    const i = lane.lane - 1;
+    const appOpts = Array.from({length: 16}, (_, n) =>
+      `<option value="${n}" ${lane.app_select === n ? 'selected' : ''}>App ${n}</option>`
     ).join('');
+
+    // DPConfigLane is one byte per lane; the rest are one bit per lane.
+    const tipApp = regTip({
+      field: `DPConfigLane${lane.lane}`, page: 0x10, addr: 0x91 + i,
+      note: `AppSelCode = ${lane.app_select} (bits 7-4); DataPathID bits 3-1, ExplicitControl bit 0`,
+    });
+    const tipTx = regTip({
+      field: `OutputDisableTx${lane.lane}`, page: 0x10, addr: 0x82,
+      value: d.tx_disable_mask, bit: i,
+      note: lane.tx_enable ? 'Checked = Tx output enabled (disable bit clear)'
+                           : 'Unchecked = Tx output disabled (disable bit set)',
+    });
+    const tipTxPol = regTip({
+      field: `InputPolarityFlipTx${lane.lane}`, page: 0x10, addr: 0x81,
+      value: d.tx_polarity_flip_mask, bit: i,
+      note: lane.tx_polarity_flip ? 'Host-side input polarity flipped' : 'No input polarity flip',
+    });
+    const tipRxPol = regTip({
+      field: `OutputPolarityFlipRx${lane.lane}`, page: 0x10, addr: 0x89,
+      value: d.rx_polarity_flip_mask, bit: i,
+      note: lane.rx_polarity_flip ? 'Host-side output polarity flipped' : 'No output polarity flip',
+    });
+    const tipDeinit = regTip({
+      field: `DPDeinitLane${lane.lane}`, page: 0x10, addr: 0x80,
+      value: d.dp_deinit_mask, bit: i,
+      note: lane.dp_deinit ? 'Data Path held de-initialised' : 'Data Path released for operation',
+    });
 
     return `<tr class="datapath-lane-row">
       <td>Lane ${lane.lane}</td>
-      <td><select id="app-sel-${lane.lane}" class="app-select-input">${appOpts}</select></td>
-      <td><input type="checkbox" id="tx-en-${lane.lane}" ${lane.tx_enable ? 'checked' : ''}></td>
-      <td><input type="checkbox" id="tx-pol-${lane.lane}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
-      <td><input type="checkbox" id="rx-pol-${lane.lane}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>
-      <td>${lane.dp_deinit ? '<span class="text-warning">Deinit</span>' : '<span class="text-success">Active</span>'}</td>
+      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select></td>
+      <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
+      <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
+      <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>
+      <td title="${esc(tipDeinit)}">${lane.dp_deinit ? '<span class="text-warning">Deinit</span>' : '<span class="text-success">Active</span>'}</td>
     </tr>`;
   }).join('');
 }
@@ -439,14 +528,17 @@ async function loadModuleControl() {
   const yes = '<span class="text-success">●</span>';
   const no  = '<span style="color:var(--text-muted)">○</span>';
 
+  const ctrlTip = (field, bit, note) =>
+    esc(regTip({ field, page: null, addr: 0x1A, value: d.raw, bit, note }));
+
   tbody.innerHTML = `
-    <tr>
+    <tr title="${ctrlTip('SoftwareReset', 3, d.software_reset ? 'Reset in progress' : 'Idle; writing 1 restarts the module')}">
       <td>Software Reset</td>
       <td>${d.software_reset ? yes : no}</td>
       <td class="td-addr">0x1A[3]</td>
       <td><button class="btn-danger btn-sm" id="btn-mod-reset">Reset Module</button></td>
     </tr>
-    <tr>
+    <tr title="${ctrlTip('LowPwrRequestSW', 4, d.low_pwr_request_sw ? 'Module held in low power' : 'Module allowed to reach high power')}">
       <td>Low Power Request (SW)</td>
       <td>${d.low_pwr_request_sw ? yes : no}</td>
       <td class="td-addr">0x1A[4]</td>
@@ -455,13 +547,13 @@ async function loadModuleControl() {
         <button class="btn-secondary btn-sm" id="btn-mod-hp">Exit LowPwr</button>
       </td>
     </tr>
-    <tr>
+    <tr title="${ctrlTip('LowPwrAllowRequestHW', 6, d.low_pwr_allow_request_hw ? 'Hardware LPMode pin honoured' : 'Hardware LPMode pin ignored')}">
       <td>Allow LowPwrRequestHW</td>
       <td>${d.low_pwr_allow_request_hw ? yes : no}</td>
       <td class="td-addr">0x1A[6]</td>
       <td>—</td>
     </tr>
-    <tr>
+    <tr title="${ctrlTip('SquelchMethodSelect', 5, d.squelch_method_select ? 'Squelch on average power (Pav)' : 'Squelch on modulation amplitude (OMA)')}">
       <td>Squelch Method</td>
       <td>${d.squelch_method_select ? 'Pav' : 'OMA'}</td>
       <td class="td-addr">0x1A[5]</td>
@@ -700,12 +792,22 @@ function _mkCheckbox(id) {
   return `<input type="checkbox" id="${id}">`;
 }
 
-function _populateBitmaskRow(prefix, mask) {
+function _populateBitmaskRow(prefix, mask, meta) {
   for (let i = 0; i < 8; i++) {
     const td = document.getElementById(`${prefix}-td-${i}`);
     if (!td) continue;
     td.innerHTML = _mkCheckbox(`${prefix}-cb-${i}`);
-    document.getElementById(`${prefix}-cb-${i}`).checked = !!((mask >> i) & 1);
+    const cb = document.getElementById(`${prefix}-cb-${i}`);
+    cb.checked = !!((mask >> i) & 1);
+    if (meta) {
+      const tip = regTip({
+        field: `${meta.field}${i + 1}`,
+        page: meta.page, addr: meta.addr, value: mask, bit: i,
+        note: ((mask >> i) & 1) ? meta.onNote : meta.offNote,
+      });
+      cb.title = tip;
+      td.title = tip;
+    }
   }
 }
 
@@ -722,10 +824,20 @@ async function loadSquelch() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/squelch');
   if (res.status !== 'ok') { toast(`Squelch error: ${res.message}`, 'error'); return; }
-  _populateBitmaskRow('sq', res.data.tx_squelch_disable);
-  _populateBitmaskRow('sf', res.data.tx_squelch_force);
-  _populateBitmaskRow('od', res.data.rx_output_disable);
-  _populateBitmaskRow('rd', res.data.rx_squelch_disable);
+  _populateBitmaskRow('sq', res.data.tx_squelch_disable, {
+    field: 'AutoSquelchDisableTx', page: 0x10, addr: 0x83,
+    onNote: 'Auto-squelch controller disabled for this lane',
+    offNote: 'Auto-squelch controller enabled for this lane' });
+  _populateBitmaskRow('sf', res.data.tx_squelch_force, {
+    field: 'OutputSquelchForceTx', page: 0x10, addr: 0x84,
+    onNote: 'Tx output squelch forced on', offNote: 'Tx output not force-squelched' });
+  _populateBitmaskRow('od', res.data.rx_output_disable, {
+    field: 'OutputDisableRx', page: 0x10, addr: 0x8A,
+    onNote: 'Rx output disabled', offNote: 'Rx output enabled' });
+  _populateBitmaskRow('rd', res.data.rx_squelch_disable, {
+    field: 'AutoSquelchDisableRx', page: 0x10, addr: 0x8B,
+    onNote: 'Auto-squelch controller disabled for this lane',
+    offNote: 'Auto-squelch controller enabled for this lane' });
 }
 
 async function applySquelch() {
@@ -742,12 +854,22 @@ async function applySquelch() {
 // ---------------------------------------------------------------------------
 // Loopback (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _populateLoopbackRow(prefix, mask) {
+function _populateLoopbackRow(prefix, mask, meta) {
   for (let i = 0; i < 8; i++) {
     const td = document.getElementById(`lb-${prefix}-${i}`);
     if (!td) continue;
     td.innerHTML = _mkCheckbox(`lb-cb-${prefix}-${i}`);
-    document.getElementById(`lb-cb-${prefix}-${i}`).checked = !!((mask >> i) & 1);
+    const cb = document.getElementById(`lb-cb-${prefix}-${i}`);
+    cb.checked = !!((mask >> i) & 1);
+    if (meta) {
+      const tip = regTip({
+        field: `${meta.field}Lane${i + 1}`,
+        page: 0x13, addr: meta.addr, value: mask, bit: i,
+        note: ((mask >> i) & 1) ? 'Loopback engaged on this lane' : 'Normal non-loopback operation',
+      });
+      cb.title = tip;
+      td.title = tip;
+    }
   }
 }
 
@@ -764,10 +886,14 @@ async function loadLoopback() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/loopback');
   if (res.status !== 'ok') { toast(`Loopback error: ${res.message}`, 'error'); return; }
-  _populateLoopbackRow('mso', res.data.media_side_output);
-  _populateLoopbackRow('msi', res.data.media_side_input);
-  _populateLoopbackRow('hso', res.data.host_side_output);
-  _populateLoopbackRow('hsi', res.data.host_side_input);
+  _populateLoopbackRow('mso', res.data.media_side_output,
+    { field: 'MediaSideOutputLoopbackEnable', addr: 0xB4 });
+  _populateLoopbackRow('msi', res.data.media_side_input,
+    { field: 'MediaSideInputLoopbackEnable', addr: 0xB5 });
+  _populateLoopbackRow('hso', res.data.host_side_output,
+    { field: 'HostSideOutputLoopbackEnable', addr: 0xB6 });
+  _populateLoopbackRow('hsi', res.data.host_side_input,
+    { field: 'HostSideInputLoopbackEnable', addr: 0xB7 });
 }
 
 async function applyLoopback() {
@@ -784,10 +910,19 @@ async function applyLoopback() {
 // ---------------------------------------------------------------------------
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _renderPrbsTable(tbodyId, block, lolMask) {
+function _renderPrbsTable(tbodyId, block, lolMask, base, side) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const isChecker = (lolMask !== undefined);
+  // Field names follow CMIS 5.3 Tables 8-109/8-111/8-113/8-115: each block is
+  // 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits, Pre/PostFECEnable,
+  // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
+  const role = isChecker ? 'Checker' : 'Generator';
+  const fecName = isChecker ? 'PostFECEnable' : 'PreFECEnable';
+  const tip = (suffix, off, mask, i, note) => esc(regTip({
+    field: `${side}Side${role}${suffix}Lane${i + 1}`, page: 0x13, addr: base + off,
+    value: mask, bit: i, note,
+  }));
   tbody.innerHTML = Array.from({length: 8}, (_, i) => {
     const en  = !!((block.enable_mask    >> i) & 1);
     const inv = !!((block.invert_mask    >> i) & 1);
@@ -802,13 +937,31 @@ function _renderPrbsTable(tbodyId, block, lolMask) {
       const lol = !!((lolMask >> i) & 1);
       lolCell = `<td>${lol ? '<span class="flag-active">LOL</span>' : '<span class="flag-ok">●</span>'}</td>`;
     }
+    // Lane i's 4-bit pattern selector sits in the low or high nibble of
+    // pattern byte base+4+(i>>1).
+    // Lane i's 4-bit PatternSelect sits in byte base+4+(i>>1); odd lanes
+    // (Lane 1, 3, 5, 7) occupy bits 3-0, even lanes bits 7-4.
+    const patAddr = base + 4 + (i >> 1);
+    const patTip = esc(regTip({
+      field: `${side}Side${role}PatternSelectLane${i + 1}`, page: 0x13, addr: patAddr,
+      note: `Bits ${(i % 2) ? '7-4' : '3-0'} = ${pattern} (${PRBS_PATTERNS[pattern] || '?'})`,
+    }));
+    const tEn  = tip('Enable', 0, block.enable_mask, i,
+                     en ? `${role} running on this lane` : `${role} stopped on this lane`);
+    const tInv = tip('DataInvert', 1, block.invert_mask, i,
+                     inv ? 'Pattern data inverted' : 'Pattern data not inverted');
+    const tSw  = tip('SwapSymbolBits', 2, block.byte_swap_mask, i,
+                     sw ? 'Symbol bit order swapped' : 'Normal symbol bit order');
+    const tFec = tip(fecName, 3, block.fec_mask, i,
+                     fec ? 'Applied at the FEC-coded side' : 'Applied at the raw side');
+
     return `<tr>
       <td>L${i+1}</td>
-      <td><input type="checkbox" id="${tbodyId}-en-${i}"  ${en  ? 'checked' : ''}></td>
-      <td><input type="checkbox" id="${tbodyId}-inv-${i}" ${inv ? 'checked' : ''}></td>
-      <td><input type="checkbox" id="${tbodyId}-sw-${i}"  ${sw  ? 'checked' : ''}></td>
-      <td><input type="checkbox" id="${tbodyId}-fec-${i}" ${fec ? 'checked' : ''}></td>
-      <td><select class="app-select-input" id="${tbodyId}-pat-${i}">${patOpts}</select></td>
+      <td title="${tEn}"><input type="checkbox" id="${tbodyId}-en-${i}" title="${tEn}" ${en  ? 'checked' : ''}></td>
+      <td title="${tInv}"><input type="checkbox" id="${tbodyId}-inv-${i}" title="${tInv}" ${inv ? 'checked' : ''}></td>
+      <td title="${tSw}"><input type="checkbox" id="${tbodyId}-sw-${i}" title="${tSw}" ${sw  ? 'checked' : ''}></td>
+      <td title="${tFec}"><input type="checkbox" id="${tbodyId}-fec-${i}" title="${tFec}" ${fec ? 'checked' : ''}></td>
+      <td title="${patTip}"><select class="app-select-input" id="${tbodyId}-pat-${i}" title="${patTip}">${patOpts}</select></td>
       ${lolCell}
     </tr>`;
   }).join('');
@@ -833,10 +986,10 @@ async function loadPrbs() {
   const res = await apiGet('/api/module/prbs');
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
-  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen);
-  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen);
-  _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask);
-  _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask);
+  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  undefined, 0x90, 'Host');
+  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, undefined, 0x98, 'Media');
+  _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0, 'Host');
+  _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8, 'Media');
 }
 
 async function applyPrbs() {
@@ -943,14 +1096,37 @@ async function loadLaser() {
       : l.tuning_in_progress
       ? '<span class="flag-warn">Tuning...</span>'
       : '<span class="flag-active">Unlocked</span>';
+    const i = l.lane - 1;
+    // Page 12h: 1 byte/lane grid, then S16 per lane for channel, fine offset
+    // and target power; frequency and status are read-only feedback.
+    const tipGrid = esc(regTip({
+      field: `GridSpacingTx${l.lane}`, page: 0x12, addr: 0x80 + i,
+      note: `Bits 7-4 = ${l.grid_code} (${l.grid}); bit 0 FineTuningEnableTx = `
+          + `${l.fine_tuning_enabled ? 1 : 0} (bits 3-1 reserved)`,
+    }));
+    const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}`, 0x12, 0x88 + i * 2, 2,
+      `S16 channel number, current ${l.channel}`));
+    const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}`, 0x12, 0x98 + i * 2, 2,
+      `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`));
+    const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}`, 0x12, 0xA8 + i * 4, 4,
+      `U32 in units of 0.001 GHz, current ${l.frequency_thz.toFixed(6)} THz (read-only)`));
+    const tipPwr = esc(regTipRange(`TargetOutputPowerTx${l.lane}`, 0x12, 0xC8 + i * 2, 2,
+      `S16 in units of 0.01 dBm, current ${l.target_power_dbm} dBm`));
+    const tipStat = esc(regTip({
+      field: `TuningInProgressTx${l.lane} / WavelengthUnlockedTx${l.lane}`,
+      page: 0x12, addr: 0xDE + i,
+      note: `Bit 1 TuningInProgressTx = ${l.tuning_in_progress ? 1 : 0}; `
+          + `bit 0 WavelengthUnlockedTx = ${l.wavelength_locked ? 0 : 1} (bits 7-2 reserved)`,
+    }));
+
     return `<tr>
       <td>${l.lane}</td>
-      <td><select class="app-select-input" id="laser-grid-${l.lane}">${gridOpts(l.grid_code)}</select></td>
-      <td><input type="number" id="laser-ch-${l.lane}" value="${l.channel}" style="width:70px" class="raw-data-input"></td>
-      <td><input type="number" id="laser-ft-${l.lane}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
-      <td style="font-family:var(--font-mono)">${l.frequency_thz.toFixed(6)}</td>
-      <td><input type="number" id="laser-pwr-${l.lane}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>
-      <td>${lockIcon}</td>
+      <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code)}</select></td>
+      <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}" style="width:70px" class="raw-data-input"></td>
+      <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
+      <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_thz.toFixed(6)}</td>
+      <td title="${tipPwr}"><input type="number" id="laser-pwr-${l.lane}" title="${tipPwr}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>
+      <td title="${tipStat}">${lockIcon}</td>
     </tr>`;
   }).join('');
 }

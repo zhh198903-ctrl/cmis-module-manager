@@ -98,6 +98,64 @@ class TestVersion(CMISTestCase):
                       'operation manual version is out of sync with app.__version__')
 
 
+class TestRegisterTooltips(CMISTestCase):
+    """The UI hover tooltips quote CMIS field names and addresses at the user.
+
+    A wrong tooltip is worse than none, so pin the strings that app.js emits to
+    the names and byte addresses in OIF CMIS 5.3. Sources: Table 8-69
+    (lane-specific controls, Page 10h), Table 8-72 (Staged Control Set 0),
+    Tables 8-109/8-111/8-113/8-115 (pattern gen/check, Page 13h), Table 8-121
+    (loopback controls), Table 8-99 (tunable laser, Page 12h) and the Module
+    Control byte in Lower Memory.
+    """
+
+    def _js(self):
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'app.js')
+        return io.open(path, encoding='utf-8').read()
+
+    def test_page10h_tooltip_fields(self):
+        js = self._js()
+        for field, addr in [('InputPolarityFlipTx', '0x81'), ('OutputDisableTx', '0x82'),
+                            ('AutoSquelchDisableTx', '0x83'), ('OutputSquelchForceTx', '0x84'),
+                            ('OutputPolarityFlipRx', '0x89'), ('OutputDisableRx', '0x8A'),
+                            ('AutoSquelchDisableRx', '0x8B')]:
+            self.assertIn(field, js, f'{field} missing from tooltips')
+            self.assertIn(addr, js, f'{addr} missing from tooltips')
+        self.assertIn('DPDeinitLane', js)
+        self.assertIn('DPConfigLane', js)
+
+    def test_page13h_tooltip_fields(self):
+        """Pattern controls are named <Side>Side<Role><Field>Lane<n>."""
+        js = self._js()
+        for part in ['Side${role}', 'PatternSelectLane', 'SwapSymbolBits',
+                     'DataInvert', 'PreFECEnable', 'PostFECEnable']:
+            self.assertIn(part, js, f'{part} missing from PRBS tooltips')
+        for field in ['MediaSideOutputLoopbackEnable', 'MediaSideInputLoopbackEnable',
+                      'HostSideOutputLoopbackEnable', 'HostSideInputLoopbackEnable']:
+            self.assertIn(field, js, f'{field} missing from loopback tooltips')
+
+    def test_page12h_tooltip_fields(self):
+        js = self._js()
+        for field in ['GridSpacingTx', 'FineTuningEnableTx', 'ChannelNumberTx',
+                      'FineTuningOffsetTx', 'CurrentLaserFrequencyTx',
+                      'TargetOutputPowerTx', 'TuningInProgressTx', 'WavelengthUnlockedTx']:
+            self.assertIn(field, js, f'{field} missing from laser tooltips')
+
+    def test_module_control_tooltip_fields(self):
+        js = self._js()
+        for field in ['SoftwareReset', 'LowPwrRequestSW',
+                      'LowPwrAllowRequestHW', 'SquelchMethodSelect']:
+            self.assertIn(field, js, f'{field} missing from Module Control tooltips')
+
+    def test_control_endpoint_exposes_raw_byte(self):
+        """Tooltips quote the current byte, so the API must return it."""
+        self.connect()
+        body = self.assertOk(self.client.get('/api/module/control'))
+        self.assertIn('raw', body['data'])
+        self.assertIsInstance(body['data']['raw'], int)
+
+
 class TestBackends(CMISTestCase):
 
     def test_backends_ok(self):

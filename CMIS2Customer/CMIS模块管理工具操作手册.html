@@ -529,10 +529,30 @@
   <h2 class="section-title">5. 界面总览</h2>
   <img src="screenshot_main.png" alt="CMIS Module Manager 界面截图" style="width:100%;border-radius:8px;border:1px solid var(--border);display:block;">
   <ul>
-    <li><b>左侧面板</b>：连接控制区，始终可见；底部显示公众号二维码</li>
+    <li><b>左侧面板</b>：连接控制区，始终可见；底部显示公众号二维码与当前版本号</li>
     <li><b>右侧内容区</b>：根据选中的标签页切换显示</li>
-    <li><b>顶部状态栏</b>：绿色圆点 = 已连接，红色 = 未连接</li>
+    <li><b>顶部状态栏</b>：软件版本徽章；绿色圆点 = 已连接，红色 = 未连接</li>
   </ul>
+
+  <h3>5.1 鼠标悬停查看寄存器来源</h3>
+  <p>把鼠标停在<b>任意一个设置项</b>（复选框、下拉框、数值输入框）或信息表格的任意一行上，
+     会弹出该项对应的寄存器信息，无需再去翻规范手册核对地址：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>提示行</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>第 1 行</td><td class="label">CMIS 规范中的字段名（如 <code>AutoSquelchDisableTx1</code>）</td></tr>
+        <tr><td>第 2 行</td><td class="label">所在 Page 与字节地址，十进制与十六进制并列（如 <code>Page 10h · byte 131 (0x83)</code>）</td></tr>
+        <tr><td>第 3 行</td><td class="label">该字节<b>当前实际读回的值</b>，十六进制 / 二进制 / 十进制三种形式</td></tr>
+        <tr><td>第 4 行</td><td class="label">该控件占用的位，以及 0/1 各代表什么</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>字段名与地址均严格取自 <b>OIF CMIS 5.3</b> 原文（Table 8-69 / 8-72 / 8-99 / 8-109 / 8-121 等）。
+    多字节字段（如激光器频率）会显示完整字节范围与单位换算。</span>
+  </div>
 </div>
 
 <!-- ══════════════ 6. 连接模块 ══════════════ -->
