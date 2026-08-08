@@ -5,9 +5,9 @@ from PyInstaller.utils.hooks import collect_data_files
 
 # This spec lives in packaging/, so every source path is resolved against the
 # repository root rather than the spec's own directory.
+# No bytecode encryption: the source is MIT-licensed and public, and
+# PyInstaller 6 dropped the cipher option entirely.
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
-
-block_cipher = None
 
 a = Analysis(
     [os.path.join(ROOT, 'app.py')],
@@ -40,10 +40,9 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'PIL'],
-    cipher=block_cipher,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz, a.scripts, a.binaries, a.zipfiles, a.datas,
