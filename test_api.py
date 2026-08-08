@@ -237,6 +237,24 @@ class TestUpdater(unittest.TestCase):
         self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', bat)
         self.assertIn('del "%~f0"', bat)
 
+    def test_helper_keeps_a_console_so_it_can_relaunch(self):
+        """Regression, found by actually upgrading a real 2.0.1 build.
+
+        With DETACHED_PROCESS the helper has no console, so its `start` cannot
+        allocate one for the console-mode exe: the files swapped correctly and
+        the app simply never came back. Nothing errors, so only this assertion
+        catches a reintroduction.
+        """
+        import io
+        import updater as u
+        self.assertFalse(hasattr(u, '_DETACHED_PROCESS'),
+                         'DETACHED_PROCESS leaves the helper unable to relaunch')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'updater.py')
+        src = io.open(path, encoding='utf-8').read()
+        body = src.split('def stage_and_swap(')[1]
+        self.assertIn('creationflags=_CREATE_NO_WINDOW', body)
+        self.assertNotIn('0x00000008', body)
+
     def test_self_update_refused_when_running_from_source(self):
         import updater as u
         self.assertFalse(u.is_frozen(), 'tests should not run frozen')

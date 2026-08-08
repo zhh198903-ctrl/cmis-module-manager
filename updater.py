@@ -210,7 +210,11 @@ def current_exe_path() -> str:
     return os.path.abspath(sys.executable)
 
 
-_DETACHED_PROCESS = 0x00000008
+# CREATE_NO_WINDOW gives the helper its own console and keeps it hidden.
+# DETACHED_PROCESS would leave it with no console at all, and `start` cannot
+# then allocate one for the console-mode exe it relaunches - the swap still
+# succeeds but the app never comes back, which is exactly what happened when
+# this was first tested against a real release.
 _CREATE_NO_WINDOW = 0x08000000
 
 
@@ -262,7 +266,7 @@ def stage_and_swap(staged_dir: str, target_dir: Optional[str] = None,
         fh.write(build_swap_bat(os.path.abspath(staged_dir), target, relaunch=relaunch))
     return subprocess.Popen(
         ['cmd', '/c', bat_path],
-        creationflags=_DETACHED_PROCESS | _CREATE_NO_WINDOW,
+        creationflags=_CREATE_NO_WINDOW,
         close_fds=True, cwd=target,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

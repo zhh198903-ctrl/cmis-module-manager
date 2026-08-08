@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.0.2<br>
+      <b>版本</b>　2.0.3<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-08<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.2 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.0.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.3 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.0.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -567,6 +567,8 @@
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>升级会关闭当前程序并重启。<b>若正在连接模块做测量，请先 Disconnect 再升级。</b>
+    <br><b>从 v2.0.2 或更早版本升级时</b>，因旧版本存在一个缺陷，文件会正确替换但<b>不会自动重启</b>——
+    此时手动双击 <code>CMIS_Module_Manager.exe</code> 即可，版本已是新的。从 v2.0.3 起自动重启正常。
     升级仅在 EXE 版可用；从源码运行时会提示改用 <code>git pull</code>。
     本工具<b>只在你点击该按钮时才联网</b>，平时不会主动访问外部网络。</span>
   </div>
@@ -779,7 +781,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span><b>v2.0.2 起</b>着色依据改为模块 Page 02h 广播的真实阈值（即下方 Module Thresholds
+    <span><b>v2.0.3 起</b>着色依据改为模块 Page 02h 广播的真实阈值（即下方 Module Thresholds
     卡片显示的值），而非固定的 ±10 dBm。不同模块阈值不同——例如某 DR8 模块的 Tx Low Alarm 是
     −8.0 dBm，按旧的固定值判断会把已触发告警的 lane 显示成正常，与 Lane Flags 表自相矛盾。</span>
   </div>
@@ -921,7 +923,7 @@
   <h2 class="section-title">10. Diagnostics — 诊断工具</h2>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span><b>v2.0.2 起</b>切换到本标签页会一次性加载全部卡片（Loopback、PRBS、BER、SNR、
+    <span><b>v2.0.3 起</b>切换到本标签页会一次性加载全部卡片（Loopback、PRBS、BER、SNR、
     Counters、Laser Tuning）。此前只有前两张会自动加载，其余需手动点各自的 ↻，
     容易出现"半页是实时数据、半页是空的或复位前的旧值"。各卡片的 ↻ 按钮仍可单独刷新。</span>
   </div>
@@ -1008,7 +1010,7 @@
   <p>GUI 同时计算并显示 <code>BER(calc) = ErrorCount / TotalBitsCount</code> 方便直读。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
-    <span><b>v2.0.2 起显示失锁提示</b>：某 lane 的 PSL 位为 1 时，该列会置灰、BER 显示为红色
+    <span><b>v2.0.3 起显示失锁提示</b>：某 lane 的 PSL 位为 1 时，该列会置灰、BER 显示为红色
     <b>no sync</b>，表格下方给出整体提示。失锁期间计数器仍在累加，但那些数字<b>不是有效的 BER
     测量结果</b>，不可写入测试报告。此前版本把失锁数据和正常数据渲染得完全一样。</span>
   </div>
@@ -1170,7 +1172,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.0.2<br>
+    CMIS Module Manager 操作手册 v2.0.3<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
