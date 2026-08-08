@@ -13,8 +13,12 @@ const AppState = {
   backendsCache: [],   // cached result of /api/backends
 };
 
-// Alarm thresholds (dBm)
-const ALARM = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
+// Fallback optical power limits (dBm), used only until the module's own
+// Page 02h thresholds have been read. Colouring by these when the module
+// advertises different limits would contradict both the Thresholds card and
+// the module's own alarm flags.
+const ALARM_FALLBACK = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
+let _moduleThresholds = null;
 
 // ---------------------------------------------------------------------------
 // Register hover tooltips
@@ -181,6 +185,7 @@ async function connectModule() {
 async function disconnectModule() {
   await apiGet('/api/disconnect');
   AppState.connected = false;
+  _moduleThresholds = null;   // the next module advertises its own limits
   stopMonitoring();
   updateConnectionUI(false, '');
   clearBackendInfoArea();
@@ -287,7 +292,13 @@ function switchTab(name) {
   if (name === 'info')        loadInfo();
   if (name === 'monitoring')  startMonitoring();
   if (name === 'datapath')  { loadModuleControl(); loadApplications(); loadDatapath(); loadSquelch(); }
-  if (name === 'diagnostics') { loadLoopback(); loadPrbs(); }
+  // Load the whole Diagnostics tab, not half of it: BER, SNR, counters and
+  // laser tuning used to sit empty until each card's own refresh was clicked,
+  // so half the page showed live data next to placeholders or values from
+  // before a reset.
+  if (name === 'diagnostics') {
+    loadLoopback(); loadPrbs(); loadBer(); loadSnr(); loadCounters(); loadLaser();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +460,27 @@ async function checkForUpdate() {
   }
 }
 
+/**
+ * Optical power limits to colour by: the module's own advertised alarm
+ * thresholds when they have been read, otherwise the generic fallback.
+ *
+ * A module can advertise anything - mock_dr8 alarms Tx low at -8.0 dBm, not
+ * -10 - so colouring by a fixed pair made the monitoring table, the Thresholds
+ * card and the module's Lane Flags give three different answers about the same
+ * lane.
+ */
+function _powerLimits() {
+  const t = _moduleThresholds;
+  if (!t) return ALARM_FALLBACK;
+  const num = (v, fb) => (typeof v === 'number' && Number.isFinite(v)) ? v : fb;
+  return {
+    TX_LOW:  num(t.tx_power_low_alarm_dbm,  ALARM_FALLBACK.TX_LOW),
+    TX_HIGH: num(t.tx_power_high_alarm_dbm, ALARM_FALLBACK.TX_HIGH),
+    RX_LOW:  num(t.rx_power_low_alarm_dbm,  ALARM_FALLBACK.RX_LOW),
+    RX_HIGH: num(t.rx_power_high_alarm_dbm, ALARM_FALLBACK.RX_HIGH),
+  };
+}
+
 /** Say plainly that what is on screen is no longer live. */
 function markMonitoringStale(reason) {
   const el = document.getElementById('monitor-stale');
@@ -522,8 +554,9 @@ async function loadMonitoring() {
   tbody.innerHTML = lanes.map(lane => {
     const txDbm = lane.tx_power_dbm;
     const rxDbm = lane.rx_power_dbm;
-    const txCls = txDbm < ALARM.TX_LOW ? 'alarm-low' : txDbm > ALARM.TX_HIGH ? 'alarm-high' : '';
-    const rxCls = rxDbm < ALARM.RX_LOW ? 'alarm-low' : rxDbm > ALARM.RX_HIGH ? 'alarm-high' : '';
+    const lim = _powerLimits();
+    const txCls = txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
+    const rxCls = rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
     const stateClass = lane.datapath_state === 'Activated'
       ? 'state-activated' : lane.datapath_state === 'Init'
       ? 'state-init' : 'state-deactivated';
@@ -936,6 +969,7 @@ async function loadThresholds() {
   const res = await apiGet('/api/module/thresholds');
   if (res.status !== 'ok') { toast(`Thresholds error: ${res.message}`, 'error'); return; }
   const d = res.data;
+  _moduleThresholds = d;   // drives the monitoring table's alarm colouring
   const tbody = document.getElementById('tbl-thresholds');
   if (!tbody) return;
 
@@ -1199,14 +1233,30 @@ async function loadCounters() {
   if (res.status !== 'ok') { toast(`Counters error: ${res.message}`, 'error'); return; }
   const lanes = res.data.lanes;
   const fmtCount = (v) => v != null ? v.toLocaleString() : '—';
-  const fmtBer = (v) => v != null && v > 0 ? v.toExponential(2) : '—';
+  // While the checker has lost pattern sync the counters keep accumulating but
+  // mean nothing, so say so rather than rendering a number that reads like a
+  // measurement.
+  const fmtBer = (v, psl) => psl ? '<span class="flag-active">no sync</span>'
+                           : (v != null && v > 0 ? v.toExponential(2) : '—');
+  const cell = (l, psl, html) =>
+    `<td${psl ? ' class="text-muted" title="Pattern sync lost on this lane — counts are not a valid measurement"' : ''}>${html}</td>`;
 
-  const hostErrCells = lanes.map(l => `<td>${fmtCount(l.host_error_count)}</td>`).join('');
-  const hostBitCells = lanes.map(l => `<td>${fmtCount(l.host_total_bits)}</td>`).join('');
-  const hostBerCells = lanes.map(l => `<td>${fmtBer(l.host_ber)}</td>`).join('');
-  const mediaErrCells = lanes.map(l => `<td>${fmtCount(l.media_error_count)}</td>`).join('');
-  const mediaBitCells = lanes.map(l => `<td>${fmtCount(l.media_total_bits)}</td>`).join('');
-  const mediaBerCells = lanes.map(l => `<td>${fmtBer(l.media_ber)}</td>`).join('');
+  const row = (side, field, fmt) => lanes.map(l =>
+    cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
+
+  const hostErrCells  = row('host', 'error_count', fmtCount);
+  const hostBitCells  = row('host', 'total_bits', fmtCount);
+  const hostBerCells  = lanes.map(l => cell(l, l.host_psl, fmtBer(l.host_ber, l.host_psl))).join('');
+  const mediaErrCells = row('media', 'error_count', fmtCount);
+  const mediaBitCells = row('media', 'total_bits', fmtCount);
+  const mediaBerCells = lanes.map(l => cell(l, l.media_psl, fmtBer(l.media_ber, l.media_psl))).join('');
+
+  const anyPsl = lanes.some(l => l.host_psl || l.media_psl);
+  const note = anyPsl
+    ? `<tr><td colspan="9" class="flag-active" style="font-size:11px">`
+      + `⚠ Pattern sync lost on one or more lanes (14h counter bit 0). Their error `
+      + `and bit counts are not a valid BER measurement.</td></tr>`
+    : '';
 
   tbody.innerHTML = `
     <tr><td style="color:var(--text-muted)">Host Errors</td>${hostErrCells}</tr>
@@ -1214,7 +1264,8 @@ async function loadCounters() {
     <tr><td style="color:var(--text-muted)">Host BER (calc)</td>${hostBerCells}</tr>
     <tr><td style="color:var(--text-muted)">Media Errors</td>${mediaErrCells}</tr>
     <tr><td style="color:var(--text-muted)">Media Total Bits</td>${mediaBitCells}</tr>
-    <tr><td style="color:var(--text-muted)">Media BER (calc)</td>${mediaBerCells}</tr>`;
+    <tr><td style="color:var(--text-muted)">Media BER (calc)</td>${mediaBerCells}</tr>
+    ${note}`;
 }
 
 // ---------------------------------------------------------------------------

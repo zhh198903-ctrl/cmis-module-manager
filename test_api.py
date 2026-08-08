@@ -98,6 +98,51 @@ class TestVersion(CMISTestCase):
                       'operation manual version is out of sync with app.__version__')
 
 
+class TestMonitoringPresentation(CMISTestCase):
+    """Guards for values that must not be presented as trustworthy."""
+
+    def _js(self):
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'app.js')
+        return io.open(path, encoding='utf-8').read()
+
+    def test_alarm_colouring_uses_the_modules_own_thresholds(self):
+        """A fixed +/-10 dBm pair contradicted the module's advertised limits,
+        so the monitoring table, the thresholds card and the lane flags gave
+        three different answers about one lane."""
+        js = self._js()
+        self.assertIn('_powerLimits()', js)
+        self.assertIn('tx_power_low_alarm_dbm', js)
+        self.assertIn('_moduleThresholds = d', js,
+                      'thresholds are read but never fed back into colouring')
+
+    def test_thresholds_endpoint_supplies_what_colouring_needs(self):
+        self.connect()
+        d = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        for k in ('tx_power_low_alarm_dbm', 'tx_power_high_alarm_dbm',
+                  'rx_power_low_alarm_dbm', 'rx_power_high_alarm_dbm'):
+            self.assertIn(k, d)
+            self.assertIsInstance(d[k], (int, float))
+
+    def test_counters_expose_pattern_sync_loss(self):
+        """Counts taken while sync is lost are not a BER measurement."""
+        self.connect()
+        d = self.assertOk(self.client.get('/api/module/counters'))['data']
+        self.assertTrue(d['lanes'], 'no lanes returned')
+        for lane in d['lanes']:
+            self.assertIn('host_psl', lane)
+            self.assertIn('media_psl', lane)
+        self.assertIn('no sync', self._js(),
+                      'the UI does not surface pattern sync loss')
+
+    def test_diagnostics_tab_loads_every_card(self):
+        js = self._js()
+        block = js.split("if (name === 'diagnostics')")[1].split('\n  }')[0]
+        for fn in ('loadLoopback', 'loadPrbs', 'loadBer', 'loadSnr',
+                   'loadCounters', 'loadLaser'):
+            self.assertIn(fn, block, f'{fn} is not loaded when the tab opens')
+
+
 class TestUpdater(unittest.TestCase):
     """Update logic, exercised without touching the network."""
 

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.0.1<br>
+      <b>版本</b>　2.0.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-08<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.0.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.0.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -771,13 +771,24 @@
     <table>
       <thead><tr><th>颜色</th><th>含义</th></tr></thead>
       <tbody>
-        <tr><td><span class="badge badge-ok">正常</span></td><td class="label">功率在 −10 dBm ~ +3 dBm 之间</td></tr>
-        <tr><td><span class="badge badge-warn">橙色</span></td><td class="label">功率低于 −10 dBm（偏低）</td></tr>
-        <tr><td><span class="badge badge-danger">红色</span></td><td class="label">功率高于 +3 dBm（偏高）</td></tr>
+        <tr><td><span class="badge badge-ok">正常</span></td><td class="label">功率在模块自己广播的 Low/High Alarm 阈值之间</td></tr>
+        <tr><td><span class="badge badge-warn">橙色</span></td><td class="label">功率低于模块的 Tx/Rx Power <b>Low Alarm</b></td></tr>
+        <tr><td><span class="badge badge-danger">红色</span></td><td class="label">功率高于模块的 Tx/Rx Power <b>High Alarm</b></td></tr>
       </tbody>
     </table>
   </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>v2.0.2 起</b>着色依据改为模块 Page 02h 广播的真实阈值（即下方 Module Thresholds
+    卡片显示的值），而非固定的 ±10 dBm。不同模块阈值不同——例如某 DR8 模块的 Tx Low Alarm 是
+    −8.0 dBm，按旧的固定值判断会把已触发告警的 lane 显示成正常，与 Lane Flags 表自相矛盾。</span>
+  </div>
   <p>顶部摘要栏同步显示温度和电压：超过 60°C → 橙色；超过 70°C → 红色。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>若某次读取失败，监控区会显示<b>红色「读数已过期」横幅</b>并将数据表置灰。
+    此时屏幕上的功率、温度和 Lane Flags 都是上一次成功读取的旧值，<b>不可作为当前状态判断依据</b>。</span>
+  </div>
 
   <h3>8.2 自动刷新间隔</h3>
   <div class="table-wrap">
@@ -908,6 +919,12 @@
 <!-- ══════════════ 10. Diagnostics ══════════════ -->
 <div class="section" id="s10">
   <h2 class="section-title">10. Diagnostics — 诊断工具</h2>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>v2.0.2 起</b>切换到本标签页会一次性加载全部卡片（Loopback、PRBS、BER、SNR、
+    Counters、Laser Tuning）。此前只有前两张会自动加载，其余需手动点各自的 ↻，
+    容易出现"半页是实时数据、半页是空的或复位前的旧值"。各卡片的 ↻ 按钮仍可单独刷新。</span>
+  </div>
 
   <h3>10.1 Loopback（环回）</h3>
   <div class="table-wrap">
@@ -989,6 +1006,12 @@
   </div>
   <p>每通道 16 字节（8 字节 ErrorCount + 8 字节 TotalBitsCount）。TotalBitsCount 最低位为 <b>PSL</b>（Pattern Sync Loss）指示位：0=同步正常，1=曾经失锁。</p>
   <p>GUI 同时计算并显示 <code>BER(calc) = ErrorCount / TotalBitsCount</code> 方便直读。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>v2.0.2 起显示失锁提示</b>：某 lane 的 PSL 位为 1 时，该列会置灰、BER 显示为红色
+    <b>no sync</b>，表格下方给出整体提示。失锁期间计数器仍在累加，但那些数字<b>不是有效的 BER
+    测量结果</b>，不可写入测试报告。此前版本把失锁数据和正常数据渲染得完全一样。</span>
+  </div>
 
   <h3>10.7 Laser Tuning（激光调谐）— 仅限可调谐模块</h3>
   <p>适用于 C-band / L-band 可调谐激光器模块（Media Interface Technology = 0x10/0x11）。</p>
@@ -1147,7 +1170,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.0.1<br>
+    CMIS Module Manager 操作手册 v2.0.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
