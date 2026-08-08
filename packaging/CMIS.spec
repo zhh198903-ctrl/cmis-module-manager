@@ -1,15 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import os
+
+from PyInstaller.utils.hooks import collect_data_files
+
+# This spec lives in packaging/, so every source path is resolved against the
+# repository root rather than the spec's own directory.
+ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
 
 block_cipher = None
 
 a = Analysis(
-    ['app.py'],
-    pathex=['.'],
+    [os.path.join(ROOT, 'app.py')],
+    pathex=[ROOT],
     binaries=[],
     datas=[
-        ('templates', 'templates'),
-        ('static',    'static'),
+        (os.path.join(ROOT, 'templates'), 'templates'),
+        (os.path.join(ROOT, 'static'),    'static'),
         *collect_data_files('flask'),
         *collect_data_files('jinja2'),
     ],

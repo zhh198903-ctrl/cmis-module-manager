@@ -47,7 +47,7 @@ python test_api.py
 ## Building a standalone EXE / 构建独立 EXE
 
 ```bash
-build_exe.bat      # PyInstaller onefile build
+packaging/build_exe.bat   # PyInstaller onefile build
 ```
 
 The result is `CMIS2Customer/CMIS_Module_Manager.exe`, a single self-contained
@@ -68,6 +68,7 @@ i2c_backends/           I2C adapter backends (ch341 / ch347 / ftdi / mock)
 templates/index.html    Single-page UI
 static/                 app.js / style.css
 test_api.py             End-to-end API tests
+packaging/              PyInstaller spec + EXE build script
 CMIS2Customer/          Distribution package content (manual + assets)
 ```
 
