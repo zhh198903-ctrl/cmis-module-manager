@@ -1,14 +1,12 @@
 @echo off
 title Build CMIS Module Manager EXE
 
-REM Run from the repository root so the spec's relative output paths line up.
+REM Run from the repository root so the spec's paths resolve correctly.
 cd /d "%~dp0.."
 
-echo [1/3] Installing PyInstaller...
-python -m pip install pyinstaller --quiet
-
-echo [2/3] Building executable...
-python -m PyInstaller "packaging\CMIS.spec" --clean --noconfirm
+echo Building CMIS_Module_Manager.exe ...
+python -m PyInstaller "packaging\CMIS.spec" --clean --noconfirm ^
+  --distpath "CMIS2Customer" --workpath "build"
 
 if errorlevel 1 (
     echo BUILD FAILED.
@@ -16,11 +14,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/3] Copying to CMIS2Customer...
-if not exist "CMIS2Customer" mkdir "CMIS2Customer"
-copy /y "dist\CMIS_Module_Manager.exe" "CMIS2Customer\"
+rmdir /s /q "build" 2>nul
 
 echo.
-echo Done! Executable is at:
-echo   %~dp0..\CMIS2Customer\CMIS_Module_Manager.exe
+echo Done: %~dp0..\CMIS2Customer\CMIS_Module_Manager.exe
 pause
