@@ -679,9 +679,9 @@
         <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效，光模块显示 "—"</td><td><code>00h / 0xCA</code></td></tr>
         <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
         <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
-        <tr><td>Host Lanes</td><td class="label">主机侧 lane 数（来自 AppDesc#1 高半字节）</td><td><code>Lower / 0x58[7:4]</code></td></tr>
-        <tr><td>Media Lanes</td><td class="label">媒体侧 lane 数（来自 AppDesc#1 低半字节）</td><td><code>Lower / 0x58[3:0]</code></td></tr>
-        <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>01h / 0x84–0x85</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（取全部 AppDescriptor 的最大值，非仅 AppDesc#1）</td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（同上）</td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
         <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本</td><td><code>01h / 0x82–0x83</code></td></tr>
       </tbody>
     </table>
@@ -863,7 +863,7 @@
         <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）</td><td><code>10h / 0x82[n−1]</code></td></tr>
         <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
         <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
-        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化状态（只读）</td><td><code>11h / 0x80</code></td></tr>
+        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化位（每 lane 1 bit）。注意是 <b>10h</b>，Page 11h 的 0x80 是只读的 DataPath State，不要混淆</td><td><code>10h / 0x80[n−1]</code></td></tr>
       </tbody>
     </table>
   </div>

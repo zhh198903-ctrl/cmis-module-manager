@@ -581,7 +581,11 @@ class MockBackend(I2CInterface):
 
     # ------------------------------------------------------------------
     def _intercept_write(self, register, data):
-        """Intercept writes to trigger state machine transitions."""
+        """Trigger state-machine transitions; return the bytes to actually store.
+
+        Self-clearing trigger bits are stripped here so a read-back never shows
+        them still set, matching how a real module behaves.
+        """
         if register < 0x80:
             if register == 0x1A:
                 ctrl = data[0]
@@ -590,6 +594,11 @@ class MockBackend(I2CInterface):
                     self._module_state = 0b001
                     self._dp_lane_states = [0x1] * 8
                     self._lp_request_time = 0
+                    # SoftwareReset is self-clearing (Table 8-10): a real module
+                    # never reads it back as 1, so neither may the mock, or the
+                    # UI shows "reset in progress" forever.
+                    data = bytes([ctrl & ~0x08]) + bytes(data[1:])
+                    return data
                 if ctrl & 0x10:
                     self._lp_request_time = time.time()
                 elif not (ctrl & 0x10) and self._lp_request_time > 0:
@@ -608,6 +617,7 @@ class MockBackend(I2CInterface):
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
                 self._prbs_enable_times[prbs_map[register]] = time.time()
+        return data
 
     # ------------------------------------------------------------------
     def connect(self, bus: int, address: int) -> None:
@@ -645,7 +655,7 @@ class MockBackend(I2CInterface):
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:
             raise IOError("Not connected")
-        self._intercept_write(register, data)
+        data = self._intercept_write(register, data)
         if register < 0x80:
             page_dict = self._registers.setdefault(None, {})
             for i, b in enumerate(data):

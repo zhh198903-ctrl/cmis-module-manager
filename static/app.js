@@ -336,7 +336,7 @@ async function loadInfo() {
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:11px">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes across all AppDescriptors'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes'],
-    ['FW Revision',     d.fw_revision,                                                            '01h',   '0x84–0x85',   'Active Firmware Major.Minor'],
+    ['FW Revision',     d.fw_revision,                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
     ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
     ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
@@ -379,6 +379,27 @@ function stopMonitoring() {
   }
 }
 
+/** Say plainly that what is on screen is no longer live. */
+function markMonitoringStale(reason) {
+  const el = document.getElementById('monitor-stale');
+  if (el) {
+    el.innerHTML = `⚠ Readings below are STALE — last refresh failed: `
+      + `${esc(reason || 'unknown error')}`;
+    el.style.display = '';
+  }
+  document.getElementById('tbl-monitoring')?.closest('table')
+    ?.classList.add('stale-data');
+  document.getElementById('tbl-flags')?.closest('table')
+    ?.classList.add('stale-data');
+}
+
+function clearMonitoringStale() {
+  const el = document.getElementById('monitor-stale');
+  if (el) el.style.display = 'none';
+  document.querySelectorAll('.stale-data')
+    .forEach(node => node.classList.remove('stale-data'));
+}
+
 async function loadMonitoring() {
   if (!AppState.connected) return;
 
@@ -388,13 +409,27 @@ async function loadMonitoring() {
     apiGet('/api/module/flags'),
   ]);
 
+  // Any failure here would otherwise leave the previous reading on screen while
+  // the page still looks live - the operator would read minutes-old power
+  // levels, or worse, all-green lane flags, as the current state.
   if (monRes.status !== 'ok') {
     toast(`Monitoring error: ${monRes.message}`, 'error');
+    markMonitoringStale(monRes.message);
     stopMonitoring();  // halt auto-refresh so a dead server doesn't spam toasts
     return;
   }
-  if (statusRes.status !== 'ok') return;
-  if (flagsRes.status === 'ok') renderFlags(flagsRes.data.lanes);
+  if (statusRes.status !== 'ok') {
+    toast(`Status error: ${statusRes.message}`, 'error');
+    markMonitoringStale(statusRes.message);
+    return;
+  }
+  if (flagsRes.status === 'ok') {
+    renderFlags(flagsRes.data.lanes);
+    clearMonitoringStale();
+  } else {
+    toast(`Lane flags error: ${flagsRes.message}`, 'error');
+    markMonitoringStale(flagsRes.message);
+  }
 
   const s = statusRes.data;
   const summaryEl = document.getElementById('monitor-summary');
@@ -424,10 +459,12 @@ async function loadMonitoring() {
       ? 'state-init' : 'state-deactivated';
 
     const cfgStatus = lane.config_status || '—';
+    // A rejected configuration is a failure, so it must not share the muted
+    // grey used for "this lane is simply not in use".
     const cfgClass = cfgStatus === 'ConfigSuccess' ? 'state-activated'
                    : cfgStatus === 'ConfigInProgress' ? 'state-init'
-                   : cfgStatus.startsWith('Config') && cfgStatus !== 'ConfigUndefined' ? 'state-deactivated'
-                   : '';
+                   : cfgStatus.startsWith('ConfigRejected') ? 'flag-active'
+                   : 'state-deactivated';
     return `<tr>
       <td>${lane.lane}</td>
       <td class="${txCls}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
@@ -537,7 +574,19 @@ async function applyDatapath() {
   await new Promise(r => setTimeout(r, 300));
   await loadDatapath();
   await loadSquelch();
-  toast('DataPath configuration applied', 'success');
+
+  // The write itself succeeding says nothing about whether the module accepted
+  // the configuration - it reports that per lane in ConfigStatus.
+  const mon = await apiGet('/api/module/monitoring');
+  const rejected = mon.status === 'ok'
+    ? mon.data.lanes.filter(l => (l.config_status || '').startsWith('ConfigRejected'))
+    : [];
+  if (rejected.length) {
+    const detail = rejected.map(l => `L${l.lane}: ${l.config_status}`).join(', ');
+    toast(`Module rejected the configuration — ${detail}`, 'error', 8000);
+  } else {
+    toast('DataPath configuration applied', 'success');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -708,8 +757,25 @@ async function rawWrite() {
   const dumpEl = document.getElementById('hex-dump');
 
   if (res.status === 'ok') {
-    dumpEl.textContent = `Written ${res.data.bytes_written} byte(s) to page 0x${page.toString(16).toUpperCase()} addr 0x${address.toString(16).toUpperCase().padStart(2,'0')}`;
-    toast(`Written ${res.data.bytes_written} byte(s)`, 'success');
+    // The write returning ok only means the I2C transfer completed. Read the
+    // bytes back so the user sees what the module actually holds - writes to
+    // read-only or protected registers are silently discarded.
+    const back = await apiPost('/api/register/read', { page, address, length: data.length });
+    if (back.status === 'ok') {
+      const got = back.data.data;
+      const same = got.length === data.length && got.every((b, i) => b === data[i]);
+      dumpEl.textContent =
+        `Wrote ${data.length} byte(s) to page 0x${page.toString(16).toUpperCase()} `
+        + `addr 0x${address.toString(16).toUpperCase().padStart(2,'0')}\n`
+        + `read back:\n${formatHexDump(got, address)}`;
+      toast(same ? `Written and verified ${data.length} byte(s)`
+                 : 'Write completed but the module reports different values — '
+                   + 'the register may be read-only or the value was clamped',
+            same ? 'success' : 'error', same ? 3000 : 8000);
+    } else {
+      dumpEl.textContent = `Wrote ${data.length} byte(s); read-back failed: ${back.message}`;
+      toast(`Written, but read-back failed: ${back.message}`, 'error', 6000);
+    }
   } else {
     dumpEl.textContent = `Error: ${res.message}`;
     toast(`Write error: ${res.message}`, 'error');

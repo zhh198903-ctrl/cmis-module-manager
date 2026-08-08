@@ -46,6 +46,22 @@ header h1 {
   font-weight: 600;
   color: var(--text);
 }
+.stale-banner {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: rgba(239, 68, 68, .12);
+  color: #fca5a5;
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Data that failed to refresh must not look live. */
+.stale-data {
+  opacity: .45;
+  filter: grayscale(1);
+  outline: 1px dashed var(--danger);
+}
 .sidebar-about {
   margin-top: 14px;
   padding-top: 12px;

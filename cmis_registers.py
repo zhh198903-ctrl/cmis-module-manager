@@ -27,6 +27,7 @@ REG_CUSTOM_MON       = (None, 0x18, 2)
 REG_MODULE_CONTROL   = (None, 0x1A, 1)   # Module-level control register
 REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15)
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
+REG_MEDIA_TYPE       = (None, 0x55, 1)   # Lower 85: Media Type Encoding (Table 8-20)
 # Application Descriptors (AppSel 1..8) — 4 bytes per descriptor
 REG_APP_DESC_BASE    = (None, 0x56, 4 * 8)  # 86..117 (8 descriptors × 4 bytes)
 REG_PAGE_SELECT      = (None, 0x7F, 1)
@@ -114,8 +115,8 @@ REG_APP_SELECT       = (0x10, 0x91, 8)   # 145-152 DPConfigLane1-8
 # Page 11h — DataPath Status & Monitoring (Table 8-82)
 # ---------------------------------------------------------------------------
 REG_DP_STATE        = (0x11, 0x80, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
-REG_OUTPUT_STATUS_TX= (0x11, 0x84, 1)   # 132
-REG_OUTPUT_STATUS_RX= (0x11, 0x85, 1)   # 133
+REG_OUTPUT_STATUS_RX= (0x11, 0x84, 1)   # 132  §8.10.2: "OutputStatusRx register (11h:132)"
+REG_OUTPUT_STATUS_TX= (0x11, 0x85, 1)   # 133  §8.10.2: "OutputStatusTx register (11h:133)"
 REG_DP_STATE_CHANGED= (0x11, 0x86, 1)
 REG_TX_FAULT_FLAGS  = (0x11, 0x87, 1)
 REG_TX_LOS_FLAGS    = (0x11, 0x88, 1)
@@ -557,14 +558,51 @@ def parse_module_control(byte_val: int) -> dict:
     }
 
 
+MODULE_CONTROL_BITS = {
+    'bank_broadcast':  7,
+    'allow_lp_hw':     6,
+    'squelch_method':  5,
+    'low_pwr':         4,
+    'software_reset':  3,
+}
+
+
 def encode_module_control(low_pwr: bool = False, software_reset: bool = False,
                           allow_lp_hw: bool = True, squelch_method: int = 0,
                           bank_broadcast: bool = False) -> int:
-    """Build Module Control byte (0x1A). software_reset is self-clearing."""
+    """Build a complete Module Control byte (0x1A) from scratch.
+
+    Prefer update_module_control when only some fields are being changed: this
+    one forces every unnamed field back to its default.
+    """
     val = 0
     if bank_broadcast:    val |= (1 << 7)
     if allow_lp_hw:       val |= (1 << 6)
     if squelch_method:    val |= (1 << 5)
     if low_pwr:           val |= (1 << 4)
     if software_reset:    val |= (1 << 3)
+    return val
+
+
+def update_module_control(current: int, **fields) -> int:
+    """Change only the named bits of an already-read Module Control byte.
+
+    Byte 0x1A packs unrelated controls together, so rebuilding it from scratch
+    to toggle low power would also clear SquelchMethodSelect and
+    BankBroadcastEnable and force AllowLowPwrRequestHW on. Read first, then
+    change only what the caller asked for. Bits 2-0 are Custom and are carried
+    through untouched.
+    """
+    val = current & 0xFF
+    for name, value in fields.items():
+        if value is None:
+            continue
+        try:
+            bit = MODULE_CONTROL_BITS[name]
+        except KeyError:
+            raise ValueError(f"unknown Module Control field: {name}")
+        if value:
+            val |= (1 << bit)
+        else:
+            val &= ~(1 << bit) & 0xFF
     return val

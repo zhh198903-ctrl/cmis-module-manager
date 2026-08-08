@@ -30,6 +30,9 @@ _state = {
     'connected': False,
     'bus': None,
     'address': None,
+    # Page currently selected in the module's PageMapping register, or None
+    # when unknown. Never assume a page without having selected it.
+    'page': None,
 }
 
 
@@ -52,9 +55,30 @@ def _require_connected():
 # Page-switch helpers
 # ---------------------------------------------------------------------------
 
+def _invalidate_page():
+    """Forget which page is selected; the next access will re-select it.
+
+    Call after anything that can move the PageMapping register out from under
+    us: connecting, a module reset, or a raw write touching byte 0x7F.
+    """
+    _state['page'] = None
+
+
 def _set_page(page: int):
+    """Select an upper-memory page, waiting out the module's access hold-off.
+
+    CMIS 5.3 gives tBPC, the maximum Bank/Page Change time, as 10 ms; reading
+    sooner can return the previous page's contents. Re-selecting a page that is
+    already current costs another hold-off for nothing, and the panels read the
+    same page repeatedly - a thresholds refresh alone re-selected page 02h
+    twenty times - so skip the write when the page is already known.
+    """
+    if _state['page'] == page:
+        return
+    _state['page'] = None  # unknown while the write is in flight
     _state['backend'].write_bytes(0x7F, bytes([page]))
-    time.sleep(0.005)  # CMIS modules may need up to 10ms after page switch
+    time.sleep(0.010)
+    _state['page'] = page
 
 
 def _read_lower(addr: int, length: int) -> bytes:
@@ -156,6 +180,7 @@ def api_connect():
     _state['connected'] = True
     _state['bus'] = bus
     _state['address'] = address
+    _invalidate_page()
     return _ok({'backend': backend_name, 'bus': bus, 'address': address})
 
 
@@ -170,6 +195,7 @@ def api_disconnect():
     _state['connected'] = False
     _state['bus'] = None
     _state['address'] = None
+    _invalidate_page()
     return _ok({'message': 'Disconnected'})
 
 
@@ -421,24 +447,34 @@ def api_module_control_set():
         body = request.get_json(force=True, silent=True) or {}
         action = body.get('action', '')
 
+        # Byte 0x1A packs unrelated controls together, so read it first and
+        # change only the requested bits. Rebuilding the byte from scratch used
+        # to clear SquelchMethodSelect and BankBroadcastEnable every time the
+        # user toggled low power.
+        current = _read_lower(0x1A, 1)[0]
+
         if action == 'reset':
-            val = cmis.encode_module_control(software_reset=True)
+            val = cmis.update_module_control(current, software_reset=True)
         elif action == 'low_power':
-            val = cmis.encode_module_control(low_pwr=True)
+            val = cmis.update_module_control(current, low_pwr=True)
         elif action == 'high_power':
-            val = cmis.encode_module_control(low_pwr=False)
+            val = cmis.update_module_control(current, low_pwr=False)
         else:
-            # Allow direct field set
-            val = cmis.encode_module_control(
-                low_pwr=bool(body.get('low_pwr', False)),
-                software_reset=bool(body.get('software_reset', False)),
-                allow_lp_hw=bool(body.get('allow_lp_hw', True)),
-                squelch_method=int(body.get('squelch_method', 0)),
-                bank_broadcast=bool(body.get('bank_broadcast', False)),
+            # Direct field set: only fields actually present in the body move.
+            val = cmis.update_module_control(
+                current,
+                low_pwr=body.get('low_pwr'),
+                software_reset=body.get('software_reset'),
+                allow_lp_hw=body.get('allow_lp_hw'),
+                squelch_method=body.get('squelch_method'),
+                bank_broadcast=body.get('bank_broadcast'),
             )
 
         _state['backend'].write_bytes(0x1A, bytes([val]))
         time.sleep(0.05)
+        # A reset restarts the module, which restores PageMapping to its
+        # default, so the page we think is selected no longer applies.
+        _invalidate_page()
         return _ok({'message': f'Module control written (0x{val:02X})', 'value': val})
     except Exception as e:
         return _err(str(e), 500)
@@ -1019,10 +1055,21 @@ def api_register_write():
             return _err("Address must be 0x00–0xFF")
         if address + len(data) > 0x100:
             return _err(f"Write would cross end of page (address 0x{address:02X} + {len(data)} bytes > 0x100)")
+        # Running a multi-byte write through 0x7F would reprogram the page
+        # select mid-transfer and dump the remaining bytes into whatever page
+        # that byte happened to name.
+        if address < 0x7F < address + len(data):
+            return _err(f"Write from 0x{address:02X} would run through the page "
+                        f"select register at 0x7F; split it into two writes")
 
         if address >= 0x80:
             _set_page(page)
         _state['backend'].write_bytes(address, data)
+        # A raw write may land on the PageMapping register itself, or on the
+        # control byte that resets the module - either moves the selected page
+        # out from under us.
+        if address <= 0x7F < address + len(data) or address < 0x80:
+            _invalidate_page()
 
         return _ok({
             'page': page,

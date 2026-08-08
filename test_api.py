@@ -98,6 +98,174 @@ class TestVersion(CMISTestCase):
                       'operation manual version is out of sync with app.__version__')
 
 
+class TestModuleControlBits(CMISTestCase):
+    """Byte 0x1A packs unrelated controls; touching one must not move others."""
+
+    def _set_raw(self, value):
+        self.client.post('/api/register/write',
+                         data=json.dumps({'page': 0, 'address': 0x1A, 'data': [value]}),
+                         content_type='application/json')
+
+    def _raw(self):
+        return self.assertOk(self.client.get('/api/module/control'))['data']['raw']
+
+    def test_low_power_toggle_preserves_other_bits(self):
+        """Regression: Exit LowPwr used to clear SquelchMethodSelect."""
+        self.connect()
+        self._set_raw(0xA0)          # BankBroadcast + SquelchMethodSelect(Pav)
+        for action in ('low_power', 'high_power'):
+            self.client.post('/api/module/control',
+                             data=json.dumps({'action': action}),
+                             content_type='application/json')
+            raw = self._raw()
+            self.assertTrue(raw & (1 << 7), f'{action} cleared BankBroadcastEnable')
+            self.assertTrue(raw & (1 << 5), f'{action} cleared SquelchMethodSelect')
+        self.assertFalse(self._raw() & (1 << 4), 'high_power left LowPwrRequestSW set')
+
+    def test_low_power_actually_toggles_its_own_bit(self):
+        self.connect()
+        self._set_raw(0x00)
+        self.client.post('/api/module/control', data=json.dumps({'action': 'low_power'}),
+                         content_type='application/json')
+        self.assertTrue(self._raw() & (1 << 4))
+
+    def test_partial_field_set_leaves_unnamed_fields_alone(self):
+        self.connect()
+        self._set_raw(0xA0)
+        self.client.post('/api/module/control',
+                         data=json.dumps({'low_pwr': True}),
+                         content_type='application/json')
+        self.assertEqual(self._raw(), 0xB0, 'a partial set rebuilt the whole byte')
+
+    def test_software_reset_is_self_clearing(self):
+        """CMIS marks SoftwareReset WO/SC; reading it back as 1 would leave the
+        UI claiming a reset is still in progress forever."""
+        self.connect()
+        self.client.post('/api/module/control', data=json.dumps({'action': 'reset'}),
+                         content_type='application/json')
+        self.assertFalse(self._raw() & (1 << 3),
+                         'SoftwareReset stayed set after the write')
+
+
+class TestRawWriteGuards(CMISTestCase):
+
+    def test_write_through_page_select_is_refused(self):
+        """A multi-byte write across 0x7F would reprogram the page mid-transfer
+        and scatter the rest into whatever page that byte named."""
+        self.connect()
+        rv = self.client.post('/api/register/write',
+                              data=json.dumps({'page': 0, 'address': 0x7C,
+                                               'data': [0, 0, 0, 0x12, 0x34]}),
+                              content_type='application/json')
+        self.assertErr(rv, 400)
+        self.assertEqual(_state['backend']._current_page, 0x00,
+                         'the refused write still moved the page')
+
+    def test_single_byte_page_select_still_allowed(self):
+        self.connect()
+        rv = self.client.post('/api/register/write',
+                              data=json.dumps({'page': 0, 'address': 0x7F, 'data': [0x11]}),
+                              content_type='application/json')
+        self.assertOk(rv)
+
+
+class TestPageSelection(CMISTestCase):
+    """Page selection is cached; a stale cache silently reads the wrong page."""
+
+    def _page_writes(self, fn):
+        """Run fn and return the pages written to the PageMapping register."""
+        backend = _state['backend']
+        real = backend.write_bytes
+        seen = []
+
+        def spy(addr, data):
+            if addr == 0x7F:
+                seen.append(data[0])
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            fn()
+        finally:
+            backend.write_bytes = real
+        return seen
+
+    def test_page_change_waits_the_spec_hold_off(self):
+        """CMIS 5.3 gives tBPC, max Bank/Page Change time, as 10 ms.
+
+        Reading sooner can return the previous page's contents on a slow
+        module - an intermittent fault that looks like corrupt data.
+        """
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        src = io.open(path, encoding='utf-8').read()
+        body = src.split('def _set_page(')[1].split('\ndef ')[0]
+        self.assertIn('time.sleep(0.010)', body,
+                      'page-change hold-off is shorter than tBPC = 10 ms')
+
+    def test_repeated_reads_of_one_page_select_once(self):
+        self.connect()
+        pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
+        self.assertEqual(pages, [0x02],
+                         f'thresholds re-selected its page: {pages}')
+
+    def test_alternating_pages_reselect_each_time(self):
+        """Caching must not skip a genuine page change."""
+        self.connect()
+        def alternate():
+            for _ in range(2):
+                self.client.post('/api/register/read',
+                                 data=json.dumps({'page': 0x11, 'address': 0x80, 'length': 1}),
+                                 content_type='application/json')
+                self.client.post('/api/register/read',
+                                 data=json.dumps({'page': 0x10, 'address': 0x80, 'length': 1}),
+                                 content_type='application/json')
+        self.assertEqual(self._page_writes(alternate), [0x11, 0x10, 0x11, 0x10])
+
+    def test_reconnect_forgets_the_cached_page(self):
+        self.connect()
+        self.client.get('/api/module/thresholds')       # leaves page 02h selected
+        self.connect()                                   # fresh module, page unknown
+        pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
+        self.assertEqual(pages, [0x02], 'reconnect trusted a stale page cache')
+
+    def test_raw_write_to_page_register_forgets_the_cache(self):
+        """Writing 0x7F by hand moves the page out from under the cache."""
+        self.connect()
+        self.client.get('/api/module/thresholds')       # page 02h cached
+        self.client.post('/api/register/write',
+                         data=json.dumps({'page': 0, 'address': 0x7F, 'data': [0x11]}),
+                         content_type='application/json')
+        pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
+        self.assertEqual(pages, [0x02], 'cache survived a raw write to 0x7F')
+
+    def test_module_reset_forgets_the_cached_page(self):
+        self.connect()
+        self.client.get('/api/module/thresholds')
+        self.client.post('/api/module/control',
+                         data=json.dumps({'action': 'reset'}),
+                         content_type='application/json')
+        pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
+        self.assertEqual(pages, [0x02], 'cache survived a module reset')
+
+    def test_values_still_come_from_the_right_page(self):
+        """End-to-end guard: caching must not cross-contaminate pages."""
+        self.connect()
+        self.client.post('/api/module/squelch',
+                         data=json.dumps({'tx_squelch_disable': 0x11,
+                                          'tx_squelch_force': 0x22,
+                                          'rx_output_disable': 0x33,
+                                          'rx_squelch_disable': 0x44}),
+                         content_type='application/json')
+        # Interleave reads of three different pages, then re-check page 10h.
+        self.client.get('/api/module/thresholds')   # 02h
+        self.client.get('/api/module/monitoring')   # 11h
+        self.client.get('/api/module/loopback')     # 13h
+        body = self.assertOk(self.client.get('/api/module/squelch'))
+        self.assertEqual(body['data']['tx_squelch_disable'], 0x11)
+        self.assertEqual(body['data']['rx_squelch_disable'], 0x44)
+
+
 class TestRegisterTooltips(CMISTestCase):
     """The UI hover tooltips quote CMIS field names and addresses at the user.
 
@@ -174,6 +342,72 @@ class TestRegisterTooltips(CMISTestCase):
                           f'{label} header names the wrong page: {head}')
             self.assertIn(f'0x{addr:02X}', head,
                           f'{label} header names the wrong address: {head}')
+
+    @staticmethod
+    def _register_ranges():
+        """Every (page, first_byte, last_byte) defined in cmis_registers."""
+        import cmis_registers as c
+        out = []
+        for name in dir(c):
+            if not name.startswith('REG_'):
+                continue
+            val = getattr(c, name)
+            if isinstance(val, tuple) and len(val) == 3:
+                page, addr, length = val
+                out.append((name, page, addr, addr + length - 1))
+        return out
+
+    def _resolve(self, page, addr):
+        return [n for n, p, lo, hi in self._register_ranges()
+                if p == page and lo <= addr <= hi]
+
+    def test_every_displayed_address_exists_in_the_register_map(self):
+        """Static Page/address labels are only "executed" when a human reads them.
+
+        Nothing else exercises the strings baked into the column headers and
+        the Module Info rows, which is how the FW Revision row came to
+        advertise Page 01h 0x84-0x85 for a field the code reads from Lower
+        Memory 0x27. Require every address shown to resolve to a real entry in
+        cmis_registers, so an invented or stale one fails here.
+        """
+        import re
+        html, js = self._html(), self._js()
+        shown = []
+
+        for m in re.finditer(r'class="reg-(?:meta|badge)">([^<]+)<', html):
+            label = m.group(1)
+            if 'sel=' in label:
+                continue  # a diagnostics selector value, not an address
+            pm = re.search(r'\b([0-9A-Fa-f]{2})h', label)
+            am = re.search(r'0x([0-9A-Fa-f]{2})', label)
+            if pm and am:
+                shown.append((int(pm.group(1), 16), int(am.group(1), 16),
+                              f'index.html header "{label.strip()}"'))
+
+        rows = js.split('const rows = [')[1].split('\n  ];')[0]
+        for pg_s, ad_s in re.findall(r"'(Lower|[0-9A-Fa-f]{2}h)',\s*'0x([0-9A-Fa-f]{2})", rows):
+            page = None if pg_s == 'Lower' else int(pg_s[:2], 16)
+            shown.append((page, int(ad_s, 16),
+                          f'Module Info row ({pg_s}, 0x{ad_s})'))
+
+        self.assertGreater(len(shown), 50, 'address extraction stopped working')
+        unknown = [(p, a, w) for p, a, w in shown if not self._resolve(p, a)]
+        self.assertEqual(unknown, [], 'addresses shown to the user with no '
+                                      'matching entry in cmis_registers')
+
+    def test_fw_revision_row_points_at_lower_memory(self):
+        """Regression: this row named a Page 01h fibre-length byte."""
+        import cmis_registers as c
+        rows = self._js().split('const rows = [')[1].split('\n  ];')[0]
+        fw = [ln for ln in rows.splitlines() if "'FW Revision'" in ln][0]
+        self.assertIn("'Lower'", fw)
+        self.assertIn(f'0x{c.REG_FW_ACTIVE_MAJOR[1]:02X}', fw)
+
+    def test_output_status_tx_rx_not_swapped(self):
+        """CMIS 5.3 8.10.2: OutputStatusRx is 11h:132, OutputStatusTx is 11h:133."""
+        import cmis_registers as c
+        self.assertEqual(c.REG_OUTPUT_STATUS_RX[:2], (0x11, 0x84))
+        self.assertEqual(c.REG_OUTPUT_STATUS_TX[:2], (0x11, 0x85))
 
     def test_values_state_their_radix(self):
         """A bare number in a register tool is ambiguous; mark hex and binary."""
