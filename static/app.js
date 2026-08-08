@@ -268,6 +268,26 @@ function clearTabContent() {
   if (dump) dump.textContent = '';
   const laserCaps = document.getElementById('laser-caps');
   if (laserCaps) laserCaps.innerHTML = '';
+
+  // The Output Controls and Loopback checkboxes live in cells the table sweep
+  // above does not touch, and the summary line keeps its last reading. Without
+  // this, reconnecting to a different module briefly shows the previous one's
+  // squelch settings, temperature and voltage as if they were the new module's.
+  ['sq', 'sf', 'od', 'rd'].forEach(p => {
+    for (let i = 0; i < 8; i++) {
+      const td = document.getElementById(`${p}-td-${i}`);
+      if (td) td.innerHTML = '';
+    }
+  });
+  ['mso', 'msi', 'hso', 'hsi'].forEach(p => {
+    for (let i = 0; i < 8; i++) {
+      const td = document.getElementById(`lb-${p}-${i}`);
+      if (td) td.innerHTML = '';
+    }
+  });
+  const summary = document.getElementById('monitor-summary');
+  if (summary) summary.innerHTML = '';
+  clearMonitoringStale();
 }
 
 // ---------------------------------------------------------------------------
@@ -967,10 +987,21 @@ const PRBS_PATTERNS = [
   'PRBS13Q','PRBS13','PRBS9Q','PRBS9','PRBS7Q','PRBS7','SSPRQ',
 ];
 
+/**
+ * Render a module-reported BER.
+ *
+ * A zero F16 word means the module counted no errors, not that it measured a
+ * bound. This used to render as a fixed "less than" figure with no basis - the
+ * format bottoms out around 1e-24 - which is the sort of number that ends up
+ * quoted in a test report as if it had been measured.
+ */
 function formatBer(ber) {
-  if (ber == null) return '—';
-  if (ber === 0) return '&lt; 1e-15';
-  if (!isFinite(ber)) return '—';
+  if (ber == null || !isFinite(ber)) return '—';
+  if (ber === 0) {
+    return '<span title="Module reports no errors. This is a zero count, not a '
+         + 'measured limit — the achievable floor depends on how many bits the '
+         + 'gate accumulated.">0</span>';
+  }
   return ber.toExponential(2);
 }
 

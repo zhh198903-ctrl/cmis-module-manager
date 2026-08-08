@@ -135,6 +135,25 @@ class TestMonitoringPresentation(CMISTestCase):
         self.assertIn('no sync', self._js(),
                       'the UI does not surface pattern sync loss')
 
+    def test_zero_ber_is_not_dressed_up_as_a_measured_bound(self):
+        """A zero F16 word is a zero count. Rendering it as "< 1e-15" invented
+        a figure with no basis - the format bottoms out at 1e-24 - and that is
+        the sort of number that gets quoted in a test report."""
+        js = self._js()
+        self.assertNotIn('1e-15', js)
+        body = js.split('function formatBer(')[1].split('\n}')[0]
+        self.assertIn('not a', body, 'the zero case is unexplained')
+
+    def test_reconnect_clears_every_panel(self):
+        """Checkbox cells and the summary line are not plain tables, so a
+        sweep of table bodies leaves the previous module's squelch settings and
+        temperature on screen."""
+        js = self._js()
+        body = js.split('function clearTabContent(')[1].split('\n}\n')[0]
+        for marker in ("'sq', 'sf', 'od', 'rd'", "'mso', 'msi', 'hso', 'hsi'",
+                       'monitor-summary'):
+            self.assertIn(marker, body, f'{marker} survives a reconnect')
+
     def test_diagnostics_tab_loads_every_card(self):
         js = self._js()
         block = js.split("if (name === 'diagnostics')")[1].split('\n  }')[0]
