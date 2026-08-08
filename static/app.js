@@ -444,8 +444,9 @@ async function checkForUpdate() {
   const ok = confirm(
     `A newer version is available.\n\n`
     + `Installed: v${d.current_version}\nAvailable: v${d.latest_version}  (${mb} MB)\n\n`
-    + `Download and install it now? The window will close and reopen `
-    + `automatically once the update is applied.\n\n`
+    + `Download and install it now? This window will close once the files are `
+    + `replaced; start CMIS_Module_Manager.exe again if it does not reopen `
+    + `by itself.\n\n`
     + `Disconnect from the module first if a measurement is running.`);
   if (!ok) return;
 
@@ -458,10 +459,10 @@ async function checkForUpdate() {
     document.body.innerHTML =
       `<div style="display:flex;align-items:center;justify-content:center;`
       + `height:100vh;font-family:system-ui;color:#c4b5fd;text-align:center;padding:24px">`
-      + `<div><h2>Updating to v${esc(applied.data.version)}</h2>`
-      + `<p style="color:#94a3b8">This window will close and the new version `
-      + `will start automatically.<br>If it does not reopen, launch `
-      + `CMIS_Module_Manager.exe again.</p></div></div>`;
+      + `<div><h2>Updated to v${esc(applied.data.version)}</h2>`
+      + `<p style="color:#94a3b8">The files have been replaced and this `
+      + `instance is shutting down.<br><b>Start CMIS_Module_Manager.exe again</b> `
+      + `— it may also reopen on its own.</p></div></div>`;
   } else {
     btn.disabled = false;
     btn.textContent = `↑ v${d.latest_version}`;
