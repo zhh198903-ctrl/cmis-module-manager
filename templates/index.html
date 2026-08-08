@@ -10,6 +10,7 @@
 
 <header>
   <h1>CMIS Module Manager</h1>
+  <span class="version-badge" id="app-version" title="Application version">v{{ version }}</span>
   <div class="status-indicator">
     <div class="status-dot disconnected" id="status-dot"></div>
     <span id="status-text">Disconnected</span>
@@ -52,6 +53,10 @@
     <div class="sidebar-qr-wrap">
       <img src="/static/qrcode.jpg" alt="公众号" class="sidebar-qr">
       <div class="sidebar-qr-label">关注公众号</div>
+    </div>
+    <div class="sidebar-about">
+      CMIS Module Manager <b>v{{ version }}</b><br>
+      OIF CMIS 5.3 · MIT License
     </div>
   </aside>
 

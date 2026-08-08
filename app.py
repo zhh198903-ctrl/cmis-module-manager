@@ -1,4 +1,8 @@
 """Flask REST API for CMIS optical module management."""
+# Single source of truth for the version shown in the UI, /api/version, the
+# console banner and the operation manual footer. Bump this, not the copies.
+__version__ = '2.0.1'
+
 import sys
 import os
 import struct
@@ -1032,9 +1036,18 @@ def api_register_write():
 # Serve frontend
 # ---------------------------------------------------------------------------
 
+@app.route('/api/version', methods=['GET'])
+def api_version():
+    return _ok({
+        'version': __version__,
+        'cmis_revision_supported': '5.3',
+        'frozen': bool(getattr(sys, 'frozen', False)),
+    })
+
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', version=__version__)
 
 
 # ---------------------------------------------------------------------------
@@ -1043,7 +1056,7 @@ def index():
 
 if __name__ == '__main__':
     url = 'http://127.0.0.1:5000'
-    print(f"CMIS Module Manager starting on {url}")
+    print(f"CMIS Module Manager v{__version__} starting on {url}")
     # Open browser after a short delay to let the server start
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     app.run(host='127.0.0.1', port=5000, debug=False, threaded=False)

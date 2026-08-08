@@ -74,6 +74,30 @@ class CMISTestCase(unittest.TestCase):
 # 1. GET /api/backends
 # ============================================================
 
+class TestVersion(CMISTestCase):
+
+    def test_version_endpoint(self):
+        body = self.assertOk(self.client.get('/api/version'))
+        self.assertEqual(body['data']['version'], app_module.__version__)
+
+    def test_version_rendered_in_ui(self):
+        """The header badge and sidebar must show the real version."""
+        html = self.client.get('/').data.decode('utf-8')
+        self.assertIn(f'v{app_module.__version__}', html)
+        self.assertNotIn('{{ version }}', html)
+
+    def test_version_matches_manual(self):
+        """The manual ships next to the EXE; a stale version there misleads users."""
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        if not os.path.exists(path):
+            self.skipTest('manual not present')
+        text = io.open(path, encoding='utf-8').read()
+        self.assertIn(app_module.__version__, text,
+                      'operation manual version is out of sync with app.__version__')
+
+
 class TestBackends(CMISTestCase):
 
     def test_backends_ok(self):

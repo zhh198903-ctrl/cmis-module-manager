@@ -46,6 +46,26 @@ header h1 {
   font-weight: 600;
   color: var(--text);
 }
+.sidebar-about {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  text-align: center;
+}
+.version-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  margin-left: -8px;
+}
 
 .status-indicator {
   display: flex;
