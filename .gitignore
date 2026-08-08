@@ -1,0 +1,70 @@
+# ═══════════════════════════════════════════════════
+#  Python
+# ═══════════════════════════════════════════════════
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ═══════════════════════════════════════════════════
+#  PyInstaller build artifacts
+# ═══════════════════════════════════════════════════
+build/
+dist/
+*.manifest
+CMIS_Module_Manager.spec
+
+# ═══════════════════════════════════════════════════
+#  PyArmor obfuscation output
+# ═══════════════════════════════════════════════════
+obf/
+.pyarmor/
+pyarmor.bug.log
+
+# ═══════════════════════════════════════════════════
+#  CMIS spec (OIF copyrighted, not for redistribution)
+# ═══════════════════════════════════════════════════
+docs/standards/
+
+# ═══════════════════════════════════════════════════
+#  Marketing material (large binaries — not source)
+# ═══════════════════════════════════════════════════
+docs/marketing/
+
+# ═══════════════════════════════════════════════════
+#  Release binaries — use GitHub Releases instead
+# ═══════════════════════════════════════════════════
+CMIS2Customer.zip
+CMIS2Customer/CMIS_Module_Manager.exe
+
+# ═══════════════════════════════════════════════════
+#  IDE / editor
+# ═══════════════════════════════════════════════════
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ═══════════════════════════════════════════════════
+#  Claude Code local config (internal workflow — not source)
+# ═══════════════════════════════════════════════════
+.claude/
+CLAUDE.md
+
+# ═══════════════════════════════════════════════════
+#  OS junk
+# ═══════════════════════════════════════════════════
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

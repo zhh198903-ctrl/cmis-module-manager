@@ -1,0 +1,686 @@
+"""Mock/simulation I2C backends for 4 different 800G QSFP-DD module types.
+
+All register addresses match the CMIS 5.3 spec (OIF-CMIS-05.3.pdf).
+Profile-driven design: a single MockBackend base class reads `self.PROFILE`
+(class attribute) to customize vendor info, capabilities, optical parameters,
+and application descriptors. Four subclasses register different profiles:
+
+  - mock_coherent : 800G Coherent tunable (C-band, DWDM, DP-16QAM)
+  - mock_dr8      : 800GBASE-DR8 (8×100G PAM4, SMF 500m, EML 1310nm)
+  - mock_sr8      : 800GBASE-SR8 (8×100G PAM4, OM4 100m, VCSEL 850nm)
+  - mock_fr4x2    : 2× 400GBASE-FR4 (CWDM4, SMF 2km, EML 1310nm)
+
+Dynamic behavior (state machine, ApplyDataPath, Reset, LowPwr, TxDisable,
+PRBS LOL, BER/SNR, counters, laser tuning) is shared across all profiles.
+"""
+import math
+import struct
+import time
+
+from i2c_interface import I2CInterface, register_backend
+import cmis_registers as cmis
+
+
+# ============================================================================
+# Module Profile Definitions
+# Each profile is a dict of every field that differs between module types.
+# ============================================================================
+
+_COHERENT_800G = {
+    'display':         '800G Coherent tunable (C-band DWDM)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-DP800G-QDD ",
+    'vendor_sn':       b"DEMO000000001   ",
+    'vendor_rev':      b"A1",
+    'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
+    'date_code':       b"24010100",
+    'clei':            b"DEMOCLEI00",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x07,             # LC
+    'media_if_tech':       0x10,             # C-band tunable laser
+    'power_class_bits':    0x80,             # Class 5 (100b << 5)
+    'max_power_0_25w':     0x40,             # 64 × 0.25 = 16.0 W
+    'tunable':             True,
+    # Per-lane nominal optical values
+    'tx_power_uw_nom':     1000,             # 0 dBm
+    'rx_power_uw_nom':     158,              # -8 dBm
+    'tx_bias_ma_nom':      60.0,             # MZM / coherent driver
+    'temperature_c_nom':   62.0,             # DSP+TEC
+    'base_ber':            1.0e-9,
+    'snr_db_nom':          18.0,
+    # Application Descriptors: (HostIfID, MediaIfID, LaneCount[7:4]H[3:0]M, HostLaneAssignMask)
+    'app_descriptors': [
+        (0x51, 0x48, 0x81, 0x01),            # AppSel 1: 800GAUI-8 → 800G coherent (8H/1M)
+        (0x4F, 0x41, 0x41, 0x11),            # AppSel 2: 400GAUI-4 → 400ZR (4H/1M)
+    ],
+    'link_lengths': {},                      # no cable length advertised
+}
+
+_DR8_800G = {
+    'display':         '800GBASE-DR8 (SMF 500m, EML 1310nm)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-DR8-800GQDD",
+    'vendor_sn':       b"DEMO000000002   ",
+    'vendor_rev':      b"B1",
+    'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
+    'date_code':       b"24010200",
+    'clei':            b"DEMOCLEI00",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x28,             # MPO 1×16 (16 fibers, 8 pairs)
+    'media_if_tech':       0x06,             # 1310 nm EML
+    'power_class_bits':    0xC0,             # Class 7 (110b << 5)
+    'max_power_0_25w':     0x38,             # 56 × 0.25 = 14.0 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1260,             # +1 dBm
+    'rx_power_uw_nom':     794,              # -1 dBm
+    'tx_bias_ma_nom':      70.0,             # EML driver
+    'temperature_c_nom':   55.0,
+    'base_ber':            5.0e-6,           # KP4 FEC operating
+    'snr_db_nom':          22.0,
+    'app_descriptors': [
+        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
+        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
+    ],
+    'link_lengths': {'smf_km_byte': 0x01},   # 500m rounds up to 1 km in advertised byte
+}
+
+_SR8_800G = {
+    'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-SR8-800GQDD",
+    'vendor_sn':       b"DEMO000000003   ",
+    'vendor_rev':      b"C1",
+    'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
+    'date_code':       b"24010300",
+    'clei':            b"DEMOCLEI00",
+    'media_type':          0x01,             # MMF
+    'connector_type':      0x28,             # MPO 1×16
+    'media_if_tech':       0x00,             # 850 nm VCSEL
+    'power_class_bits':    0xC0,             # Class 7
+    'max_power_0_25w':     0x30,             # 48 × 0.25 = 12.0 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1000,             # 0 dBm
+    'rx_power_uw_nom':     631,              # -2 dBm
+    'tx_bias_ma_nom':      8.0,              # VCSEL bias
+    'temperature_c_nom':   50.0,
+    'base_ber':            1.0e-5,
+    'snr_db_nom':          19.0,
+    'app_descriptors': [
+        (0x51, 0x12, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800G-SR8 (8H/8M)
+        (0x4F, 0x10, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-SR8 (4H/4M)
+    ],
+    'link_lengths': {'om4_m_byte': 0x0A},    # 10 × 10m = 100 m
+}
+
+_FR4X2_800G = {
+    'display':         '2× 400GBASE-FR4 (SMF 2km, CWDM4 EML)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-FR4X2-800G ",
+    'vendor_sn':       b"DEMO000000004   ",
+    'vendor_rev':      b"A2",
+    'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
+    'date_code':       b"24010400",
+    'clei':            b"DEMOCLEI00",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x07,             # LC (dual LC for 2× 400G)
+    'media_if_tech':       0x06,             # 1310 nm EML
+    'power_class_bits':    0xC0,             # Class 7
+    'max_power_0_25w':     0x3C,             # 60 × 0.25 = 15.0 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1260,             # +1 dBm
+    'rx_power_uw_nom':     794,              # -1 dBm
+    'tx_bias_ma_nom':      70.0,
+    'temperature_c_nom':   58.0,
+    'base_ber':            5.0e-6,
+    'snr_db_nom':          22.0,
+    'app_descriptors': [
+        # Two 400GBASE-FR4 apps: first on host lanes 1-4, second on host lanes 5-8
+        (0x4F, 0x1D, 0x44, 0x01),            # AppSel 1: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 1
+        (0x4F, 0x1D, 0x44, 0x10),            # AppSel 2: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 5
+    ],
+    'link_lengths': {'smf_km_byte': 0x02},   # 2 km
+}
+
+
+# ============================================================================
+# Base Mock Backend (profile-driven)
+# ============================================================================
+
+class MockBackend(I2CInterface):
+    """Profile-driven CMIS 5.3 optical module simulator.
+
+    Subclasses set `PROFILE = <profile dict>` at class level. The default
+    PROFILE is 800G coherent tunable, but this class is NOT registered directly.
+    Subclasses below register 4 specific profiles.
+    """
+
+    PROFILE = _COHERENT_800G  # default (overridden by subclasses)
+
+    def __init__(self):
+        self._profile = self.PROFILE
+        self._connected = False
+        self._current_page = 0x00
+        self._start_time = time.time()
+        # State machine tracking
+        self._module_state = 0b011      # ModuleReady
+        self._reset_time = 0.0
+        self._lp_request_time = 0.0
+        self._apply_time = 0.0
+        self._dp_lane_states = [0x4] * 8  # all Activated
+        self._tx_disable_mask = 0x00
+        self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
+        self._error_counts = [0] * 8
+        self._bit_counts = [0] * 8
+        self._last_counter_time = 0.0
+        self._registers = self._build_initial_registers()
+
+    @classmethod
+    def probe_availability(cls) -> dict:
+        return {
+            'available': True,
+            'description': f'Mock simulation: {cls.PROFILE["display"]}',
+        }
+
+    # ------------------------------------------------------------------
+    def _build_initial_registers(self) -> dict:
+        p = self._profile
+        regs = {}
+
+        # ==== Lower Memory ====
+        lower = {}
+        lower[0x00] = 0x1E                  # QSFP-DD CMIS
+        lower[0x01] = 0x53                  # CMIS 5.3
+        lower[0x02] = 0x00                  # MemoryModel: paged
+        lower[0x03] = (0b011 << 1)          # ModuleReady, interrupt deasserted
+        for a in range(0x04, 0x0E): lower[a] = 0x00
+        # Temperature
+        temp_raw = int(p['temperature_c_nom'] * 256) & 0xFFFF
+        lower[0x0E] = (temp_raw >> 8) & 0xFF
+        lower[0x0F] = temp_raw & 0xFF
+        # Voltage 3.3 V
+        lower[0x10] = 0x80; lower[0x11] = 0xE8
+        # Aux monitors (generic)
+        lower[0x12] = 0x0C; lower[0x13] = 0xCD   # Aux1
+        lower[0x14] = 0x37; lower[0x15] = 0x00   # Aux2
+        lower[0x16] = 0x80; lower[0x17] = 0xE8   # Aux3
+        lower[0x1A] = 0x40                  # ModuleControl: AllowLPHW=1
+        lower[0x27] = 2; lower[0x28] = 5    # Active FW 2.5
+        lower[0x55] = p['media_type']       # Media Type
+
+        # Application Descriptors (lower 0x56-0x75)
+        appdesc = list(p['app_descriptors']) + [(0xFF, 0, 0, 0)] * 8
+        for i, (h, m, lc, hla) in enumerate(appdesc[:8]):
+            base = 0x56 + i * 4
+            lower[base] = h
+            lower[base + 1] = m
+            lower[base + 2] = lc
+            lower[base + 3] = hla
+
+        lower[0x7F] = 0x00                  # Page select
+        regs[None] = lower
+
+        # ==== Page 00h — Administrative Information ====
+        p00 = {}
+        p00[0x80] = 0x1E                    # Identifier copy
+        # Vendor Name 0x81-0x90 (16 bytes)
+        for i, b in enumerate(p['vendor_name'][:16]):
+            p00[0x81 + i] = b
+        # Vendor OUI 0x91-0x93 (3 bytes)
+        p00[0x91] = p['vendor_oui'][0]
+        p00[0x92] = p['vendor_oui'][1]
+        p00[0x93] = p['vendor_oui'][2]
+        # Vendor PN 0x94-0xA3 (16 bytes)
+        for i, b in enumerate(p['vendor_pn'][:16]):
+            p00[0x94 + i] = b
+        # Vendor Rev 0xA4-0xA5 (2 bytes)
+        for i, b in enumerate(p['vendor_rev'][:2]):
+            p00[0xA4 + i] = b
+        # Vendor SN 0xA6-0xB5 (16 bytes)
+        for i, b in enumerate(p['vendor_sn'][:16]):
+            p00[0xA6 + i] = b
+        # Date Code 0xB6-0xBD (8 bytes)
+        for i, b in enumerate(p['date_code'][:8]):
+            p00[0xB6 + i] = b
+        # CLEI 0xBE-0xC7 (10 bytes)
+        for i, b in enumerate(p['clei'][:10]):
+            p00[0xBE + i] = b
+        # Power Class & Max Power
+        p00[0xC8] = p['power_class_bits']
+        p00[0xC9] = p['max_power_0_25w']
+        p00[0xCA] = 0x00                    # Cable length = 0 (transceiver)
+        p00[0xCB] = p['connector_type']
+        for a in range(0xCC, 0xD2): p00[a] = 0x00   # Cu attenuation = 0
+        p00[0xD2] = 0x00                    # MediaLaneInformation
+        p00[0xD3] = 0x00                    # FarEndConfig
+        p00[0xD4] = p['media_if_tech']      # Media Interface Technology
+        regs[0x00] = p00
+
+        # ==== Page 01h — Advertising ====
+        p01 = {}
+        p01[0x80] = 1; p01[0x81] = 0        # Inactive FW 1.0
+        p01[0x82] = 1; p01[0x83] = 2        # HW Rev 1.2
+        # Link lengths (profile-dependent)
+        ll = p['link_lengths']
+        p01[0x84] = ll.get('smf_km_byte', 0x00)
+        p01[0x85] = ll.get('om5_m_byte', 0x00)
+        p01[0x86] = ll.get('om4_m_byte', 0x00)
+        p01[0x87] = ll.get('om3_m_byte', 0x00)
+        p01[0x88] = ll.get('om2_m_byte', 0x00)
+        p01[0x8E] = 0x00                    # BanksSupported = Bank0 only
+        regs[0x01] = p01
+
+        # ==== Page 02h — Thresholds ====
+        p02 = {}
+        for addr, val in [
+            (0x80, 0x5000), (0x82, 0x0000), (0x84, 0x4B00), (0x86, 0x0500),  # Temp
+            (0x88, 0x8CA0), (0x8A, 0x7530), (0x8C, 0x88B8), (0x8E, 0x7918),  # Vcc
+            (0xB0, 0x7B84), (0xB2, 0x062C), (0xB4, 0x6220), (0xB6, 0x09CE),  # TxPwr
+            (0xB8, 0xEA60), (0xBA, 0x1388), (0xBC, 0xC350), (0xBE, 0x2710),  # TxBias
+            (0xC0, 0x2710), (0xC2, 0x0064), (0xC4, 0x1F04), (0xC6, 0x00A0),  # RxPwr
+        ]:
+            p02[addr] = (val >> 8) & 0xFF
+            p02[addr + 1] = val & 0xFF
+        regs[0x02] = p02
+
+        # ==== Page 04h — Laser Capabilities (ONLY for tunable profiles) ====
+        if p['tunable']:
+            p04 = {}
+            p04[0x80] = 0xB0                # 75/100/50 GHz grids
+            p04[0x81] = 0x80                # FineTuningSupported
+            for a in range(0x82, 0xA6): p04[a] = 0x00
+            # 50 GHz grid channel range ±80
+            p04[0x92] = 0xFF; p04[0x93] = 0xB0    # -80
+            p04[0x94] = 0x00; p04[0x95] = 0x50    # +80
+            # 100 GHz grid channel range ±40
+            p04[0x96] = 0xFF; p04[0x97] = 0xD8    # -40
+            p04[0x98] = 0x00; p04[0x99] = 0x28    # +40
+            # Fine tuning: 1 MHz resolution, ±12.5 GHz
+            p04[0xBE] = 0x00; p04[0xBF] = 0x01
+            v = struct.pack(">h", -12500)
+            p04[0xC0] = v[0]; p04[0xC1] = v[1]
+            v = struct.pack(">h", 12500)
+            p04[0xC2] = v[0]; p04[0xC3] = v[1]
+            # Programmable output power range
+            v = struct.pack(">h", -1000)
+            p04[0xC6] = v[0]; p04[0xC7] = v[1]
+            v = struct.pack(">h", 300)
+            p04[0xC8] = v[0]; p04[0xC9] = v[1]
+            regs[0x04] = p04
+
+        # ==== Page 10h — DataPath Configuration ====
+        p10 = {}
+        p10[0x80] = 0x00                            # 128 DataPathDeinit all clear
+        for a in range(0x81, 0x91): p10[a] = 0x00   # 129-144 lane controls + Apply*
+        for i in range(8): p10[0x91 + i] = 0x10     # 145-152 DPConfigLane: AppSel=1
+        regs[0x10] = p10
+
+        # ==== Page 11h — DataPath Status & Monitoring ====
+        p11 = {}
+        for a in range(0x80, 0x84): p11[a] = 0x44   # DP State: Activated
+        for a in range(0x84, 0x99): p11.setdefault(a, 0x00)
+        # Per-lane Tx Power
+        tx_raw = int(p['tx_power_uw_nom'] * 10) & 0xFFFF
+        for i in range(8):
+            a = 0x9A + i * 2
+            p11[a] = (tx_raw >> 8) & 0xFF
+            p11[a + 1] = tx_raw & 0xFF
+        # Per-lane Tx Bias
+        bias_raw = int(p['tx_bias_ma_nom'] / 0.002) & 0xFFFF
+        for i in range(8):
+            a = 0xAA + i * 2
+            p11[a] = (bias_raw >> 8) & 0xFF
+            p11[a + 1] = bias_raw & 0xFF
+        # Per-lane Rx Power
+        rx_raw = int(p['rx_power_uw_nom'] * 10) & 0xFFFF
+        for i in range(8):
+            a = 0xBA + i * 2
+            p11[a] = (rx_raw >> 8) & 0xFF
+            p11[a + 1] = rx_raw & 0xFF
+        # ConfigStatus: all Success
+        for a in range(0xCA, 0xCE): p11[a] = 0x11
+        # DPConfigLane: AppSel=1
+        for i in range(8): p11[0xCE + i] = 0x10
+        regs[0x11] = p11
+
+        # ==== Page 12h — Laser Tuning Control/Status (ONLY for tunable) ====
+        if p['tunable']:
+            p12 = {}
+            for i in range(8): p12[0x80 + i] = 0x50    # 100 GHz grid per lane
+            for i in range(16): p12[0x88 + i] = 0x00   # channel = 0
+            for i in range(16): p12[0x98 + i] = 0x00   # fine offset = 0
+            # CurrentLaserFrequency U32 = 193100000 (193.1 THz × 10^6 kHz)
+            freq_u32 = 193_100_000
+            for i in range(8):
+                a = 0xA8 + i * 4
+                p12[a] = (freq_u32 >> 24) & 0xFF
+                p12[a + 1] = (freq_u32 >> 16) & 0xFF
+                p12[a + 2] = (freq_u32 >> 8) & 0xFF
+                p12[a + 3] = freq_u32 & 0xFF
+            for i in range(16): p12[0xC8 + i] = 0x00   # target power = 0
+            for i in range(8): p12[0xDE + i] = 0x00    # status: locked, not tuning
+            for i in range(8): p12[0xE7 + i] = 0x00    # flags clear
+            regs[0x12] = p12
+
+        # ==== Page 13h — Diagnostic Controls ====
+        p13 = {}
+        for base in [0x90, 0x98, 0xA0, 0xA8]:
+            for off in range(8): p13[base + off] = 0x00
+        p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0
+        regs[0x13] = p13
+
+        # ==== Page 14h — Diagnostic Results ====
+        p14 = {}
+        p14[0x80] = 0x00
+        p14[0x8A] = 0x00; p14[0x8B] = 0x00
+        for lane in range(8):
+            w = cmis.encode_f16_ber(p['base_ber'])
+            p14[0xC0 + lane * 2] = (w >> 8) & 0xFF
+            p14[0xC0 + lane * 2 + 1] = w & 0xFF
+            p14[0xD0 + lane * 2] = (w >> 8) & 0xFF
+            p14[0xD0 + lane * 2 + 1] = w & 0xFF
+        regs[0x14] = p14
+
+        return regs
+
+    # ------------------------------------------------------------------
+    # State machine update
+    # ------------------------------------------------------------------
+    def _update_state_machine(self):
+        now = time.time()
+
+        # Module state machine (Reset / LowPwr)
+        if self._reset_time > 0:
+            dt = now - self._reset_time
+            if dt < 0.3:
+                self._module_state = 0b001
+            elif dt < 0.8:
+                self._module_state = 0b010
+            else:
+                self._module_state = 0b011
+                self._reset_time = 0
+                self._dp_lane_states = [0x4] * 8
+                self._apply_time = 0
+        elif self._lp_request_time > 0:
+            self._module_state = 0b001
+            self._dp_lane_states = [0x1] * 8
+        else:
+            if self._module_state not in (0b011,):
+                self._module_state = 0b011
+
+        self._registers[None][0x03] = (self._module_state << 1) | 0x01
+
+        # DataPath state machine (ApplyDataPath)
+        if self._apply_time > 0 and self._reset_time == 0:
+            dt = now - self._apply_time
+            if dt < 0.2:
+                for i in range(8):
+                    if not ((self._tx_disable_mask >> i) & 1):
+                        self._dp_lane_states[i] = 0x2
+            elif dt < 0.5:
+                for i in range(8):
+                    if not ((self._tx_disable_mask >> i) & 1):
+                        self._dp_lane_states[i] = 0x5
+            else:
+                for i in range(8):
+                    if not ((self._tx_disable_mask >> i) & 1):
+                        self._dp_lane_states[i] = 0x4
+                    else:
+                        self._dp_lane_states[i] = 0x1
+                self._apply_time = 0
+                for a in range(0xCA, 0xCE):
+                    self._registers[0x11][a] = 0x11
+
+        # Write DP states back to Page 11h:0x80-0x83
+        for i in range(8):
+            byte_idx = i // 2
+            nibble_pos = (i % 2) * 4
+            addr = 0x80 + byte_idx
+            old = self._registers[0x11].get(addr, 0)
+            mask = 0x0F << nibble_pos
+            self._registers[0x11][addr] = (old & ~mask) | ((self._dp_lane_states[i] & 0x0F) << nibble_pos)
+
+        # PRBS LOL flags (lock after 0.3 s)
+        for key, lol_addr in [('hc', 0x8A), ('mc', 0x8B)]:
+            t_en = self._prbs_enable_times.get(key, 0)
+            if t_en > 0:
+                self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00
+
+    # ------------------------------------------------------------------
+    def _update_dynamic_values(self):
+        self._update_state_machine()
+        p = self._profile
+        t = time.time() - self._start_time
+
+        # Temperature: nominal ± 3°C, 90s period
+        temp_c = p['temperature_c_nom'] + 3.0 * math.sin(2 * math.pi * t / 90.0)
+        raw = int(temp_c * 256) & 0xFFFF
+        self._registers[None][0x0E] = (raw >> 8) & 0xFF
+        self._registers[None][0x0F] = raw & 0xFF
+
+        # Per-lane monitors
+        for lane in range(8):
+            phase = lane * math.pi / 4
+            tx_disabled = bool((self._tx_disable_mask >> lane) & 1)
+            dp_active = self._dp_lane_states[lane] == 0x4
+
+            # Tx Power: 0 if disabled or not Activated, else nominal ± 3%
+            if tx_disabled or not dp_active:
+                tx_uw = 0.0
+            else:
+                tx_uw = p['tx_power_uw_nom'] * (1.0 + 0.03 * math.sin(2 * math.pi * t / 60.0 + phase))
+            tx_val = int(tx_uw * 10) & 0xFFFF
+            a = 0x9A + lane * 2
+            self._registers[0x11][a] = (tx_val >> 8) & 0xFF
+            self._registers[0x11][a + 1] = tx_val & 0xFF
+
+            # Tx Fault flag if disabled
+            if tx_disabled:
+                self._registers[0x11][0x87] |= (1 << lane)
+            else:
+                self._registers[0x11][0x87] &= ~(1 << lane)
+
+            # Tx Bias
+            if dp_active:
+                bias_ma = p['tx_bias_ma_nom'] * (1.0 + 0.033 * math.sin(2 * math.pi * t / 120.0 + phase))
+            else:
+                bias_ma = 0.0
+            bias_val = int(bias_ma / 0.002) & 0xFFFF
+            a = 0xAA + lane * 2
+            self._registers[0x11][a] = (bias_val >> 8) & 0xFF
+            self._registers[0x11][a + 1] = bias_val & 0xFF
+
+            # Rx Power
+            rx_uw = p['rx_power_uw_nom'] * (1.0 + 0.05 * math.sin(2 * math.pi * t / 45.0 + phase))
+            rx_val = int(rx_uw * 10) & 0xFFFF
+            a = 0xBA + lane * 2
+            self._registers[0x11][a] = (rx_val >> 8) & 0xFF
+            self._registers[0x11][a + 1] = rx_val & 0xFF
+
+        # Module-level alarm flag toggling (demo)
+        self._registers[None][0x09] = 0x10 if (int(t / 30) % 2) else 0x00
+
+        # CDR-LOL simulation on lane 8
+        self._registers[0x11][0x89] = 0x80 if (int(t / 60) % 2) else 0x00
+        self._registers[0x11][0x94] = 0x80 if (int(t / 75) % 2) else 0x00
+
+        # Diagnostic selector-dependent updates
+        sel = self._registers[0x14].get(0x80, 0)
+        base_ber = p['base_ber']
+
+        for lane in range(8):
+            phase = lane * math.pi / 4
+
+            if sel == 0x01 or sel == 0x11:
+                h_ber = base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase))
+                m_ber = base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))
+                w = cmis.encode_f16_ber(h_ber)
+                a = 0xC0 + lane * 2
+                self._registers[0x14][a] = (w >> 8) & 0xFF
+                self._registers[0x14][a + 1] = w & 0xFF
+                w = cmis.encode_f16_ber(m_ber)
+                a = 0xD0 + lane * 2
+                self._registers[0x14][a] = (w >> 8) & 0xFF
+                self._registers[0x14][a + 1] = w & 0xFF
+
+            elif sel == 0x06:
+                snr_db = p['snr_db_nom'] + 2.0 * math.sin(2 * math.pi * t / 40.0 + phase)
+                snr_val = int(snr_db * 256) & 0xFFFF
+                a_h = 0xD0 + lane * 2
+                self._registers[0x14][a_h] = snr_val & 0xFF
+                self._registers[0x14][a_h + 1] = (snr_val >> 8) & 0xFF
+                a_m = 0xF0 + lane * 2
+                self._registers[0x14][a_m] = snr_val & 0xFF
+                self._registers[0x14][a_m + 1] = (snr_val >> 8) & 0xFF
+
+        # Error/Bit counters (selectors 0x02-0x05, 0x12-0x15)
+        if sel in (0x02, 0x03, 0x04, 0x05, 0x12, 0x13, 0x14, 0x15):
+            now_t = time.time()
+            dt = now_t - self._last_counter_time if self._last_counter_time > 0 else 0.1
+            self._last_counter_time = now_t
+            bits_per_sec = int(100e9)   # 100 Gbps per lane
+            is_high = sel in (0x03, 0x05, 0x13, 0x15)
+            lane_start = 4 if is_high else 0
+            for li in range(4):
+                lane = lane_start + li
+                new_bits = int(bits_per_sec * dt)
+                new_errors = int(new_bits * base_ber * (1.0 + 0.2 * math.sin(t + lane)))
+                self._bit_counts[lane] += new_bits
+                self._error_counts[lane] += max(new_errors, 0)
+                off = 0xC0 + li * 16
+                ec = self._error_counts[lane]
+                bc = self._bit_counts[lane] & ~1    # PSL=0 in LSB
+                for j in range(8):
+                    self._registers[0x14][off + j] = (ec >> (j * 8)) & 0xFF
+                for j in range(8):
+                    self._registers[0x14][off + 8 + j] = (bc >> (j * 8)) & 0xFF
+
+        # Laser tuning: update CurrentLaserFrequency from Page 12h control values (tunable only)
+        if p['tunable'] and 0x12 in self._registers:
+            p12 = self._registers[0x12]
+            for lane in range(8):
+                grid_byte = p12.get(0x80 + lane, 0x50)
+                grid_code = (grid_byte >> 4) & 0x0F
+                grid_steps = {0: 0.003125, 1: 0.00625, 2: 0.0125, 3: 0.025,
+                              4: 0.05, 5: 0.1, 6: 1.0/30, 7: 0.075, 8: 0.15}
+                step_thz = grid_steps.get(grid_code, 0.1)
+                ch_hi = p12.get(0x88 + lane * 2, 0)
+                ch_lo = p12.get(0x89 + lane * 2, 0)
+                ch_n = struct.unpack(">h", bytes([ch_hi, ch_lo]))[0]
+                ft_hi = p12.get(0x98 + lane * 2, 0)
+                ft_lo = p12.get(0x99 + lane * 2, 0)
+                ft_offset = struct.unpack(">h", bytes([ft_hi, ft_lo]))[0]
+                fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
+                freq_thz = 193.1 + ch_n * step_thz + fine_ghz / 1000.0
+                freq_mhz = int(round(freq_thz * 1e6))
+                a = 0xA8 + lane * 4
+                p12[a] = (freq_mhz >> 24) & 0xFF
+                p12[a + 1] = (freq_mhz >> 16) & 0xFF
+                p12[a + 2] = (freq_mhz >> 8) & 0xFF
+                p12[a + 3] = freq_mhz & 0xFF
+                p12[0xDE + lane] = 0x00
+
+    # ------------------------------------------------------------------
+    def _intercept_write(self, register, data):
+        """Intercept writes to trigger state machine transitions."""
+        if register < 0x80:
+            if register == 0x1A:
+                ctrl = data[0]
+                if ctrl & 0x08:
+                    self._reset_time = time.time()
+                    self._module_state = 0b001
+                    self._dp_lane_states = [0x1] * 8
+                    self._lp_request_time = 0
+                if ctrl & 0x10:
+                    self._lp_request_time = time.time()
+                elif not (ctrl & 0x10) and self._lp_request_time > 0:
+                    self._lp_request_time = 0
+                    self._dp_lane_states = [0x4] * 8
+        elif self._current_page == 0x10:
+            # Writes may span several control bytes, so match on the range
+            span = range(register, register + len(data))
+            if 0x82 in span:                                        # OutputDisableTx
+                self._tx_disable_mask = data[0x82 - register]
+            if 0x8F in span and data[0x8F - register] == 0xFF:      # ApplyDPInit
+                self._apply_time = time.time()
+                for a in range(0xCA, 0xCE):
+                    self._registers[0x11][a] = 0xCC
+        elif self._current_page == 0x13:
+            prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
+            if register in prbs_map and data[0] != 0:
+                self._prbs_enable_times[prbs_map[register]] = time.time()
+
+    # ------------------------------------------------------------------
+    def connect(self, bus: int, address: int) -> None:
+        self._connected = True
+        self._start_time = time.time()
+        self._last_counter_time = time.time()
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def get_backend_info(self) -> dict:
+        return {
+            'name': getattr(self, 'BACKEND_NAME', 'mock'),
+            'description': f'Mock: {self._profile["display"]}',
+            'current_page': self._current_page,
+        }
+
+    def read_bytes(self, register: int, length: int) -> bytes:
+        if not self._connected:
+            raise IOError("Not connected")
+        self._update_dynamic_values()
+        if register < 0x80:
+            page_dict = self._registers.get(None, {})
+        else:
+            page_dict = self._registers.get(self._current_page, {})
+        result = bytearray(length)
+        for i in range(length):
+            result[i] = page_dict.get(register + i, 0x00)
+        return bytes(result)
+
+    def write_bytes(self, register: int, data: bytes) -> None:
+        if not self._connected:
+            raise IOError("Not connected")
+        self._intercept_write(register, data)
+        if register < 0x80:
+            page_dict = self._registers.setdefault(None, {})
+            for i, b in enumerate(data):
+                page_dict[register + i] = b
+            if register <= 0x7F <= register + len(data) - 1:
+                self._current_page = data[0x7F - register]
+        else:
+            page_dict = self._registers.setdefault(self._current_page, {})
+            for i, b in enumerate(data):
+                page_dict[register + i] = b
+
+
+# ============================================================================
+# Registered Backend Subclasses
+# ============================================================================
+
+@register_backend("mock_coherent")
+class MockCoherentBackend(MockBackend):
+    PROFILE = _COHERENT_800G
+    BACKEND_NAME = 'mock_coherent'
+
+
+@register_backend("mock_dr8")
+class MockDR8Backend(MockBackend):
+    PROFILE = _DR8_800G
+    BACKEND_NAME = 'mock_dr8'
+
+
+@register_backend("mock_sr8")
+class MockSR8Backend(MockBackend):
+    PROFILE = _SR8_800G
+    BACKEND_NAME = 'mock_sr8'
+
+
+@register_backend("mock_fr4x2")
+class MockFR4x2Backend(MockBackend):
+    PROFILE = _FR4X2_800G
+    BACKEND_NAME = 'mock_fr4x2'

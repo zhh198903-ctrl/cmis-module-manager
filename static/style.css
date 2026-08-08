@@ -1,0 +1,644 @@
+/* CMIS Module Manager — Dark Mode Stylesheet */
+:root {
+  --bg: #1e1e2e;
+  --surface: #2a2a3e;
+  --surface2: #313145;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --muted: #64748b;
+  --border: #3f3f5a;
+  --radius: 6px;
+  --font-mono: 'Consolas', 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ---- Layout ---- */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s;
+}
+
+.status-dot.connected { background: var(--success); }
+.status-dot.disconnected { background: var(--danger); }
+
+main {
+  display: flex;
+  height: calc(100vh - 53px);
+}
+
+/* ---- Sidebar (connection panel) ---- */
+.sidebar {
+  width: 260px;
+  min-width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.sidebar h2 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+select, input[type="text"], input[type="number"] {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+select:focus, input:focus {
+  border-color: var(--accent);
+}
+
+select option {
+  background: var(--surface2);
+}
+
+button {
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  width: 100%;
+}
+
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.btn-secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  width: 100%;
+}
+
+.btn-secondary:hover:not(:disabled) { background: var(--border); }
+
+.btn-danger {
+  background: #7f1d1d;
+  color: #fca5a5;
+  width: 100%;
+}
+
+.btn-danger:hover:not(:disabled) { background: #991b1b; }
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+/* ---- Tab content area ---- */
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+}
+
+.tab-btn {
+  background: none;
+  color: var(--text-muted);
+  padding: 10px 16px;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.tab-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface2);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+.tab-panel {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* ---- Cards ---- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Tables ---- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+tr:last-child td { border-bottom: none; }
+
+tr:hover td { background: var(--surface2); }
+
+/* ---- Alarm coloring ---- */
+.alarm-high {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #fca5a5;
+}
+
+.alarm-low {
+  background: rgba(245, 158, 11, 0.15) !important;
+  color: #fde68a;
+}
+
+.state-activated { color: var(--success); }
+.state-init { color: var(--warning); }
+.state-deactivated { color: var(--muted); }
+
+/* ---- Monitoring: all-lanes-activated status dot ---- */
+.monitor-all-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+  margin-left: 8px;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+  animation: pulse-green 2s ease-in-out infinite;
+}
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 4px var(--success); }
+  50%       { box-shadow: 0 0 10px var(--success); }
+}
+
+/* ---- Monitoring controls ---- */
+.monitoring-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.monitoring-controls label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.monitoring-controls select {
+  width: auto;
+}
+
+/* ---- DataPath config ---- */
+.datapath-lane-row td:first-child {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* AppSelect inside the DataPath table — explicit dark theme override so
+   native OS styling does not bleed through on Windows/Linux */
+.app-select-input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  width: auto;
+  min-width: 90px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  /* Override system appearance so background/color apply on all browsers */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  /* Custom dropdown arrow that works on dark backgrounds */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2394a3b8'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+  padding-right: 22px;
+}
+
+.app-select-input:focus {
+  border-color: var(--accent);
+}
+
+.app-select-input option {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* ---- Raw register tab ---- */
+.raw-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.raw-data-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+}
+
+.raw-data-input:focus { border-color: var(--accent); }
+
+.hex-dump {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre;
+  overflow-x: auto;
+  min-height: 80px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.raw-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.raw-buttons button {
+  width: auto;
+}
+
+/* ---- Toast notifications ---- */
+#toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+}
+
+.toast {
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  max-width: 320px;
+  animation: slideIn 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.toast-success { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
+.toast-error   { background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; }
+.toast-info    { background: #1e1b4b; color: #c7d2fe; border: 1px solid #3730a3; }
+
+@keyframes slideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ---- Loading spinner ---- */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Util ---- */
+.text-mono { font-family: var(--font-mono); }
+.text-muted { color: var(--text-muted); }
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-danger  { color: var(--danger); }
+.mt-8 { margin-top: 8px; }
+.placeholder-text {
+  color: var(--muted);
+  text-align: center;
+  padding: 40px;
+  font-style: italic;
+}
+
+/* ---- WeChat QR code (sidebar bottom) ---- */
+.sidebar-qr-wrap {
+  margin-top: auto;
+  padding-top: 16px;
+  text-align: center;
+}
+
+.sidebar-qr {
+  width: 88%;
+  max-width: 180px;
+  border-radius: 6px;
+  mix-blend-mode: screen;   /* black → transparent, white → visible */
+  opacity: 0.55;
+  transition: opacity 0.25s;
+  display: block;
+  margin: 0 auto;
+}
+
+.sidebar-qr:hover {
+  opacity: 0.85;
+}
+
+.sidebar-qr-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Backend info area (sidebar) ---- */
+#backend-info-area {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* ---- Backend availability badge ---- */
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-ok  { background: #14532d; color: #bbf7d0; }
+.badge-off { background: #3f3f5a; color: var(--muted); }
+
+/* ---- Lane flag indicators ---- */
+.flag-active {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.flag-warn {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.flag-ok {
+  color: var(--success);
+  font-size: 10px;
+}
+
+/* ---- Threshold table tint ---- */
+.threshold-table td.ha, td.ha { background: rgba(239, 68, 68, 0.08); }
+.threshold-table td.hw, td.hw { background: rgba(245, 158, 11, 0.08); }
+.threshold-table td.la, td.la { background: rgba(239, 68, 68, 0.04); }
+.threshold-table td.lw, td.lw { background: rgba(245, 158, 11, 0.04); }
+
+/* Column headers for threshold table */
+.th-ha { color: #fca5a5 !important; }
+.th-la { color: #fca5a5 !important; opacity: 0.7; }
+.th-hw { color: #fde68a !important; }
+.th-lw { color: #fde68a !important; opacity: 0.7; }
+
+/* ---- Squelch / Loopback bitmask table ---- */
+.squelch-table td {
+  text-align: center;
+  padding: 5px 4px;
+}
+
+.squelch-table th {
+  text-align: center;
+}
+
+.squelch-table td:first-child {
+  text-align: left;
+  padding-left: 10px;
+}
+
+/* ---- Register metadata annotations ---- */
+.reg-meta {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+/* columns for row-based info tables (Module Info, Thresholds) */
+.td-page,
+.td-addr {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.td-def {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.4;
+}
+/* compact register badge used in row labels */
+.reg-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: middle;
+  line-height: 1.6;
+}
+
+/* ---- PRBS controls layout ---- */
+.prbs-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.prbs-section h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.prbs-table td {
+  text-align: center;
+  padding: 4px 8px;
+}
+
+.prbs-table td:first-child {
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.prbs-table th {
+  text-align: center;
+}

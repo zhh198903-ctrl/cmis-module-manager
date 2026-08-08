@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMIS 模块管理工具 操作手册</title>
+  <style>
+    :root {
+      --bg:       #1e1e2e;
+      --surface:  #2a2a3e;
+      --surface2: #313145;
+      --accent:   #7c3aed;
+      --border:   #3f3f5a;
+      --text:     #e2e8f0;
+      --muted:    #94a3b8;
+      --dim:      #64748b;
+      --success:  #22c55e;
+      --warning:  #f59e0b;
+      --danger:   #ef4444;
+      --mono:     'Consolas', 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    /* ── Cover ── */
+    .cover {
+      background: var(--surface);
+      border-bottom: 2px solid var(--accent);
+      padding: 48px 60px 36px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 32px;
+    }
+
+    .cover-text h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.02em;
+      margin-bottom: 14px;
+    }
+
+    .cover-text h1 span {
+      color: var(--accent);
+    }
+
+    .cover-meta {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 2;
+    }
+
+    .cover-meta b { color: var(--text); }
+
+    .cover-qr {
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .cover-qr img {
+      width: 130px;
+      border-radius: 8px;
+      mix-blend-mode: screen;
+      opacity: 0.75;
+      display: block;
+    }
+
+    .cover-qr p {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 6px;
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Layout ── */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 48px 80px;
+    }
+
+    /* ── TOC ── */
+    .toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px 28px;
+      margin-bottom: 40px;
+    }
+
+    .toc h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    .toc ol {
+      padding-left: 20px;
+      column-count: 2;
+      column-gap: 32px;
+    }
+
+    .toc li { margin-bottom: 4px; }
+
+    .toc a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      transition: color 0.2s;
+    }
+
+    .toc a:hover { color: var(--accent); }
+
+    /* ── Sections ── */
+    .section {
+      margin-bottom: 48px;
+    }
+
+    h2.section-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      margin-bottom: 20px;
+      scroll-margin-top: 24px;
+    }
+
+    h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 24px 0 10px;
+    }
+
+    p { margin-bottom: 12px; color: var(--text); }
+
+    /* ── Tables ── */
+    .table-wrap { overflow-x: auto; margin-bottom: 16px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      background: var(--surface2);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      padding: 8px 12px;
+      text-align: left;
+      border: 1px solid var(--border);
+    }
+
+    td {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 13px;
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+    tr:hover td { background: var(--surface2); }
+
+    td.label {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+      color: var(--muted);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    /* ── Code ── */
+    code {
+      font-family: var(--mono);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 12px;
+      color: #c4b5fd;
+    }
+
+    pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text);
+      overflow-x: auto;
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    /* ── Callouts ── */
+    .callout {
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      border-left: 3px solid;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+
+    .callout-note   { background: rgba(124,58,237,0.1); border-color: var(--accent); color: #c4b5fd; }
+    .callout-warn   { background: rgba(245,158,11,0.1); border-color: var(--warning); color: #fde68a; }
+    .callout-danger { background: rgba(239,68,68,0.1);  border-color: var(--danger);  color: #fca5a5; }
+
+    .callout-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Lists ── */
+    ol, ul {
+      padding-left: 22px;
+      margin-bottom: 12px;
+    }
+
+    li { margin-bottom: 5px; }
+
+    /* ── Ordered steps ── */
+    .steps { counter-reset: step; list-style: none; padding-left: 0; }
+    .steps li {
+      counter-increment: step;
+      display: flex;
+      gap: 12px;
+      margin-bottom: 10px;
+      align-items: flex-start;
+    }
+    .steps li::before {
+      content: counter(step);
+      background: var(--accent);
+      color: #fff;
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* ── Q&A (FAQ) ── */
+    .faq-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+
+    .faq-q {
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .faq-q .tag {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 4px;
+      padding: 1px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+
+    .faq-reason { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .faq-solve  { color: var(--text);  font-size: 13px; }
+
+    /* ── HR ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--mono);
+    }
+
+    .badge-ok      { background: #14532d; color: #bbf7d0; }
+    .badge-warn    { background: #451a03; color: #fde68a; }
+    .badge-danger  { background: #450a0a; color: #fca5a5; }
+    .badge-neutral { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 36px 60px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .footer-text {
+      font-size: 12px;
+      color: var(--dim);
+      line-height: 1.8;
+    }
+
+    .footer-qr { text-align: center; }
+
+    .footer-qr img {
+      width: 110px;
+      border-radius: 6px;
+      mix-blend-mode: screen;
+      opacity: 0.65;
+      display: block;
+    }
+
+    .footer-qr p {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 5px;
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════ COVER ══════════════ -->
+<div class="cover">
+  <div class="cover-text">
+    <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
+    <div class="cover-meta">
+      <b>版本</b>　2.0.1<br>
+      <b>适用软件</b>　CMIS Module Manager<br>
+      <b>更新日期</b>　2026-08-08<br>
+      <b>适用平台</b>　Windows 10 / 11（64 位）
+    </div>
+  </div>
+  <div class="cover-qr">
+    <img src="qrcode.jpg" alt="公众号二维码">
+    <p>扫码关注公众号</p>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ══════════════ TOC ══════════════ -->
+<div class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">产品简介</a></li>
+    <li><a href="#s2">系统要求</a></li>
+    <li><a href="#s3">USB 驱动安装指南</a></li>
+    <li><a href="#s4">启动程序</a></li>
+    <li><a href="#s5">界面总览</a></li>
+    <li><a href="#s6">连接模块</a></li>
+    <li><a href="#s7">Module Info — 模块基本信息</a></li>
+    <li><a href="#s8">Monitoring — 实时监控</a></li>
+    <li><a href="#s9">DataPath Config — 数据通道配置</a></li>
+    <li><a href="#s10">Diagnostics — 诊断工具</a></li>
+    <li><a href="#s11">Raw Registers — 寄存器直读写</a></li>
+    <li><a href="#s12">常见问题排查</a></li>
+    <li><a href="#s13">附录：界面按钮速查</a></li>
+  </ol>
+</div>
+
+<!-- ══════════════ 1. 产品简介 ══════════════ -->
+<div class="section" id="s1">
+  <h2 class="section-title">1. 产品简介</h2>
+  <p>CMIS Module Manager 是一款用于调测和管理符合 CMIS（Common Management Interface Specification）标准的光模块的桌面工具。支持读取模块身份信息、实时监控光功率与温度、配置数据通道（DataPath）、执行环回 / PRBS 诊断，以及直接读写任意寄存器。</p>
+
+  <h3>支持的接口后端（Backend）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Backend</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>mock_coherent</code></td><td class="label">模拟 800G QSFP-DD 可调谐相干模块（C-band DWDM, DP-16QAM），无需硬件</td></tr>
+        <tr><td><code>mock_dr8</code></td><td class="label">模拟 800GBASE-DR8（8×100G PAM4, SMF 500m, EML 1310nm），无需硬件</td></tr>
+        <tr><td><code>mock_sr8</code></td><td class="label">模拟 800GBASE-SR8（8×100G PAM4, OM4 100m, VCSEL 850nm），无需硬件</td></tr>
+        <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
+        <tr><td><code>ch341</code></td><td class="label">通过 CH341 USB 转 I2C 适配器连接真实模块</td></tr>
+        <tr><td><code>ch347</code></td><td class="label">通过 CH347 USB 转 I2C 适配器连接真实模块</td></tr>
+        <tr><td><code>ftdi</code></td><td class="label">通过 FTDI 系列芯片连接真实模块</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>4 种 Mock 模块涵盖了主流 800G QSFP-DD 应用：长途相干、数据中心 500m、机架内 100m、园区 2km，可用于不同场景演示与培训。</span>
+  </div>
+</div>
+
+<!-- ══════════════ 2. 系统要求 ══════════════ -->
+<div class="section" id="s2">
+  <h2 class="section-title">2. 系统要求</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>项目</th><th>要求</th></tr></thead>
+      <tbody>
+        <tr><td class="label">操作系统</td><td>Windows 10 / Windows 11（64 位）</td></tr>
+        <tr><td class="label">硬件接口</td><td>USB 端口（使用真实模块时）</td></tr>
+        <tr>
+          <td class="label">驱动程序</td>
+          <td>
+            使用真实模块时需提前安装对应 USB 驱动：<br>
+            · <b>CH341</b>：从 WCH 官网下载 <code>CH341SER.EXE</code>，安装后 <code>CH341DLL.dll</code> 自动注册到系统<br>
+            · <b>CH347</b>：从 WCH 官网下载 <code>CH347SER.EXE</code>（串口驱动）+ <code>CH347DLL.dll</code>（I2C 通信库，需另行获取，详见第 3 节）<br>
+            · <b>CH341</b> 安装驱动后 DLL 自动进入 System32；<b>CH347</b> 可能需要手动将 <code>CH347DLL.dll</code> 放入 EXE 同目录或 System32<br>
+            · <b>Mock 模式</b>（不接硬件）无需安装任何驱动<br>
+            · WCH 官网（国内）：<code>www.wch.cn</code>　&ensp;官网（国际）：<code>www.wch-ic.com</code>
+          </td>
+        </tr>
+        <tr><td class="label">运行时依赖</td><td>无需安装 Python 或任何运行时，双击 EXE 即可运行</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Mock 模式</b>不需要任何硬件，适合软件演示、界面熟悉和功能验证。</span>
+  </div>
+</div>
+
+<!-- ══════════════ 3. USB 驱动安装指南 ══════════════ -->
+<div class="section" id="s3">
+  <h2 class="section-title">3. USB 驱动安装指南</h2>
+  <p>使用 CH341 或 CH347 适配器连接真实光模块前，需先在 Windows 中安装对应的 WCH USB 驱动。Mock 模式无需此步骤。</p>
+
+  <h3>步骤一：识别你的硬件</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>外观特征</th><th>芯片型号</th><th>需安装的驱动</th></tr></thead>
+      <tbody>
+        <tr><td class="label">黑色小板，常见于淘宝低价 I2C 适配器</td><td><code>CH341A</code></td><td>CH341 驱动</td></tr>
+        <tr><td class="label">蓝色板，支持更高速率（USB 2.0 High-Speed）</td><td><code>CH347</code></td><td>CH347 驱动</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>步骤二：下载驱动</h3>
+  <ul>
+    <li>WCH 官网（国内）：<code>www.wch.cn</code></li>
+    <li>WCH 官网（国际）：<code>www.wch-ic.com</code></li>
+    <li>在搜索框输入芯片型号（<code>CH341</code> 或 <code>CH347</code>），进入产品页 → 下载 → Windows 驱动压缩包</li>
+    <li>CH341 驱动包文件名通常为 <code>CH341SER.ZIP</code>，内含 <code>CH341SER.EXE</code></li>
+    <li>CH347 驱动包文件名通常为 <code>CH347SER.ZIP</code>，内含 <code>CH347SER.EXE</code></li>
+    <li><b>CH347 额外步骤</b>：CH347 的串口驱动安装包不一定包含 I2C 通信所需的 <code>CH347DLL.dll</code>。如果安装后工具仍显示 <code>unavailable</code>，需从 WCH 官网搜索 <b>"CH347EVT"</b>（开发资料包）下载，在压缩包内找到 <code>CH347DLL.dll</code>，复制到 <code>CMIS_Module_Manager.exe</code> 同一目录下即可</li>
+  </ul>
+
+  <h3>步骤三：安装</h3>
+  <ol class="steps">
+    <li>解压下载的压缩包。</li>
+    <li>运行压缩包内的 <code>SETUP.EXE</code>（或 <code>CH341SER.EXE</code> / <code>CH347SER.EXE</code>）。</li>
+    <li>在安装界面点击 <b>安装（Install）</b>，等待提示"驱动预安装成功"。</li>
+    <li>将 USB 适配器插入电脑。</li>
+    <li>打开 <b>设备管理器</b>（Win + X → 设备管理器），在"端口（COM 和 LPT）"或"通用串行总线控制器"下应出现：<br>
+      &ensp;· CH341：<code>USB-SERIAL CH341 (COM×)</code><br>
+      &ensp;· CH347：<code>USB Enhanced Serial Port (COM×)</code>
+    </li>
+  </ol>
+
+  <h3>步骤四：验证</h3>
+  <ol class="steps">
+    <li>启动 <code>CMIS_Module_Manager.exe</code>。</li>
+    <li>在左侧 <b>Backend</b> 下拉菜单中，应出现 <code>ch341</code> 或 <code>ch347</code> 选项（状态 <code>available</code>）。</li>
+    <li>若未出现，点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
+  </ol>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>CH341</b>：安装驱动后 <code>CH341DLL.dll</code> 会自动注册到 System32，EXE 无需额外配置。</span>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>CH347 注意</b>：<code>CH347SER.EXE</code> 安装的是串口驱动（设备管理器可识别设备），但 I2C 通信所需的 <code>CH347DLL.dll</code> 可能不会自动安装到系统。若工具显示 CH347 <code>unavailable</code>，请从 WCH 官网下载 <b>CH347EVT</b> 开发资料包，找到 <code>CH347DLL.dll</code>，复制到 EXE 同目录或 <code>System32</code> 下。</span>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>若设备管理器中设备图标有<b>黄色感叹号</b>，说明驱动安装不完整。请右键该设备 → 更新驱动程序，或重新运行安装程序。</span>
+  </div>
+</div>
+
+<!-- ══════════════ 4. 启动程序 ══════════════ -->
+<div class="section" id="s4">
+  <h2 class="section-title">4. 启动程序</h2>
+  <ol class="steps">
+    <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
+    <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager starting on http://127.0.0.1:5000</pre></li>
+    <li>浏览器自动打开，显示工具主界面。</li>
+  </ol>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>控制台窗口必须保持开启。</b>关闭它会停止服务器，浏览器页面将无法使用。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>如果浏览器未自动打开，请手动在地址栏输入：<code>http://127.0.0.1:5000</code></span>
+  </div>
+</div>
+
+<!-- ══════════════ 5. 界面总览 ══════════════ -->
+<div class="section" id="s5">
+  <h2 class="section-title">5. 界面总览</h2>
+  <img src="screenshot_main.png" alt="CMIS Module Manager 界面截图" style="width:100%;border-radius:8px;border:1px solid var(--border);display:block;">
+  <ul>
+    <li><b>左侧面板</b>：连接控制区，始终可见；底部显示公众号二维码</li>
+    <li><b>右侧内容区</b>：根据选中的标签页切换显示</li>
+    <li><b>顶部状态栏</b>：绿色圆点 = 已连接，红色 = 未连接</li>
+  </ul>
+</div>
+
+<!-- ══════════════ 6. 连接模块 ══════════════ -->
+<div class="section" id="s6">
+  <h2 class="section-title">6. 连接模块</h2>
+
+  <h3>6.1 选择 Backend</h3>
+  <p>点击左侧 <b>Backend</b> 下拉菜单，选择对应接口类型：</p>
+
+  <h4>Mock 模拟模块（无需硬件，适合演示/培训/开发）</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Backend</th><th>模拟类型</th><th>典型场景</th><th>特征</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>mock_coherent</code></td>
+          <td class="label">800G QSFP-DD 相干（C-band 可调谐）</td>
+          <td class="label">DWDM 长途 / DCI</td>
+          <td class="label">DP-16QAM，支持 Laser Tuning，Pre-FEC BER ~1e-9，16 W</td>
+        </tr>
+        <tr>
+          <td><code>mock_dr8</code></td>
+          <td class="label">800GBASE-DR8</td>
+          <td class="label">数据中心内 500m</td>
+          <td class="label">8×100G PAM4，SMF MPO 1×16，EML 1310nm，14 W</td>
+        </tr>
+        <tr>
+          <td><code>mock_sr8</code></td>
+          <td class="label">800GBASE-SR8</td>
+          <td class="label">机架内 100m (OM4)</td>
+          <td class="label">8×100G PAM4，MMF MPO 1×16，VCSEL 850nm，12 W（Bias 极低）</td>
+        </tr>
+        <tr>
+          <td><code>mock_fr4x2</code></td>
+          <td class="label">2× 400GBASE-FR4</td>
+          <td class="label">园区 / 楼栋间 2km</td>
+          <td class="label">CWDM4 × 2，双 LC，EML 1310nm，15 W</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.3 规范和实际产品特征构造。仅 <code>mock_coherent</code> 支持 Laser Tuning 功能。</p>
+
+  <h4>真实硬件接口</h4>
+  <ul>
+    <li><code>ch341</code> — CH341A USB-I2C 适配器</li>
+    <li><code>ch347</code> — CH347 USB-I2C 适配器（更高速）</li>
+    <li><code>ftdi</code> — FTDI FT232H/FT2232H 系列</li>
+  </ul>
+  <p>点击 <b>↻ Refresh Backends</b> 可重新扫描（插入 USB 适配器后刷新）。标注 <code>(unavailable)</code> 的选项表示驱动或硬件不可用。</p>
+
+  <h3>6.2 填写 Bus 和 I2C 地址</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>说明</th><th>典型值</th></tr></thead>
+      <tbody>
+        <tr><td>Bus / Device Index</td><td class="label">USB 适配器编号，通常为 0</td><td><code>0</code></td></tr>
+        <tr><td>I2C Address</td><td class="label">光模块 I2C 地址，支持十六进制或十进制</td><td><code>0x50</code> 或 <code>80</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>6.3 点击 Connect</h3>
+  <ul>
+    <li><b>成功</b>：顶部绿色圆点，显示 <code>Connected — ch341  bus:0  addr:0x50</code>；标签页解锁；自动加载 Module Info。</li>
+    <li><b>失败</b>：弹出红色错误提示，检查 Backend / Bus / Address 是否正确。</li>
+  </ul>
+
+  <h3>6.4 断开连接</h3>
+  <p>点击红色 <b>Disconnect</b> 按钮，断开当前连接并清空所有数据。</p>
+</div>
+
+<!-- ══════════════ 7. Module Info ══════════════ -->
+<div class="section" id="s7">
+  <h2 class="section-title">7. Module Info — 模块基本信息</h2>
+  <p>连接成功后自动加载，显示模块的身份信息、能力广告与当前运行状态。所有字段寄存器地址严格按 CMIS 5.3 规范（OIF-CMIS-05.3.pdf Table 8-26）。</p>
+
+  <h3>7.1 身份信息（Vendor Info）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Module Type</td><td class="label">SFF-8024 Identifier（如 QSFP-DD、OSFP、CMIS-Compliant）</td><td><code>Lower / 0x00</code></td></tr>
+        <tr><td>CMIS Revision</td><td class="label">CMIS 规范版本（如 5.3）。上半字节=主版本，下半字节=次版本</td><td><code>Lower / 0x01</code></td></tr>
+        <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）</td><td><code>Lower / 0x02[7]</code></td></tr>
+        <tr><td>Media Type</td><td class="label">MMF / SMF / Passive Copper / Active Cable / BASE-T</td><td><code>Lower / 0x55</code></td></tr>
+        <tr><td>Module State</td><td class="label">当前状态机（见下表）</td><td><code>Lower / 0x03[3:1]</code></td></tr>
+        <tr><td>Vendor Name</td><td class="label">厂商名称，16 字节 ASCII</td><td><code>00h / 0x81–0x90</code></td></tr>
+        <tr><td>Vendor OUI</td><td class="label">IEEE 厂商 OUI，3 字节十六进制</td><td><code>00h / 0x91–0x93</code></td></tr>
+        <tr><td>Vendor P/N</td><td class="label">厂商料号，16 字节 ASCII</td><td><code>00h / 0x94–0xA3</code></td></tr>
+        <tr><td>Vendor Rev</td><td class="label">产品版本，2 字节 ASCII</td><td><code>00h / 0xA4–0xA5</code></td></tr>
+        <tr><td>Vendor S/N</td><td class="label">序列号，16 字节 ASCII</td><td><code>00h / 0xA6–0xB5</code></td></tr>
+        <tr><td>Date Code</td><td class="label">生产日期码 YYMMDDLL（Y=年, M=月, D=日, L=批次）</td><td><code>00h / 0xB6–0xBD</code></td></tr>
+        <tr><td>CLEI Code</td><td class="label">CLEI 设备识别码，10 字节 ASCII</td><td><code>00h / 0xBE–0xC7</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>7.2 能力广告（Capabilities）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Power Class</td><td class="label">模块功耗等级 Class 1–8（bits[7:5]）</td><td><code>00h / 0xC8</code></td></tr>
+        <tr><td>Max Power</td><td class="label">最大功耗（W），原始值 × 0.25</td><td><code>00h / 0xC9</code></td></tr>
+        <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效，光模块显示 "—"</td><td><code>00h / 0xCA</code></td></tr>
+        <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
+        <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧 lane 数（来自 AppDesc#1 高半字节）</td><td><code>Lower / 0x58[7:4]</code></td></tr>
+        <tr><td>Media Lanes</td><td class="label">媒体侧 lane 数（来自 AppDesc#1 低半字节）</td><td><code>Lower / 0x58[3:0]</code></td></tr>
+        <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>01h / 0x84–0x85</code></td></tr>
+        <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本</td><td><code>01h / 0x82–0x83</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>7.3 运行状态</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Temperature</td><td class="label">模块内部温度，signed16 ÷ 256 (°C)</td><td><code>Lower / 0x0E–0x0F</code></td></tr>
+        <tr><td>Supply Voltage</td><td class="label">供电电压，uint16 × 100 µV</td><td><code>Lower / 0x10–0x11</code></td></tr>
+        <tr><td>Alarms</td><td class="label">告警摘要（按 0x09 的 Vcc/Temp Hi/Lo Alarm/Warn 位综合判定）</td><td><code>Lower / 0x08–0x0D</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>7.4 Module State 枚举（CMIS 5.3 Table 8-7）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>状态</th><th>编码 (bits[3:1])</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>ModuleLowPwr</code></td><td><code>001b</code></td><td class="label">模块处于低功耗模式</td></tr>
+        <tr><td><code>ModulePwrUp</code></td><td><code>010b</code></td><td class="label">模块正在上电初始化</td></tr>
+        <tr><td><code>ModuleReady</code></td><td><code>011b</code></td><td class="label">模块正常工作 <span class="badge badge-ok">正常</span></td></tr>
+        <tr><td><code>ModulePwrDn</code></td><td><code>100b</code></td><td class="label">模块正在下电</td></tr>
+        <tr><td><code>ModuleFault</code></td><td><code>101b</code></td><td class="label">模块故障 <span class="badge badge-danger">异常</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>点击右上角 <b>↻ Refresh</b> 手动刷新。</p>
+</div>
+
+<!-- ══════════════ 8. Monitoring ══════════════ -->
+<div class="section" id="s8">
+  <h2 class="section-title">8. Monitoring — 实时监控</h2>
+
+  <h3>8.1 实时数据表</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Lane</td><td class="label">通道编号（1–8）</td><td>—</td></tr>
+        <tr><td>Tx Power</td><td class="label">发送光功率（µW 和 dBm）</td><td><code>11h / 0x9A+(n−1)×2</code></td></tr>
+        <tr><td>Tx Bias</td><td class="label">发送偏置电流（mA）</td><td><code>11h / 0xAA+(n−1)×2</code></td></tr>
+        <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+(n−1)×2</code></td></tr>
+        <tr><td>DataPath State</td><td class="label">数据通道状态，4 bits/lane（见下表枚举）</td><td><code>11h / 0x80–0x83</code></td></tr>
+        <tr><td>Config Status</td><td class="label">上次 Apply 配置的结果（ConfigSuccess / ConfigRejected / ConfigInProgress 等）</td><td><code>11h / 0xCA–0xCD</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>DataPath State 枚举（CMIS 5.3 Table 8-84）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>编码</th><th>名称</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x1</code></td><td>Deactivated</td><td class="label">未激活</td></tr>
+        <tr><td><code>0x2</code></td><td>Init</td><td class="label">初始化中</td></tr>
+        <tr><td><code>0x3</code></td><td>Deinit</td><td class="label">去初始化中</td></tr>
+        <tr><td><code>0x4</code></td><td>Activated</td><td class="label">已激活 <span class="badge badge-ok">正常</span></td></tr>
+        <tr><td><code>0x5</code></td><td>TxTurnOn</td><td class="label">发送启动中</td></tr>
+        <tr><td><code>0x6</code></td><td>TxTurnOff</td><td class="label">发送关闭中</td></tr>
+        <tr><td><code>0x7</code></td><td>Initialized</td><td class="label">初始化完成（未激活发送）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>颜色告警规则</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>颜色</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge badge-ok">正常</span></td><td class="label">功率在 −10 dBm ~ +3 dBm 之间</td></tr>
+        <tr><td><span class="badge badge-warn">橙色</span></td><td class="label">功率低于 −10 dBm（偏低）</td></tr>
+        <tr><td><span class="badge badge-danger">红色</span></td><td class="label">功率高于 +3 dBm（偏高）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>顶部摘要栏同步显示温度和电压：超过 60°C → 橙色；超过 70°C → 红色。</p>
+
+  <h3>8.2 自动刷新间隔</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>选项</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>1 s</td><td class="label">每秒刷新一次</td></tr>
+        <tr><td>2 s（默认）</td><td class="label">每 2 秒刷新一次</td></tr>
+        <tr><td>5 s</td><td class="label">每 5 秒刷新一次</td></tr>
+        <tr><td>10 s</td><td class="label">每 10 秒刷新一次</td></tr>
+        <tr><td>Manual</td><td class="label">关闭自动刷新，点击 ↻ Now 手动触发</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>8.3 模块告警阈值表（02h）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>参数</th>
+          <th>Page / Addr</th>
+          <th style="color:#fca5a5">High Alarm</th>
+          <th style="color:#fca5a5;opacity:.7">Low Alarm</th>
+          <th style="color:#fde68a">High Warn</th>
+          <th style="color:#fde68a;opacity:.7">Low Warn</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="label">Temperature (°C)</td><td><code>02h/0x80–87</code></td><td>过温告警</td><td>欠温告警</td><td>过温警告</td><td>欠温警告</td></tr>
+        <tr><td class="label">Vcc (V)</td><td><code>02h/0x88–8F</code></td><td>过压告警</td><td>欠压告警</td><td>过压警告</td><td>欠压警告</td></tr>
+        <tr><td class="label">Tx Power (dBm)</td><td><code>02h/0xB0–B7</code></td><td colspan="4" style="color:var(--dim)">光功率上下限阈值</td></tr>
+        <tr><td class="label">Tx Bias (mA)</td><td><code>02h/0xB8–BF</code></td><td colspan="4" style="color:var(--dim)">偏置电流上下限阈值</td></tr>
+        <tr><td class="label">Rx Power (dBm)</td><td><code>02h/0xC0–C7</code></td><td colspan="4" style="color:var(--dim)">接收光功率上下限阈值</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>8.4 通道标志位（Lane Flags）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>列</th><th>含义</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Tx Fault</td><td class="label">发送故障</td><td><code>11h / 0x87</code></td></tr>
+        <tr><td>Tx LOS</td><td class="label">发送端信号丢失</td><td><code>11h / 0x88</code></td></tr>
+        <tr><td>Tx CDR-LOL</td><td class="label">发送 CDR 失锁</td><td><code>11h / 0x89</code></td></tr>
+        <tr><td>Rx LOS</td><td class="label">接收端信号丢失</td><td><code>11h / 0x93</code></td></tr>
+        <tr><td>Rx CDR-LOL</td><td class="label">接收 CDR 失锁</td><td><code>11h / 0x94</code></td></tr>
+        <tr><td>Alarms/Warns</td><td class="label">功率 / 偏置综合告警状态</td><td><code>11h / 0x8B–0x98</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>图标：<span class="badge badge-ok">● 正常</span>&ensp;<span class="badge badge-warn">▲ WARN</span>&ensp;<span class="badge badge-danger">■ ALARM</span></p>
+</div>
+
+<!-- ══════════════ 9. DataPath Config ══════════════ -->
+<div class="section" id="s9">
+  <h2 class="section-title">9. DataPath Config — 数据通道配置</h2>
+
+  <h3>9.1 Module Control（模块控制）</h3>
+  <p>模块级控制寄存器（Lower 0x1A），用于软复位与低功耗模式切换。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>控制项</th><th>含义</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td><b>Reset Module</b></td><td class="label">向 0x1A[3] 写 1 触发软件复位。所有 DataPath 将重新进入 Init 状态</td><td><code>Lower / 0x1A[3]</code></td></tr>
+        <tr><td><b>Enter LowPwr</b></td><td class="label">向 0x1A[4] 写 1 请求进入低功耗模式</td><td><code>Lower / 0x1A[4]</code></td></tr>
+        <tr><td><b>Exit LowPwr</b></td><td class="label">清除 0x1A[4] 请求退出低功耗模式</td><td><code>Lower / 0x1A[4]</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>软复位会中断业务！点击 <b>Reset Module</b> 后会弹出确认对话框。复位后模块会经历 LowPwr → PwrUp → Ready 状态机流程。</span>
+  </div>
+
+  <h3>9.2 Supported Applications（支持的应用码）</h3>
+  <p>读取 Lower Memory 0x56–0x75 的 Application Descriptor 表（最多 8 组），列出模块广告的 Host/Media Interface ID 组合。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>列</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>AppSel</td><td class="label">应用码序号（1–8），写入 DataPath 配置表时使用</td></tr>
+        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID（如 0x4F=200GAUI-2-S、0x4D=100GAUI-2）</td></tr>
+        <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID（取决于 Media Type）</td></tr>
+        <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
+        <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>9.3 DataPath 配置表</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Lane</td><td class="label">通道编号（1–8）</td><td>—</td></tr>
+        <tr><td>AppSelect</td><td class="label">应用码选择（0–15）。DPConfigLane，每 lane 1 字节：bits[7:4]=AppSelCode，bits[3:1]=DataPathID，bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
+        <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）</td><td><code>10h / 0x82[n−1]</code></td></tr>
+        <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
+        <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
+        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化状态（只读）</td><td><code>11h / 0x80</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ol class="steps">
+    <li>点击 <b>↻ Refresh</b> 读取当前配置。</li>
+    <li>参考 9.2 Supported Applications 表选择合适的 AppSelect。</li>
+    <li>勾选 / 取消 TX Enable、Pol Flip。</li>
+    <li>点击 <b>Apply</b> 写入模块并激活（自动触发 ApplyDataPath = 0xFF）。</li>
+    <li>回到 Monitoring 标签查看 <b>Config Status</b> 列确认配置结果。</li>
+  </ol>
+
+  <h3>9.4 Output Controls（输出控制）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>控制项</th><th>含义</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>AutoSquelchDisableTx</td><td class="label">勾选 = 禁用 Tx 自动 Squelch 控制器</td><td><code>10h / 0x83</code></td></tr>
+        <tr><td>OutputSquelchForceTx</td><td class="label">勾选 = 强制 Tx 输出 Squelch</td><td><code>10h / 0x84</code></td></tr>
+        <tr><td>OutputDisableRx</td><td class="label">勾选 = 禁用 Rx 输出</td><td><code>10h / 0x8A</code></td></tr>
+        <tr><td>AutoSquelchDisableRx</td><td class="label">勾选 = 禁用 Rx 自动 Squelch 控制器</td><td><code>10h / 0x8B</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════ 10. Diagnostics ══════════════ -->
+<div class="section" id="s10">
+  <h2 class="section-title">10. Diagnostics — 诊断工具</h2>
+
+  <h3>10.1 Loopback（环回）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模式</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>MediaSide Output</td><td class="label">媒体侧输出环回</td><td><code>13h / 0xB4</code></td></tr>
+        <tr><td>MediaSide Input</td><td class="label">媒体侧输入环回</td><td><code>13h / 0xB5</code></td></tr>
+        <tr><td>HostSide Output</td><td class="label">主机侧输出环回</td><td><code>13h / 0xB6</code></td></tr>
+        <tr><td>HostSide Input</td><td class="label">主机侧输入环回</td><td><code>13h / 0xB7</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>开启环回会影响正常业务。测试完毕后请全部取消勾选并 Apply 恢复。</span>
+  </div>
+
+  <h3>10.2 PRBS Generator（PRBS 发生器）</h3>
+  <p>每个 PRBS 块为 8 字节：Enable（使能位图）/ Invert（数据反转位图）/ ByteSwap（PAM4 MSB/LSB 交换位图）/ PreFEC（FEC 编码前注入）/ Pattern×4（4 字节, 4 bits/lane）。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分区</th><th>En</th><th>Invert</th><th>ByteSwap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
+      <tbody>
+        <tr><td>Host-Side Generator</td><td><code>13h/0x90</code></td><td><code>0x91</code></td><td><code>0x92</code></td><td><code>0x93</code></td><td><code>0x94–0x97</code></td></tr>
+        <tr><td>Media-Side Generator</td><td><code>13h/0x98</code></td><td><code>0x99</code></td><td><code>0x9A</code></td><td><code>0x9B</code></td><td><code>0x9C–0x9F</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体，以及 SSPRQ（Table 8-105）。</p>
+
+  <h3>10.3 PRBS Checker（PRBS 检测器）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分区</th><th>En</th><th>Invert</th><th>ByteSwap</th><th>PostFEC</th><th>Pattern</th><th>LOL 地址</th></tr></thead>
+      <tbody>
+        <tr><td>Host-Side Checker</td><td><code>13h/0xA0</code></td><td><code>0xA1</code></td><td><code>0xA2</code></td><td><code>0xA3</code></td><td><code>0xA4–0xA7</code></td><td><code>14h/0x8A</code></td></tr>
+        <tr><td>Media-Side Checker</td><td><code>13h/0xA8</code></td><td><code>0xA9</code></td><td><code>0xAA</code></td><td><code>0xAB</code></td><td><code>0xAC–0xAF</code></td><td><code>14h/0x8B</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
+
+  <h3>10.4 BER Results（误码率）</h3>
+  <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x01</code> 选择 BER F16 诊断。Host BER 在 <code>14h/0xC0</code>，Media BER 在 <code>14h/0xD0</code>，每通道 2 字节。</p>
+  <p>F16 解码公式（CMIS 5.3 十进制浮点）：<code>BER = mantissa × 10^(exp − 24)</code>，其中 bits[15:11]=exp, bits[10:0]=mantissa。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>信号质量</th><th>典型 pre-FEC BER</th></tr></thead>
+      <tbody>
+        <tr><td class="label">接近底噪（优良）</td><td><span class="badge badge-ok">&lt; 1e-9 ~ 1e-8</span></td></tr>
+        <tr><td class="label">正常工作</td><td><span class="badge badge-neutral">1e-8 ~ 1e-4</span></td></tr>
+        <tr><td class="label">边缘</td><td><span class="badge badge-warn">1e-4 ~ 1e-3</span></td></tr>
+        <tr><td class="label">劣化</td><td><span class="badge badge-danger">&gt; 1e-3</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>10.5 SNR Results（信噪比）</h3>
+  <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x06</code> 选择 SNR 诊断。Host SNR 在 <code>14h/0xD0</code>，Media SNR 在 <code>14h/0xF0</code>，每通道 2 字节小端 u16，单位 1/256 dB。</p>
+  <p>典型 400G/800G 链路 SNR 范围：PAM4 DSP 输出约 <b>15–22 dB</b>，越高越好。低于 13 dB 通常意味着链路劣化。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>BER / SNR 读取无需 PRBS 使能，直接反映当前链路质量。若同时开启 PRBS 发生/检测，结果对应 PRBS 码流质量。</span>
+  </div>
+
+  <h3>10.6 Error / Bit Counters（误码/比特计数器）</h3>
+  <p>使用 Page 14h Diagnostic Selectors 0x02–0x05 读取每通道累计的 Error Count 和 Total Bits Count（U64 小端序）。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Selector</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x02</code></td><td class="label">Host 侧 Lane 1–4 Error + Total Bits 计数</td></tr>
+        <tr><td><code>0x03</code></td><td class="label">Host 侧 Lane 5–8 计数</td></tr>
+        <tr><td><code>0x04</code></td><td class="label">Media 侧 Lane 1–4 计数</td></tr>
+        <tr><td><code>0x05</code></td><td class="label">Media 侧 Lane 5–8 计数</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>每通道 16 字节（8 字节 ErrorCount + 8 字节 TotalBitsCount）。TotalBitsCount 最低位为 <b>PSL</b>（Pattern Sync Loss）指示位：0=同步正常，1=曾经失锁。</p>
+  <p>GUI 同时计算并显示 <code>BER(calc) = ErrorCount / TotalBitsCount</code> 方便直读。</p>
+
+  <h3>10.7 Laser Tuning（激光调谐）— 仅限可调谐模块</h3>
+  <p>适用于 C-band / L-band 可调谐激光器模块（Media Interface Technology = 0x10/0x11）。</p>
+  <p><b>Page 04h</b>（只读能力广告）：支持的 Grid 列表、通道范围、Fine Tuning 分辨率/范围、可编程输出功率范围。</p>
+  <p><b>Page 12h</b>（读写控制）：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>Access</th><th>说明</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td>Grid Spacing</td><td>RW</td><td class="label">Grid 选择 + Fine Tuning 使能</td><td><code>12h / 0x80+lane</code></td></tr>
+        <tr><td>Channel Number</td><td>RW</td><td class="label">S16 通道偏移 n，频率 = 193.1 + n × step (THz)</td><td><code>12h / 0x88+lane×2</code></td></tr>
+        <tr><td>Fine Offset</td><td>RW</td><td class="label">S16，单位 0.001 GHz (1 MHz)</td><td><code>12h / 0x98+lane×2</code></td></tr>
+        <tr><td>Current Frequency</td><td>RO</td><td class="label">U32，单位 0.001 GHz → THz = val / 10^6</td><td><code>12h / 0xA8+lane×4</code></td></tr>
+        <tr><td>Target Power</td><td>RW</td><td class="label">S16，单位 0.01 dBm</td><td><code>12h / 0xC8+lane×2</code></td></tr>
+        <tr><td>Tuning Status</td><td>RO</td><td class="label">bit 1=TuningInProgress, bit 0=WavelengthUnlocked</td><td><code>12h / 0xDE+lane</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>修改 Grid / Channel 需要 DataPath 处于 Deactivated 状态。Fine Tuning 和 Target Power 可在非瞬态状态下修改。</span>
+  </div>
+
+  <h3>10.8 状态机模拟（Mock 模式特性）</h3>
+  <p>Mock 后端完整模拟了 CMIS 状态机行为，方便无硬件演示：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>操作</th><th>响应行为</th></tr></thead>
+      <tbody>
+        <tr><td><b>Software Reset</b></td><td class="label">ModuleState: Ready → LowPwr (0.3s) → PwrUp (0.5s) → Ready (0.8s)，所有 DataPath 经历 Deactivated → Activated</td></tr>
+        <tr><td><b>Enter LowPwr</b></td><td class="label">ModuleState → LowPwr，所有 DataPath → Deactivated，TxPower = 0</td></tr>
+        <tr><td><b>Exit LowPwr</b></td><td class="label">ModuleState → Ready，所有 DataPath → Activated</td></tr>
+        <tr><td><b>TX Disable</b></td><td class="label">被禁用 lane 的 TxPower 降为 0，TxFault 标志置位，DP State → Deactivated</td></tr>
+        <tr><td><b>Apply DataPath</b></td><td class="label">Config Status 先变为 ConfigInProgress，DP State 经历 Init → TxTurnOn → Activated（约 0.5s）</td></tr>
+        <tr><td><b>PRBS Checker Enable</b></td><td class="label">LOL Flag 先置位（失锁），0.3s 后自动清除（锁定）</td></tr>
+        <tr><td><b>Laser Tune</b></td><td class="label">写入 Grid/Channel 后，Current Frequency 实时更新，Status 显示 Locked</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════ 11. Raw Registers ══════════════ -->
+<div class="section" id="s11">
+  <h2 class="section-title">11. Raw Registers — 寄存器直读写</h2>
+
+  <h3>11.1 读取寄存器</h3>
+  <ol class="steps">
+    <li>填写 <b>Page</b>（如 <code>0x00</code>、<code>0x11</code>）</li>
+    <li>填写 <b>Address</b>（起始地址，如 <code>0x80</code>）</li>
+    <li>填写 <b>Length</b>（读取字节数，1–128）</li>
+    <li>点击 <b>Read</b></li>
+  </ol>
+  <p>结果以十六进制 Dump 格式显示：</p>
+  <pre>0x80: A1 B2 C3 D4 E5 F6 01 02  ........
+0x88: 03 04 05 06 07 08 09 0A  ........</pre>
+  <p>格式：<code>地址: 十六进制字节&ensp;&ensp;ASCII（不可打印字符显示为 .）</code></p>
+
+  <h3>11.2 写入寄存器</h3>
+  <ol class="steps">
+    <li>填写 <b>Page</b> 和 <b>Address</b></li>
+    <li>在 <b>Write Data</b> 输入框填入字节（空格分隔十六进制，如 <code>1E 50 00</code>）</li>
+    <li>点击 <b>Write</b></li>
+  </ol>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>地址 ≥ <code>0x80</code> 为上页寄存器，工具自动切页；地址 &lt; <code>0x80</code> 为下页，忽略 Page 字段。</span>
+  </div>
+  <div class="callout callout-danger">
+    <span class="callout-icon">✕</span>
+    <span><b>警告：</b>直接写寄存器可能影响模块正常工作，请在熟悉 CMIS 规范的前提下操作。</span>
+  </div>
+</div>
+
+<!-- ══════════════ 12. 常见问题 ══════════════ -->
+<div class="section" id="s12">
+  <h2 class="section-title">12. 常见问题排查</h2>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q1</span>双击 EXE 后控制台窗口一闪而过</div>
+    <div class="faq-reason">原因：程序启动异常，通常是端口 5000 已被占用。</div>
+    <div class="faq-solve">解决：右键 EXE → "以管理员身份运行"；或在任务管理器中找到占用 5000 端口的进程，关闭后重试。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q2</span>浏览器显示"无法访问此网站"</div>
+    <div class="faq-reason">原因：控制台窗口已被关闭，服务器停止运行。</div>
+    <div class="faq-solve">解决：重新双击 EXE 启动，保持控制台窗口开启。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q3</span>Backend 下拉菜单只显示 <code>mock_coherent/dr8/sr8/fr4x2</code>，没有 <code>ch341/ch347/ftdi</code></div>
+    <div class="faq-reason">可能原因及对应解决方法：</div>
+    <div class="faq-solve">
+      <ul style="margin-top:6px;">
+        <li><b>USB 适配器未插入</b> → 插入适配器后点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
+        <li><b>驱动未安装</b> → 参考第 3 节《USB 驱动安装指南》，安装对应型号的 WCH 驱动后再刷新。</li>
+        <li><b>驱动已安装但仍不显示</b> → 打开设备管理器，检查适配器图标是否有黄色感叹号；如有，请重新运行驱动安装程序。尝试拔出适配器并重新插入，再点击 ↻ Refresh Backends。</li>
+        <li><b>CH347 特有问题：设备管理器正常但工具显示 <code>unavailable</code></b> → 串口驱动（<code>CH347SER.EXE</code>）只让系统识别设备，但 I2C 通信需要 <code>CH347DLL.dll</code>，该文件可能未随驱动自动安装。从 WCH 官网下载 <b>CH347EVT</b> 开发资料包，找到 <code>CH347DLL.dll</code>，复制到 EXE 同目录，重启工具即可。详见第 3 节。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q4</span>点击 Connect 提示 "Connect failed"</div>
+    <div class="faq-reason">原因：Backend / Bus / I2C 地址与实际设备不匹配，或模块未正确连接。</div>
+    <div class="faq-solve">解决：确认 I2C 地址（光模块通常为 <code>0x50</code>）、Bus 编号正确；检查模块与适配器的物理连接。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q5</span>Monitoring 功率显示 −inf dBm 或全为 0</div>
+    <div class="faq-reason">原因：模块处于低功耗状态，或无光纤输入（Rx 功率为 0 时 dBm = −∞）。</div>
+    <div class="faq-solve">解决：检查 Module Info 中 Module State 是否为 <code>ModuleReady</code>；检查光纤连接。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
+    <div class="faq-reason"></div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.3 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 4 种 profile：<code>mock_coherent</code>（800G 相干可调谐）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，分别模拟不同类型 800G QSFP-DD 模块。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q7</span>为什么 <code>mock_dr8/sr8/fr4x2</code> 的 Laser Tuning 卡片显示"非可调谐模块"？</div>
+    <div class="faq-reason">原因：这些 profile 模拟的是固定波长激光器（EML / VCSEL），Media Interface Technology ≠ C-band/L-band tunable。</div>
+    <div class="faq-solve">正常现象。只有 <code>mock_coherent</code>（Media Interface Tech = 0x10 C-band tunable）支持 Laser Tuning 功能。真实模块的 Page 04h GridSupported 寄存器若为 0，说明不支持调谐。</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q8</span><code>mock_fr4x2</code> 的 Host/Media Lanes 为什么显示 8 而不是 4？</div>
+    <div class="faq-reason">2× 400G-FR4 模块通过 CMIS 广告两个独立的 400GBASE-FR4 应用（AppSel#1 占用 host 通道 1-4，AppSel#2 占用 host 通道 5-8），两个应用并发运行得到 800G 总容量。</div>
+    <div class="faq-solve">GUI 会遍历所有 Application Descriptors 并计算最大并发通道数（非重叠应用相加）。Host Lanes 后括号中显示了每个 AppSel 的明细。</div>
+  </div>
+</div>
+
+<!-- ══════════════ 13. 附录 ══════════════ -->
+<div class="section" id="s13">
+  <h2 class="section-title">13. 附录：界面按钮速查</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>按钮</th><th>位置</th><th>功能</th></tr></thead>
+      <tbody>
+        <tr><td>↻ Refresh Backends</td><td class="label">左侧面板</td><td class="label">重新扫描可用 Backend</td></tr>
+        <tr><td>Connect</td><td class="label">左侧面板</td><td class="label">连接模块</td></tr>
+        <tr><td>Disconnect</td><td class="label">左侧面板</td><td class="label">断开连接</td></tr>
+        <tr><td>↻ Refresh</td><td class="label">各标签页</td><td class="label">手动刷新当前页数据</td></tr>
+        <tr><td>Apply</td><td class="label">DataPath / Diagnostics</td><td class="label">将修改写入模块并生效</td></tr>
+        <tr><td>↻ Now</td><td class="label">Monitoring</td><td class="label">立即手动刷新一次监控数据</td></tr>
+        <tr><td>Read</td><td class="label">Raw Registers</td><td class="label">读取指定寄存器</td></tr>
+        <tr><td>Write</td><td class="label">Raw Registers</td><td class="label">写入指定寄存器</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+</div><!-- .container -->
+
+<!-- ══════════════ FOOTER ══════════════ -->
+<footer>
+  <div class="footer-text">
+    CMIS Module Manager 操作手册 v2.0.1<br>
+    如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
+    © 2026 · 本软件已在 GitHub 开源（MIT License）
+  </div>
+  <div class="footer-qr">
+    <img src="qrcode.jpg" alt="公众号二维码">
+    <p>扫码关注公众号</p>
+  </div>
+</footer>
+
+</body>
+</html>

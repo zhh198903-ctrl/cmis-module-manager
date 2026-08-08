@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMIS Module Manager</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>CMIS Module Manager</h1>
+  <div class="status-indicator">
+    <div class="status-dot disconnected" id="status-dot"></div>
+    <span id="status-text">Disconnected</span>
+  </div>
+</header>
+
+<main>
+  <!-- ===== Sidebar: Connection Panel ===== -->
+  <aside class="sidebar">
+    <h2>Connection</h2>
+
+    <div class="field-group">
+      <label for="sel-backend">Backend</label>
+      <select id="sel-backend">
+        <option value="mock">mock</option>
+      </select>
+    </div>
+
+    <button class="btn-secondary btn-sm" id="btn-refresh-backends">↻ Refresh Backends</button>
+
+    <div class="field-group">
+      <label for="inp-bus">Bus / Device Index</label>
+      <input type="number" id="inp-bus" value="0" min="0" max="9">
+    </div>
+
+    <div class="field-group">
+      <label for="inp-address">I2C Address (hex or dec)</label>
+      <input type="text" id="inp-address" value="0x50" placeholder="0x50 or 80">
+    </div>
+
+    <button class="btn-primary" id="btn-connect">Connect</button>
+    <button class="btn-danger" id="btn-disconnect" disabled>Disconnect</button>
+
+    <hr class="divider">
+
+    <h2>Backend Info</h2>
+    <div id="backend-info-area">
+      Select a backend and connect to view info.
+    </div>
+    <div class="sidebar-qr-wrap">
+      <img src="/static/qrcode.jpg" alt="公众号" class="sidebar-qr">
+      <div class="sidebar-qr-label">关注公众号</div>
+    </div>
+  </aside>
+
+  <!-- ===== Content Area ===== -->
+  <div class="content">
+    <!-- Tab bar -->
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="info"        disabled>Module Info</button>
+      <button class="tab-btn"        data-tab="monitoring"  disabled>Monitoring</button>
+      <button class="tab-btn"        data-tab="datapath"    disabled>DataPath Config</button>
+      <button class="tab-btn"        data-tab="diagnostics" disabled>Diagnostics</button>
+      <button class="tab-btn"        data-tab="raw"         disabled>Raw Registers</button>
+    </nav>
+
+    <!-- ===== Tab: Module Info ===== -->
+    <div class="tab-panel active" id="tab-info">
+      <div class="card">
+        <h3>Identity &amp; Status
+          <button class="btn-secondary btn-sm" id="btn-refresh-info" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr><th>Field</th><th>Value</th><th>Page</th><th>Address</th><th>CMIS Definition</th></tr>
+          </thead>
+          <tbody id="tbl-info">
+            <tr><td colspan="5" class="placeholder-text">Connect to a module to view information.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ===== Tab: Monitoring ===== -->
+    <div class="tab-panel" id="tab-monitoring">
+      <div class="card">
+        <h3>Live Monitoring <span id="monitor-all-activated-dot" class="monitor-all-dot" style="display:none"></span></h3>
+
+        <div class="monitoring-controls">
+          <span id="monitor-summary" style="font-family:var(--font-mono);font-size:13px"></span>
+          <label>Refresh:
+            <select id="sel-refresh-interval">
+              <option value="1000">1 s</option>
+              <option value="2000" selected>2 s</option>
+              <option value="5000">5 s</option>
+              <option value="10000">10 s</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
+          <button class="btn-secondary btn-sm" id="btn-refresh-monitor">↻ Now</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>Tx Power<span class="reg-meta">11h / 0x9A+(n−1)×2, uint16×0.1µW</span></th>
+              <th>Tx Bias<span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
+              <th>Rx Power<span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
+              <th>DataPath State<span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
+              <th>Config Status<span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
+            </tr>
+          </thead>
+          <tbody id="tbl-monitoring">
+            <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          Alarm thresholds: Tx/Rx Power &lt; −10 dBm (orange) or &gt; 3 dBm (red).
+        </p>
+      </div>
+
+      <!-- Thresholds card -->
+      <div class="card">
+        <h3>Module Thresholds
+          <button class="btn-secondary btn-sm" id="btn-refresh-thresholds" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr><th>Parameter</th><th>Page / Address</th><th class="th-ha">High Alarm</th><th class="th-la">Low Alarm</th><th class="th-hw">High Warn</th><th class="th-lw">Low Warn</th></tr>
+          </thead>
+          <tbody id="tbl-thresholds">
+            <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Lane Flags card -->
+      <div class="card">
+        <h3>Lane Flags</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>Tx Fault<span class="reg-meta">11h / 0x87</span></th>
+              <th>Tx LOS<span class="reg-meta">11h / 0x88</span></th>
+              <th>Tx CDR-LOL<span class="reg-meta">11h / 0x89</span></th>
+              <th>Rx LOS<span class="reg-meta">11h / 0x93</span></th>
+              <th>Rx CDR-LOL<span class="reg-meta">11h / 0x94</span></th>
+              <th>Alarms/Warns</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-flags">
+            <tr><td colspan="7" class="placeholder-text">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ===== Tab: DataPath Config ===== -->
+    <div class="tab-panel" id="tab-datapath">
+
+      <!-- Module Control card -->
+      <div class="card">
+        <h3>Module Control
+          <button class="btn-secondary btn-sm" id="btn-refresh-control" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr><th>Field</th><th>State</th><th>Register</th><th>Action</th></tr>
+          </thead>
+          <tbody id="tbl-control">
+            <tr><td colspan="4" class="placeholder-text">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          ⚠ Software Reset reinitializes the module — all DataPaths re-enter Init. Use with care.
+        </p>
+      </div>
+
+      <!-- Application Descriptors card -->
+      <div class="card">
+        <h3>Supported Applications
+          <button class="btn-secondary btn-sm" id="btn-refresh-apps" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr>
+              <th>AppSel</th>
+              <th>Host Interface ID<span class="reg-meta">SFF-8024</span></th>
+              <th>Media Interface ID</th>
+              <th>Host Lanes</th>
+              <th>Media Lanes</th>
+              <th>Host Lane Assign<span class="reg-meta">bitmap</span></th>
+            </tr>
+          </thead>
+          <tbody id="tbl-apps">
+            <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>DataPath Configuration
+          <span style="float:right;display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-datapath">↻ Refresh</button>
+            <button class="btn-primary btn-sm"   id="btn-apply-datapath">Apply</button>
+          </span>
+        </h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>AppSelect<span class="reg-meta">10h / 0x86+(n−1), [7:4]</span></th>
+              <th>TX Enable<span class="reg-meta">10h / 0x81[n−1] (inv.)</span></th>
+              <th>TX Pol Flip<span class="reg-meta">10h / 0x8E[n−1]</span></th>
+              <th>RX Pol Flip<span class="reg-meta">10h / 0x8F[n−1]</span></th>
+              <th>DP Deinit<span class="reg-meta">11h / 0x80, RO</span></th>
+            </tr>
+          </thead>
+          <tbody id="tbl-datapath">
+            <tr><td colspan="6" class="placeholder-text">Connect to configure DataPath.</td></tr>
+          </tbody>
+        </table>
+
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          TX Enable is the inverse of the TX Disable bitmask. AppSelect selects the application code (0–15 per lane).
+          Click <strong>Apply</strong> to write and activate the configuration.
+        </p>
+      </div>
+
+      <!-- Output Controls card -->
+      <div class="card">
+        <h3>Output Controls
+          <span style="float:right;display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-squelch">↻ Refresh</button>
+            <button class="btn-primary btn-sm"   id="btn-apply-squelch">Apply</button>
+          </span>
+        </h3>
+        <table class="squelch-table">
+          <thead>
+            <tr>
+              <th style="width:160px">Control</th>
+              <th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+              <th>L5</th><th>L6</th><th>L7</th><th>L8</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="color:var(--text-muted)">AutoSquelchDisableTx<span class="reg-badge">10h/0x83</span></td>
+              <td id="sq-td-0"></td><td id="sq-td-1"></td><td id="sq-td-2"></td><td id="sq-td-3"></td>
+              <td id="sq-td-4"></td><td id="sq-td-5"></td><td id="sq-td-6"></td><td id="sq-td-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">OutputSquelchForceTx<span class="reg-badge">10h/0x84</span></td>
+              <td id="sf-td-0"></td><td id="sf-td-1"></td><td id="sf-td-2"></td><td id="sf-td-3"></td>
+              <td id="sf-td-4"></td><td id="sf-td-5"></td><td id="sf-td-6"></td><td id="sf-td-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">OutputDisableRx<span class="reg-badge">10h/0x8A</span></td>
+              <td id="od-td-0"></td><td id="od-td-1"></td><td id="od-td-2"></td><td id="od-td-3"></td>
+              <td id="od-td-4"></td><td id="od-td-5"></td><td id="od-td-6"></td><td id="od-td-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">AutoSquelchDisableRx<span class="reg-badge">10h/0x8B</span></td>
+              <td id="rd-td-0"></td><td id="rd-td-1"></td><td id="rd-td-2"></td><td id="rd-td-3"></td>
+              <td id="rd-td-4"></td><td id="rd-td-5"></td><td id="rd-td-6"></td><td id="rd-td-7"></td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          Checked = bit set (auto-squelch controller disabled / output disabled / squelch forced).
+          CMIS defines no OutputSquelchForceRx counterpart.
+        </p>
+      </div>
+    </div>
+
+    <!-- ===== Tab: Diagnostics ===== -->
+    <div class="tab-panel" id="tab-diagnostics">
+
+      <!-- Loopback card -->
+      <div class="card">
+        <h3>Loopback
+          <span style="float:right;display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-loopback">↻ Refresh</button>
+            <button class="btn-primary btn-sm"   id="btn-apply-loopback">Apply</button>
+          </span>
+        </h3>
+        <table class="squelch-table">
+          <thead>
+            <tr>
+              <th style="width:180px">Mode</th>
+              <th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+              <th>L5</th><th>L6</th><th>L7</th><th>L8</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="color:var(--text-muted)">MediaSide Output<span class="reg-badge">13h/0xB4</span></td>
+              <td id="lb-mso-0"></td><td id="lb-mso-1"></td><td id="lb-mso-2"></td><td id="lb-mso-3"></td>
+              <td id="lb-mso-4"></td><td id="lb-mso-5"></td><td id="lb-mso-6"></td><td id="lb-mso-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">MediaSide Input<span class="reg-badge">13h/0xB5</span></td>
+              <td id="lb-msi-0"></td><td id="lb-msi-1"></td><td id="lb-msi-2"></td><td id="lb-msi-3"></td>
+              <td id="lb-msi-4"></td><td id="lb-msi-5"></td><td id="lb-msi-6"></td><td id="lb-msi-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">HostSide Output<span class="reg-badge">13h/0xB6</span></td>
+              <td id="lb-hso-0"></td><td id="lb-hso-1"></td><td id="lb-hso-2"></td><td id="lb-hso-3"></td>
+              <td id="lb-hso-4"></td><td id="lb-hso-5"></td><td id="lb-hso-6"></td><td id="lb-hso-7"></td>
+            </tr>
+            <tr>
+              <td style="color:var(--text-muted)">HostSide Input<span class="reg-badge">13h/0xB7</span></td>
+              <td id="lb-hsi-0"></td><td id="lb-hsi-1"></td><td id="lb-hsi-2"></td><td id="lb-hsi-3"></td>
+              <td id="lb-hsi-4"></td><td id="lb-hsi-5"></td><td id="lb-hsi-6"></td><td id="lb-hsi-7"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- PRBS Generator card -->
+      <div class="card">
+        <h3>PRBS Generator
+          <span style="float:right;display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-prbs">↻ Refresh</button>
+            <button class="btn-primary btn-sm"   id="btn-apply-prbs">Apply</button>
+          </span>
+        </h3>
+        <div class="prbs-controls">
+          <div class="prbs-section">
+            <h4>Host-Side<span class="reg-badge">13h/0x90–0x97 (En·Inv·Swap·PreFEC·Pat×4)</span></h4>
+            <table class="prbs-table">
+              <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
+              <tbody id="tbl-prbs-host-gen"></tbody>
+            </table>
+          </div>
+          <div class="prbs-section">
+            <h4>Media-Side<span class="reg-badge">13h/0x98–0x9F</span></h4>
+            <table class="prbs-table">
+              <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
+              <tbody id="tbl-prbs-media-gen"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- PRBS Checker card -->
+      <div class="card">
+        <h3>PRBS Checker</h3>
+        <div class="prbs-controls">
+          <div class="prbs-section">
+            <h4>Host-Side<span class="reg-badge">13h/0xA0–0xA7 (En·Inv·Swap·PostFEC·Pat×4)</span></h4>
+            <table class="prbs-table">
+              <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PostFEC</th><th>Pattern</th><th>LOL</th></tr></thead>
+              <tbody id="tbl-prbs-host-chk"></tbody>
+            </table>
+          </div>
+          <div class="prbs-section">
+            <h4>Media-Side<span class="reg-badge">13h/0xA8–0xAF</span></h4>
+            <table class="prbs-table">
+              <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PostFEC</th><th>Pattern</th><th>LOL</th></tr></thead>
+              <tbody id="tbl-prbs-media-chk"></tbody>
+            </table>
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          LOL = Pattern Checker Loss of Lock (14h/0x8A·0x8B). Inv inverts pattern. Swap = MSB/LSB swap for PAM4.
+        </p>
+      </div>
+
+      <!-- BER Results card -->
+      <div class="card">
+        <h3>BER Results
+          <button class="btn-secondary btn-sm" id="btn-refresh-ber" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr>
+              <th>BER (F16)<span class="reg-meta">14h / sel=0x01, m×10^(s−24)</span></th>
+              <th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+              <th>L5</th><th>L6</th><th>L7</th><th>L8</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-ber">
+            <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read BER.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Error/Bit Counters card -->
+      <div class="card">
+        <h3>Error / Bit Counters
+          <button class="btn-secondary btn-sm" id="btn-refresh-counters" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Counter<span class="reg-meta">14h / sel=0x02-0x05, U64 LE</span></th>
+              <th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+              <th>L5</th><th>L6</th><th>L7</th><th>L8</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-counters">
+            <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read counters.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- SNR Results card -->
+      <div class="card">
+        <h3>SNR Results
+          <button class="btn-secondary btn-sm" id="btn-refresh-snr" style="float:right">↻ Refresh</button>
+        </h3>
+        <table>
+          <thead>
+            <tr>
+              <th>SNR (dB)<span class="reg-meta">14h / sel=0x06, u16 LE × 1/256 dB</span></th>
+              <th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+              <th>L5</th><th>L6</th><th>L7</th><th>L8</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-snr">
+            <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read SNR.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Laser Tuning card -->
+      <div class="card">
+        <h3>Laser Tuning
+          <span style="float:right;display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-laser">↻ Refresh</button>
+            <button class="btn-primary btn-sm"   id="btn-apply-laser">Apply</button>
+          </span>
+        </h3>
+        <div id="laser-caps" style="font-size:12px;color:var(--muted);margin-bottom:10px"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>Grid<span class="reg-meta">12h/0x80</span></th>
+              <th>Channel<span class="reg-meta">12h/0x88 S16</span></th>
+              <th>Fine Offset<span class="reg-meta">GHz</span></th>
+              <th>Frequency<span class="reg-meta">THz, RO</span></th>
+              <th>Power<span class="reg-meta">dBm</span></th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-laser">
+            <tr><td colspan="7" class="placeholder-text">Click ↻ Refresh to read laser tuning.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+
+    <!-- ===== Tab: Raw Registers ===== -->
+    <div class="tab-panel" id="tab-raw">
+      <div class="card">
+        <h3>Raw Register Access</h3>
+
+        <div class="raw-controls">
+          <div class="field-group">
+            <label for="raw-page">Page (hex/dec)</label>
+            <input type="text" id="raw-page" value="0x00" class="raw-data-input">
+          </div>
+          <div class="field-group">
+            <label for="raw-address">Address (hex/dec)</label>
+            <input type="text" id="raw-address" value="0x00" class="raw-data-input">
+          </div>
+          <div class="field-group">
+            <label for="raw-length">Length (bytes)</label>
+            <input type="number" id="raw-length" value="16" min="1" max="128" class="raw-data-input">
+          </div>
+        </div>
+
+        <div class="field-group" style="margin-bottom:12px">
+          <label for="raw-data">Write Data (space-separated hex, e.g. "1E 50 00")</label>
+          <input type="text" id="raw-data" class="raw-data-input" placeholder="FF 00 1A …">
+        </div>
+
+        <div class="raw-buttons">
+          <button class="btn-primary btn-sm"    id="btn-raw-read">Read</button>
+          <button class="btn-secondary btn-sm"  id="btn-raw-write">Write</button>
+        </div>
+
+        <div class="hex-dump" id="hex-dump">Results will appear here…</div>
+
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+          For upper page registers (addr ≥ 0x80), the page is set automatically before read/write.
+          Lower page registers (addr &lt; 0x80) ignore the page field.
+        </p>
+      </div>
+    </div>
+
+  </div><!-- .content -->
+</main>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

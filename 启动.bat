@@ -1,0 +1,36 @@
+@echo off
+title CMIS Module Manager
+
+REM Try py launcher first, then python, then python3
+set PYTHON=
+where py >nul 2>&1 && set PYTHON=py
+if "%PYTHON%"=="" where python >nul 2>&1 && set PYTHON=python
+if "%PYTHON%"=="" where python3 >nul 2>&1 && set PYTHON=python3
+
+if "%PYTHON%"=="" (
+    echo ERROR: Python not found. Please install Python from https://python.org
+    pause
+    exit /b 1
+)
+
+echo Python found: %PYTHON%
+echo Checking dependencies...
+%PYTHON% -c "import flask" >nul 2>&1
+if not errorlevel 1 goto :run
+
+echo Installing dependencies...
+%PYTHON% -m pip install flask --quiet
+if errorlevel 1 (
+    echo ERROR: Failed to install dependencies.
+    pause
+    exit /b 1
+)
+
+:run
+echo Starting CMIS Module Manager...
+echo Open browser: http://127.0.0.1:5000
+%PYTHON% app.py
+
+echo.
+echo Server stopped. Press any key to close.
+pause >nul

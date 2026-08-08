@@ -1,0 +1,42 @@
+# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+block_cipher = None
+
+a = Analysis(
+    ['app.py'],
+    pathex=['.'],
+    binaries=[],
+    datas=[
+        ('templates', 'templates'),
+        ('static',    'static'),
+        *collect_data_files('flask'),
+        *collect_data_files('jinja2'),
+    ],
+    hiddenimports=[
+        'i2c_backends.mock',
+        'i2c_backends.ch341',
+        'i2c_backends.ch347',
+        'i2c_backends.ftdi_backend',
+        'flask',
+        'jinja2',
+        'werkzeug',
+        'click',
+    ],
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'PIL'],
+    cipher=block_cipher,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz, a.scripts, a.binaries, a.zipfiles, a.datas,
+    name='CMIS_Module_Manager',
+    debug=False,
+    strip=False,
+    upx=False,
+    console=True,
+    onefile=True,
+)
