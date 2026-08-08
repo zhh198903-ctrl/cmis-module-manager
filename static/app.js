@@ -45,9 +45,11 @@ const pageName = p => (p === null || p === undefined)
  * @param {string} [o.note]  extra line, e.g. decoded meaning or units
  */
 function regTip(o) {
-  const lines = [o.field, `${pageName(o.page)} · byte ${o.addr} (${hex8(o.addr)})`];
+  const lines = [o.field,
+    `${pageName(o.page)} · byte ${hex8(o.addr)} hex = ${o.addr} dec`];
   if (o.value !== undefined && o.value !== null && !Number.isNaN(o.value)) {
-    lines.push(`Current byte: ${hex8(o.value)}  ${bin8(o.value)}  (${o.value & 0xFF})`);
+    const v = o.value & 0xFF;
+    lines.push(`Current value: ${hex8(v)} hex = ${bin8(v)} bin = ${v} dec`);
     if (o.bit !== undefined && o.bit !== null) {
       lines.push(`Bit ${o.bit} = ${(o.value >> o.bit) & 1}`);
     }
@@ -79,7 +81,7 @@ async function applyAndReload(label, path, body, reload) {
 function regTipRange(field, page, addr, len, note) {
   const end = addr + len - 1;
   const lines = [field,
-    `${pageName(page)} · bytes ${addr}-${end} (${hex8(addr)}-${hex8(end)})`];
+    `${pageName(page)} · bytes ${hex8(addr)}-${hex8(end)} hex = ${addr}-${end} dec`];
   if (note) lines.push(note);
   return lines.join('\n');
 }
@@ -628,14 +630,19 @@ async function loadApplications() {
   tbody.innerHTML = apps.map(a => {
     const hostHex = `0x${a.host_if_id.toString(16).toUpperCase().padStart(2,'0')}`;
     const mediaHex = `0x${a.media_if_id.toString(16).toUpperCase().padStart(2,'0')}`;
-    const assignBin = a.host_lane_assign_mask.toString(2).padStart(8, '0');
+    // Prefix the bitmap: a bare "00000001" reads as decimal one to anyone
+    // scanning the table.
+    const assignBin = '0b' + a.host_lane_assign_mask.toString(2).padStart(8, '0');
+    const lanesTip = `Host Lane Assignment: ${assignBin} bin = `
+      + `${hex8(a.host_lane_assign_mask)} hex = ${a.host_lane_assign_mask} dec\n`
+      + 'Bit n set = this Application may start on host lane n+1';
     return `<tr>
-      <td>${a.app_sel}</td>
-      <td>${hostHex}</td>
-      <td>${mediaHex}</td>
-      <td>${a.host_lanes || '—'}</td>
-      <td>${a.media_lanes || '—'}</td>
-      <td><code>${assignBin}</code></td>
+      <td title="AppSelCode ${a.app_sel} (dec), 1-15">${a.app_sel}</td>
+      <td title="Host Interface ID ${hostHex} hex = ${a.host_if_id} dec (SFF-8024)">${hostHex}</td>
+      <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec">${mediaHex}</td>
+      <td title="Host lane count (dec)">${a.host_lanes || '—'}</td>
+      <td title="Media lane count (dec)">${a.media_lanes || '—'}</td>
+      <td title="${esc(lanesTip)}"><code>${assignBin}</code></td>
     </tr>`;
   }).join('');
 }
@@ -711,7 +718,9 @@ async function rawWrite() {
 
 function formatHexDump(byteArray, baseAddr) {
   const ROW = 8;
-  let out = '';
+  // Header states the radix: the body is bare 2-digit groups with no 0x, so
+  // without it a row of "00 01 10" is ambiguous.
+  let out = 'addr (hex) : bytes (hex)                ascii\n';
   for (let i = 0; i < byteArray.length; i += ROW) {
     const slice = byteArray.slice(i, i + ROW);
     const addrStr = `0x${(baseAddr + i).toString(16).toUpperCase().padStart(2, '0')}`;

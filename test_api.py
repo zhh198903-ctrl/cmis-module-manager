@@ -148,6 +148,42 @@ class TestRegisterTooltips(CMISTestCase):
                       'LowPwrAllowRequestHW', 'SquelchMethodSelect']:
             self.assertIn(field, js, f'{field} missing from Module Control tooltips')
 
+    def _html(self):
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        return io.open(path, encoding='utf-8').read()
+
+    def test_static_column_labels_match_register_map(self):
+        """Column headers hard-code addresses; keep them tied to cmis_registers.
+
+        These labels drifted once already: after the Page 10h map was corrected
+        the DataPath headers still advertised the old bytes, so the header and
+        the hover tooltip disagreed about the same control.
+        """
+        import cmis_registers as c
+        html = self._html()
+        for label, reg in [('AppSelect', c.REG_APP_SELECT),
+                           ('TX Enable', c.REG_TX_OUTPUT_DIS),
+                           ('TX Pol Flip', c.REG_TX_POL_FLIP),
+                           ('RX Pol Flip', c.REG_RX_POL_FLIP),
+                           ('DP Deinit', c.REG_DP_DEINIT)]:
+            head = html.split(f'<th>{label}<span class="reg-meta">')[1].split('</span>')[0]
+            page, addr = reg[0], reg[1]
+            self.assertIn(f'{page:02X}h', head,
+                          f'{label} header names the wrong page: {head}')
+            self.assertIn(f'0x{addr:02X}', head,
+                          f'{label} header names the wrong address: {head}')
+
+    def test_values_state_their_radix(self):
+        """A bare number in a register tool is ambiguous; mark hex and binary."""
+        js = self._js()
+        self.assertIn('hex = ', js, 'tooltips do not label the hex form')
+        self.assertIn('bin = ', js, 'tooltips do not label the binary form')
+        self.assertIn('dec', js, 'tooltips do not label the decimal form')
+        # The lane-assignment bitmap must not render as bare digits.
+        self.assertIn("'0b' + a.host_lane_assign_mask.toString(2)", js)
+
     def test_apply_handlers_reload_after_write(self):
         """Every Apply must re-read, or the panel and its tooltips go stale.
 

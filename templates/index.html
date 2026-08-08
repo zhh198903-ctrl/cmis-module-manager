@@ -79,7 +79,7 @@
         </h3>
         <table>
           <thead>
-            <tr><th>Field</th><th>Value</th><th>Page</th><th>Address</th><th>CMIS Definition</th></tr>
+            <tr><th>Field</th><th>Value</th><th>Page</th><th>Address<span class="reg-meta">hex</span></th><th>CMIS Definition</th></tr>
           </thead>
           <tbody id="tbl-info">
             <tr><td colspan="5" class="placeholder-text">Connect to a module to view information.</td></tr>
@@ -193,12 +193,12 @@
         <table>
           <thead>
             <tr>
-              <th>AppSel</th>
-              <th>Host Interface ID<span class="reg-meta">SFF-8024</span></th>
-              <th>Media Interface ID</th>
-              <th>Host Lanes</th>
-              <th>Media Lanes</th>
-              <th>Host Lane Assign<span class="reg-meta">bitmap</span></th>
+              <th>AppSel<span class="reg-meta">dec</span></th>
+              <th>Host Interface ID<span class="reg-meta">hex · SFF-8024</span></th>
+              <th>Media Interface ID<span class="reg-meta">hex</span></th>
+              <th>Host Lanes<span class="reg-meta">dec</span></th>
+              <th>Media Lanes<span class="reg-meta">dec</span></th>
+              <th>Host Lane Assign<span class="reg-meta">binary bitmap</span></th>
             </tr>
           </thead>
           <tbody id="tbl-apps">
@@ -219,11 +219,11 @@
           <thead>
             <tr>
               <th>Lane</th>
-              <th>AppSelect<span class="reg-meta">10h / 0x86+(n−1), [7:4]</span></th>
-              <th>TX Enable<span class="reg-meta">10h / 0x81[n−1] (inv.)</span></th>
-              <th>TX Pol Flip<span class="reg-meta">10h / 0x8E[n−1]</span></th>
-              <th>RX Pol Flip<span class="reg-meta">10h / 0x8F[n−1]</span></th>
-              <th>DP Deinit<span class="reg-meta">11h / 0x80, RO</span></th>
+              <th>AppSelect<span class="reg-meta">10h / 0x91+(n−1), bits [7:4]</span></th>
+              <th>TX Enable<span class="reg-meta">10h / 0x82[n−1] (inv.)</span></th>
+              <th>TX Pol Flip<span class="reg-meta">10h / 0x81[n−1]</span></th>
+              <th>RX Pol Flip<span class="reg-meta">10h / 0x89[n−1]</span></th>
+              <th>DP Deinit<span class="reg-meta">10h / 0x80[n−1]</span></th>
             </tr>
           </thead>
           <tbody id="tbl-datapath">
@@ -448,10 +448,10 @@
             <tr>
               <th>Lane</th>
               <th>Grid<span class="reg-meta">12h/0x80</span></th>
-              <th>Channel<span class="reg-meta">12h/0x88 S16</span></th>
-              <th>Fine Offset<span class="reg-meta">GHz</span></th>
-              <th>Frequency<span class="reg-meta">THz, RO</span></th>
-              <th>Power<span class="reg-meta">dBm</span></th>
+              <th>Channel<span class="reg-meta">12h/0x88 · S16 dec</span></th>
+              <th>Fine Offset<span class="reg-meta">12h/0x98 · GHz dec</span></th>
+              <th>Frequency<span class="reg-meta">12h/0xA8 · THz dec, RO</span></th>
+              <th>Power<span class="reg-meta">12h/0xC8 · dBm dec</span></th>
               <th>Status</th>
             </tr>
           </thead>

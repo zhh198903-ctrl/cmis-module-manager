@@ -543,7 +543,8 @@
       <tbody>
         <tr><td>第 1 行</td><td class="label">CMIS 规范中的字段名（如 <code>AutoSquelchDisableTx1</code>）</td></tr>
         <tr><td>第 2 行</td><td class="label">所在 Page 与字节地址，十进制与十六进制并列（如 <code>Page 10h · byte 131 (0x83)</code>）</td></tr>
-        <tr><td>第 3 行</td><td class="label">该字节<b>当前实际读回的值</b>，十六进制 / 二进制 / 十进制三种形式</td></tr>
+        <tr><td>第 3 行</td><td class="label">该字节<b>当前实际读回的值</b>，同时给出三种进制并<b>各自标明</b>：
+            <code>0x05 hex = 0b00000101 bin = 5 dec</code></td></tr>
         <tr><td>第 4 行</td><td class="label">该控件占用的位，以及 0/1 各代表什么</td></tr>
       </tbody>
     </table>
@@ -553,6 +554,23 @@
     <span>字段名与地址均严格取自 <b>OIF CMIS 5.3</b> 原文（Table 8-69 / 8-72 / 8-99 / 8-109 / 8-121 等）。
     多字节字段（如激光器频率）会显示完整字节范围与单位换算。</span>
   </div>
+
+  <h3>5.2 数值进制的表示约定</h3>
+  <p>寄存器工具里一个裸数字容易被误读，因此界面上<b>所有数值都可判别进制</b>：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>进制</th><th>写法</th><th>出现位置</th></tr></thead>
+      <tbody>
+        <tr><td>十六进制</td><td><code>0x</code> 前缀，如 <code>0x83</code></td>
+            <td class="label">寄存器地址、Interface ID、Raw 十六进制转储</td></tr>
+        <tr><td>二进制</td><td><code>0b</code> 前缀，如 <code>0b00000101</code></td>
+            <td class="label">位掩码，如 Applications 表的 Host Lane Assign</td></tr>
+        <tr><td>十进制</td><td>无前缀，表头标注 <code>dec</code></td>
+            <td class="label">通道号、lane 数、带单位的监控值</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>表头的灰色小字会注明该列的进制与所属寄存器；悬停提示则同时给出三种进制，无需心算换算。</p>
 </div>
 
 <!-- ══════════════ 6. 连接模块 ══════════════ -->
