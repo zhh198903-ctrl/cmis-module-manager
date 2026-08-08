@@ -218,54 +218,85 @@ def current_exe_path() -> str:
 _CREATE_NO_WINDOW = 0x08000000
 
 
-def build_swap_bat(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME,
-                   relaunch: bool = True) -> str:
-    """Script that waits for the exe's lock to drop, moves the new files over
-    the old ones, relaunches and deletes itself.
+HEALTH_URL = 'http://127.0.0.1:5000/api/version'
 
-    Uses ping rather than timeout because a detached process has no console.
-    The wait loop is capped: a permanent failure (antivirus quarantine, an
-    unwritable directory, an app that never exits) must not leave a hidden
-    cmd.exe spinning forever. Giving up without relaunching leaves the user on
-    their working old version, which is the safe outcome.
+
+def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME,
+                      relaunch: bool = True, health_url: str = HEALTH_URL) -> str:
+    """PowerShell helper that swaps the install and brings the app back.
+
+    A cmd script could move the files but could not tell whether the relaunched
+    process actually came up - and in practice it often did not, leaving the
+    user on a dead page having been told the window would reopen. PowerShell
+    can start the process and then poll the health endpoint, so the helper
+    retries instead of assuming.
+
+    The relaunched instance gets CMIS_NO_BROWSER=1: the user is already looking
+    at the page, which reconnects on its own, and opening another tab on every
+    update is how tabs pile up.
+
+    Every wait is bounded. A permanent failure - antivirus quarantine, an
+    unwritable directory, an app that never exits - must not leave a hidden
+    PowerShell spinning forever; giving up leaves the working old version in
+    place, which is the safe outcome.
     """
-    relaunch_line = f'start "" "{os.path.join(target_dir, exe_name)}"\r\n' if relaunch else ''
-    return (
-        '@echo off\r\n'
-        'chcp 65001 >nul\r\n'
-        'set tries=0\r\n'
-        ':waitloop\r\n'
-        'set /a tries+=1\r\n'
-        'if %tries% gtr 150 goto cleanup\r\n'
-        f'move /y "{os.path.join(staged_dir, exe_name)}" "{os.path.join(target_dir, exe_name)}" >nul 2>&1\r\n'
-        'if errorlevel 1 (\r\n'
-        '    ping -n 2 127.0.0.1 >nul\r\n'
-        '    goto waitloop\r\n'
-        ')\r\n'
-        # The exe swapped, so its lock is gone; the rest cannot be locked.
-        f'copy /y "{os.path.join(staged_dir, "*")}" "{target_dir}" >nul 2>&1\r\n'
-        f'rmdir /s /q "{staged_dir}" >nul 2>&1\r\n'
-        f'{relaunch_line}'
-        ':cleanup\r\n'
-        '(goto) 2>nul & del "%~f0"\r\n'
-    )
+    staged_exe = os.path.join(staged_dir, exe_name)
+    target_exe = os.path.join(target_dir, exe_name)
+    relaunch_block = f'''
+for ($attempt = 1; $attempt -le 3; $attempt++) {{
+    try {{
+        Start-Process -FilePath "{target_exe}" -WorkingDirectory "{target_dir}"
+    }} catch {{ Start-Sleep -Seconds 2; continue }}
+    for ($w = 0; $w -lt 30; $w++) {{
+        Start-Sleep -Seconds 1
+        try {{
+            Invoke-WebRequest -Uri "{health_url}" -UseBasicParsing -TimeoutSec 2 | Out-Null
+            exit 0
+        }} catch {{ }}
+    }}
+}}
+''' if relaunch else ''
+    return f'''$ErrorActionPreference = "SilentlyContinue"
+$env:CMIS_NO_BROWSER = "1"
+
+# Wait for the old build to release its executable, then take its place.
+$swapped = $false
+for ($i = 0; $i -lt 150; $i++) {{
+    Move-Item -LiteralPath "{staged_exe}" -Destination "{target_exe}" -Force
+    if ($?) {{ $swapped = $true; break }}
+    Start-Sleep -Milliseconds 500
+}}
+if (-not $swapped) {{ exit 1 }}
+
+# The executable is the only file the running app held open.
+Get-ChildItem -LiteralPath "{staged_dir}" -File | ForEach-Object {{
+    Move-Item -LiteralPath $_.FullName -Destination "{target_dir}" -Force
+}}
+Remove-Item -LiteralPath "{staged_dir}" -Recurse -Force
+{relaunch_block}exit 0
+'''
 
 
 def stage_and_swap(staged_dir: str, target_dir: Optional[str] = None,
                    relaunch: bool = True) -> subprocess.Popen:
-    """Launch the detached helper that replaces this install.
+    """Launch the helper that replaces this install and brings the app back.
 
     Frozen-only. The caller must exit promptly afterwards so the exe's file
     lock drops and the helper's move can succeed.
+
+    -ExecutionPolicy Bypass applies to this invocation only; without it a
+    machine whose policy forbids scripts would swap nothing.
     """
     if not is_frozen():
         raise RuntimeError('stage_and_swap() is only valid in a frozen build')
     target = os.path.abspath(target_dir or os.path.dirname(current_exe_path()))
-    bat_path = os.path.join(tempfile.gettempdir(), f'cmis_update_{os.getpid()}.bat')
-    with open(bat_path, 'w', encoding='utf-8') as fh:
-        fh.write(build_swap_bat(os.path.abspath(staged_dir), target, relaunch=relaunch))
+    script = os.path.join(tempfile.gettempdir(), f'cmis_update_{os.getpid()}.ps1')
+    with open(script, 'w', encoding='utf-8') as fh:
+        fh.write(build_swap_script(os.path.abspath(staged_dir), target,
+                                   relaunch=relaunch))
     return subprocess.Popen(
-        ['cmd', '/c', bat_path],
+        ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+         '-WindowStyle', 'Hidden', '-File', script],
         creationflags=_CREATE_NO_WINDOW,
         close_fds=True, cwd=target,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

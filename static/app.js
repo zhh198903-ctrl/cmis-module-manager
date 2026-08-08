@@ -456,18 +456,51 @@ async function checkForUpdate() {
 
   const applied = await apiPost('/api/update/apply', {});
   if (applied.status === 'ok') {
-    document.body.innerHTML =
-      `<div style="display:flex;align-items:center;justify-content:center;`
-      + `height:100vh;font-family:system-ui;color:#c4b5fd;text-align:center;padding:24px">`
-      + `<div><h2>Updated to v${esc(applied.data.version)}</h2>`
-      + `<p style="color:#94a3b8">The files have been replaced and this `
-      + `instance is shutting down.<br><b>Start CMIS_Module_Manager.exe again</b> `
-      + `— it may also reopen on its own.</p></div></div>`;
+    await _waitForNewVersion(applied.data.version);
   } else {
     btn.disabled = false;
     btn.textContent = `↑ v${d.latest_version}`;
     toast(applied.message, 'error', 12000);
   }
+}
+
+/**
+ * Hold the page while the install is swapped, then reload into the new build.
+ *
+ * The updated instance is started with the browser suppressed, so this tab is
+ * the one the user keeps looking at - it has to come back on its own rather
+ * than ask them to relaunch anything.
+ */
+async function _waitForNewVersion(expected) {
+  const panel = (title, detail, spin) =>
+    `<div style="display:flex;align-items:center;justify-content:center;`
+    + `height:100vh;font-family:system-ui;color:#c4b5fd;text-align:center;padding:24px">`
+    + `<div><h2>${title}</h2><p style="color:#94a3b8;line-height:1.7">${detail}</p>`
+    + (spin ? `<div class="update-spinner"></div>` : '') + `</div></div>`;
+
+  document.body.innerHTML = panel(
+    `Updating to v${esc(expected)}`,
+    'Replacing files and restarting. This page reloads by itself when the new '
+    + 'version is ready — no need to close anything.', true);
+
+  // The old instance has to exit, the files swap, and a onefile build takes a
+  // while to unpack, so allow well over a minute before giving up.
+  for (let i = 0; i < 90; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const r = await fetch('/api/version', { cache: 'no-store' });
+      const j = await r.json();
+      if (j.status === 'ok' && j.data.version === expected) {
+        location.reload();
+        return;
+      }
+    } catch (e) { /* server is down mid-swap, which is expected */ }
+  }
+
+  document.body.innerHTML = panel(
+    `Updated to v${esc(expected)}`,
+    'The files were replaced, but the new version did not come back up on its '
+    + 'own.<br><b>Start CMIS_Module_Manager.exe again</b> to continue.', false);
 }
 
 /**

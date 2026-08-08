@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.0.4'
+__version__ = '2.0.5'
 
 import sys
 import os
@@ -1176,6 +1176,10 @@ def index():
 if __name__ == '__main__':
     url = 'http://127.0.0.1:5000'
     print(f"CMIS Module Manager v{__version__} starting on {url}")
-    # Open browser after a short delay to let the server start
-    threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    # Set CMIS_NO_BROWSER=1 to start the server without opening a tab. Repeated
+    # automated launches otherwise leave a pile of tabs behind, and after a
+    # self-update the relaunched instance would open yet another one on top of
+    # the page the user is already looking at.
+    if os.environ.get('CMIS_NO_BROWSER', '').strip() not in ('1', 'true', 'True'):
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     app.run(host='127.0.0.1', port=5000, debug=False, threaded=False)

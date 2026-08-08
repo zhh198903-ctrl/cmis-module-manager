@@ -230,12 +230,33 @@ class TestUpdater(unittest.TestCase):
             self.assertFalse(u.verify_sha256(p, '00' * 32))
 
     def test_swap_script_is_bounded_and_quotes_paths(self):
-        """An unbounded retry loop would leave a hidden cmd.exe spinning."""
+        """Unbounded waits would leave a hidden PowerShell spinning forever."""
         import updater as u
-        bat = u.build_swap_bat(r'C:\stage dir', r'C:\install dir')
-        self.assertIn('if %tries% gtr 150 goto cleanup', bat)
-        self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', bat)
-        self.assertIn('del "%~f0"', bat)
+        ps = u.build_swap_script(r'C:\stage dir', r'C:\install dir')
+        self.assertIn('-lt 150', ps, 'the unlock wait is unbounded')
+        self.assertIn('-le 3', ps, 'the relaunch is retried without limit')
+        self.assertIn('-lt 30', ps, 'the health wait is unbounded')
+        self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', ps)
+
+    def test_swap_script_verifies_the_app_came_back(self):
+        """Moving the files is not the same as the app running again; the
+        helper must check rather than assume, and retry when it has not."""
+        import updater as u
+        ps = u.build_swap_script(r'C:\s', r'C:\t')
+        self.assertIn('Invoke-WebRequest', ps)
+        self.assertIn(u.HEALTH_URL, ps)
+        self.assertIn('Start-Process', ps)
+
+    def test_relaunch_suppresses_the_browser(self):
+        """The user is already looking at a page that reloads itself; opening
+        another tab on every update is how tabs pile up."""
+        import updater as u
+        self.assertIn('CMIS_NO_BROWSER', u.build_swap_script(r'C:\s', r'C:\t'))
+
+    def test_no_relaunch_leaves_the_health_check_out(self):
+        import updater as u
+        ps = u.build_swap_script(r'C:\s', r'C:\t', relaunch=False)
+        self.assertNotIn('Start-Process', ps)
 
     def test_helper_keeps_a_console_so_it_can_relaunch(self):
         """Regression, found by actually upgrading a real 2.0.1 build.
@@ -263,6 +284,33 @@ class TestUpdater(unittest.TestCase):
 
 
 class TestUpdateRoutes(CMISTestCase):
+
+    def test_nothing_checks_or_updates_without_a_click(self):
+        """The tool is used on isolated lab networks and on modules that are
+        mid-measurement. It must never reach out to GitHub, and must never
+        replace itself, unless the operator asked for it.
+        """
+        import io
+        js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js')
+        js = io.open(js_path, encoding='utf-8').read()
+
+        # checkForUpdate may only be reachable from the button.
+        callers = [ln.strip() for ln in js.splitlines()
+                   if 'checkForUpdate' in ln and 'function checkForUpdate' not in ln]
+        self.assertEqual(len(callers), 1, f'unexpected callers: {callers}')
+        self.assertIn("getElementById('btn-check-update')", callers[0])
+
+        # No timer or load hook may drive it, and apply is only ever called
+        # from inside checkForUpdate, after the user confirms.
+        for pattern in ('setInterval(checkForUpdate', 'setTimeout(checkForUpdate',
+                        "addEventListener('load'", 'checkForUpdate()'):
+            if pattern == 'checkForUpdate()':
+                continue
+            self.assertNotIn(pattern, js, f'{pattern} would update unprompted')
+        body = js.split('async function checkForUpdate(')[1].split('\n}')[0]
+        self.assertIn('confirm(', body, 'apply runs without asking the user')
+        self.assertEqual(js.count("apiPost('/api/update/apply'"), 1)
 
     def test_apply_refused_from_source(self):
         rv = self.client.post('/api/update/apply')

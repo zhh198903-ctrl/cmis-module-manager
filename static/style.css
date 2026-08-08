@@ -46,6 +46,14 @@ header h1 {
   font-weight: 600;
   color: var(--text);
 }
+.update-spinner {
+  width: 26px; height: 26px; margin: 18px auto 0;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: update-spin 0.9s linear infinite;
+}
+@keyframes update-spin { to { transform: rotate(360deg); } }
 .btn-update {
   font-size: 11px;
   font-weight: 600;
