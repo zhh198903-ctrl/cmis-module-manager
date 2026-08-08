@@ -264,7 +264,25 @@ class TestUpdater(unittest.TestCase):
         ps = u.build_swap_script(r'C:\s', r'C:\t')
         self.assertIn('Invoke-WebRequest', ps)
         self.assertIn(u.HEALTH_URL, ps)
-        self.assertIn('Start-Process', ps)
+
+    def test_relaunch_avoids_shellexecute(self):
+        """Start-Process goes through ShellExecute, which needs a usable window
+        station. Spawned from an exiting console app it created nothing while
+        reporting no error, so the app never came back."""
+        import updater as u
+        ps = u.build_swap_script(r'C:\s', r'C:\t')
+        self.assertIn('[System.Diagnostics.Process]::Start', ps)
+        self.assertIn('UseShellExecute = $false', ps)
+        self.assertNotIn('Start-Process', ps)
+
+    def test_swap_script_leaves_a_log(self):
+        """A failed update is otherwise invisible - the app is simply gone."""
+        import updater as u
+        ps = u.build_swap_script(r'C:\s', r'C:\t')
+        self.assertIn(r'C:\t\update.log', ps)
+        for moment in ('update helper started', 'executable replaced',
+                       'relaunch attempt', 'started pid', 'giving up'):
+            self.assertIn(moment, ps, f'the log never records "{moment}"')
 
     def test_relaunch_suppresses_the_browser(self):
         """The user is already looking at a page that reloads itself; opening

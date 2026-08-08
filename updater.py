@@ -242,22 +242,47 @@ def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME
     """
     staged_exe = os.path.join(staged_dir, exe_name)
     target_exe = os.path.join(target_dir, exe_name)
+    log = os.path.join(target_dir, 'update.log')
+    # Start-Process goes through ShellExecute, which needs a usable window
+    # station; spawned from an exiting console app it silently created nothing
+    # while reporting no error. Going straight to CreateProcess avoids that.
     relaunch_block = f'''
 for ($attempt = 1; $attempt -le 3; $attempt++) {{
+    Log "relaunch attempt $attempt"
     try {{
-        Start-Process -FilePath "{target_exe}" -WorkingDirectory "{target_dir}"
-    }} catch {{ Start-Sleep -Seconds 2; continue }}
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "{target_exe}"
+        $psi.WorkingDirectory = "{target_dir}"
+        $psi.UseShellExecute = $false
+        $psi.EnvironmentVariables["CMIS_NO_BROWSER"] = "1"
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        Log ("started pid " + $proc.Id)
+    }} catch {{
+        Log ("start failed: " + $_.Exception.Message)
+        Start-Sleep -Seconds 2
+        continue
+    }}
     for ($w = 0; $w -lt 30; $w++) {{
         Start-Sleep -Seconds 1
         try {{
             Invoke-WebRequest -Uri "{health_url}" -UseBasicParsing -TimeoutSec 2 | Out-Null
+            Log "new build is serving; update complete"
             exit 0
         }} catch {{ }}
     }}
+    Log "no response after 30s"
 }}
+Log "giving up; the files are updated but the app must be started by hand"
 ''' if relaunch else ''
     return f'''$ErrorActionPreference = "SilentlyContinue"
 $env:CMIS_NO_BROWSER = "1"
+
+# A failed update is otherwise invisible: the app is gone and nothing says why.
+function Log($m) {{
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" |
+        Out-File -FilePath "{log}" -Append -Encoding utf8
+}}
+Log "update helper started"
 
 # Wait for the old build to release its executable, then take its place.
 $swapped = $false
@@ -266,13 +291,15 @@ for ($i = 0; $i -lt 150; $i++) {{
     if ($?) {{ $swapped = $true; break }}
     Start-Sleep -Milliseconds 500
 }}
-if (-not $swapped) {{ exit 1 }}
+if (-not $swapped) {{ Log "could not replace the executable; nothing changed"; exit 1 }}
+Log "executable replaced"
 
 # The executable is the only file the running app held open.
 Get-ChildItem -LiteralPath "{staged_dir}" -File | ForEach-Object {{
     Move-Item -LiteralPath $_.FullName -Destination "{target_dir}" -Force
 }}
 Remove-Item -LiteralPath "{staged_dir}" -Recurse -Force
+Log "supporting files replaced"
 {relaunch_block}exit 0
 '''
 
