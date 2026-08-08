@@ -6,6 +6,22 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 
 ![Main UI](CMIS2Customer/screenshot_main.png)
 
+## 📥 下载 / Download
+
+**免安装 Windows 版：[最新 Release](https://github.com/zhh198903-ctrl/cmis-module-manager/releases/latest)**
+
+下载 `CMIS_dist_v<版本>.zip`，解压后双击 `CMIS_Module_Manager.exe` 即可使用 —— 单文件自包含，
+目标机**无需安装 Python**。首次运行 Windows SmartScreen 可能拦截，点「更多信息 → 仍要运行」。
+
+| 解压后的文件 | 说明 |
+|---|---|
+| `CMIS_Module_Manager.exe` | 单文件 Windows EXE，双击即用 |
+| `CMIS模块管理工具操作手册.html` | 完整中文操作手册（浏览器打开） |
+| `screenshot_main.png` / `qrcode.jpg` | 辅助资源 |
+
+> ⚠️ **v2.0.0 及更早版本存在 Page 10h 控制寄存器地址错位**，在真实模块上会导致 TX Disable 实际
+> 翻转极性、写 RX 极性掩码误触发 ApplyDPInit。**请务必升级到 v2.0.1 或更新版本。**
+
 ## Features / 功能
 
 - **Register access 寄存器读写** — raw read/write on any Page/Address, with CMIS field decoding
@@ -55,8 +71,8 @@ file that bundles the Python runtime, Flask, the templates and the static assets
 It runs on a machine with no Python installed — double-click it and the UI opens
 at `http://127.0.0.1:5000`.
 
-Prebuilt Windows binaries are published at
-[cmis-module-manager-releases](https://github.com/zhh198903-ctrl/cmis-module-manager-releases).
+Prebuilt Windows binaries are attached to each
+[Release](https://github.com/zhh198903-ctrl/cmis-module-manager/releases).
 
 ## Project layout / 目录结构
 
