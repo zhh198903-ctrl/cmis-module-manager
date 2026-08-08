@@ -148,6 +148,24 @@ class TestRegisterTooltips(CMISTestCase):
                       'LowPwrAllowRequestHW', 'SquelchMethodSelect']:
             self.assertIn(field, js, f'{field} missing from Module Control tooltips')
 
+    def test_apply_handlers_reload_after_write(self):
+        """Every Apply must re-read, or the panel and its tooltips go stale.
+
+        The tooltips quote the current register byte, so an Apply that only
+        writes leaves the user looking at the value from before their change -
+        and hides a module that rejected or clamped the write.
+        """
+        js = self._js()
+        # These three go through the shared write-then-reload helper.
+        for fn in ['applySquelch', 'applyLoopback', 'applyPrbs']:
+            body = js.split(f'async function {fn}(')[1].split('\nasync function')[0]
+            self.assertIn('applyAndReload', body,
+                          f'{fn} writes without re-reading the module')
+        # applyDatapath waits for ApplyDPInit before re-reading, so it reloads
+        # explicitly rather than via the helper.
+        dp = js.split('async function applyDatapath(')[1].split('\nasync function')[0]
+        self.assertIn('loadDatapath()', dp, 'applyDatapath does not re-read')
+
     def test_control_endpoint_exposes_raw_byte(self):
         """Tooltips quote the current byte, so the API must return it."""
         self.connect()

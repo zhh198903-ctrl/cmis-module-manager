@@ -56,6 +56,25 @@ function regTip(o) {
   return lines.join('\n');
 }
 
+/**
+ * Write, then re-read the panel from the module.
+ *
+ * A module may reject or clamp a control value (CMIS lets it report
+ * ConfigRejected), so the panel must show what the device actually holds
+ * afterwards, not what we asked for. Re-reading also refreshes the register
+ * tooltips, which quote the current byte.
+ */
+async function applyAndReload(label, path, body, reload) {
+  const res = await apiPost(path, body);
+  if (res.status !== 'ok') {
+    toast(`Apply failed: ${res.message}`, 'error');
+    return res;
+  }
+  await reload();
+  toast(`${label} applied`, 'success');
+  return res;
+}
+
 /** Multi-byte field (e.g. a 16-byte ASCII string or a 2-byte word). */
 function regTipRange(field, page, addr, len, note) {
   const end = addr + len - 1;
@@ -507,11 +526,16 @@ async function applyDatapath() {
     apply: true,
   });
 
-  if (res.status === 'ok') {
-    toast('DataPath configuration applied', 'success');
-  } else {
+  if (res.status !== 'ok') {
     toast(`Apply failed: ${res.message}`, 'error');
+    return;
   }
+  // ApplyDPInit restarts the Data Path state machines, so give the module a
+  // moment before reading back what it settled on.
+  await new Promise(r => setTimeout(r, 300));
+  await loadDatapath();
+  await loadSquelch();
+  toast('DataPath configuration applied', 'success');
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +589,12 @@ async function loadModuleControl() {
     const r = await apiPost('/api/module/control', { action: 'reset' });
     toast(r.status === 'ok' ? 'Module reset issued' : `Reset failed: ${r.message}`,
           r.status === 'ok' ? 'success' : 'error');
+    if (r.status !== 'ok') return;
+    // A reset reinitialises every Data Path, so refresh the whole tab rather
+    // than leaving stale values and tooltips behind.
+    setTimeout(() => {
+      loadModuleControl(); loadDatapath(); loadSquelch(); loadApplications();
+    }, 400);
   });
   document.getElementById('btn-mod-lp')?.addEventListener('click', async () => {
     const r = await apiPost('/api/module/control', { action: 'low_power' });
@@ -841,14 +871,12 @@ async function loadSquelch() {
 }
 
 async function applySquelch() {
-  const res = await apiPost('/api/module/squelch', {
+  return applyAndReload('Output controls', '/api/module/squelch', {
     tx_squelch_disable: _readBitmaskRow('sq'),
     tx_squelch_force:   _readBitmaskRow('sf'),
     rx_output_disable:  _readBitmaskRow('od'),
     rx_squelch_disable: _readBitmaskRow('rd'),
-  });
-  if (res.status === 'ok') toast('Output controls applied', 'success');
-  else toast(`Apply failed: ${res.message}`, 'error');
+  }, loadSquelch);
 }
 
 // ---------------------------------------------------------------------------
@@ -897,14 +925,12 @@ async function loadLoopback() {
 }
 
 async function applyLoopback() {
-  const res = await apiPost('/api/module/loopback', {
+  return applyAndReload('Loopback configuration', '/api/module/loopback', {
     media_side_output: _readLoopbackRow('mso'),
     media_side_input:  _readLoopbackRow('msi'),
     host_side_output:  _readLoopbackRow('hso'),
     host_side_input:   _readLoopbackRow('hsi'),
-  });
-  if (res.status === 'ok') toast('Loopback configuration applied', 'success');
-  else toast(`Apply failed: ${res.message}`, 'error');
+  }, loadLoopback);
 }
 
 // ---------------------------------------------------------------------------
@@ -993,14 +1019,12 @@ async function loadPrbs() {
 }
 
 async function applyPrbs() {
-  const res = await apiPost('/api/module/prbs', {
+  return applyAndReload('PRBS configuration', '/api/module/prbs', {
     host_gen:  _readPrbsSection('tbl-prbs-host-gen'),
     media_gen: _readPrbsSection('tbl-prbs-media-gen'),
     host_chk:  _readPrbsSection('tbl-prbs-host-chk'),
     media_chk: _readPrbsSection('tbl-prbs-media-chk'),
-  });
-  if (res.status === 'ok') toast('PRBS configuration applied', 'success');
-  else toast(`Apply failed: ${res.message}`, 'error');
+  }, loadPrbs);
 }
 
 // ---------------------------------------------------------------------------
