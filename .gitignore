@@ -24,13 +24,6 @@ dist/
 CMIS_Module_Manager.spec
 
 # ═══════════════════════════════════════════════════
-#  PyArmor obfuscation output
-# ═══════════════════════════════════════════════════
-obf/
-.pyarmor/
-pyarmor.bug.log
-
-# ═══════════════════════════════════════════════════
 #  CMIS spec (OIF copyrighted, not for redistribution)
 # ═══════════════════════════════════════════════════
 docs/standards/

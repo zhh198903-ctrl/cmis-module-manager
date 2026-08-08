@@ -47,9 +47,13 @@ python test_api.py
 ## Building a standalone EXE / 构建独立 EXE
 
 ```bash
-build_exe.bat      # plain PyInstaller onefile build
-build_secure.bat   # PyArmor-obfuscated build (used for binary releases)
+build_exe.bat      # PyInstaller onefile build
 ```
+
+The result is `CMIS2Customer/CMIS_Module_Manager.exe`, a single self-contained
+file that bundles the Python runtime, Flask, the templates and the static assets.
+It runs on a machine with no Python installed — double-click it and the UI opens
+at `http://127.0.0.1:5000`.
 
 Prebuilt Windows binaries are published at
 [cmis-module-manager-releases](https://github.com/zhh198903-ctrl/cmis-module-manager-releases).

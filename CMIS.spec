@@ -22,6 +22,14 @@ a = Analysis(
         'jinja2',
         'werkzeug',
         'click',
+        # pyftdi is imported lazily by ftdi_backend, so PyInstaller cannot see
+        # it; without this the packaged EXE has no working FTDI backend.
+        'pyftdi',
+        'pyftdi.ftdi',
+        'pyftdi.i2c',
+        'usb',
+        'usb.backend.libusb1',
+        'serial',
     ],
     hookspath=[],
     runtime_hooks=[],

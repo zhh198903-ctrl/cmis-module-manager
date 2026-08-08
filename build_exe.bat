@@ -6,7 +6,7 @@ echo [1/3] Installing PyInstaller...
 pip install pyinstaller --quiet
 
 echo [2/3] Building executable...
-pyinstaller CMIS.spec --clean --noconfirm
+python -m PyInstaller CMIS.spec --clean --noconfirm
 
 if errorlevel 1 (
     echo BUILD FAILED.
