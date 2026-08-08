@@ -19,6 +19,7 @@ const AppState = {
 // the module's own alarm flags.
 const ALARM_FALLBACK = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
 let _moduleThresholds = null;
+let _advertisedApps = [];
 
 // ---------------------------------------------------------------------------
 // Register hover tooltips
@@ -185,7 +186,9 @@ async function connectModule() {
 async function disconnectModule() {
   await apiGet('/api/disconnect');
   AppState.connected = false;
-  _moduleThresholds = null;   // the next module advertises its own limits
+  // The next module advertises its own limits and its own Applications.
+  _moduleThresholds = null;
+  _advertisedApps = [];
   stopMonitoring();
   updateConnectionUI(false, '');
   clearBackendInfoArea();
@@ -291,7 +294,13 @@ function switchTab(name) {
   // Auto-load data for tab
   if (name === 'info')        loadInfo();
   if (name === 'monitoring')  startMonitoring();
-  if (name === 'datapath')  { loadModuleControl(); loadApplications(); loadDatapath(); loadSquelch(); }
+  // The AppSelect dropdown is built from the advertised Applications, so they
+  // must be in hand before the DataPath table renders.
+  if (name === 'datapath') {
+    loadModuleControl();
+    loadSquelch();
+    loadApplications().then(loadDatapath);
+  }
   // Load the whole Diagnostics tab, not half of it: BER, SNR, counters and
   // laser tuning used to sit empty until each card's own refresh was clicked,
   // so half the page showed live data next to placeholders or values from
@@ -604,9 +613,23 @@ async function loadDatapath() {
   const d = res.data;
   tbody.innerHTML = d.lanes.map(lane => {
     const i = lane.lane - 1;
-    const appOpts = Array.from({length: 16}, (_, n) =>
-      `<option value="${n}" ${lane.app_select === n ? 'selected' : ''}>App ${n}</option>`
-    ).join('');
+    // Offer only the Applications this module advertises. Listing 0-15 let
+    // the user pick a code the module never announced, which it then rejects
+    // in ConfigStatus - and AppSelCode 0 means "no application", not App 0.
+    const opts = _advertisedApps.length
+      ? _advertisedApps.map(a =>
+          `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
+          + `App ${a.app_sel} — ${hex8(a.host_if_id)}/${hex8(a.media_if_id)} `
+          + `${a.host_lanes}H/${a.media_lanes}M</option>`)
+      : Array.from({length: 15}, (_, i) =>
+          `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
+    // A lane can sit on a code the module no longer advertises; keep it
+    // visible rather than silently snapping the dropdown to another value.
+    if (lane.app_select && !_advertisedApps.some(a => a.app_sel === lane.app_select)) {
+      opts.unshift(`<option value="${lane.app_select}" selected>`
+                   + `App ${lane.app_select} — not advertised</option>`);
+    }
+    const appOpts = opts.join('');
 
     // DPConfigLane is one byte per lane; the rest are one bit per lane.
     const tipApp = regTip({
@@ -775,6 +798,8 @@ async function loadApplications() {
   if (!tbody) return;
 
   const apps = res.data.applications;
+  // The DataPath AppSelect dropdown offers exactly these.
+  _advertisedApps = Array.isArray(apps) ? apps : [];
   if (!apps || apps.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="placeholder-text">No applications advertised.</td></tr>';
     return;
