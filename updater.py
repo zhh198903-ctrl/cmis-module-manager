@@ -254,6 +254,13 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {{
         $psi.FileName = "{target_exe}"
         $psi.WorkingDirectory = "{target_dir}"
         $psi.UseShellExecute = $false
+        # The helper inherited the dying app's environment, which carries
+        # PyInstaller's bootloader handshake variables. Handing those to a
+        # fresh onefile build is meaningless at best, so start it clean. This
+        # is hygiene, not a proven fix for the relaunch problem below.
+        @($psi.EnvironmentVariables.Keys) | Where-Object {{
+            $_ -like "_MEI*" -or $_ -like "_PYI*"
+        }} | ForEach-Object {{ $psi.EnvironmentVariables.Remove($_) }}
         $psi.EnvironmentVariables["CMIS_NO_BROWSER"] = "1"
         $proc = [System.Diagnostics.Process]::Start($psi)
         Log ("started pid " + $proc.Id)
