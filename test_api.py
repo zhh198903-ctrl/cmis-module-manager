@@ -98,6 +98,144 @@ class TestVersion(CMISTestCase):
                       'operation manual version is out of sync with app.__version__')
 
 
+class TestUpdater(unittest.TestCase):
+    """Update logic, exercised without touching the network."""
+
+    def test_version_parsing_and_ordering(self):
+        import updater as u
+        self.assertEqual(u.parse_version('v2.0.1'), (2, 0, 1))
+        self.assertEqual(u.parse_version('2.0.1-rc1'), (2, 0, 1))
+        self.assertEqual(u.parse_version(''), (0,))
+        self.assertTrue(u.is_newer('2.0.2', '2.0.1'))
+        self.assertTrue(u.is_newer('2.1', '2.0.9'), 'shorter version mis-padded')
+        self.assertFalse(u.is_newer('2.0.1', '2.0.1'))
+        self.assertFalse(u.is_newer('2.0.0', '2.0.1'), 'offered a downgrade')
+
+    def test_release_payload_normalises(self):
+        import updater as u
+        rel = u.normalize_release({
+            'tag_name': 'v2.1.0',
+            'html_url': 'https://example.invalid/r',
+            'body': 'notes',
+            'assets': [
+                {'name': 'source.zip', 'browser_download_url': 'https://x/1'},
+                {'name': 'CMIS_dist_v2_1_0.zip', 'size': 123,
+                 'digest': 'sha256:ABC', 'browser_download_url': 'https://x/2'},
+            ],
+        })
+        self.assertEqual(rel['version'], '2.1.0')
+        self.assertEqual(rel['asset_name'], 'CMIS_dist_v2_1_0.zip')
+        self.assertEqual(rel['asset_url'], 'https://x/2')
+        self.assertEqual(rel['sha256'], 'abc')
+
+    def test_release_without_our_asset_is_rejected(self):
+        """A release carrying only source tarballs must not look installable."""
+        import updater as u
+        self.assertIsNone(u.normalize_release(
+            {'tag_name': 'v9.9.9', 'assets': [{'name': 'notes.txt',
+                                               'browser_download_url': 'https://x'}]}))
+        self.assertIsNone(u.normalize_release({'tag_name': 'v9.9.9', 'assets': []}))
+        self.assertIsNone(u.normalize_release(None))
+
+    def test_extract_rejects_paths_escaping_the_target(self):
+        import tempfile, zipfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            zp = os.path.join(tmp, 'evil.zip')
+            with zipfile.ZipFile(zp, 'w') as zf:
+                zf.writestr('../escaped.exe', b'x')
+                zf.writestr(u.EXE_NAME, b'x')
+            with self.assertRaises(ValueError):
+                u.extract_payload(zp, os.path.join(tmp, 'out'))
+
+    def test_extract_requires_the_executable(self):
+        import tempfile, zipfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            zp = os.path.join(tmp, 'partial.zip')
+            with zipfile.ZipFile(zp, 'w') as zf:
+                zf.writestr('manual.html', b'x')
+            with self.assertRaises(ValueError):
+                u.extract_payload(zp, os.path.join(tmp, 'out'))
+
+    def test_extract_unpacks_the_whole_payload(self):
+        """Manual and images travel with the exe; a new exe beside an old
+        manual would document behaviour the build no longer has."""
+        import tempfile, zipfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            zp = os.path.join(tmp, 'ok.zip')
+            with zipfile.ZipFile(zp, 'w') as zf:
+                zf.writestr(u.EXE_NAME, b'exe')
+                zf.writestr('manual.html', b'doc')
+                zf.writestr('qrcode.jpg', b'img')
+            out = os.path.join(tmp, 'out')
+            names = u.extract_payload(zp, out)
+            self.assertCountEqual(names, [u.EXE_NAME, 'manual.html', 'qrcode.jpg'])
+            self.assertTrue(os.path.isfile(os.path.join(out, u.EXE_NAME)))
+
+    def test_checksum_absent_is_accepted_but_mismatch_is_not(self):
+        import tempfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, 'f.bin')
+            with open(p, 'wb') as fh:
+                fh.write(b'hello')
+            self.assertTrue(u.verify_sha256(p, None))
+            self.assertFalse(u.verify_sha256(p, '00' * 32))
+
+    def test_swap_script_is_bounded_and_quotes_paths(self):
+        """An unbounded retry loop would leave a hidden cmd.exe spinning."""
+        import updater as u
+        bat = u.build_swap_bat(r'C:\stage dir', r'C:\install dir')
+        self.assertIn('if %tries% gtr 150 goto cleanup', bat)
+        self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', bat)
+        self.assertIn('del "%~f0"', bat)
+
+    def test_self_update_refused_when_running_from_source(self):
+        import updater as u
+        self.assertFalse(u.is_frozen(), 'tests should not run frozen')
+        with self.assertRaises(RuntimeError):
+            u.stage_and_swap('anywhere')
+
+
+class TestUpdateRoutes(CMISTestCase):
+
+    def test_apply_refused_from_source(self):
+        rv = self.client.post('/api/update/apply')
+        self.assertErr(rv, 400)
+        self.assertIn('git pull', json.loads(rv.data)['message'])
+
+    def test_check_reports_unreachable_rather_than_up_to_date(self):
+        """A blocked network must never be reported as being current."""
+        import updater as u
+        real = u.fetch_latest_release
+        u.fetch_latest_release = lambda *a, **k: None
+        try:
+            rv = self.client.get('/api/update/check')
+            self.assertErr(rv, 502)
+            self.assertIn('Could not reach GitHub', json.loads(rv.data)['message'])
+        finally:
+            u.fetch_latest_release = real
+
+    def test_check_compares_against_the_running_version(self):
+        import updater as u
+        import app as app_mod
+        real = u.fetch_latest_release
+        u.fetch_latest_release = lambda *a, **k: {
+            'version': '9.9.9', 'tag': 'v9.9.9', 'asset_name': 'CMIS_dist_v9_9_9.zip',
+            'asset_url': 'https://x', 'asset_size': 10, 'sha256': None,
+            'html_url': 'https://x', 'notes': '', 'published_at': '',
+        }
+        try:
+            body = self.assertOk(self.client.get('/api/update/check'))['data']
+            self.assertTrue(body['update_available'])
+            self.assertEqual(body['current_version'], app_mod.__version__)
+            self.assertFalse(body['can_self_update'], 'source run offered a self-update')
+        finally:
+            u.fetch_latest_release = real
+
+
 class TestModuleControlBits(CMISTestCase):
     """Byte 0x1A packs unrelated controls; touching one must not move others."""
 

@@ -379,6 +379,76 @@ function stopMonitoring() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Update check
+//
+// Only ever triggered by the button: this tool runs on isolated lab networks
+// and must not reach out to GitHub on its own.
+// ---------------------------------------------------------------------------
+async function checkForUpdate() {
+  const btn = document.getElementById('btn-check-update');
+  if (!btn) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+
+  const res = await apiGet('/api/update/check');
+  btn.disabled = false;
+
+  if (res.status !== 'ok') {
+    btn.textContent = label;
+    toast(res.message, 'error', 9000);
+    return;
+  }
+
+  const d = res.data;
+  if (!d.update_available) {
+    btn.textContent = label;
+    btn.classList.remove('update-available');
+    toast(`Already on the newest version (v${d.current_version})`, 'success');
+    return;
+  }
+
+  btn.textContent = `↑ v${d.latest_version}`;
+  btn.classList.add('update-available');
+
+  const mb = (d.asset_size / 1048576).toFixed(1);
+  if (!d.can_self_update) {
+    // Running from source: replacing an executable is meaningless here.
+    toast(`v${d.latest_version} is available. Running from source — `
+          + 'use git pull to upgrade.', 'success', 9000);
+    window.open(d.release_url, '_blank', 'noopener');
+    return;
+  }
+
+  const ok = confirm(
+    `A newer version is available.\n\n`
+    + `Installed: v${d.current_version}\nAvailable: v${d.latest_version}  (${mb} MB)\n\n`
+    + `Download and install it now? The window will close and reopen `
+    + `automatically once the update is applied.\n\n`
+    + `Disconnect from the module first if a measurement is running.`);
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+  toast(`Downloading v${d.latest_version} (${mb} MB)…`, 'success', 20000);
+
+  const applied = await apiPost('/api/update/apply', {});
+  if (applied.status === 'ok') {
+    document.body.innerHTML =
+      `<div style="display:flex;align-items:center;justify-content:center;`
+      + `height:100vh;font-family:system-ui;color:#c4b5fd;text-align:center;padding:24px">`
+      + `<div><h2>Updating to v${esc(applied.data.version)}</h2>`
+      + `<p style="color:#94a3b8">This window will close and the new version `
+      + `will start automatically.<br>If it does not reopen, launch `
+      + `CMIS_Module_Manager.exe again.</p></div></div>`;
+  } else {
+    btn.disabled = false;
+    btn.textContent = `↑ v${d.latest_version}`;
+    toast(applied.message, 'error', 12000);
+  }
+}
+
 /** Say plainly that what is on screen is no longer live. */
 function markMonitoringStale(reason) {
   const el = document.getElementById('monitor-stale');
@@ -1278,6 +1348,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Info refresh
   document.getElementById('btn-refresh-info')?.addEventListener('click', loadInfo);
+  document.getElementById('btn-check-update')?.addEventListener('click', checkForUpdate);
 
   // Monitoring interval selector
   document.getElementById('sel-refresh-interval')?.addEventListener('change', e => {

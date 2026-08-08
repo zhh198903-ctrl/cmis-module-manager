@@ -5,6 +5,7 @@ __version__ = '2.0.1'
 
 import sys
 import os
+import shutil
 import struct
 import threading
 import time
@@ -13,6 +14,7 @@ import webbrowser
 from flask import Flask, jsonify, render_template, request
 
 import cmis_registers as cmis
+import updater
 from i2c_interface import list_backends, create_backend
 
 _BASE = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
@@ -1090,6 +1092,75 @@ def api_version():
         'version': __version__,
         'cmis_revision_supported': '5.3',
         'frozen': bool(getattr(sys, 'frozen', False)),
+    })
+
+
+@app.route('/api/update/check', methods=['GET'])
+def api_update_check():
+    """Ask GitHub whether a newer release exists.
+
+    Only ever runs when the user clicks Update - the tool is used on isolated
+    lab networks and must not reach out on its own.
+    """
+    rel = updater.fetch_latest_release()
+    if rel is None:
+        # Never report "up to date" for a failed lookup: on a lab network with
+        # no route to GitHub that would tell the user they are current when
+        # nothing was actually checked.
+        return _err('Could not reach GitHub. Check the network connection, '
+                    'or download manually from '
+                    f'https://github.com/{updater.GITHUB_OWNER}/{updater.GITHUB_REPO}/releases',
+                    502)
+    return _ok({
+        'current_version': __version__,
+        'latest_version': rel['version'],
+        'update_available': updater.is_newer(rel['version'], __version__),
+        'can_self_update': updater.is_frozen(),
+        'asset_name': rel['asset_name'],
+        'asset_size': rel['asset_size'],
+        'release_url': rel['html_url'],
+        'notes': rel['notes'][:4000],
+        'published_at': rel['published_at'],
+    })
+
+
+@app.route('/api/update/apply', methods=['POST'])
+def api_update_apply():
+    """Download the newer release and hand the swap to a detached helper."""
+    if not updater.is_frozen():
+        return _err('Running from source — upgrade with git pull instead of '
+                    'replacing an executable', 400)
+    rel = updater.fetch_latest_release()
+    if rel is None:
+        return _err('Could not reach GitHub to download the update', 502)
+    if not updater.is_newer(rel['version'], __version__):
+        return _err(f'Already on the newest version ({__version__})', 400)
+
+    staged = updater.staging_dir()
+    try:
+        if os.path.isdir(staged):
+            shutil.rmtree(staged, ignore_errors=True)
+        os.makedirs(staged, exist_ok=True)
+        archive = os.path.join(staged, rel['asset_name'])
+        updater.download_asset(rel['asset_url'], archive,
+                               total_hint=rel['asset_size'])
+        if not updater.verify_sha256(archive, rel['sha256']):
+            shutil.rmtree(staged, ignore_errors=True)
+            return _err('Downloaded file failed its checksum; update aborted', 500)
+        updater.extract_payload(archive, staged)
+        os.remove(archive)
+    except Exception as e:
+        shutil.rmtree(staged, ignore_errors=True)
+        return _err(f'Update download failed: {e}', 500)
+
+    updater.stage_and_swap(staged)
+    # The helper is now waiting for this process to release the exe. Give the
+    # response time to reach the browser, then quit so the swap can proceed.
+    threading.Timer(1.5, lambda: os._exit(0)).start()
+    return _ok({
+        'message': f'Updating to {rel["version"]}. The window will close and '
+                   'reopen automatically.',
+        'version': rel['version'],
     })
 
 
