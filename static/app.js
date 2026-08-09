@@ -464,9 +464,9 @@ async function checkForUpdate() {
   const ok = confirm(
     `A newer version is available.\n\n`
     + `Installed: v${d.current_version}\nAvailable: v${d.latest_version}  (${mb} MB)\n\n`
-    + `Download and install it now? This window will close once the files are `
-    + `replaced; start CMIS_Module_Manager.exe again if it does not reopen `
-    + `by itself.\n\n`
+    + `Download and install it now?\n\n`
+    + `The tool closes once the files are replaced, then you start `
+    + `CMIS_Module_Manager.exe again — one double-click.\n\n`
     + `Disconnect from the module first if a measurement is running.`);
   if (!ok) return;
 
@@ -492,20 +492,26 @@ async function checkForUpdate() {
  * than ask them to relaunch anything.
  */
 async function _waitForNewVersion(expected) {
-  const panel = (title, detail, spin) =>
+  // Say what to do straight away. Spinning for a minute first, on the chance
+  // the process relaunches itself, just looks like the tool has hung — the
+  // files are already updated by this point and one double-click finishes it.
+  document.body.innerHTML =
     `<div style="display:flex;align-items:center;justify-content:center;`
-    + `height:100vh;font-family:system-ui;color:#c4b5fd;text-align:center;padding:24px">`
-    + `<div><h2>${title}</h2><p style="color:#94a3b8;line-height:1.7">${detail}</p>`
-    + (spin ? `<div class="update-spinner"></div>` : '') + `</div></div>`;
+    + `height:100vh;font-family:system-ui;text-align:center;padding:24px">`
+    + `<div style="max-width:520px">`
+    + `<div style="font-size:44px;line-height:1">✓</div>`
+    + `<h2 style="color:#86efac;margin:12px 0 4px">Updated to v${esc(expected)}</h2>`
+    + `<p style="color:#c4b5fd;font-size:17px;margin:18px 0 6px">`
+    + `Start <b>CMIS_Module_Manager.exe</b> again to continue.</p>`
+    + `<p style="color:#94a3b8;line-height:1.7;font-size:13px">`
+    + `The new version is already installed — the old console window has closed. `
+    + `This page reconnects on its own if the tool comes back up.<br>`
+    + `A record of the update is in <code>update.log</code> next to the exe.</p>`
+    + `</div></div>`;
 
-  document.body.innerHTML = panel(
-    `Updating to v${esc(expected)}`,
-    'Replacing files and restarting. This page reloads by itself when the new '
-    + 'version is ready — no need to close anything.', true);
-
-  // The old instance has to exit, the files swap, and a onefile build takes a
-  // while to unpack, so allow well over a minute before giving up.
-  for (let i = 0; i < 90; i++) {
+  // Keep watching quietly: if the relaunch did work, the user should not have
+  // to do anything after all.
+  for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 1000));
     try {
       const r = await fetch('/api/version', { cache: 'no-store' });
@@ -514,13 +520,8 @@ async function _waitForNewVersion(expected) {
         location.reload();
         return;
       }
-    } catch (e) { /* server is down mid-swap, which is expected */ }
+    } catch (e) { /* expected while the old instance is gone */ }
   }
-
-  document.body.innerHTML = panel(
-    `Updated to v${esc(expected)}`,
-    'The files were replaced, but the new version did not come back up on its '
-    + 'own.<br><b>Start CMIS_Module_Manager.exe again</b> to continue.', false);
 }
 
 /**

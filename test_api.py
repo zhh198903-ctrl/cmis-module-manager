@@ -253,8 +253,8 @@ class TestUpdater(unittest.TestCase):
         import updater as u
         ps = u.build_swap_script(r'C:\stage dir', r'C:\install dir')
         self.assertIn('-lt 150', ps, 'the unlock wait is unbounded')
-        self.assertIn('-le 3', ps, 'the relaunch is retried without limit')
-        self.assertIn('-lt 30', ps, 'the health wait is unbounded')
+        self.assertIn('-le 2', ps, 'the relaunch is retried without limit')
+        self.assertIn('-lt 15', ps, 'the health wait is unbounded')
         self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', ps)
 
     def test_swap_script_verifies_the_app_came_back(self):
@@ -281,7 +281,8 @@ class TestUpdater(unittest.TestCase):
         ps = u.build_swap_script(r'C:\s', r'C:\t')
         self.assertIn(r'C:\t\update.log', ps)
         for moment in ('update helper started', 'executable replaced',
-                       'relaunch attempt', 'started pid', 'giving up'):
+                       'relaunch attempt', 'started pid',
+                       'the files are updated'):
             self.assertIn(moment, ps, f'the log never records "{moment}"')
 
     def test_relaunch_suppresses_the_browser(self):
@@ -348,6 +349,22 @@ class TestUpdateRoutes(CMISTestCase):
         body = js.split('async function checkForUpdate(')[1].split('\n}')[0]
         self.assertIn('confirm(', body, 'apply runs without asking the user')
         self.assertEqual(js.count("apiPost('/api/update/apply'"), 1)
+
+    def test_completion_screen_says_what_to_do_immediately(self):
+        """Spinning first and only then admitting a restart is needed reads as
+        a hang. The files are already in place by that point, so the
+        instruction comes first and the reconnect poll runs behind it.
+        """
+        import io
+        js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js')
+        js = io.open(js_path, encoding='utf-8').read()
+        body = js.split('async function _waitForNewVersion(')[1].split('\n}\n')[0]
+        instruction = body.index('CMIS_Module_Manager.exe')
+        poll = body.index("fetch('/api/version'")
+        self.assertLess(instruction, poll,
+                        'the restart instruction is shown only after polling')
+        self.assertIn('update.log', body, 'no pointer to the update record')
 
     def test_apply_refused_from_source(self):
         rv = self.client.post('/api/update/apply')

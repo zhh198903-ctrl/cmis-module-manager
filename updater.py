@@ -247,7 +247,7 @@ def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME
     # station; spawned from an exiting console app it silently created nothing
     # while reporting no error. Going straight to CreateProcess avoids that.
     relaunch_block = f'''
-for ($attempt = 1; $attempt -le 3; $attempt++) {{
+for ($attempt = 1; $attempt -le 2; $attempt++) {{
     Log "relaunch attempt $attempt"
     try {{
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -269,7 +269,7 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {{
         Start-Sleep -Seconds 2
         continue
     }}
-    for ($w = 0; $w -lt 30; $w++) {{
+    for ($w = 0; $w -lt 15; $w++) {{
         Start-Sleep -Seconds 1
         try {{
             Invoke-WebRequest -Uri "{health_url}" -UseBasicParsing -TimeoutSec 2 | Out-Null
@@ -277,9 +277,9 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {{
             exit 0
         }} catch {{ }}
     }}
-    Log "no response after 30s"
+    Log "no response after 15s"
 }}
-Log "giving up; the files are updated but the app must be started by hand"
+Log "the files are updated; the user starts the exe again from here"
 ''' if relaunch else ''
     return f'''$ErrorActionPreference = "SilentlyContinue"
 $env:CMIS_NO_BROWSER = "1"

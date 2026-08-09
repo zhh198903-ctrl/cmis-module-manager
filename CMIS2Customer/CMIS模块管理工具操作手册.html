@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.0.8<br>
+      <b>版本</b>　2.0.9<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-08<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.8 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.0.8</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.9 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.0.9</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -559,18 +559,18 @@
   <p>标题右侧版本徽章旁有 <b>↑ Update</b> 按钮，点击即联网检查 GitHub 上是否有新版本：</p>
   <ul>
     <li><b>已是最新</b>：提示「Already on the newest version」，按钮不变</li>
-    <li><b>有新版本</b>：按钮变为琥珀色的 <b>↑ v新版本号</b>，并弹出确认框显示版本号与下载大小。
-        确认后自动完成下载、校验、替换与重启，<b>当前页面会自己重新连接并刷新</b>，
-        全程无需手动操作，也不会新开标签页。升级过程会在 EXE 同目录写 <code>update.log</code>，
-        万一升级异常可据此排查</li>
+    <li><b>有新版本</b>：按钮变为琥珀色的 <b>↑ v新版本号</b>，弹出确认框显示版本号与下载大小。
+        确认后自动下载、校验并替换全部文件；完成后当前程序退出，页面显示绿色对勾和
+        <b>「Start CMIS_Module_Manager.exe again」</b>——<b>再双击一次 EXE 即可</b>。
+        整个过程记录在 EXE 同目录的 <code>update.log</code> 里</li>
     <li><b>无法联网</b>：明确提示无法访问 GitHub，并给出手动下载地址。
         <b>不会</b>把联网失败误报成"已是最新"</li>
   </ul>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>升级会关闭当前程序并重启。<b>若正在连接模块做测量，请先 Disconnect 再升级。</b>
-    <br><b>从 v2.0.2 或更早版本升级时</b>，因旧版本存在一个缺陷，文件会正确替换但<b>不会自动重启</b>——
-    此时手动双击 <code>CMIS_Module_Manager.exe</code> 即可，版本已是新的。从 v2.0.3 起自动重启正常。
+    <br><b>升级后需要手动重启一次</b>：程序无法在替换自身后可靠地把自己拉起来，
+    因此完成页会明确提示你双击 EXE。文件此时已全部更新完毕，重启后就是新版本。
     升级仅在 EXE 版可用；从源码运行时会提示改用 <code>git pull</code>。
     本工具<b>只在你点击该按钮时才联网</b>，平时不会主动访问外部网络。</span>
   </div>
@@ -1174,7 +1174,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.0.8<br>
+    CMIS Module Manager 操作手册 v2.0.9<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
