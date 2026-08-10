@@ -355,9 +355,9 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.2.0<br>
+      <b>版本</b>　2.2.1<br>
       <b>适用软件</b>　CMIS Module Manager<br>
-      <b>更新日期</b>　2026-08-09<br>
+      <b>更新日期</b>　2026-08-10<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
     </div>
   </div>
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.2.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.1 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.2.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -560,9 +560,12 @@
   <ul>
     <li><b>已是最新</b>：提示「Already on the newest version」，按钮不变</li>
     <li><b>有新版本</b>：按钮变为琥珀色的 <b>↑ v新版本号</b>，弹出确认框显示版本号与下载大小。
-        确认后自动下载、校验并替换全部文件；完成后当前程序退出，页面显示绿色对勾和
-        <b>「Start CMIS_Module_Manager.exe again」</b>——<b>再双击一次 EXE 即可</b>。
-        整个过程记录在 EXE 同目录的 <code>update.log</code> 里</li>
+        确认后自动下载、校验并替换全部文件，当前程序随即退出。
+        <b>多数情况下你什么都不用做</b>：升级助手会把新版本拉起来，页面自己重新连上并刷新。
+        页面上的绿色对勾表示<b>下载与校验已通过</b>、文件替换正在进行，并给出
+        <b>「Start CMIS_Module_Manager.exe again」</b>作为兜底提示——
+        <b>若等待约一分钟后页面仍停在该提示，再双击一次 EXE 即可</b>（不要在自动重启成功后再双击，
+        否则会多开一个实例）。整个过程记录在 EXE 同目录的 <code>update.log</code> 里</li>
     <li><b>无法联网</b>：明确提示无法访问 GitHub，并给出手动下载地址。
         <b>不会</b>把联网失败误报成"已是最新"</li>
     <li><b>校验不通过</b>：下载包会逐字节比对 GitHub 公布的 SHA-256 摘要，
@@ -572,18 +575,25 @@
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>升级会关闭当前程序并重启。<b>若正在连接模块做测量，请先 Disconnect 再升级。</b>
-    <br><b>升级后需要手动重启一次</b>：程序无法在替换自身后可靠地把自己拉起来，
-    因此完成页会明确提示你双击 EXE。文件此时已全部更新完毕，重启后就是新版本。
+    <br><b>自动重启不保证成功</b>：程序要替换的是自己正在运行的那个文件，
+    升级助手会尝试两次并轮询新版本是否起来。绝大多数情况下会成功、页面自动回来；
+    失败时不会有任何损失，双击 EXE 即可，文件已经是新版本。
     升级仅在 EXE 版可用；从源码运行时会提示改用 <code>git pull</code>。
     本工具<b>只在你点击该按钮时才联网</b>，平时不会主动访问外部网络。</span>
   </div>
   <div class="callout">
     <span class="callout-icon">🔒</span>
     <span><b>关于本机 5000 端口的安全性</b>：程序只监听 127.0.0.1，外部机器无法访问。
-    自 v2.2.0 起还会拒绝<b>由其它网页发起</b>的请求——你在浏览器里打开的任何站点，
-    都无法借你的浏览器去连接模块、改寄存器或触发升级；用 IP 以外的域名指向本机也一样会被拒。
-    只有本工具自己的页面（<code>http://127.0.0.1:5000</code>）能操作模块。
-    你自己写的脚本、curl、Python 程序<b>不受影响</b>，仍可正常调用 API。</span>
+    自 <b>v2.1.0</b> 起，所有 <code>/api/</code> 接口还会拒绝<b>由其它网页发起</b>的请求——
+    你在浏览器里打开的任何站点，都无法借你的浏览器去连接模块、改寄存器或触发升级。
+    即便有人把自己的域名解析到你本机（DNS rebinding），接口同样会因 Host 不在白名单而被拒。
+    <br><b>需要说清的一点</b>：自 v2.2.0 起，界面页面本身和 css/js 等静态文件<b>不设此限制</b>，
+    从任何地方点链接打开 <code>http://127.0.0.1:5000</code> 都能正常显示界面——
+    因为光是拿到页面并不能操作模块，所有能碰模块的入口都在 <code>/api/</code> 下面。
+    可用的本机地址有三个：<code>127.0.0.1</code>、<code>localhost</code>、<code>[::1]</code>（带或不带 <code>:5000</code>）。
+    <br>你自己写的脚本、curl、Python 程序<b>不受此限制影响</b>，但有两条硬要求：
+    带 body 的 POST 必须是 <code>Content-Type: application/json</code>，否则返回 <b>415</b>；
+    且必须用上面三个本机地址访问，用本机主机名会被拒。</span>
   </div>
 
   <h3>5.3 数值进制的表示约定</h3>
@@ -638,6 +648,21 @@
     不会溢出到卡片外面。</span>
   </div>
   <p class="label">若想恢复出厂外观，打开显示设置点 <b>Reset to defaults</b> 即可。</p>
+
+  <h3>5.5 读取失败时各卡片的表现（务必了解）</h3>
+  <p><b>只有 Monitoring 卡片会在读取失败时把数据置灰并显示过期横幅。</b>其余所有卡片——
+     Squelch、Loopback、PRBS、Module Thresholds、DataPath、BER、SNR、Error/Bit Counters、
+     Module Control、Applications——失败时的表现是：</p>
+  <ul>
+    <li>右下角弹一条<b>红色提示，3 秒后自动消失</b>，之后没有任何痕迹</li>
+    <li><b>卡片里的旧数值原样留着，没有任何标记</b>——看上去和读取成功完全一样</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>后果是：如果你没看见那 3 秒的提示，就会把<b>上一次成功读取的旧值</b>当作当前状态。
+    记录数据或判断故障前，请先点该卡片的 <b>↻ Refresh</b> 并确认没有弹出红色提示。
+    提示条一律出现在窗口右下角，<b>没有历史记录</b>，错过就查不到了。</span>
+  </div>
 </div>
 
 <!-- ══════════════ 6. 连接模块 ══════════════ -->
@@ -746,8 +771,8 @@
         <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效，光模块显示 "—"</td><td><code>00h / 0xCA</code></td></tr>
         <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
         <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
-        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（取全部 AppDescriptor 的最大值，非仅 AppDesc#1）</td><td><code>Lower / 0x56+</code></td></tr>
-        <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（同上）</td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
         <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本</td><td><code>01h / 0x82–0x83</code></td></tr>
       </tbody>
@@ -831,14 +856,44 @@
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>v2.0.3 起</b>着色依据改为模块 Page 02h 广播的真实阈值（即下方 Module Thresholds
-    卡片显示的值），而非固定的 ±10 dBm。不同模块阈值不同——例如某 DR8 模块的 Tx Low Alarm 是
-    −8.0 dBm，按旧的固定值判断会把已触发告警的 lane 显示成正常，与 Lane Flags 表自相矛盾。</span>
+    卡片显示的值），而非旧版固定的 <b>−10 / +3 dBm</b>。不同模块阈值不同——例如某 DR8 模块的
+    Tx Low Alarm 是 −8.0 dBm，按旧的固定值判断会把已触发告警的 lane 显示成正常，
+    与 Lane Flags 表自相矛盾。
+    <br><b>仍会用到那对固定值的场合</b>：刚连上模块、Page 02h 阈值尚未读回，或该次读取失败时，
+    着色会回退到 −10 / +3 dBm。此时颜色仅供参考，请以 Lane Flags 表和 Module Thresholds
+    卡片为准。</span>
   </div>
   <p>顶部摘要栏同步显示温度和电压：超过 60°C → 橙色；超过 70°C → 红色。</p>
+
+  <h3>状态列的颜色与图标图例</h3>
+  <p>上面讲的是光功率染色。界面里还有几套颜色和符号，含义各不相同：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>出现位置</th><th>显示</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3">Config Status<br><span class="label">（Monitoring）</span></td><td><span class="badge badge-ok">绿色</span> ConfigSuccess</td><td class="label">该 lane 的配置被模块接受</td></tr>
+        <tr><td><span class="badge badge-warn">琥珀</span> ConfigInProgress</td><td class="label">配置进行中，稍等再看</td></tr>
+        <tr><td><span class="badge badge-danger">红底</span> ConfigRejected…</td><td class="label">被拒绝。<b>不是灰色</b>——灰色留给"该 lane 未使用"</td></tr>
+        <tr><td rowspan="3">DataPath State<br><span class="label">（Monitoring）</span></td><td><span class="badge badge-ok">绿色</span> Activated</td><td class="label">数据通道已激活</td></tr>
+        <tr><td><span class="badge badge-warn">琥珀</span> Init</td><td class="label">初始化中</td></tr>
+        <tr><td><span class="badge badge-neutral">灰色</span> 其它</td><td class="label">Deactivated / Deinit / TxTurnOn 等，均按未激活显示</td></tr>
+        <tr><td rowspan="3">Lane Flags<br><span class="label">（Monitoring）</span></td><td><b>■ ALARM</b>（红底）</td><td class="label">该标志位置起：Tx Fault / LOS / CDR LOL 之一</td></tr>
+        <tr><td><b>▲ Warn</b>（橙底）</td><td class="label">仅出现在最右的汇总列，表示有 Warning 级阈值越界但无 Alarm</td></tr>
+        <tr><td><b>●</b>（绿色小点）</td><td class="label">正常，无标志</td></tr>
+        <tr><td>Module Control<br><span class="label">（DataPath）</span></td><td><b>●</b> / <b>○</b></td><td class="label">●=该位为 1（生效），○=该位为 0</td></tr>
+        <tr><td>顶部摘要栏</td><td>绿色圆点</td><td class="label">仅当<b>全部</b> lane 都是 Activated 时才出现</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>若某次读取失败，监控区会显示<b>红色「读数已过期」横幅</b>并将数据表置灰。
-    此时屏幕上的功率、温度和 Lane Flags 都是上一次成功读取的旧值，<b>不可作为当前状态判断依据</b>。</span>
+    此时屏幕上的功率、温度和 Lane Flags 都是上一次成功读取的旧值，<b>不可作为当前状态判断依据</b>。
+    <br><b>并且自动刷新会就此停住，不会自行恢复。</b>监控主接口读取失败时工具会主动停掉轮询
+    （否则模块掉线会每秒刷屏报错）。模块恢复正常后<b>屏幕仍然是灰的</b>，必须手动做以下任一操作
+    才会重新开始刷新：点 <b>↻ Now</b>、切到别的标签再切回 Monitoring、或改一次自动刷新间隔。
+    <br>另外：<b>离开 Monitoring 标签页就会停止轮询</b>，本工具不做后台监控；回到该页才重新开始。</span>
   </div>
 
   <h3>8.2 自动刷新间隔</h3>
@@ -900,20 +955,26 @@
   <h2 class="section-title">9. DataPath Config — 数据通道配置</h2>
 
   <h3>9.1 Module Control（模块控制）</h3>
-  <p>模块级控制寄存器（Lower 0x1A），用于软复位与低功耗模式切换。</p>
+  <p>模块级控制寄存器（Lower 0x1A）。表格共四行，<b>只有前两行带操作按钮</b>，后两行是当前状态显示，
+     本工具不提供修改入口（"操作"列显示 <code>—</code>）。</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>控制项</th><th>含义</th><th>Page / Addr</th></tr></thead>
+      <thead><tr><th>行</th><th>含义</th><th>操作</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td><b>Reset Module</b></td><td class="label">向 0x1A[3] 写 1 触发软件复位。所有 DataPath 将重新进入 Init 状态</td><td><code>Lower / 0x1A[3]</code></td></tr>
-        <tr><td><b>Enter LowPwr</b></td><td class="label">向 0x1A[4] 写 1 请求进入低功耗模式</td><td><code>Lower / 0x1A[4]</code></td></tr>
-        <tr><td><b>Exit LowPwr</b></td><td class="label">清除 0x1A[4] 请求退出低功耗模式</td><td><code>Lower / 0x1A[4]</code></td></tr>
+        <tr><td><b>Software Reset</b></td><td class="label">向 0x1A[3] 写 1 触发软件复位。所有 DataPath 将重新进入 Init 状态</td><td><b>Reset Module</b> 按钮（红色）</td><td><code>Lower / 0x1A[3]</code></td></tr>
+        <tr><td><b>Low Power Request (SW)</b></td><td class="label">0x1A[4]。写 1 请求进入低功耗模式，清除则请求退出</td><td><b>Enter LowPwr</b> / <b>Exit LowPwr</b> 两个按钮</td><td><code>Lower / 0x1A[4]</code></td></tr>
+        <tr><td>Allow LowPwrRequestHW</td><td class="label">模块是否响应硬件 LPMode 引脚。●=响应，○=忽略。<b>只读显示</b></td><td>—</td><td><code>Lower / 0x1A[6]</code></td></tr>
+        <tr><td>Squelch Method</td><td class="label">Squelch 判据：<code>Pav</code>=按平均光功率，<code>OMA</code>=按调制幅度。<b>只读显示</b></td><td>—</td><td><code>Lower / 0x1A[5]</code></td></tr>
       </tbody>
     </table>
   </div>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
-    <span>软复位会中断业务！点击 <b>Reset Module</b> 后会弹出确认对话框。复位后模块会经历 LowPwr → PwrUp → Ready 状态机流程。</span>
+    <span><b>Reset Module 会中断业务</b>，点击后会弹出确认对话框。复位后模块会经历
+    LowPwr → PwrUp → Ready 状态机流程，本工具随后自动刷新整个标签页。
+    <br><b>Enter LowPwr 同样会中断业务，而且没有确认对话框——点下去立即生效。</b>
+    低功耗模式下模块会关闭发射，Monitoring 页的 TxPower 会掉到 0（这不是读数故障），
+    DataPath 退出 Activated。恢复业务需要点 <b>Exit LowPwr</b> 并等待模块回到 Ready。</span>
   </div>
 
   <h3>9.2 Supported Applications（支持的应用码）</h3>
@@ -937,20 +998,40 @@
       <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
         <tr><td>Lane</td><td class="label">通道编号（1–8）</td><td>—</td></tr>
-        <tr><td>AppSelect</td><td class="label">应用码选择（0–15）。DPConfigLane，每 lane 1 字节：bits[7:4]=AppSelCode，bits[3:1]=DataPathID，bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
+        <tr><td>AppSelect</td><td class="label">应用码选择。下拉<b>只列出该模块实际广播的应用</b>（通常 1–8 个），格式为
+            <code>App 2 — 0x4F/0x1B 4H/4M</code>，依次是应用码、主机/媒体接口 ID、主机与媒体 lane 数；
+            若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
+            <code>App n — not advertised</code> 用于保留现值。
+            寄存器本身：DPConfigLane，每 lane 1 字节，bits[7:4]=AppSelCode（0 表示"无应用"，不是 App 0），
+            bits[3:1]=DataPathID，bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
         <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）</td><td><code>10h / 0x82[n−1]</code></td></tr>
         <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
         <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
-        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化位（每 lane 1 bit）。注意是 <b>10h</b>，Page 11h 的 0x80 是只读的 DataPath State，不要混淆</td><td><code>10h / 0x80[n−1]</code></td></tr>
+        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化位（每 lane 1 bit），显示为 <code>Deinit</code> / <code>Active</code> 文字。
+            <b>本列是只读的</b>，界面上没有对应的复选框，Apply 也不会下发这一位——不用去找。
+            需要改这一位请用 Raw Registers 直接写。
+            注意是 <b>10h</b>，Page 11h 的 0x80 是只读的 DataPath State，不要混淆</td><td><code>10h / 0x80[n−1]</code></td></tr>
       </tbody>
     </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>Apply 会重启全部 8 条 lane，在线业务会中断。</b>点击 Apply 时，工具把 8 条 lane 的
+    AppSelect、TX Enable 和两个极性掩码<b>整体</b>下发，然后写 <code>ApplyDPInit = 0xFF</code>，
+    模块据此重启数据通道状态机——<b>你没有改动的 lane 一样会被重启</b>。
+    Apply 没有确认对话框。若正在跑业务，请先确认可以断流。</span>
   </div>
   <ol class="steps">
     <li>点击 <b>↻ Refresh</b> 读取当前配置。</li>
     <li>参考 9.2 Supported Applications 表选择合适的 AppSelect。</li>
     <li>勾选 / 取消 TX Enable、Pol Flip。</li>
-    <li>点击 <b>Apply</b> 写入模块并激活（自动触发 ApplyDataPath = 0xFF）。</li>
-    <li>回到 Monitoring 标签查看 <b>Config Status</b> 列确认配置结果。</li>
+    <li>点击 <b>Apply</b> 写入模块并激活（自动触发 ApplyDPInit = 0xFF）。</li>
+    <li><b>配置结果工具会自动告诉你，不需要自己去 Monitoring 页查。</b>Apply 后工具等 300 ms
+        重读配置，再检查每条 lane 的 Config Status：全部通过则右下角弹绿色
+        <b>「DataPath configuration applied」</b>；只要有 lane 被拒，就弹<b>红色</b>提示并点名是哪几条
+        （形如 <code>L3: ConfigRejectedInvalidAppSel</code>），停留 8 秒。</li>
+    <li>遇到 <code>ConfigRejected*</code>：说明模块拒绝了该 lane 的配置，常见原因是选了模块不支持的
+        AppSelect、或该应用要求的起始 lane 与 9.2 的 Host Lane Assign 位图不符。按 9.2 的表重选应用码后再 Apply。</li>
   </ol>
 
   <h3>9.4 Output Controls（输出控制）</h3>
@@ -1018,6 +1099,13 @@
     </table>
   </div>
   <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Checker 卡片没有自己的 Apply 按钮</b>——不要在这张卡上找。改完 Checker 的设置后，
+    点 <b>PRBS Generator</b> 卡片上的 <b>Apply</b>，Generator 与 Checker 四个分区
+    （Host/Media × 发生器/检测器）会<b>一次性一起下发</b>。反过来也一样：
+    只改了 Generator 点 Apply，Checker 当前界面上的设置同样会被写进模块。</span>
+  </div>
 
   <h3>10.4 BER Results（误码率）</h3>
   <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x01</code> 选择 BER F16 诊断。Host BER 在 <code>14h/0xC0</code>，Media BER 在 <code>14h/0xD0</code>，每通道 2 字节。</p>
@@ -1032,6 +1120,14 @@
         <tr><td class="label">劣化</td><td><span class="badge badge-danger">&gt; 1e-3</span></td></tr>
       </tbody>
     </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>表格里显示 <code>0</code> 的含义是"模块报告零错误计数"，不是测到的 BER 下限。</b>
+    上表没有 <code>0</code> 这一档是有意的：真实的可达下限取决于该次统计门累积了多少比特，
+    模块并不告诉你这个数。<b>请不要把 <code>0</code> 当作实测值写进测试报告</b>——
+    需要给出量化结果时，应根据码率与统计时长自行算出置信下限。
+    鼠标悬停在 <code>0</code> 上也有同样的说明。显示 <code>—</code> 表示该 lane 没有有效读数。</span>
   </div>
 
   <h3>10.5 SNR Results（信噪比）</h3>
@@ -1130,9 +1226,34 @@
     <span class="callout-icon">ℹ</span>
     <span>地址 ≥ <code>0x80</code> 为上页寄存器，工具自动切页；地址 &lt; <code>0x80</code> 为下页，忽略 Page 字段。</span>
   </div>
+
+  <h4>写完之后工具会回读比对——看懂那条红色提示</h4>
+  <p>写操作返回成功只代表 I2C 传输完成，<b>不代表模块真的接受了这个值</b>。所以工具写完会立刻
+     把同样长度的字节读回来，与你写入的逐字节比较，并把读回的内容显示在下方 hex 转储区：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>提示</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge badge-ok">绿色</span> Written and verified …（3 秒）</td>
+            <td class="label">读回值与写入值完全一致</td></tr>
+        <tr><td><span class="badge badge-danger">红色</span> Write completed but the module reports different values（8 秒）</td>
+            <td class="label"><b>这不是工具故障。</b>传输成功了，但模块把值改掉或忽略了——
+                最常见的原因是<b>写到了只读或保留字节</b>，其次是模块把超范围的值钳位到了合法区间。
+                写只读寄存器时出现这条提示是正常现象</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>另有三种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
+  <ul>
+    <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
+    <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
+    <li><b>跨过 0x7F 的多字节写</b>：一次写入若从 <code>0x7F</code> 之前开始、越过它继续写，会在传输中途
+        改掉页选择寄存器，剩余字节将落到另一页上。工具直接拒绝并要求你<b>拆成两次写</b></li>
+  </ul>
   <div class="callout callout-danger">
     <span class="callout-icon">✕</span>
-    <span><b>警告：</b>直接写寄存器可能影响模块正常工作，请在熟悉 CMIS 规范的前提下操作。</span>
+    <span><b>警告：</b>直接写寄存器可能影响模块正常工作，请在熟悉 CMIS 规范的前提下操作。
+    本页的写入<b>没有确认对话框</b>，点 Write 立即执行。</span>
   </div>
 </div>
 
@@ -1142,8 +1263,11 @@
 
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q1</span>双击 EXE 后控制台窗口一闪而过</div>
-    <div class="faq-reason">原因：程序启动异常，通常是端口 5000 已被占用。</div>
-    <div class="faq-solve">解决：右键 EXE → "以管理员身份运行"；或在任务管理器中找到占用 5000 端口的进程，关闭后重试。</div>
+    <div class="faq-reason">原因：程序启动异常，通常是端口 5000 已被占用（常见的是上一次没退干净，还留着一个实例）。</div>
+    <div class="faq-solve">解决：找到并结束占用 5000 端口的进程后重试。命令行执行
+      <code>netstat -ano | findstr :5000</code> 看最后一列的 PID，再到任务管理器"详细信息"页按 PID 结束它。
+      <br><b>不要试图用"以管理员身份运行"解决</b>：监听 127.0.0.1:5000 本来就不需要管理员权限，
+      提权也不会把已占用端口的进程赶走。本工具的端口是固定的 5000，没有自动改用其它端口的机制。</div>
   </div>
 
   <div class="faq-item">
@@ -1207,12 +1331,49 @@
         <tr><td>Connect</td><td class="label">左侧面板</td><td class="label">连接模块</td></tr>
         <tr><td>Disconnect</td><td class="label">左侧面板</td><td class="label">断开连接</td></tr>
         <tr><td>↻ Refresh</td><td class="label">各标签页</td><td class="label">手动刷新当前页数据</td></tr>
-        <tr><td>Apply</td><td class="label">DataPath / Diagnostics</td><td class="label">将修改写入模块并生效</td></tr>
-        <tr><td>↻ Now</td><td class="label">Monitoring</td><td class="label">立即手动刷新一次监控数据</td></tr>
+        <tr><td>↻ Now</td><td class="label">Monitoring</td><td class="label">立即手动刷新一次监控数据；监控因出错停掉后也靠它恢复轮询</td></tr>
         <tr><td>Read</td><td class="label">Raw Registers</td><td class="label">读取指定寄存器</td></tr>
-        <tr><td>Write</td><td class="label">Raw Registers</td><td class="label">写入指定寄存器</td></tr>
         <tr><td>⚙ Display</td><td class="label">右上角</td><td class="label">显示设置：主题、界面缩放、字号、字体（见 5.4）</td></tr>
-        <tr><td>↑ Update</td><td class="label">右上角</td><td class="label">检查并安装新版本（见 5.2）</td></tr>
+        <tr><td>Reset to defaults</td><td class="label">⚙ Display 面板内</td><td class="label">把四项显示设置恢复默认。<b>只影响外观</b>，不碰模块</td></tr>
+        <tr><td>↑ Update</td><td class="label">右上角</td><td class="label">检查并安装新版本（见 5.2）。是本工具唯一会主动联网的操作</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>会中断业务的按钮</h3>
+  <p>以下按钮会影响模块的实际工作状态。<b>只有 Reset Module 有确认对话框</b>，其余点下去立即生效。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>按钮</th><th>位置</th><th>影响范围</th><th>确认框</th></tr></thead>
+      <tbody>
+        <tr><td><b>Reset Module</b></td><td class="label">DataPath / 9.1</td><td class="label">软复位整个模块，所有 DataPath 重新初始化</td><td>有</td></tr>
+        <tr><td><b>Enter LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">模块进入低功耗，<b>关闭发射</b>，TxPower 掉到 0</td><td class="label">无</td></tr>
+        <tr><td><b>Exit LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">请求退出低功耗，恢复到高功耗状态</td><td class="label">无</td></tr>
+        <tr><td><b>Write</b></td><td class="label">Raw Registers / 11.2</td><td class="label">任意寄存器写入，后果取决于你写了什么</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（DataPath 配置表）</td><td class="label">DataPath / 9.3</td><td class="label">重启<b>全部 8 条</b> lane 的数据通道</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（Loopback）</td><td class="label">Diagnostics / 10.1</td><td class="label">环回会中断正常收发</td><td class="label">无</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>五个 Apply 的影响范围并不相同</h3>
+  <p>界面上有五个 Apply 按钮，各管各的，互不下发对方的设置——唯一的例外是 PRBS。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Apply 所在卡片</th><th>实际下发的内容</th></tr></thead>
+      <tbody>
+        <tr><td>DataPath 配置表<br><span class="label">（9.3）</span></td>
+            <td class="label"><b>影响最大</b>：整体下发 8 条 lane 的 AppSelect / TX Enable / 两个极性掩码，
+                再写 <code>ApplyDPInit = 0xFF</code> 重启全部数据通道——<b>未改动的 lane 也会被重启</b></td></tr>
+        <tr><td>Output Controls<br><span class="label">（9.4）</span></td>
+            <td class="label">只写 Tx Squelch Disable / Tx Squelch Force / Rx Output Disable /
+                Rx Squelch Disable 四个掩码，不触发 DataPath 重启</td></tr>
+        <tr><td>Loopback<br><span class="label">（10.1）</span></td>
+            <td class="label">只写媒体侧/主机侧各两个环回掩码</td></tr>
+        <tr><td>PRBS Generator<br><span class="label">（10.2）</span></td>
+            <td class="label">一次下发 Generator <b>和</b> Checker 共四个分区；Checker 卡片没有自己的 Apply</td></tr>
+        <tr><td>Laser Tuning<br><span class="label">（10.7）</span></td>
+            <td class="label">按 lane 下发栅格间隔、通道号、微调偏移与目标功率，仅可调谐模块可用</td></tr>
       </tbody>
     </table>
   </div>
@@ -1223,7 +1384,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.2.0<br>
+    CMIS Module Manager 操作手册 v2.2.1<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

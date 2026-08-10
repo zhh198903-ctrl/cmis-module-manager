@@ -200,9 +200,18 @@ def download_asset(url: str, dest_path: str,
 
 
 def verify_sha256(path: str, expected: Optional[str]) -> bool:
-    """True when expected is absent (GitHub's digest is best-effort) or matches."""
+    """True only when the file matches a digest we were actually given.
+
+    A missing digest is a refusal, not a pass. Installing an unverified build
+    is exactly as bad as installing one that failed its check - the difference
+    is only whether anyone noticed - and the caller has a safe alternative to
+    offer: download it from the release page by hand. Every release asset this
+    project has published carries a digest, so this refuses nothing that works
+    today; if GitHub ever drops the field the user gets a clear error instead
+    of a silent unverified install.
+    """
     if not expected:
-        return True
+        return False
     h = hashlib.sha256()
     with open(path, 'rb') as fh:
         for block in iter(lambda: fh.read(1 << 20), b''):
@@ -210,26 +219,51 @@ def verify_sha256(path: str, expected: Optional[str]) -> bool:
     return h.hexdigest().lower() == expected.strip().lower()
 
 
+def _payload_members(names: list) -> list:
+    """Archive entries paired with the flat name each must be staged under.
+
+    Both zip layouts this project has published must land flat, because the
+    swap helper looks for the exe directly in the staging root and moves the
+    rest with a non-recursive listing. v2.0.9 and earlier zipped the contents
+    of CMIS2Customer/; v2.1.0 and v2.2.0 zipped the folder itself, and nothing
+    noticed - the old code staged CMIS2Customer/CMIS_Module_Manager.exe, the
+    helper found no exe where it looked, retried for 75 s and gave up without
+    ever relaunching. So strip one shared leading directory when every entry
+    has it, and refuse anything still nested rather than stall later.
+    """
+    files = [n for n in names if not n.endswith('/')]
+    tops = {n.replace('\\', '/').split('/')[0] for n in files}
+    strip = len(tops) == 1 and any('/' in n or '\\' in n for n in files)
+    members = []
+    for name in files:
+        rel = name.replace('\\', '/')
+        if strip:
+            rel = rel.split('/', 1)[1]
+        if '/' in rel or not rel:
+            raise ValueError(f'release archive nests {name}; expected a flat payload')
+        members.append((name, rel))
+    return members
+
+
 def extract_payload(zip_path: str, dest_dir: str) -> list:
-    """Unpack the release zip, refusing entries that escape dest_dir.
+    """Unpack the release zip flat, refusing entries that escape dest_dir.
 
     A zip is attacker-controllable input in principle, so paths are checked
-    rather than trusted; the archive is flat by construction.
+    rather than trusted.
     """
     os.makedirs(dest_dir, exist_ok=True)
     written = []
     dest_root = os.path.abspath(dest_dir)
     with zipfile.ZipFile(zip_path) as zf:
-        for name in zf.namelist():
-            if name.endswith('/'):
-                continue
-            target = os.path.abspath(os.path.join(dest_root, name))
-            if os.path.commonpath([dest_root, target]) != dest_root:
+        for name, rel in _payload_members(zf.namelist()):
+            target = os.path.abspath(os.path.join(dest_root, rel))
+            if os.path.dirname(target) != dest_root:
                 raise ValueError(f'archive entry escapes the target directory: {name}')
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if rel in written:
+                raise ValueError(f'release archive stages {rel} twice')
             with zf.open(name) as src, open(target, 'wb') as out:
                 out.write(src.read())
-            written.append(os.path.basename(target))
+            written.append(rel)
     if EXE_NAME not in written:
         raise ValueError(f'release archive has no {EXE_NAME}')
     return written

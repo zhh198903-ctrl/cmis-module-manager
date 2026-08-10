@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.2.0'
+__version__ = '2.2.1'
 
 import sys
 import os
@@ -1209,6 +1209,14 @@ def api_update_apply():
                                total_hint=rel['asset_size'])
         if not updater.verify_sha256(archive, rel['sha256']):
             shutil.rmtree(staged, ignore_errors=True)
+            # Separate messages: "we checked and it was wrong" and "there was
+            # nothing to check against" call for different reactions, and the
+            # second one is not the user's fault.
+            if not rel['sha256']:
+                return _err(
+                    f'Release {rel["version"]} publishes no SHA-256 digest, so the '
+                    'download cannot be verified; nothing was installed. Download '
+                    'it from the release page by hand if you trust it.', 500)
             return _err('Downloaded file failed its checksum; update aborted', 500)
         updater.extract_payload(archive, staged)
         os.remove(archive)
@@ -1221,8 +1229,12 @@ def api_update_apply():
     # response time to reach the browser, then quit so the swap can proceed.
     threading.Timer(1.5, lambda: os._exit(0)).start()
     return _ok({
-        'message': f'Updating to {rel["version"]}. The window will close and '
-                   'reopen automatically.',
+        # The old build cannot reliably relaunch itself after replacing its own
+        # exe, so do not promise it will. app.js discards this and shows the
+        # completion screen, but a stale promise here would resurface the moment
+        # anything else read it.
+        'message': f'Updating to {rel["version"]}. This window closes; the page '
+                   'reconnects on its own if the new build comes back up.',
         'version': rel['version'],
     })
 

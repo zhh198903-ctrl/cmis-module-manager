@@ -248,15 +248,66 @@ class TestUpdater(unittest.TestCase):
             self.assertCountEqual(names, [u.EXE_NAME, 'manual.html', 'qrcode.jpg'])
             self.assertTrue(os.path.isfile(os.path.join(out, u.EXE_NAME)))
 
-    def test_checksum_absent_is_accepted_but_mismatch_is_not(self):
+    def test_a_wrapped_payload_still_stages_flat(self):
+        """The layout v2.1.0 and v2.2.0 actually shipped.
+
+        Those zips hold a CMIS2Customer/ folder rather than the four files.
+        Staging kept the folder, so the swap helper found no exe where it
+        looks, retried for 75 s and quit before ever relaunching - the update
+        silently did nothing on every real upgrade into those two versions.
+        """
+        import tempfile, zipfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            zp = os.path.join(tmp, 'wrapped.zip')
+            with zipfile.ZipFile(zp, 'w') as zf:
+                zf.writestr('CMIS2Customer/' + u.EXE_NAME, b'exe')
+                zf.writestr('CMIS2Customer/manual.html', b'doc')
+                zf.writestr('CMIS2Customer/qrcode.jpg', b'img')
+            out = os.path.join(tmp, 'out')
+            names = u.extract_payload(zp, out)
+            self.assertCountEqual(names, [u.EXE_NAME, 'manual.html', 'qrcode.jpg'])
+            self.assertTrue(os.path.isfile(os.path.join(out, u.EXE_NAME)),
+                            'the helper looks for the exe in the staging root')
+            self.assertFalse(os.path.isdir(os.path.join(out, 'CMIS2Customer')))
+
+    def test_extract_refuses_a_payload_it_cannot_stage_flat(self):
+        """Failing loudly beats the 75 s silent stall the helper used to hit."""
+        import tempfile, zipfile
+        import updater as u
+        for label, entries in [
+            ('two levels deep', ['a/b/' + u.EXE_NAME, 'a/b/manual.html']),
+            ('only some nested', [u.EXE_NAME, 'sub/manual.html']),
+            ('same name twice', ['a/' + u.EXE_NAME, 'b/' + u.EXE_NAME]),
+        ]:
+            with tempfile.TemporaryDirectory() as tmp:
+                zp = os.path.join(tmp, 'odd.zip')
+                with zipfile.ZipFile(zp, 'w') as zf:
+                    for n in entries:
+                        zf.writestr(n, b'x')
+                with self.assertRaises(ValueError, msg=label):
+                    u.extract_payload(zp, os.path.join(tmp, 'out'))
+
+    def test_an_unverifiable_download_is_refused_like_a_failed_one(self):
+        """This test used to assert the opposite, and its old name said so.
+
+        Accepting a download with no digest to check against meant an attacker
+        who could strip one field got an unverified install with nothing shown
+        to the user - while the manual told that user the tool refuses exactly
+        this case. Every release asset this project has published carries a
+        digest, so nothing that works today is refused.
+        """
         import tempfile
         import updater as u
         with tempfile.TemporaryDirectory() as tmp:
             p = os.path.join(tmp, 'f.bin')
             with open(p, 'wb') as fh:
                 fh.write(b'hello')
-            self.assertTrue(u.verify_sha256(p, None))
+            digest = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+            self.assertFalse(u.verify_sha256(p, None), 'no digest must not pass')
+            self.assertFalse(u.verify_sha256(p, ''), 'empty digest must not pass')
             self.assertFalse(u.verify_sha256(p, '00' * 32))
+            self.assertTrue(u.verify_sha256(p, digest), 'a real match must pass')
 
     def test_swap_script_is_bounded_and_quotes_paths(self):
         """Unbounded waits would leave a hidden PowerShell spinning forever."""
@@ -1938,6 +1989,63 @@ class TestDisplayPreferences(CMISTestCase):
         manual = self._read('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
         for phrase in ('显示设置', '主题', '界面缩放'):
             self.assertIn(phrase, manual, f'the manual never mentions {phrase}')
+
+
+class TestManualMatchesBehaviour(CMISTestCase):
+    """The manual ships to customers as the only description of the product.
+
+    These pin the claims that were found wrong once already, so a rewrite or a
+    careless version bump cannot quietly put them back.
+    """
+
+    def _manual(self):
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        return io.open(path, encoding='utf-8').read()
+
+    def test_the_alarm_fallback_is_not_described_as_symmetric(self):
+        """ALARM_FALLBACK is -10/+3 dBm; '±10' was never a value in the code."""
+        manual = self._manual()
+        self.assertNotIn('±10', manual)
+        self.assertIn('−10 / +3', manual)
+
+    def test_the_guard_paragraph_keeps_its_version_and_its_scope(self):
+        """Bumping the version with a global search-and-replace rewrote history
+        here once: the cross-site guard shipped in v2.1.0, not v2.2.0. The
+        scope matters just as much - the guard covers /api/, so a reader must
+        not conclude the page failing to load is what keeps them safe.
+        """
+        manual = self._manual()
+        self.assertIn('自 <b>v2.1.0</b> 起', manual)
+        self.assertIn('/api/', manual)
+        for name in ('127.0.0.1', 'localhost', '[::1]'):
+            self.assertIn(name, manual, f'{name} also reaches the API')
+
+    def test_the_datapath_apply_carries_a_traffic_warning(self):
+        """Apply restarts all eight lanes including the untouched ones, which
+        is the easiest way in the whole UI to drop live traffic by accident."""
+        manual = self._manual()
+        self.assertIn('Apply 会重启全部 8 条 lane', manual)
+        section = manual.split('9.3 DataPath 配置表', 1)[1].split('9.4', 1)[0]
+        self.assertIn('callout-warn', section)
+        self.assertIn('中断', section)
+
+    def test_the_appendix_lists_the_buttons_that_disrupt_traffic(self):
+        """It calls itself a button reference; omitting the dangerous ones is
+        how a reader concludes none of them are dangerous."""
+        appendix = self._manual().split('13. 附录', 1)[1]
+        for button in ('Reset Module', 'Enter LowPwr', 'Exit LowPwr', 'Write'):
+            self.assertIn(button, appendix, f'{button} is missing')
+
+    def test_a_missing_digest_reads_differently_from_a_bad_one(self):
+        """"We checked and it was wrong" and "there was nothing to check
+        against" call for different reactions from the user."""
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        src = io.open(path, encoding='utf-8').read()
+        self.assertIn('publishes no SHA-256 digest', src)
+        self.assertIn('failed its checksum', src)
 
 
 class TestRequestGuardScope(CMISTestCase):
