@@ -248,6 +248,196 @@ class TestUpdater(unittest.TestCase):
             self.assertCountEqual(names, [u.EXE_NAME, 'manual.html', 'qrcode.jpg'])
             self.assertTrue(os.path.isfile(os.path.join(out, u.EXE_NAME)))
 
+    def _download_harness(self, responses):
+        """Drive download_asset against scripted responses, no network.
+
+        Returns (fake_open, requests) - requests records each urllib Request so
+        a test can assert which byte range was actually asked for.
+        """
+        import io as _io
+        requests = []
+
+        class _Resp:
+            def __init__(self, body, code=200, content_length=None):
+                self._buf = _io.BytesIO(body)
+                self._code = code
+                n = len(body) if content_length is None else content_length
+                self.headers = {'Content-Length': str(n)}
+
+            def getcode(self):
+                return self._code
+
+            def read(self, n=-1):
+                return self._buf.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        scripted = list(responses)
+
+        def fake_open(req, timeout):
+            requests.append(req)
+            item = scripted.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return _Resp(*item)
+
+        return fake_open, requests
+
+    def _with_fake_open(self, fake_open):
+        import updater as u
+        original = u._open
+        u._open = fake_open
+        self.addCleanup(lambda: setattr(u, '_open', original))
+
+    def test_a_dropped_connection_resumes_instead_of_starting_over(self):
+        """Restarting from zero can never finish on a link that drops more
+        often than a full download takes - which is what a 16 MB asset over a
+        slow proxy looks like."""
+        import tempfile
+        import updater as u
+        payload = bytes(range(256)) * 8          # 2048 bytes
+        fake, reqs = self._download_harness([
+            (payload[:800], 200, len(payload)),  # closes early
+            (payload[800:], 206, None),          # honours Range
+        ])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset(_GH_URL, dest, total_hint=len(payload), retry_wait=0)
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+            self.assertFalse(os.path.exists(dest + '.part'))
+        self.assertIsNone(reqs[0].get_header('Range'))
+        self.assertEqual(reqs[1].get_header('Range'), 'bytes=800-',
+                         'the retry must ask only for the missing bytes')
+
+    def test_a_server_ignoring_range_restarts_rather_than_corrupting(self):
+        """Appending a full body onto a partial file would produce a plausible
+        archive of the wrong length; the checksum would catch it, but only
+        after another full download."""
+        import tempfile
+        import updater as u
+        payload = bytes(range(256)) * 8
+        fake, _ = self._download_harness([
+            (payload[:800], 200, len(payload)),
+            (payload, 200, None),                # ignores Range, sends it all
+        ])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset(_GH_URL, dest, total_hint=len(payload), retry_wait=0)
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+
+    def test_a_download_that_never_finishes_leaves_nothing_behind(self):
+        """A .part left next to the staged files would be mistaken for the
+        asset by the next step."""
+        import tempfile
+        import updater as u
+        payload = b'x' * 2048
+        fake, reqs = self._download_harness([(payload[:100], 200, len(payload))] * 3)
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            with self.assertRaises(Exception):
+                u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                                 attempts=3, retry_wait=0)
+            self.assertFalse(os.path.exists(dest))
+            self.assertFalse(os.path.exists(dest + '.part'))
+        self.assertEqual(len(reqs), 3, 'it must stop after the given attempts')
+
+    def test_a_definitive_http_error_is_not_retried(self):
+        """A 404, or the handler's refusal to follow a redirect off GitHub,
+        will not fix itself - retrying only delays the error."""
+        import tempfile
+        import urllib.error
+        import updater as u
+        err = urllib.error.HTTPError(_GH_URL, 404, 'Not Found', {}, None)
+        fake, reqs = self._download_harness([err, err, err])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(urllib.error.HTTPError):
+                u.download_asset(_GH_URL, os.path.join(tmp, 'a.zip'),
+                                 attempts=3, retry_wait=0)
+        self.assertEqual(len(reqs), 1)
+
+    def test_a_kept_partial_lets_a_later_run_carry_on(self):
+        """Retries alone still lose everything once they run out. On a link
+        that drops this often, the bytes already fetched are the only thing
+        that makes the next attempt shorter than the last."""
+        import tempfile
+        import updater as u
+        payload = bytes(range(256)) * 8
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            part = os.path.join(tmp, 'keep', 'a.zip.part')
+
+            fake, _ = self._download_harness([(payload[:900], 200, len(payload))])
+            self._with_fake_open(fake)
+            with self.assertRaises(Exception):
+                u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                                 attempts=1, retry_wait=0,
+                                 part_path=part, keep_partial=True)
+            self.assertTrue(os.path.exists(part), 'the progress must survive')
+            self.assertEqual(os.path.getsize(part), 900)
+
+            fake2, reqs2 = self._download_harness([(payload[900:], 206, None)])
+            self._with_fake_open(fake2)
+            u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                             attempts=1, retry_wait=0,
+                             part_path=part, keep_partial=True)
+            self.assertEqual(reqs2[0].get_header('Range'), 'bytes=900-')
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+            self.assertFalse(os.path.exists(part))
+
+    def test_a_partial_longer_than_the_asset_is_thrown_away(self):
+        """A release rebuilt under the same name leaves a partial that is not
+        a prefix of anything; resuming past it would fail the checksum on
+        every future attempt, which is a loop the user cannot get out of."""
+        import tempfile
+        import updater as u
+        payload = b'z' * 1000
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            part = os.path.join(tmp, 'a.zip.part')
+            with open(part, 'wb') as fh:
+                fh.write(b'Q' * 4000)
+            fake, reqs = self._download_harness([(payload, 200, None)])
+            self._with_fake_open(fake)
+            u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                             attempts=2, retry_wait=0, part_path=part)
+            self.assertIsNone(reqs[0].get_header('Range'),
+                              'it must not resume from a bogus offset')
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+
+    def test_partials_for_other_versions_are_dropped(self):
+        """Otherwise every abandoned upgrade parks 16 MB on disk for good."""
+        import tempfile
+        import updater as u
+        with tempfile.TemporaryDirectory() as tmp:
+            original = u.download_dir
+            u.download_dir = lambda: tmp
+            self.addCleanup(lambda: setattr(u, 'download_dir', original))
+            for name in ('CMIS_dist_v2_2_1.zip.part', 'CMIS_dist_v2_2_2.zip.part'):
+                open(os.path.join(tmp, name), 'wb').close()
+            removed = u.discard_stale_partials('CMIS_dist_v2_2_2.zip')
+            self.assertEqual(removed, ['CMIS_dist_v2_2_1.zip.part'])
+            self.assertEqual(os.listdir(tmp), ['CMIS_dist_v2_2_2.zip.part'])
+
+    def test_the_partial_is_not_kept_where_staging_gets_wiped(self):
+        """api_update_apply rmtree's the staging directory before every
+        download; a partial in there could never survive to be resumed."""
+        import updater as u
+        staged = os.path.normcase(os.path.abspath(u.staging_dir()))
+        part = os.path.normcase(os.path.abspath(u.partial_path('CMIS_dist_v9_9_9.zip')))
+        self.assertFalse(part.startswith(staged + os.sep))
+
     def test_a_wrapped_payload_still_stages_flat(self):
         """The layout v2.1.0 and v2.2.0 actually shipped.
 

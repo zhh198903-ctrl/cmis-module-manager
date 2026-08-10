@@ -24,6 +24,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -142,11 +143,15 @@ def normalize_release(data: dict) -> Optional[dict]:
 
 
 def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO,
-                         timeout: int = 10) -> Optional[dict]:
-    """GET the latest release, or None on any failure.
+                         timeout: int = 10, attempts: int = 3,
+                         retry_wait: float = 2.0) -> Optional[dict]:
+    """GET the latest release, or None once the retries are spent.
 
     Callers turn None into "could not reach GitHub" rather than "up to date":
     a network error must never be reported as being on the newest version.
+    That makes a single dropped connection look like the update server is
+    unreachable, which on a proxied link happens often enough to be worth
+    retrying before telling the user so.
     """
     url = f'https://api.github.com/repos/{owner}/{repo}/releases/latest'
     req = urllib.request.Request(url, headers={
@@ -154,12 +159,15 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO,
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
     })
-    try:
-        with _open(req, timeout) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-    except Exception:
-        return None
-    return normalize_release(data)
+    for attempt in range(attempts):
+        try:
+            with _open(req, timeout) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            return normalize_release(data)
+        except Exception:
+            if attempt + 1 < attempts:
+                time.sleep(retry_wait)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -169,32 +177,95 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO,
 def download_asset(url: str, dest_path: str,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
                    chunk: int = 1 << 16, timeout: int = 30,
-                   total_hint: int = 0) -> str:
-    """Stream url to dest_path via a .part file so a killed download never
-    leaves a half-written archive that looks complete."""
+                   total_hint: int = 0, attempts: int = 6,
+                   retry_wait: float = 2.0, part_path: Optional[str] = None,
+                   keep_partial: bool = False) -> str:
+    """Stream url to dest_path via a .part file, resuming after a dropped link.
+
+    A 16 MB asset over a slow or proxied connection routinely dies mid-transfer
+    - the object store just closes the socket, which surfaces as an SSL
+    "unexpected EOF" - and starting over from zero can never finish if the link
+    drops more often than a full download takes. Each retry asks for only the
+    bytes still missing and appends to the same .part file, so progress
+    survives; the file is renamed into place only once it is complete.
+
+    A server that ignores Range answers 200 instead of 206, and then the file
+    has to start over rather than be corrupted by appended duplicates. Either
+    way the caller's SHA-256 check is what makes the result safe to trust - a
+    resume that silently stitched together the wrong bytes fails it.
+
+    part_path puts the partial file somewhere the caller controls, and
+    keep_partial leaves it there when the attempts run out, so a download can
+    carry on across separate runs instead of only across retries. The default
+    keeps the old behaviour: a partial beside dest_path, removed on failure so
+    nothing that looks like the asset is left behind.
+    """
     if not is_trusted_url(url):
         raise ValueError(f'refusing to download from an untrusted URL: {url}')
-    part = dest_path + '.part'
-    req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+    part = part_path or dest_path + '.part'
+    os.makedirs(os.path.dirname(os.path.abspath(part)), exist_ok=True)
+    total = total_hint
+    last_err = None
     try:
-        with _open(req, timeout) as resp:
-            total = int(resp.headers.get('Content-Length') or 0) or total_hint
-            done = 0
-            with open(part, 'wb') as fh:
-                while True:
-                    buf = resp.read(chunk)
-                    if not buf:
-                        break
-                    fh.write(buf)
-                    done += len(buf)
-                    if progress_cb:
-                        progress_cb(done, total)
+        for attempt in range(attempts):
+            have = os.path.getsize(part) if os.path.exists(part) else 0
+            # A leftover longer than the asset cannot be a prefix of it - the
+            # release was rebuilt under the same name, or the file is junk.
+            if total and have > total:
+                open(part, 'wb').close()
+                have = 0
+            if total and have == total:
+                break
+            headers = {'User-Agent': _USER_AGENT}
+            if have:
+                headers['Range'] = f'bytes={have}-'
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with _open(req, timeout) as resp:
+                    resumed = have > 0 and resp.getcode() == 206
+                    if have and not resumed:
+                        have = 0
+                    length = int(resp.headers.get('Content-Length') or 0)
+                    total = have + length if length else total
+                    done = have
+                    with open(part, 'ab' if resumed else 'wb') as fh:
+                        while True:
+                            buf = resp.read(chunk)
+                            if not buf:
+                                break
+                            fh.write(buf)
+                            done += len(buf)
+                            if progress_cb:
+                                progress_cb(done, total)
+                if not total or done >= total:
+                    break
+                last_err = IOError(
+                    f'connection closed after {done} of {total} bytes')
+            except urllib.error.HTTPError as e:
+                # 416 means the .part is already at or past the asset's length,
+                # so there is nothing left to ask for and the file is wrong.
+                if e.code == 416:
+                    open(part, 'wb').close()
+                    last_err = e
+                elif e.code == 429 or e.code >= 500:
+                    last_err = e
+                else:
+                    raise   # a refused redirect or a 404 will not fix itself
+            except OSError as e:
+                # ssl.SSLError and socket timeouts land here; these are the
+                # ones worth resuming.
+                last_err = e
+            if attempt + 1 < attempts:
+                time.sleep(retry_wait)
+        else:
+            raise last_err or IOError('download did not complete')
         os.replace(part, dest_path)
     except BaseException:
-        try:
-            os.remove(part)
-        except OSError:
-            pass
+        if not keep_partial:
+            try:
+                os.remove(part)
+            except OSError:
+                pass
         raise
     return dest_path
 
@@ -430,3 +501,46 @@ def staging_dir() -> str:
     """Where the update is unpacked: beside the exe, so the swap move is a
     rename on the same volume rather than a cross-device copy."""
     return os.path.join(os.path.dirname(current_exe_path()), '_cmis_update')
+
+
+def download_dir() -> str:
+    """Where a partly downloaded asset waits between attempts.
+
+    Deliberately not inside staging_dir(): that one is wiped at the start of
+    every update so extraction starts clean, which would throw away the very
+    bytes a resume needs. Beside the exe keeps the final rename on one volume.
+    """
+    return os.path.join(os.path.dirname(current_exe_path()), '_cmis_download')
+
+
+def partial_path(asset_name: str) -> str:
+    """The partial file for one release asset.
+
+    Named after the asset, so a partial left by an abandoned upgrade to one
+    version is never mistaken for the start of a different version's download
+    - the asset name carries the version.
+    """
+    return os.path.join(download_dir(), os.path.basename(asset_name) + '.part')
+
+
+def discard_stale_partials(keep_asset_name: str) -> list:
+    """Drop partials for anything but the asset being fetched now.
+
+    Without this a user who gives up on one version leaves 16 MB parked on
+    disk for good, and every later release adds another.
+    """
+    keep = os.path.basename(partial_path(keep_asset_name))
+    removed = []
+    try:
+        names = os.listdir(download_dir())
+    except OSError:
+        return removed
+    for name in names:
+        if name == keep:
+            continue
+        try:
+            os.remove(os.path.join(download_dir(), name))
+            removed.append(name)
+        except OSError:
+            pass
+    return removed

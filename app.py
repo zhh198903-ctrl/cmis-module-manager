@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.2.1'
+__version__ = '2.2.2'
 
 import sys
 import os
@@ -1205,8 +1205,14 @@ def api_update_apply():
             shutil.rmtree(staged, ignore_errors=True)
         os.makedirs(staged, exist_ok=True)
         archive = os.path.join(staged, rel['asset_name'])
+        # The partial lives outside `staged`, which was just wiped: on a link
+        # that keeps dropping, the bytes already fetched are the only thing
+        # that makes the next attempt shorter than the last.
+        updater.discard_stale_partials(rel['asset_name'])
         updater.download_asset(rel['asset_url'], archive,
-                               total_hint=rel['asset_size'])
+                               total_hint=rel['asset_size'],
+                               part_path=updater.partial_path(rel['asset_name']),
+                               keep_partial=True)
         if not updater.verify_sha256(archive, rel['sha256']):
             shutil.rmtree(staged, ignore_errors=True)
             # Separate messages: "we checked and it was wrong" and "there was
