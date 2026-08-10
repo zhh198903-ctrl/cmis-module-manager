@@ -355,9 +355,9 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.0.9<br>
+      <b>版本</b>　2.1.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
-      <b>更新日期</b>　2026-08-08<br>
+      <b>更新日期</b>　2026-08-09<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
     </div>
   </div>
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.0.9 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.0.9</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.1.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.1.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -565,6 +565,9 @@
         整个过程记录在 EXE 同目录的 <code>update.log</code> 里</li>
     <li><b>无法联网</b>：明确提示无法访问 GitHub，并给出手动下载地址。
         <b>不会</b>把联网失败误报成"已是最新"</li>
+    <li><b>校验不通过</b>：下载包会逐字节比对 GitHub 公布的 SHA-256 摘要，
+        对不上就丢弃、不安装。如果该版本压根没有公布摘要，同样<b>拒绝安装</b>并提示你
+        自行到 Release 页面手动下载——"无法校验"和"校验失败"一样危险，不会放行</li>
   </ul>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
@@ -573,6 +576,14 @@
     因此完成页会明确提示你双击 EXE。文件此时已全部更新完毕，重启后就是新版本。
     升级仅在 EXE 版可用；从源码运行时会提示改用 <code>git pull</code>。
     本工具<b>只在你点击该按钮时才联网</b>，平时不会主动访问外部网络。</span>
+  </div>
+  <div class="callout">
+    <span class="callout-icon">🔒</span>
+    <span><b>关于本机 5000 端口的安全性</b>：程序只监听 127.0.0.1，外部机器无法访问。
+    自 v2.1.0 起还会拒绝<b>由其它网页发起</b>的请求——你在浏览器里打开的任何站点，
+    都无法借你的浏览器去连接模块、改寄存器或触发升级；用 IP 以外的域名指向本机也一样会被拒。
+    只有本工具自己的页面（<code>http://127.0.0.1:5000</code>）能操作模块。
+    你自己写的脚本、curl、Python 程序<b>不受影响</b>，仍可正常调用 API。</span>
   </div>
 
   <h3>5.3 数值进制的表示约定</h3>
@@ -1174,7 +1185,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.0.9<br>
+    CMIS Module Manager 操作手册 v2.1.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

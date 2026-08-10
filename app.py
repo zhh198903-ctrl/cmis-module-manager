@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.0.9'
+__version__ = '2.1.0'
 
 import sys
 import os
@@ -17,12 +17,17 @@ import cmis_registers as cmis
 import updater
 from i2c_interface import list_backends, create_backend
 
+# The port appears in the bind call, the accepted Host/Origin values and the
+# updater's health probe; keep them from drifting apart.
+PORT = 5000
+
 _BASE = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__,
             template_folder=os.path.join(_BASE, 'templates'),
             static_folder=os.path.join(_BASE, 'static'))
-# No CORS: the UI is same-origin. Allowing cross-origin requests would let any
-# website the user visits drive I2C register writes on the attached module.
+# No CORS headers are served, but that is not what keeps other sites out - it
+# only stops them reading the reply. See _reject_foreign_requests() below for
+# the check that actually refuses them.
 
 # ---------------------------------------------------------------------------
 # Module-level state (single-user desktop app)
@@ -50,6 +55,56 @@ def _require_connected():
     """Return error response if not connected, else None."""
     if not _state['connected'] or _state['backend'] is None:
         return _err("Not connected to any module", 503)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Local-origin request guard
+# ---------------------------------------------------------------------------
+# Serving no CORS headers does NOT make this API unreachable from other sites.
+# It only stops the attacker reading the reply; the request itself is still
+# delivered and still executes. A page on any site the user happens to open can
+# POST here as a CORS "simple request" - no preflight, no consent - and drive
+# I2C writes on whatever module is plugged in. So provenance is checked here
+# instead of being assumed from same-origin hosting.
+_LOCAL_NAMES = ('127.0.0.1', 'localhost', '[::1]')
+_ALLOWED_HOSTS = frozenset(
+    list(_LOCAL_NAMES) + [f'{n}:{PORT}' for n in _LOCAL_NAMES])
+_ALLOWED_ORIGINS = frozenset(
+    [f'http://{n}:{PORT}' for n in _LOCAL_NAMES] +
+    [f'http://{n}' for n in _LOCAL_NAMES])
+
+
+@app.before_request
+def _reject_foreign_requests():
+    """Refuse anything a browser tells us came from somewhere else.
+
+    Sec-Fetch-Site rides on every request current browsers make, including the
+    ones that carry no Origin at all - a bare <img> GET, a form post - so it is
+    the only signal that covers state-changing GETs. Non-browser callers (curl,
+    the test suite) send none of these headers and are left alone: a local
+    process already runs with the user's rights and gains nothing by coming
+    through the API.
+    """
+    site = request.headers.get('Sec-Fetch-Site')
+    if site and site not in ('same-origin', 'none'):
+        return _err('Refused: this request came from another site', 403)
+
+    origin = request.headers.get('Origin')
+    if origin and origin not in _ALLOWED_ORIGINS:
+        return _err('Refused: cross-origin request', 403)
+
+    # DNS rebinding: the attacker points a name they own at 127.0.0.1, so the
+    # browser calls their page same-origin and can read the replies too. The
+    # Host header is what gives that away - the real UI never sends another.
+    if request.host not in _ALLOWED_HOSTS:
+        return _err('Refused: unexpected Host header', 403)
+
+    # application/json is not a CORS-simple content type, so requiring it forces
+    # a preflight that a foreign page cannot satisfy. This is the layer that
+    # holds if a browser ever omits the headers above.
+    if request.method == 'POST' and request.content_length and not request.is_json:
+        return _err('Expected Content-Type: application/json', 415)
     return None
 
 
@@ -150,7 +205,7 @@ def api_backends():
 
 @app.route('/api/connect', methods=['POST'])
 def api_connect():
-    body = request.get_json(force=True, silent=True) or {}
+    body = request.get_json(silent=True) or {}
     backend_name = body.get('backend', 'mock_dr8')
     try:
         bus = int(body.get('bus', 0))
@@ -446,7 +501,7 @@ def api_module_control_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         action = body.get('action', '')
 
         # Byte 0x1A packs unrelated controls together, so read it first and
@@ -488,7 +543,7 @@ def api_datapath_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         tx_disable_mask = int(body.get('tx_disable_mask', 0)) & 0xFF
         app_select = body.get('app_select', [1] * 8)
         tx_pol_mask = int(body.get('tx_polarity_flip_mask', 0)) & 0xFF
@@ -653,7 +708,7 @@ def api_squelch_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         tx_sq = int(body.get('tx_squelch_disable', 0)) & 0xFF
         tx_sf = int(body.get('tx_squelch_force',   0)) & 0xFF
         rx_od = int(body.get('rx_output_disable',  0)) & 0xFF
@@ -692,7 +747,7 @@ def api_loopback_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         media_out = int(body.get('media_side_output', 0)) & 0xFF
         media_in  = int(body.get('media_side_input',  0)) & 0xFF
         host_out  = int(body.get('host_side_output',  0)) & 0xFF
@@ -747,7 +802,7 @@ def api_prbs_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         _set_page(0x13)
         for key, base_addr in [
             ('host_gen',  0x90),
@@ -908,7 +963,7 @@ def api_laser_set():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         _set_page(0x12)
         lanes = body.get('lanes', [])
         for ldata in lanes:
@@ -986,7 +1041,7 @@ def api_register_read():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         page_raw = body.get('page', 0)
         if isinstance(page_raw, str):
             page = int(page_raw, 0)
@@ -1031,7 +1086,7 @@ def api_register_write():
     if err:
         return err
     try:
-        body = request.get_json(force=True, silent=True) or {}
+        body = request.get_json(silent=True) or {}
         page_raw = body.get('page', 0)
         if isinstance(page_raw, str):
             page = int(page_raw, 0)
@@ -1174,7 +1229,7 @@ def index():
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    url = 'http://127.0.0.1:5000'
+    url = f'http://127.0.0.1:{PORT}'
     print(f"CMIS Module Manager v{__version__} starting on {url}")
     # Set CMIS_NO_BROWSER=1 to start the server without opening a tab. Repeated
     # automated launches otherwise leave a pile of tabs behind, and after a
@@ -1182,4 +1237,4 @@ if __name__ == '__main__':
     # the page the user is already looking at.
     if os.environ.get('CMIS_NO_BROWSER', '').strip() not in ('1', 'true', 'True'):
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    app.run(host='127.0.0.1', port=5000, debug=False, threaded=False)
+    app.run(host='127.0.0.1', port=PORT, debug=False, threaded=False)

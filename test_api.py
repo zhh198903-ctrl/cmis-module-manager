@@ -12,6 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app as app_module
 from app import app, _state
 
+# Shape of a real release-asset URL. The updater refuses anything that is not
+# https on a GitHub host, so fixtures have to look genuine or they would pass
+# for the wrong reason.
+_GH_URL = ('https://github.com/zhh198903-ctrl/cmis-module-manager/releases/'
+           'download/v2.1.0/CMIS_dist_v2_1_0.zip')
+
 
 def reset_state():
     """Reset global app state between tests."""
@@ -182,22 +188,25 @@ class TestUpdater(unittest.TestCase):
             'html_url': 'https://example.invalid/r',
             'body': 'notes',
             'assets': [
-                {'name': 'source.zip', 'browser_download_url': 'https://x/1'},
+                {'name': 'source.zip',
+                 'browser_download_url': 'https://github.com/o/r/a/source.zip'},
                 {'name': 'CMIS_dist_v2_1_0.zip', 'size': 123,
-                 'digest': 'sha256:ABC', 'browser_download_url': 'https://x/2'},
+                 'digest': 'sha256:ABC',
+                 'browser_download_url': _GH_URL},
             ],
         })
         self.assertEqual(rel['version'], '2.1.0')
         self.assertEqual(rel['asset_name'], 'CMIS_dist_v2_1_0.zip')
-        self.assertEqual(rel['asset_url'], 'https://x/2')
+        self.assertEqual(rel['asset_url'], _GH_URL)
         self.assertEqual(rel['sha256'], 'abc')
 
     def test_release_without_our_asset_is_rejected(self):
         """A release carrying only source tarballs must not look installable."""
         import updater as u
+        # A GitHub-hosted URL, so this can only be rejected on the asset name.
         self.assertIsNone(u.normalize_release(
             {'tag_name': 'v9.9.9', 'assets': [{'name': 'notes.txt',
-                                               'browser_download_url': 'https://x'}]}))
+                                               'browser_download_url': _GH_URL}]}))
         self.assertIsNone(u.normalize_release({'tag_name': 'v9.9.9', 'assets': []}))
         self.assertIsNone(u.normalize_release(None))
 
@@ -255,7 +264,9 @@ class TestUpdater(unittest.TestCase):
         self.assertIn('-lt 150', ps, 'the unlock wait is unbounded')
         self.assertIn('-le 2', ps, 'the relaunch is retried without limit')
         self.assertIn('-lt 15', ps, 'the health wait is unbounded')
-        self.assertIn(r'"C:\install dir\CMIS_Module_Manager.exe"', ps)
+        # Single-quoted, so a path with spaces survives and one containing
+        # $(...) is not evaluated - see test_install_path_cannot_inject_powershell.
+        self.assertIn(r"'C:\install dir\CMIS_Module_Manager.exe'", ps)
 
     def test_swap_script_verifies_the_app_came_back(self):
         """Moving the files is not the same as the app running again; the
@@ -1472,10 +1483,18 @@ class TestEdgeCases(CMISTestCase):
         self.assertOk(rv)
 
     def test_connect_missing_json_content_type(self):
-        """POST without Content-Type: json should still work (force=True)."""
+        """A POST that is not declared as JSON must be refused.
+
+        This used to be accepted (get_json(force=True)), which is precisely
+        what made the API reachable from any other website: text/plain is a
+        CORS-simple content type, so a foreign page could post JSON here with
+        no preflight and no consent. Requiring application/json forces the
+        preflight that such a page cannot satisfy.
+        """
         rv = self.client.post('/api/connect',
-                              data=json.dumps({'backend': 'mock_dr8'}))
-        self.assertOk(rv)
+                              data=json.dumps({'backend': 'mock_dr8'}),
+                              content_type='text/plain')
+        self.assertEqual(rv.status_code, 415)
 
     def test_monitoring_after_datapath_write(self):
         """Monitoring should remain functional after datapath write."""
@@ -1607,6 +1626,140 @@ class TestCmisRegisters(unittest.TestCase):
         unpacked = unpack_appselect(packed)
         # 0xFF & 0x0F = 0xF = 15
         self.assertTrue(all(v == 15 for v in unpacked))
+
+
+# ============================================================
+# Request provenance (anti-CSRF / anti-DNS-rebinding)
+# ============================================================
+
+class TestForeignRequestsRefused(CMISTestCase):
+    """Any other website the user opens must not be able to drive this API.
+
+    Serving no CORS headers does not achieve that: it withholds the response
+    from the attacker but the request still executes. Before this guard, a
+    text/plain POST from any page wrote to the attached module and returned
+    200 - a real risk of damaging expensive hardware, not just a nuisance.
+    """
+
+    WRITE = {'page': 0x10, 'address': 130, 'data': [0xFF]}
+
+    def test_the_original_attack_is_refused(self):
+        """Verbatim replay of what used to succeed: a CORS-simple POST."""
+        self.connect()
+        rv = self.client.post('/api/register/write',
+                              data=json.dumps(self.WRITE),
+                              content_type='text/plain',
+                              headers={'Origin': 'https://evil.example',
+                                       'Sec-Fetch-Site': 'cross-site'})
+        self.assertEqual(rv.status_code, 403)
+
+    def test_cross_site_fetch_metadata_is_refused(self):
+        self.connect()
+        rv = self.client.post('/api/register/write', json=self.WRITE,
+                              headers={'Sec-Fetch-Site': 'cross-site'})
+        self.assertEqual(rv.status_code, 403)
+
+    def test_foreign_origin_is_refused(self):
+        self.connect()
+        rv = self.client.post('/api/register/write', json=self.WRITE,
+                              headers={'Origin': 'https://evil.example'})
+        self.assertEqual(rv.status_code, 403)
+
+    def test_state_changing_get_is_refused(self):
+        """A bare <img src> GET carries no Origin, so Sec-Fetch-Site is the
+        only thing standing between a foreign page and this route."""
+        self.connect()
+        rv = self.client.get('/api/disconnect',
+                             headers={'Sec-Fetch-Site': 'cross-site'})
+        self.assertEqual(rv.status_code, 403)
+
+    def test_dns_rebinding_is_refused(self):
+        """With a name the attacker owns pointed at 127.0.0.1 the browser
+        calls their page same-origin and would read the replies too. The Host
+        header is what gives it away."""
+        self.connect()
+        rv = self.client.get('/api/module/info',
+                             headers={'Host': 'evil.example'})
+        self.assertEqual(rv.status_code, 403)
+
+    def test_form_encoded_post_is_refused(self):
+        """The layer that holds even if a browser sends no metadata at all."""
+        self.connect()
+        rv = self.client.post('/api/register/write',
+                              data='page=16&address=130&data=255',
+                              content_type='application/x-www-form-urlencoded')
+        self.assertEqual(rv.status_code, 415)
+
+    def test_the_real_ui_still_works(self):
+        """The guard is worthless if it also blocks the page it protects."""
+        self.connect()
+        rv = self.client.post('/api/register/write', json=self.WRITE,
+                              headers={'Origin': 'http://127.0.0.1:5000',
+                                       'Sec-Fetch-Site': 'same-origin',
+                                       'Host': '127.0.0.1:5000'})
+        self.assertOk(rv)
+
+    def test_address_bar_and_localhost_still_work(self):
+        """Sec-Fetch-Site: none is what a browser sends for a typed URL."""
+        rv = self.client.get('/api/version',
+                             headers={'Sec-Fetch-Site': 'none',
+                                      'Host': 'localhost:5000'})
+        self.assertOk(rv)
+
+
+# ============================================================
+# Update-path hardening
+# ============================================================
+
+class TestUpdateTrustBoundary(unittest.TestCase):
+
+    def test_install_path_cannot_inject_powershell(self):
+        """A Windows directory may legally be named `$(...)`, and inside a
+        double-quoted PowerShell string that runs before the cmdlet does -
+        under -ExecutionPolicy Bypass. Paths must be single-quoted literals."""
+        import updater as u
+        evil = r'D:\tools\$(Start-Process calc.exe)\CMIS'
+        ps = u.build_swap_script(evil + r'\_cmis_update', evil)
+        self.assertNotIn(f'"{evil}', ps, 'path landed in an expanding string')
+        self.assertIn(f"'{evil}", ps)
+
+    def test_embedded_quote_is_escaped(self):
+        import updater as u
+        self.assertEqual(u.ps_literal(r"D:\it's here"), r"'D:\it''s here'")
+
+    def test_asset_url_must_be_https_on_github(self):
+        import updater as u
+        for bad in ('http://attacker.example/p.zip',
+                    'https://attacker.example/p.zip',
+                    'https://github.com.evil.example/p.zip',
+                    'http://github.com/o/r/p.zip'):
+            self.assertFalse(u.is_trusted_url(bad), bad)
+        for good in (_GH_URL, 'https://objects.githubusercontent.com/x'):
+            self.assertTrue(u.is_trusted_url(good), good)
+
+    def test_release_pointing_off_github_is_not_installable(self):
+        import updater as u
+        self.assertIsNone(u.normalize_release({
+            'tag_name': 'v9.9.9',
+            'assets': [{'name': 'CMIS_dist_v9_9_9.zip', 'size': 1,
+                        'browser_download_url': 'https://attacker.example/p.zip'}],
+        }))
+
+    def test_download_refuses_an_untrusted_url(self):
+        """Belt and braces: the check does not rely on normalize_release
+        having been the only way the URL was chosen."""
+        import updater as u
+        with self.assertRaises(ValueError):
+            u.download_asset('http://attacker.example/p.zip', 'unused.zip')
+
+    def test_redirects_off_github_are_refused(self):
+        """urllib follows redirects on its own; without this handler a 302
+        could walk the download onto plain http or another host entirely."""
+        import updater as u
+        h = u._TrustedRedirectHandler()
+        with self.assertRaises(Exception):
+            h.redirect_request(None, None, 302, 'Found', {},
+                               'http://attacker.example/p.zip')
 
 
 # ============================================================

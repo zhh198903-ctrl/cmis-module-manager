@@ -24,6 +24,8 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from typing import Callable, Optional
@@ -34,6 +36,42 @@ GITHUB_REPO = "cmis-module-manager"
 ASSET_PATTERN = re.compile(r"^CMIS_dist_v[\d_]+\.zip$", re.I)
 EXE_NAME = "CMIS_Module_Manager.exe"
 _USER_AGENT = "CMIS-Module-Manager-Updater"  # GitHub REST requires a User-Agent
+
+# Where a release asset may legitimately live. GitHub answers the download URL
+# with a redirect to its object store, so the whole chain is checked, not just
+# the first hop: urllib follows redirects on its own and would just as happily
+# follow one onto plain http, or off GitHub entirely.
+_TRUSTED_HOSTS = frozenset(['github.com', 'api.github.com'])
+_TRUSTED_SUFFIX = '.githubusercontent.com'
+
+
+def is_trusted_url(url: str) -> bool:
+    """True only for https URLs on GitHub or its asset hosts."""
+    try:
+        parts = urllib.parse.urlparse(url or '')
+    except ValueError:
+        return False
+    if parts.scheme != 'https':
+        return False
+    host = (parts.hostname or '').lower()
+    return host in _TRUSTED_HOSTS or host.endswith(_TRUSTED_SUFFIX)
+
+
+class _TrustedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Abort rather than follow a redirect that leaves GitHub or drops TLS."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not is_trusted_url(newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, 'refusing a redirect off GitHub', headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open(req, timeout: int):
+    opener = urllib.request.build_opener(
+        _TrustedRedirectHandler,
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    return opener.open(req, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +122,7 @@ def normalize_release(data: dict) -> Optional[dict]:
     tag = data.get('tag_name') or ''
     asset = next((a for a in (data.get('assets') or [])
                   if isinstance(a, dict) and ASSET_PATTERN.match(a.get('name') or '')), None)
-    if asset is None or not asset.get('browser_download_url'):
+    if asset is None or not is_trusted_url(asset.get('browser_download_url')):
         return None
     sha = None
     digest = asset.get('digest')
@@ -117,8 +155,7 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO,
         'X-GitHub-Api-Version': '2022-11-28',
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout,
-                                    context=ssl.create_default_context()) as resp:
+        with _open(req, timeout) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except Exception:
         return None
@@ -135,11 +172,12 @@ def download_asset(url: str, dest_path: str,
                    total_hint: int = 0) -> str:
     """Stream url to dest_path via a .part file so a killed download never
     leaves a half-written archive that looks complete."""
+    if not is_trusted_url(url):
+        raise ValueError(f'refusing to download from an untrusted URL: {url}')
     part = dest_path + '.part'
     req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=timeout,
-                                    context=ssl.create_default_context()) as resp:
+        with _open(req, timeout) as resp:
             total = int(resp.headers.get('Content-Length') or 0) or total_hint
             done = 0
             with open(part, 'wb') as fh:
@@ -221,6 +259,19 @@ _CREATE_NO_WINDOW = 0x08000000
 HEALTH_URL = 'http://127.0.0.1:5000/api/version'
 
 
+def ps_literal(s: str) -> str:
+    """Quote a string as a PowerShell single-quoted literal.
+
+    Windows lets a directory be named `$(whatever)`, and inside a double-quoted
+    PowerShell string that is a subexpression evaluated before the cmdlet ever
+    runs - so interpolating an install path into one hands whoever named the
+    directory a command-execution primitive, under -ExecutionPolicy Bypass no
+    less. Single quotes suppress every form of expansion; doubling is the only
+    escape they need.
+    """
+    return "'" + str(s).replace("'", "''") + "'"
+
+
 def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME,
                       relaunch: bool = True, health_url: str = HEALTH_URL) -> str:
     """PowerShell helper that swaps the install and brings the app back.
@@ -240,9 +291,13 @@ def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME
     PowerShell spinning forever; giving up leaves the working old version in
     place, which is the safe outcome.
     """
-    staged_exe = os.path.join(staged_dir, exe_name)
-    target_exe = os.path.join(target_dir, exe_name)
-    log = os.path.join(target_dir, 'update.log')
+    # Every path reaches PowerShell as a single-quoted literal: see ps_literal.
+    q_staged_dir = ps_literal(staged_dir)
+    q_target_dir = ps_literal(target_dir)
+    q_staged_exe = ps_literal(os.path.join(staged_dir, exe_name))
+    q_target_exe = ps_literal(os.path.join(target_dir, exe_name))
+    q_log = ps_literal(os.path.join(target_dir, 'update.log'))
+    q_health = ps_literal(health_url)
     # Start-Process goes through ShellExecute, which needs a usable window
     # station; spawned from an exiting console app it silently created nothing
     # while reporting no error. Going straight to CreateProcess avoids that.
@@ -251,8 +306,8 @@ for ($attempt = 1; $attempt -le 2; $attempt++) {{
     Log "relaunch attempt $attempt"
     try {{
         $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "{target_exe}"
-        $psi.WorkingDirectory = "{target_dir}"
+        $psi.FileName = {q_target_exe}
+        $psi.WorkingDirectory = {q_target_dir}
         $psi.UseShellExecute = $false
         # The helper inherited the dying app's environment, which carries
         # PyInstaller's bootloader handshake variables. Handing those to a
@@ -272,7 +327,7 @@ for ($attempt = 1; $attempt -le 2; $attempt++) {{
     for ($w = 0; $w -lt 15; $w++) {{
         Start-Sleep -Seconds 1
         try {{
-            Invoke-WebRequest -Uri "{health_url}" -UseBasicParsing -TimeoutSec 2 | Out-Null
+            Invoke-WebRequest -Uri {q_health} -UseBasicParsing -TimeoutSec 2 | Out-Null
             Log "new build is serving; update complete"
             exit 0
         }} catch {{ }}
@@ -287,14 +342,14 @@ $env:CMIS_NO_BROWSER = "1"
 # A failed update is otherwise invisible: the app is gone and nothing says why.
 function Log($m) {{
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" |
-        Out-File -FilePath "{log}" -Append -Encoding utf8
+        Out-File -FilePath {q_log} -Append -Encoding utf8
 }}
 Log "update helper started"
 
 # Wait for the old build to release its executable, then take its place.
 $swapped = $false
 for ($i = 0; $i -lt 150; $i++) {{
-    Move-Item -LiteralPath "{staged_exe}" -Destination "{target_exe}" -Force
+    Move-Item -LiteralPath {q_staged_exe} -Destination {q_target_exe} -Force
     if ($?) {{ $swapped = $true; break }}
     Start-Sleep -Milliseconds 500
 }}
@@ -302,10 +357,10 @@ if (-not $swapped) {{ Log "could not replace the executable; nothing changed"; e
 Log "executable replaced"
 
 # The executable is the only file the running app held open.
-Get-ChildItem -LiteralPath "{staged_dir}" -File | ForEach-Object {{
-    Move-Item -LiteralPath $_.FullName -Destination "{target_dir}" -Force
+Get-ChildItem -LiteralPath {q_staged_dir} -File | ForEach-Object {{
+    Move-Item -LiteralPath $_.FullName -Destination {q_target_dir} -Force
 }}
-Remove-Item -LiteralPath "{staged_dir}" -Recurse -Force
+Remove-Item -LiteralPath {q_staged_dir} -Recurse -Force
 Log "supporting files replaced"
 {relaunch_block}exit 0
 '''
