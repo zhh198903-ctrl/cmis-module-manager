@@ -1,5 +1,6 @@
 """Comprehensive API tests for CMIS optical module management tool."""
 import os
+import re
 import sys
 import json
 import math
@@ -1762,11 +1763,215 @@ class TestUpdateTrustBoundary(unittest.TestCase):
                                'http://attacker.example/p.zip')
 
 
+PREFS_KEY = 'cmis.ui'
+
+
+class TestDisplayPreferences(CMISTestCase):
+    """The UI is themeable and scalable, which only holds while nothing
+    hard-codes a colour or a size behind the variable system's back.
+
+    These read the three frontend files as text. Coarse, but the alternative is
+    a browser in the test loop, and what they catch is exactly the silent kind
+    of breakage: a stray hex that looks right in the theme it was picked for, a
+    breakpoint that quietly stops matching once the user changes scale.
+    """
+
+    def _read(self, *parts):
+        import io
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        return io.open(path, encoding='utf-8').read()
+
+    def _css(self):
+        return self._read('static', 'style.css')
+
+    def _js(self):
+        return self._read('static', 'app.js')
+
+    def _html(self):
+        return self._read('templates', 'index.html')
+
+    def _palettes(self):
+        """Token names defined by each theme block, keyed by theme name."""
+        pattern = r':root(?:,\s*\n:root)?\[data-theme="(\w+)"\]\s*\{(.*?)\n\}'
+        return {m.group(1): set(re.findall(r'(--[\w-]+)\s*:', m.group(2)))
+                for m in re.finditer(pattern, self._css(), re.S)}
+
+    def _rules(self):
+        """The stylesheet with the palette blocks removed."""
+        return self._css().split('* {\n  box-sizing', 1)[1]
+
+    def test_every_theme_defines_the_same_tokens(self):
+        """A theme that omits a token silently inherits the default palette's.
+
+        That is how a light theme ends up drawing pale-on-white alarm text: it
+        looks finished until the one value it forgot lands on the wrong ground.
+        """
+        palettes = self._palettes()
+        self.assertGreaterEqual(len(palettes), 4, f'themes: {sorted(palettes)}')
+        self.assertIn('midnight', palettes)
+        base = palettes['midnight']
+        self.assertGreater(len(base), 25, 'the default palette looks truncated')
+        for name, tokens in palettes.items():
+            self.assertEqual(base - tokens, set(), f'theme {name} is missing tokens')
+            self.assertEqual(tokens - base, set(), f'theme {name} defines extra tokens')
+
+    def test_every_theme_declares_a_colour_scheme(self):
+        """Dropdown popups and scrollbars are drawn by the OS, not by CSS, so a
+        light theme without color-scheme gets black popups."""
+        self.assertEqual(len(re.findall(r'color-scheme:', self._css())),
+                         len(self._palettes()))
+
+    def test_no_colour_literals_outside_the_palettes(self):
+        """A colour belongs to a theme. A literal belongs to whichever theme
+        its author happened to be looking at."""
+        offenders = [line.strip() for line in self._rules().splitlines()
+                     if re.search(r':[^;]*#[0-9a-fA-F]{3,8}\b', line)
+                     or re.search(r':[^;]*\brgba?\(', line)]
+        self.assertEqual(offenders, [])
+
+    def test_no_colour_literals_in_the_frontend_scripts(self):
+        """The post-update screen used to hard-code pale green on a dark
+        ground. On a light theme that is near-white on white, and it is the one
+        screen that tells the user how to finish updating."""
+        for name, text in (('app.js', self._js()), ('index.html', self._html())):
+            self.assertEqual(re.findall(r'(?<!&)#[0-9a-fA-F]{3,8}\b', text), [],
+                             f'{name} hard-codes a colour')
+
+    def test_font_sizes_all_use_tokens(self):
+        """One step has to move every size together, so no size may opt out."""
+        for name, text in (('style.css', self._css()), ('index.html', self._html()),
+                           ('app.js', self._js())):
+            self.assertEqual(re.findall(r'font-size:\s*\d+px', text), [],
+                             f'{name} sets a font-size outside the scale')
+
+    def test_font_step_is_written_with_a_unit(self):
+        """calc(10px + 2) is invalid at computed-value time, and an invalid
+        font-size falls back to the inherited one - so a missing 'px' would
+        collapse every label in the app at once."""
+        for text in (self._js(), self._html()):
+            for m in re.finditer(r"setProperty\(\s*'--fs-step'\s*,\s*([^)]+)\)", text):
+                self.assertIn("'px'", m.group(1), f'unitless --fs-step: {m.group(1)}')
+
+    def test_monospace_survives_the_font_setting(self):
+        """Hex dumps and register columns must keep their digits aligned
+        whatever family the user picks, so no preset reassigns --font-mono."""
+        css = self._css()
+        self.assertIn('font-family: var(--font-mono);', css)
+        for m in re.finditer(r':root\[data-font-sans="\w+"\]\s*\{([^}]*)\}', css):
+            self.assertNotIn('--font-mono:', m.group(1))
+
+    def test_no_magic_viewport_arithmetic(self):
+        """The shell used to subtract a hard-coded header height. It was
+        already a pixel out, and it multiplies wrongly once the UI can scale."""
+        css = self._css()
+        self.assertNotIn('calc(100vh', css)
+        self.assertIn('inset: 0;', css)
+
+    def test_scale_uses_zoom_not_transform(self):
+        """transform: scale() rasterises then resamples - blurry text - and
+        does not reflow, so nothing inside would adapt to the new width."""
+        css = self._css()
+        self.assertIn('zoom: var(--ui-zoom)', css)
+        self.assertNotIn('transform: scale(', css)
+
+    def test_breakpoints_use_container_queries(self):
+        """@media measures the unzoomed viewport. At 150% on a 1920 screen the
+        content is effectively 1280 wide while every media query still reports
+        1920, so the breakpoints stop firing exactly when they are needed."""
+        css = self._css()
+        self.assertGreaterEqual(len(re.findall(r'@container\s', css)), 4)
+        self.assertEqual(re.findall(r'@media\s*\(', css), [])
+        self.assertIn('container-type: inline-size', css)
+
+    def test_every_table_is_scroll_contained(self):
+        """The counters table passes 1300px once total_bits reaches 18 digits,
+        which is minutes into any run. With no scroll box it draws outside its
+        own card and reads as a rendering fault."""
+        html = self._html()
+        self.assertEqual(html.count('<table'), html.count('class="table-scroll"'))
+        self.assertNotIn('float:right', html)
+
+    def test_theme_is_applied_before_the_first_paint(self):
+        """Applying the saved theme from app.js would paint the default palette
+        first and then swap, which reads as a flash on every launch."""
+        head = self._html().split('</head>', 1)[0]
+        self.assertIn(PREFS_KEY, head)
+        self.assertLess(head.index(PREFS_KEY), head.index('style.css'))
+        self.assertIn('documentElement', head)
+        self.assertIn('data-theme', head)
+
+    def test_preferences_survive_the_body_being_replaced(self):
+        """_waitForNewVersion() assigns document.body.innerHTML, so anything
+        parked on <body> goes with it."""
+        block = self._js().split('function applyPrefs', 1)[1].split('\n}', 1)[0]
+        self.assertIn('documentElement', block)
+        self.assertNotIn('document.body', block)
+
+    def test_preferences_key_agrees_between_bootstrap_and_app(self):
+        """The key is necessarily spelled out twice. If the two drift the saved
+        settings are silently discarded on every reload."""
+        self.assertIn(PREFS_KEY, self._html())
+        self.assertIn(PREFS_KEY, self._js())
+
+    def test_auto_scale_never_shrinks(self):
+        """innerWidth is CSS pixels, so a 1366x768 laptop at 125% reports about
+        1093 - a small workspace, not a dense one. Scaling down there would
+        shrink the text that is already hardest to read."""
+        block = self._js().split('function autoScale', 1)[1].split('\n}', 1)[0]
+        factors = [float(x) for x in re.findall(r'return\s+([\d.]+);', block)]
+        self.assertTrue(factors, 'autoScale returns nothing')
+        self.assertEqual(min(factors), 1, f'auto scale goes below 100%: {factors}')
+        self.assertNotIn('devicePixelRatio', block)
+
+    def test_display_settings_reachable_without_a_connection(self):
+        """updateConnectionUI disables every tab button until a module is
+        connected, and someone whose UI is unreadable has to fix that first."""
+        html = self._html()
+        self.assertIn('id="btn-settings"', html)
+        tabs = html.split('<nav class="tabs">', 1)[1].split('</nav>', 1)[0]
+        self.assertNotIn('btn-settings', tabs)
+        button = re.search(r'<button[^>]*id="btn-settings"[^>]*>', html).group(0)
+        self.assertNotIn('disabled', button)
+
+    def test_manual_documents_the_display_settings(self):
+        """CLAUDE.md requires the manual to track user-visible behaviour."""
+        manual = self._read('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        for phrase in ('显示设置', '主题', '界面缩放'):
+            self.assertIn(phrase, manual, f'the manual never mentions {phrase}')
+
+
+class TestRequestGuardScope(CMISTestCase):
+    """The provenance guard covers the API, not the page."""
+
+    def test_the_page_and_its_assets_are_not_gated(self):
+        """Serving the HTML and the stylesheet grants no capability - every way
+        to reach the module is under /api/ - so refusing a cross-site
+        navigation only meant that following a link to this tool from a wiki or
+        a chat message landed the user on a 403 instead of the UI.
+        """
+        for path in ('/', '/static/style.css', '/static/app.js'):
+            r = self.client.get(path, headers={'Sec-Fetch-Site': 'cross-site'})
+            self.assertEqual(r.status_code, 200, path)
+
+    def test_the_api_is_still_gated(self):
+        for path in ('/api/version', '/api/backends', '/api/disconnect'):
+            r = self.client.get(path, headers={'Sec-Fetch-Site': 'cross-site'})
+            self.assertEqual(r.status_code, 403, path)
+
+
 # ============================================================
 # Run
 # ============================================================
 
 if __name__ == '__main__':
+    # A failure message quoting the Chinese manual otherwise kills the summary
+    # with a UnicodeEncodeError on a GBK console - the failing test's own text
+    # is the last thing you want to lose.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(unittest.TestLoader().loadTestsFromModule(
         sys.modules[__name__]))

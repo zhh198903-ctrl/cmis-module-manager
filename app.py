@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.1.0'
+__version__ = '2.2.0'
 
 import sys
 import os
@@ -85,7 +85,15 @@ def _reject_foreign_requests():
     the test suite) send none of these headers and are left alone: a local
     process already runs with the user's rights and gains nothing by coming
     through the API.
+
+    Only /api/ is guarded. The page and its assets grant no capability - every
+    way to reach the module is under /api/ - so refusing them bought nothing and
+    cost something real: following a link to this tool from a wiki or a chat
+    message landed the user on a 403 instead of the UI.
     """
+    if not request.path.startswith('/api/'):
+        return None
+
     site = request.headers.get('Sec-Fetch-Site')
     if site and site not in ('same-origin', 'none'):
         return _err('Refused: this request came from another site', 403)

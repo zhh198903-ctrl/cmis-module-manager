@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.1.0<br>
+      <b>版本</b>　2.2.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-09<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.1.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.1.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.2.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -580,7 +580,7 @@
   <div class="callout">
     <span class="callout-icon">🔒</span>
     <span><b>关于本机 5000 端口的安全性</b>：程序只监听 127.0.0.1，外部机器无法访问。
-    自 v2.1.0 起还会拒绝<b>由其它网页发起</b>的请求——你在浏览器里打开的任何站点，
+    自 v2.2.0 起还会拒绝<b>由其它网页发起</b>的请求——你在浏览器里打开的任何站点，
     都无法借你的浏览器去连接模块、改寄存器或触发升级；用 IP 以外的域名指向本机也一样会被拒。
     只有本工具自己的页面（<code>http://127.0.0.1:5000</code>）能操作模块。
     你自己写的脚本、curl、Python 程序<b>不受影响</b>，仍可正常调用 API。</span>
@@ -602,6 +602,42 @@
     </table>
   </div>
   <p>表头的灰色小字会注明该列的进制与所属寄存器；悬停提示则同时给出三种进制，无需心算换算。</p>
+
+  <h3>5.4 显示设置（v2.2.0 起）</h3>
+  <p>点右上角的 <b>⚙ Display</b> 打开显示设置。四项设置<b>改动立即生效</b>，无需确认，
+     并保存在本机浏览器里，下次打开自动沿用。未连接模块时也能调整。</p>
+  <table>
+    <thead><tr><th>设置</th><th>可选项</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>主题<br><span class="label">Theme</span></td>
+          <td>Midnight（默认深色）<br>Light 浅色<br>High contrast 高对比<br>Warm 护眼暖色</td>
+          <td class="label">Light 适合白天强光或投影；High contrast 适合车间、远距离查看；
+              Warm 降低蓝光，适合长时间盯屏。切换主题时告警红/黄、阈值染色、状态徽标会整套跟着变，
+              保证任何主题下数值都清晰可读。</td></tr>
+      <tr><td>界面缩放<br><span class="label">UI scale</span></td>
+          <td>Auto（默认）<br>80% / 90% / 100% / 115% / 125% / 150%</td>
+          <td class="label">整个界面等比放大或缩小，含文字、间距、表格。
+              <b>Auto</b> 会按你显示器的可用宽度自动选一档：1900px 以上放大到 115%，
+              2400px 以上 135%，3000px 以上 150%，其余保持 100%。手动选定后就不再自动变。</td></tr>
+      <tr><td>字号<br><span class="label">Text size</span></td>
+          <td>Compact / Normal / Large / Extra large</td>
+          <td class="label">只放大文字、不放大边距，与"界面缩放"是两件事。
+              它对最小的那些字（寄存器地址注释、状态标记）提升最明显——
+              选 Extra large 时这些 10px 的小字会长到 14px，而标题只从 18px 到 22px。</td></tr>
+      <tr><td>字体<br><span class="label">Font</span></td>
+          <td>System default<br>微软雅黑<br>思源黑体<br>全等宽</td>
+          <td class="label">只影响界面文字。<b>寄存器地址、十六进制转储、监控数值永远保持等宽字体</b>，
+              不受此项影响——否则数字列会对不齐，直接影响读数。
+              所列字体均取自系统，未选中的字体若系统没装会自动回退。</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <span class="callout-icon">💡</span>
+    <span>窄屏（如 1366×768 笔记本，或把缩放调到较大档位）下界面会自动适应：
+    PRBS 的左右两栏改为上下排列，侧边栏收窄，过宽的表格在自己的卡片内横向滚动，
+    不会溢出到卡片外面。</span>
+  </div>
+  <p class="label">若想恢复出厂外观，打开显示设置点 <b>Reset to defaults</b> 即可。</p>
 </div>
 
 <!-- ══════════════ 6. 连接模块 ══════════════ -->
@@ -1175,6 +1211,8 @@
         <tr><td>↻ Now</td><td class="label">Monitoring</td><td class="label">立即手动刷新一次监控数据</td></tr>
         <tr><td>Read</td><td class="label">Raw Registers</td><td class="label">读取指定寄存器</td></tr>
         <tr><td>Write</td><td class="label">Raw Registers</td><td class="label">写入指定寄存器</td></tr>
+        <tr><td>⚙ Display</td><td class="label">右上角</td><td class="label">显示设置：主题、界面缩放、字号、字体（见 5.4）</td></tr>
+        <tr><td>↑ Update</td><td class="label">右上角</td><td class="label">检查并安装新版本（见 5.2）</td></tr>
       </tbody>
     </table>
   </div>
@@ -1185,7 +1223,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.1.0<br>
+    CMIS Module Manager 操作手册 v2.2.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

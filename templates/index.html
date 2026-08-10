@@ -4,9 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CMIS Module Manager</title>
+  <script>
+  /* Runs before the stylesheet is even fetched. Doing this from app.js instead
+     would paint the default palette first and then swap, which reads as a
+     flash. Only documentElement is touched, so it also survives the wholesale
+     body rewrite the post-update screen does. Key is duplicated in app.js —
+     a test pins the two together. */
+  (function () {
+    var d = document.documentElement, p = {};
+    try { p = JSON.parse(localStorage.getItem('cmis.ui') || 'null') || {}; } catch (e) {}
+    if (p.theme) { d.setAttribute('data-theme', p.theme); }
+    if (p.fontSans) { d.setAttribute('data-font-sans', p.fontSans); }
+    if (typeof p.fontStep === 'number') { d.style.setProperty('--fs-step', p.fontStep + 'px'); }
+    var z = p.scale;
+    if (typeof z !== 'number' || p.scaleAuto !== false) {
+      var w = window.innerWidth;
+      z = w >= 3000 ? 1.5 : w >= 2400 ? 1.35 : w >= 1900 ? 1.15 : 1;
+    }
+    d.style.setProperty('--ui-zoom', z);
+  })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+
+<div id="app-shell">
 
 <header>
   <h1>CMIS Module Manager</h1>
@@ -17,6 +39,11 @@
     <div class="status-dot disconnected" id="status-dot"></div>
     <span id="status-text">Disconnected</span>
   </div>
+  <!-- Deliberately not a tab: every tab button is disabled until a module is
+       connected, and someone whose UI is too small to read has to be able to
+       fix that first. -->
+  <button class="btn-update" id="btn-settings"
+          title="Display settings — theme, scale, text size, font">&#9881; Display</button>
 </header>
 
 <main>
@@ -77,9 +104,10 @@
     <div class="tab-panel active" id="tab-info">
       <div class="card">
         <h3>Identity &amp; Status
-          <button class="btn-secondary btn-sm" id="btn-refresh-info" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-info">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr><th>Field</th><th>Value</th><th>Page</th><th>Address<span class="reg-meta">hex</span></th><th>CMIS Definition</th></tr>
           </thead>
@@ -87,6 +115,7 @@
             <tr><td colspan="5" class="placeholder-text">Connect to a module to view information.</td></tr>
           </tbody>
         </table>
+</div>
       </div>
     </div>
 
@@ -98,7 +127,7 @@
         <div id="monitor-stale" class="stale-banner" style="display:none"></div>
 
         <div class="monitoring-controls">
-          <span id="monitor-summary" style="font-family:var(--font-mono);font-size:13px"></span>
+          <span id="monitor-summary" style="font-family:var(--font-mono);font-size:var(--fs-md)"></span>
           <label>Refresh:
             <select id="sel-refresh-interval">
               <option value="1000">1 s</option>
@@ -111,7 +140,8 @@
           <button class="btn-secondary btn-sm" id="btn-refresh-monitor">↻ Now</button>
         </div>
 
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>Lane</th>
@@ -126,7 +156,8 @@
             <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+</div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           Colouring uses the module's own Tx/Rx power alarm thresholds from Page 02h — the same
           values shown in the Module Thresholds card below.
         </p>
@@ -135,9 +166,10 @@
       <!-- Thresholds card -->
       <div class="card">
         <h3>Module Thresholds
-          <button class="btn-secondary btn-sm" id="btn-refresh-thresholds" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-thresholds">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr><th>Parameter</th><th>Page / Address</th><th class="th-ha">High Alarm</th><th class="th-la">Low Alarm</th><th class="th-hw">High Warn</th><th class="th-lw">Low Warn</th></tr>
           </thead>
@@ -145,12 +177,14 @@
             <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <!-- Lane Flags card -->
       <div class="card">
         <h3>Lane Flags</h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>Lane</th>
@@ -166,6 +200,7 @@
             <tr><td colspan="7" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
+</div>
       </div>
     </div>
 
@@ -175,9 +210,10 @@
       <!-- Module Control card -->
       <div class="card">
         <h3>Module Control
-          <button class="btn-secondary btn-sm" id="btn-refresh-control" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-control">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr><th>Field</th><th>State</th><th>Register</th><th>Action</th></tr>
           </thead>
@@ -185,7 +221,8 @@
             <tr><td colspan="4" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+</div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           ⚠ Software Reset reinitializes the module — all DataPaths re-enter Init. Use with care.
         </p>
       </div>
@@ -193,9 +230,10 @@
       <!-- Application Descriptors card -->
       <div class="card">
         <h3>Supported Applications
-          <button class="btn-secondary btn-sm" id="btn-refresh-apps" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-apps">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>AppSel<span class="reg-meta">dec</span></th>
@@ -210,17 +248,19 @@
             <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <div class="card">
         <h3>DataPath Configuration
-          <span style="float:right;display:flex;gap:8px">
+          <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-datapath">↻ Refresh</button>
             <button class="btn-primary btn-sm"   id="btn-apply-datapath">Apply</button>
           </span>
         </h3>
 
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>Lane</th>
@@ -235,8 +275,9 @@
             <tr><td colspan="6" class="placeholder-text">Connect to configure DataPath.</td></tr>
           </tbody>
         </table>
+</div>
 
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           TX Enable is the inverse of the TX Disable bitmask. AppSelect selects the application code (0–15 per lane).
           Click <strong>Apply</strong> to write and activate the configuration.
         </p>
@@ -245,12 +286,13 @@
       <!-- Output Controls card -->
       <div class="card">
         <h3>Output Controls
-          <span style="float:right;display:flex;gap:8px">
+          <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-squelch">↻ Refresh</button>
             <button class="btn-primary btn-sm"   id="btn-apply-squelch">Apply</button>
           </span>
         </h3>
-        <table class="squelch-table">
+        <div class="table-scroll">
+<table class="squelch-table">
           <thead>
             <tr>
               <th style="width:160px">Control</th>
@@ -281,7 +323,8 @@
             </tr>
           </tbody>
         </table>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+</div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           Checked = bit set (auto-squelch controller disabled / output disabled / squelch forced).
           CMIS defines no OutputSquelchForceRx counterpart.
         </p>
@@ -294,12 +337,13 @@
       <!-- Loopback card -->
       <div class="card">
         <h3>Loopback
-          <span style="float:right;display:flex;gap:8px">
+          <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-loopback">↻ Refresh</button>
             <button class="btn-primary btn-sm"   id="btn-apply-loopback">Apply</button>
           </span>
         </h3>
-        <table class="squelch-table">
+        <div class="table-scroll">
+<table class="squelch-table">
           <thead>
             <tr>
               <th style="width:180px">Mode</th>
@@ -330,12 +374,13 @@
             </tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <!-- PRBS Generator card -->
       <div class="card">
         <h3>PRBS Generator
-          <span style="float:right;display:flex;gap:8px">
+          <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-prbs">↻ Refresh</button>
             <button class="btn-primary btn-sm"   id="btn-apply-prbs">Apply</button>
           </span>
@@ -343,17 +388,21 @@
         <div class="prbs-controls">
           <div class="prbs-section">
             <h4>Host-Side<span class="reg-badge">13h/0x90–0x97 (En·Inv·Swap·PreFEC·Pat×4)</span></h4>
-            <table class="prbs-table">
+            <div class="table-scroll">
+<table class="prbs-table">
               <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
               <tbody id="tbl-prbs-host-gen"></tbody>
             </table>
+</div>
           </div>
           <div class="prbs-section">
             <h4>Media-Side<span class="reg-badge">13h/0x98–0x9F</span></h4>
-            <table class="prbs-table">
+            <div class="table-scroll">
+<table class="prbs-table">
               <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
               <tbody id="tbl-prbs-media-gen"></tbody>
             </table>
+</div>
           </div>
         </div>
       </div>
@@ -364,20 +413,24 @@
         <div class="prbs-controls">
           <div class="prbs-section">
             <h4>Host-Side<span class="reg-badge">13h/0xA0–0xA7 (En·Inv·Swap·PostFEC·Pat×4)</span></h4>
-            <table class="prbs-table">
+            <div class="table-scroll">
+<table class="prbs-table">
               <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PostFEC</th><th>Pattern</th><th>LOL</th></tr></thead>
               <tbody id="tbl-prbs-host-chk"></tbody>
             </table>
+</div>
           </div>
           <div class="prbs-section">
             <h4>Media-Side<span class="reg-badge">13h/0xA8–0xAF</span></h4>
-            <table class="prbs-table">
+            <div class="table-scroll">
+<table class="prbs-table">
               <thead><tr><th>Lane</th><th>En</th><th>Inv</th><th>Swap</th><th>PostFEC</th><th>Pattern</th><th>LOL</th></tr></thead>
               <tbody id="tbl-prbs-media-chk"></tbody>
             </table>
+</div>
           </div>
         </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           LOL = Pattern Checker Loss of Lock (14h/0x8A·0x8B). Inv inverts pattern. Swap = MSB/LSB swap for PAM4.
         </p>
       </div>
@@ -385,9 +438,10 @@
       <!-- BER Results card -->
       <div class="card">
         <h3>BER Results
-          <button class="btn-secondary btn-sm" id="btn-refresh-ber" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-ber">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>BER (F16)<span class="reg-meta">14h / sel=0x01, m×10^(s−24)</span></th>
@@ -399,14 +453,16 @@
             <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read BER.</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <!-- Error/Bit Counters card -->
       <div class="card">
         <h3>Error / Bit Counters
-          <button class="btn-secondary btn-sm" id="btn-refresh-counters" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-counters">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>Counter<span class="reg-meta">14h / sel=0x02-0x05, U64 LE</span></th>
@@ -418,14 +474,16 @@
             <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read counters.</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <!-- SNR Results card -->
       <div class="card">
         <h3>SNR Results
-          <button class="btn-secondary btn-sm" id="btn-refresh-snr" style="float:right">↻ Refresh</button>
+          <button class="btn-secondary btn-sm" id="btn-refresh-snr">↻ Refresh</button>
         </h3>
-        <table>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>SNR (dB)<span class="reg-meta">14h / sel=0x06, u16 LE × 1/256 dB</span></th>
@@ -437,18 +495,20 @@
             <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read SNR.</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
       <!-- Laser Tuning card -->
       <div class="card">
         <h3>Laser Tuning
-          <span style="float:right;display:flex;gap:8px">
+          <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-laser">↻ Refresh</button>
             <button class="btn-primary btn-sm"   id="btn-apply-laser">Apply</button>
           </span>
         </h3>
-        <div id="laser-caps" style="font-size:12px;color:var(--muted);margin-bottom:10px"></div>
-        <table>
+        <div id="laser-caps" style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:10px"></div>
+        <div class="table-scroll">
+<table>
           <thead>
             <tr>
               <th>Lane</th>
@@ -464,6 +524,7 @@
             <tr><td colspan="7" class="placeholder-text">Click ↻ Refresh to read laser tuning.</td></tr>
           </tbody>
         </table>
+</div>
       </div>
 
     </div>
@@ -500,7 +561,7 @@
 
         <div class="hex-dump" id="hex-dump">Results will appear here…</div>
 
-        <p style="font-size:11px;color:var(--muted);margin-top:8px">
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           For upper page registers (addr ≥ 0x80), the page is set automatically before read/write.
           Lower page registers (addr &lt; 0x80) ignore the page field.
         </p>
@@ -512,6 +573,70 @@
 
 <!-- Toast container -->
 <div id="toast-container"></div>
+
+</div><!-- #app-shell -->
+
+<!-- Outside the shell, and carrying its own zoom: a dialog is promoted to the
+     top layer, which changes its containing block, so inheriting the shell's
+     scale is not something to depend on. -->
+<dialog id="settings-dialog">
+  <form method="dialog" class="settings-form">
+    <h3>Display</h3>
+
+    <div class="field-group">
+      <label for="set-theme">Theme</label>
+      <select id="set-theme">
+        <option value="midnight">Midnight (default)</option>
+        <option value="light">Light</option>
+        <option value="contrast">High contrast</option>
+        <option value="warm">Warm — low blue light</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label for="set-scale">UI scale</label>
+      <select id="set-scale">
+        <option value="auto">Auto — match this screen</option>
+        <option value="0.8">80%</option>
+        <option value="0.9">90%</option>
+        <option value="1">100%</option>
+        <option value="1.15">115%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label for="set-fontstep">Text size</label>
+      <select id="set-fontstep">
+        <option value="-1">Compact</option>
+        <option value="0">Normal</option>
+        <option value="2">Large</option>
+        <option value="4">Extra large</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label for="set-font">Font</label>
+      <select id="set-font">
+        <option value="system">System default</option>
+        <option value="yahei" style="font-family:'Microsoft YaHei'">Microsoft YaHei</option>
+        <option value="source" style="font-family:'Source Han Sans SC','Noto Sans SC'">Source Han Sans</option>
+        <option value="mono" style="font-family:Consolas,monospace">Monospace everywhere</option>
+      </select>
+    </div>
+
+    <p class="settings-note">
+      Register addresses, hex dumps and monitoring values stay monospace whatever
+      you pick here, so digits keep lining up.
+    </p>
+
+    <div class="settings-actions">
+      <button type="button" class="btn-secondary btn-sm" id="btn-settings-reset">Reset to defaults</button>
+      <button type="submit" class="btn-primary btn-sm">Done</button>
+    </div>
+  </form>
+</dialog>
 
 <script src="/static/app.js"></script>
 </body>

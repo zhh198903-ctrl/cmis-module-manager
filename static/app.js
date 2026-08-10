@@ -124,6 +124,104 @@ function toast(message, type = 'info', durationMs = 3000) {
 }
 
 // ---------------------------------------------------------------------------
+// Display preferences
+// ---------------------------------------------------------------------------
+// Everything lands on <html>: the post-update screen replaces document.body
+// wholesale, and anything parked there would go with it. The same key is read
+// by the inline bootstrap in index.html, which applies all of this before the
+// first paint; this module only handles later changes.
+const PREFS_KEY = 'cmis.ui';
+const PREFS_DEFAULT = Object.freeze({
+  v: 1, theme: 'midnight', scale: 1, scaleAuto: true, fontStep: 0, fontSans: 'system',
+});
+
+// innerWidth is CSS pixels, so Windows DPI scaling and browser zoom are already
+// folded in - it measures usable workspace, not pixel density. Multiplying by
+// devicePixelRatio on top would double-count and blow up a 125%-scaled laptop.
+// Only ever scales up: a small viewport means a small screen, and shrinking the
+// text there is backwards.
+function autoScale(width) {
+  if (width >= 3000) return 1.5;
+  if (width >= 2400) return 1.35;
+  if (width >= 1900) return 1.15;
+  return 1;
+}
+
+function loadPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null');
+    if (raw && typeof raw === 'object') return { ...PREFS_DEFAULT, ...raw };
+  } catch (e) { /* corrupt preferences must not cost the user the whole UI */ }
+  return { ...PREFS_DEFAULT };
+}
+
+function savePrefs(prefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch (e) {
+    toast('Could not save display settings in this browser', 'error');
+  }
+}
+
+function applyPrefs(prefs) {
+  const root = document.documentElement;
+  root.setAttribute('data-theme', prefs.theme);
+  root.setAttribute('data-font-sans', prefs.fontSans);
+  // The unit is not optional: calc(10px + 2) is invalid at computed-value time,
+  // which would silently collapse every font-size to its inherited value.
+  root.style.setProperty('--fs-step', prefs.fontStep + 'px');
+  root.style.setProperty(
+    '--ui-zoom', prefs.scaleAuto ? autoScale(window.innerWidth) : prefs.scale);
+}
+
+function initSettings() {
+  const dialog = document.getElementById('settings-dialog');
+  const theme = document.getElementById('set-theme');
+  const scale = document.getElementById('set-scale');
+  const step = document.getElementById('set-fontstep');
+  const font = document.getElementById('set-font');
+  if (!dialog) return;
+
+  let prefs = loadPrefs();
+
+  const toForm = () => {
+    theme.value = prefs.theme;
+    scale.value = prefs.scaleAuto ? 'auto' : String(prefs.scale);
+    step.value = String(prefs.fontStep);
+    font.value = prefs.fontSans;
+  };
+  const commit = () => { applyPrefs(prefs); savePrefs(prefs); };
+
+  applyPrefs(prefs);
+  toForm();
+
+  // Applied live, saved immediately: a single-user local tool has no reason to
+  // make someone confirm what they can already see.
+  theme.addEventListener('change', () => { prefs.theme = theme.value; commit(); });
+  font.addEventListener('change', () => { prefs.fontSans = font.value; commit(); });
+  step.addEventListener('change', () => { prefs.fontStep = parseInt(step.value, 10); commit(); });
+  scale.addEventListener('change', () => {
+    prefs.scaleAuto = scale.value === 'auto';
+    if (!prefs.scaleAuto) prefs.scale = parseFloat(scale.value);
+    commit();
+  });
+
+  document.getElementById('btn-settings-reset')?.addEventListener('click', () => {
+    prefs = { ...PREFS_DEFAULT };
+    commit();
+    toForm();
+  });
+
+  document.getElementById('btn-settings')?.addEventListener('click', () => {
+    toForm();
+    dialog.showModal();
+  });
+
+  // Clicking the backdrop lands on the dialog element itself, not the form.
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+}
+
+// ---------------------------------------------------------------------------
 // Connection panel
 // ---------------------------------------------------------------------------
 async function loadBackends() {
@@ -374,7 +472,7 @@ async function loadInfo() {
     ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
-    ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:11px">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes across all AppDescriptors'],
+    ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes across all AppDescriptors'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes'],
     ['FW Revision',     d.fw_revision,                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
@@ -497,13 +595,13 @@ async function _waitForNewVersion(expected) {
   // files are already updated by this point and one double-click finishes it.
   document.body.innerHTML =
     `<div style="display:flex;align-items:center;justify-content:center;`
-    + `height:100vh;font-family:system-ui;text-align:center;padding:24px">`
+    + `height:100%;font-family:var(--font-sans);text-align:center;padding:24px">`
     + `<div style="max-width:520px">`
-    + `<div style="font-size:44px;line-height:1">✓</div>`
-    + `<h2 style="color:#86efac;margin:12px 0 4px">Updated to v${esc(expected)}</h2>`
-    + `<p style="color:#c4b5fd;font-size:17px;margin:18px 0 6px">`
+    + `<div style="font-size:3em;line-height:1">✓</div>`
+    + `<h2 style="color:var(--success-fg);margin:12px 0 4px">Updated to v${esc(expected)}</h2>`
+    + `<p style="color:var(--accent-fg);font-size:var(--fs-h1);margin:18px 0 6px">`
     + `Start <b>CMIS_Module_Manager.exe</b> again to continue.</p>`
-    + `<p style="color:#94a3b8;line-height:1.7;font-size:13px">`
+    + `<p style="color:var(--text-muted);line-height:1.7;font-size:var(--fs-md)">`
     + `The new version is already installed — the old console window has closed. `
     + `This page reconnects on its own if the tool comes back up.<br>`
     + `A record of the update is in <code>update.log</code> next to the exe.</p>`
@@ -1344,7 +1442,7 @@ async function loadCounters() {
 
   const anyPsl = lanes.some(l => l.host_psl || l.media_psl);
   const note = anyPsl
-    ? `<tr><td colspan="9" class="flag-active" style="font-size:11px">`
+    ? `<tr><td colspan="9" class="flag-active" style="font-size:var(--fs-xs)">`
       + `⚠ Pattern sync lost on one or more lanes (14h counter bit 0). Their error `
       + `and bit counts are not a valid BER measurement.</td></tr>`
     : '';
@@ -1380,7 +1478,7 @@ async function loadLaser() {
   // Non-tunable module: Page 04h reads all zeros → no grids advertised
   if (!d.grids_supported || d.grids_supported.length === 0) {
     if (capsEl) {
-      capsEl.innerHTML = '<span style="color:var(--dim)">Not a tunable laser module (Media Interface Technology is not C-band/L-band); Page 04h tuning capabilities not advertised.</span>';
+      capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module (Media Interface Technology is not C-band/L-band); Page 04h tuning capabilities not advertised.</span>';
     }
     tbody.innerHTML = '<tr><td colspan="7" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
     return;
@@ -1473,6 +1571,10 @@ async function applyLaser() {
 // Init
 // ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
+  // Display settings — wired first so the controls work even before a module
+  // is connected, which is exactly when someone needs to fix an unreadable UI.
+  initSettings();
+
   // Load backends
   loadBackends();
 
