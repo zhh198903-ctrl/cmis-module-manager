@@ -355,9 +355,9 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.2.2<br>
+      <b>版本</b>　2.2.3<br>
       <b>适用软件</b>　CMIS Module Manager<br>
-      <b>更新日期</b>　2026-08-10<br>
+      <b>更新日期</b>　2026-08-11<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
     </div>
   </div>
@@ -510,8 +510,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.2 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.2.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.3 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.2.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -569,6 +569,13 @@
     <li><b>无法联网</b>：明确提示无法访问 GitHub，并给出手动下载地址。
         <b>不会</b>把联网失败误报成"已是最新"。检查版本时若连接失败会自动重试 3 次再报错，
         以免一次抖动就被当成 GitHub 不可达</li>
+    <li><b>双下载源，哪个快用哪个</b>：升级包同时放在 GitHub Release 和作者的下载站
+        （<code>106.14.76.130</code>）。点 Update 后工具会<b>各测一次实际速度</b>（约 10–40 秒，
+        取决于网络），然后从快的那个下载；下载中若该源失败，会自动切到另一个
+        <b>并接着已下载的部分继续</b>，不用重来。哪个源快因时因地而异，所以是每次实测而不是写死。
+        <br><b>版本号和校验值始终只从 GitHub 取</b>（HTTPS）。下载站只提供文件本身，
+        它说不了"哪个是最新版"，也无法让一个包通过校验——即便下载站被篡改，
+        最坏的结果也只是升级失败，装不进坏包</li>
     <li><b>下载中断会自动续传</b>：升级包约 16 MB，在慢速或走代理的网络上经常传到一半被掐断。
         断开后工具会<b>只请求尚未下到的那部分字节</b>接着传，而不是从头再来（一次最多重试 6 次）。
         因此链路再差也能一点点攒完，不会出现"每次都差一点、永远下不完"。
@@ -1393,7 +1400,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.2.2<br>
+    CMIS Module Manager 操作手册 v2.2.3<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

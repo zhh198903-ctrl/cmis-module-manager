@@ -365,6 +365,119 @@ class TestUpdater(unittest.TestCase):
                                  attempts=3, retry_wait=0)
         self.assertEqual(len(reqs), 1)
 
+    def test_the_mirror_may_carry_bytes_but_never_metadata(self):
+        """The download site publishes no version list and no digest, so it is
+        never asked what the newest release is - only for a copy of an asset
+        GitHub already named and hashed. That split is what makes plain http
+        acceptable for it."""
+        import updater as u
+        mirror = u.mirror_url('2.2.3', 'CMIS_dist_v2_2_3.zip')
+        self.assertTrue(u.is_allowed_source(mirror))
+        self.assertFalse(u.is_trusted_url(mirror),
+                         'the mirror must not pass the metadata check')
+        self.assertIsNone(u.normalize_release({
+            'tag_name': 'v2.2.3',
+            'assets': [{'name': 'CMIS_dist_v2_2_3.zip', 'size': 1,
+                        'browser_download_url': mirror}],
+        }), 'a release pointing at the mirror is not installable')
+
+    def test_widening_the_source_check_did_not_open_it_to_anyone(self):
+        import updater as u
+        for bad in ('http://attacker.example/p.zip',
+                    'https://attacker.example/p.zip',
+                    'http://106.14.76.130.evil.example/p.zip',
+                    'https://106.14.76.130.evil.example/p.zip'):
+            self.assertFalse(u.is_allowed_source(bad), bad)
+        with self.assertRaises(ValueError):
+            u.download_asset(['http://attacker.example/p.zip'], 'unused.zip')
+
+    def test_the_faster_source_is_tried_first(self):
+        """Picking wrong costs minutes on a 16 MB asset, and which one wins
+        changes by the hour, so it is measured rather than assumed."""
+        import updater as u
+        slow = _GH_URL
+        fast = u.mirror_url('9.9.9', 'CMIS_dist_v9_9_9.zip')
+        fake, _ = self._download_harness([(b'x' * 200, 206, None),
+                                          (b'y' * 400000, 206, None)])
+        self._with_fake_open(fake)
+        ranked = u.order_sources([slow, fast], seconds=0.05)
+        self.assertEqual([url for url, _ in ranked], [fast, slow])
+        self.assertGreater(ranked[0][1], ranked[1][1])
+
+    def test_an_unreachable_source_scores_zero_but_is_still_offered(self):
+        """Four seconds of silence is not proof the host is gone, and refusing
+        to try it would strand the update when both probes happen to fail."""
+        import updater as u
+        fake, _ = self._download_harness([IOError('refused'), IOError('refused')])
+        self._with_fake_open(fake)
+        ranked = u.order_sources([_GH_URL, u.mirror_url('9.9.9', 'a.zip')],
+                                 seconds=0.05)
+        self.assertEqual(len(ranked), 2)
+        self.assertEqual([rate for _, rate in ranked], [0.0, 0.0])
+
+    def test_a_source_that_does_not_carry_the_release_falls_back(self):
+        """The mirror is filled by hand, so it routinely lags a release by
+        hours - a 404 there must not abort an update GitHub can serve."""
+        import tempfile
+        import urllib.error
+        import updater as u
+        payload = b'p' * 1500
+        mirror = u.mirror_url('9.9.9', 'CMIS_dist_v9_9_9.zip')
+        fake, reqs = self._download_harness([
+            urllib.error.HTTPError(mirror, 404, 'Not Found', {}, None),
+            (payload, 200, None),
+        ])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset([mirror, _GH_URL], dest,
+                             total_hint=len(payload), attempts=3, retry_wait=0)
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+        self.assertEqual(reqs[0].full_url, mirror)
+        self.assertEqual(reqs[1].full_url, _GH_URL, 'it must switch source')
+
+    def test_switching_source_keeps_the_bytes_already_fetched(self):
+        """Every mirror serves the identical asset - that is what the shared
+        SHA-256 asserts - so a dead source's progress is still good."""
+        import tempfile
+        import updater as u
+        payload = bytes(range(256)) * 8
+        mirror = u.mirror_url('9.9.9', 'CMIS_dist_v9_9_9.zip')
+        fake, reqs = self._download_harness([
+            (payload[:700], 200, len(payload)),   # dies partway
+            (payload[700:], 206, None),           # other source finishes it
+        ])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset([mirror, _GH_URL], dest,
+                             total_hint=len(payload), attempts=3, retry_wait=0)
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+        self.assertEqual(reqs[1].full_url, _GH_URL)
+        self.assertEqual(reqs[1].get_header('Range'), 'bytes=700-',
+                         'the second source must continue, not restart')
+
+    def test_a_truncated_mirror_cannot_end_the_download_early(self):
+        """The size came from the release metadata over TLS. A mirror holding
+        a half-uploaded copy must not be able to talk the download into
+        calling that complete."""
+        import tempfile
+        import updater as u
+        payload = b'w' * 2000
+        mirror = u.mirror_url('9.9.9', 'CMIS_dist_v9_9_9.zip')
+        fake, _ = self._download_harness([
+            (payload[:500], 200, 500),        # mirror claims the asset is 500 B
+            (payload[500:], 206, None),
+        ])
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset([mirror, _GH_URL], dest,
+                             total_hint=len(payload), attempts=3, retry_wait=0)
+            self.assertEqual(os.path.getsize(dest), len(payload))
+
     def test_a_kept_partial_lets_a_later_run_carry_on(self):
         """Retries alone still lose everything once they run out. On a link
         that drops this often, the bytes already fetched are the only thing

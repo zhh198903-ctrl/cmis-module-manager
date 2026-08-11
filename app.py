@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.2.2'
+__version__ = '2.2.3'
 
 import sys
 import os
@@ -1209,7 +1209,15 @@ def api_update_apply():
         # that keeps dropping, the bytes already fetched are the only thing
         # that makes the next attempt shorter than the last.
         updater.discard_stale_partials(rel['asset_name'])
-        updater.download_asset(rel['asset_url'], archive,
+        # Which of the two carries the bytes faster changes by the hour, so it
+        # is measured rather than assumed. Both serve the same asset and the
+        # digest below is what decides installability, so the mirror never
+        # needs to be trusted - only to be quick.
+        ranked = updater.order_sources([
+            rel['asset_url'],
+            updater.mirror_url(rel['version'], rel['asset_name']),
+        ])
+        updater.download_asset([u for u, _ in ranked], archive,
                                total_hint=rel['asset_size'],
                                part_path=updater.partial_path(rel['asset_name']),
                                keep_partial=True)

@@ -45,9 +45,28 @@ _USER_AGENT = "CMIS-Module-Manager-Updater"  # GitHub REST requires a User-Agent
 _TRUSTED_HOSTS = frozenset(['github.com', 'api.github.com'])
 _TRUSTED_SUFFIX = '.githubusercontent.com'
 
+# The personal download site, which keeps a copy of every release asset at
+# /<product>/<version>/<file>. Which of the two is faster changes by the hour
+# here - GitHub's object store has answered at 15 KB/s and at nothing at all -
+# so both are offered and the quicker one wins.
+#
+# It is a byte mirror and nothing more. It publishes no version list and no
+# digest, so what the newest release is and what it must hash to still come
+# from GitHub over TLS. That is also why plain http is acceptable for it: the
+# worst a tampered mirror can do is fail the SHA-256 check and abort the
+# update, which is the same outcome as the download simply not working.
+MIRROR_BASE = 'http://106.14.76.130'
+MIRROR_PRODUCT = 'CMIS'
+_MIRROR_HOST = '106.14.76.130'
+
 
 def is_trusted_url(url: str) -> bool:
-    """True only for https URLs on GitHub or its asset hosts."""
+    """True only for https URLs on GitHub or its asset hosts.
+
+    This gates what may *tell us about* a release - the API reply and the asset
+    URL inside it. Where the bytes may be fetched from is a weaker question,
+    answered by is_allowed_source().
+    """
     try:
         parts = urllib.parse.urlparse(url or '')
     except ValueError:
@@ -58,11 +77,31 @@ def is_trusted_url(url: str) -> bool:
     return host in _TRUSTED_HOSTS or host.endswith(_TRUSTED_SUFFIX)
 
 
+def is_allowed_source(url: str) -> bool:
+    """True for hosts the payload bytes may be pulled from.
+
+    Wider than is_trusted_url by exactly one pinned host, and only because the
+    digest that decides whether the result is installable comes from elsewhere.
+    """
+    if is_trusted_url(url):
+        return True
+    try:
+        parts = urllib.parse.urlparse(url or '')
+    except ValueError:
+        return False
+    return parts.scheme == 'http' and (parts.hostname or '').lower() == _MIRROR_HOST
+
+
+def mirror_url(version: str, asset_name: str) -> str:
+    """Where the download site keeps one release asset."""
+    return f'{MIRROR_BASE}/{MIRROR_PRODUCT}/{version}/{asset_name}'
+
+
 class _TrustedRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Abort rather than follow a redirect that leaves GitHub or drops TLS."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not is_trusted_url(newurl):
+        if not is_allowed_source(newurl):
             raise urllib.error.HTTPError(
                 newurl, code, 'refusing a redirect off GitHub', headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -174,7 +213,64 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO,
 # Download + integrity
 # ---------------------------------------------------------------------------
 
-def download_asset(url: str, dest_path: str,
+def probe_source(url: str, seconds: float = 4.0, timeout: int = 15,
+                 offset: int = 0) -> float:
+    """Bytes per second measured over a short read, or 0.0 if unusable.
+
+    Timed rather than sized: a fixed 256 KB probe is instant on a good link and
+    takes half an hour on the bad one this is meant to detect, which would cost
+    more than picking wrong. Reading for a fixed few seconds costs the same
+    either way and still separates the two by orders of magnitude.
+
+    A source that 404s, refuses Range or cannot be reached scores 0.0 rather
+    than raising - not being able to measure it is a reason to prefer the other
+    one, not a reason to fail.
+
+    The clock starts only once the response headers are in. Timing the connect
+    as well made both sources score zero on a link where the handshake alone
+    outlasted the window, which turned the whole measurement into "keep the
+    order they were passed in". Connect cost is paid once; throughput is what
+    decides sixteen megabytes.
+    """
+    if not is_allowed_source(url):
+        return 0.0
+    req = urllib.request.Request(url, headers={
+        'User-Agent': _USER_AGENT, 'Range': f'bytes={offset}-'})
+    got = 0
+    try:
+        with _open(req, timeout) as resp:
+            started = time.monotonic()
+            while time.monotonic() - started < seconds:
+                buf = resp.read(1 << 15)
+                if not buf:
+                    break
+                got += len(buf)
+            elapsed = time.monotonic() - started
+    except Exception:
+        return 0.0
+    return got / elapsed if elapsed > 0 and got else 0.0
+
+
+def order_sources(urls: list, seconds: float = 4.0, timeout: int = 15,
+                  offset: int = 0) -> list:
+    """[(url, bytes_per_second)] fastest first, measured right now.
+
+    Unreachable sources sort last but are kept: when every probe scores zero
+    the download should still be attempted rather than refused on the strength
+    of a four-second sample.
+
+    The connect timeout is deliberately generous. A handshake here has taken
+    ten seconds through a proxy, and a probe that gives up before that scores
+    a perfectly usable source as dead - which is worse than not probing, since
+    it looks like a measurement.
+    """
+    scored = [(probe_source(u, seconds, timeout, offset), i, u)
+              for i, u in enumerate(urls)]
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return [(u, rate) for rate, _, u in scored]
+
+
+def download_asset(url, dest_path: str,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
                    chunk: int = 1 << 16, timeout: int = 30,
                    total_hint: int = 0, attempts: int = 6,
@@ -199,13 +295,28 @@ def download_asset(url: str, dest_path: str,
     carry on across separate runs instead of only across retries. The default
     keeps the old behaviour: a partial beside dest_path, removed on failure so
     nothing that looks like the asset is left behind.
+
+    url may be a list of mirrors, fastest first. A failed attempt moves to the
+    next one and keeps the same partial file: every mirror serves the identical
+    asset, which is what the SHA-256 the caller checks afterwards asserts. So
+    the bytes already fetched from a source that has since died are still worth
+    keeping, and the switch costs nothing.
     """
-    if not is_trusted_url(url):
-        raise ValueError(f'refusing to download from an untrusted URL: {url}')
+    sources = [url] if isinstance(url, str) else list(url)
+    if not sources:
+        raise ValueError('no download source given')
+    for src in sources:
+        if not is_allowed_source(src):
+            raise ValueError(f'refusing to download from an untrusted URL: {src}')
     part = part_path or dest_path + '.part'
     os.makedirs(os.path.dirname(os.path.abspath(part)), exist_ok=True)
+    # The caller's size comes from the release metadata, which is the one
+    # statement about this asset that arrived over TLS. A mirror serving a
+    # truncated copy must not be able to talk the download into stopping early.
     total = total_hint
     last_err = None
+    src_i = 0
+    dead = set()
     try:
         for attempt in range(attempts):
             have = os.path.getsize(part) if os.path.exists(part) else 0
@@ -219,14 +330,15 @@ def download_asset(url: str, dest_path: str,
             headers = {'User-Agent': _USER_AGENT}
             if have:
                 headers['Range'] = f'bytes={have}-'
-            req = urllib.request.Request(url, headers=headers)
+            req = urllib.request.Request(sources[src_i], headers=headers)
             try:
                 with _open(req, timeout) as resp:
                     resumed = have > 0 and resp.getcode() == 206
                     if have and not resumed:
                         have = 0
                     length = int(resp.headers.get('Content-Length') or 0)
-                    total = have + length if length else total
+                    if not total:
+                        total = have + length
                     done = have
                     with open(part, 'ab' if resumed else 'wb') as fh:
                         while True:
@@ -250,11 +362,21 @@ def download_asset(url: str, dest_path: str,
                 elif e.code == 429 or e.code >= 500:
                     last_err = e
                 else:
-                    raise   # a refused redirect or a 404 will not fix itself
+                    # This source will not start working - but the mirror
+                    # simply may not carry this release yet, so a 404 on one
+                    # of them is not a 404 on all of them.
+                    dead.add(sources[src_i])
+                    last_err = e
+                    if len(dead) >= len(sources):
+                        raise
             except OSError as e:
                 # ssl.SSLError and socket timeouts land here; these are the
                 # ones worth resuming.
                 last_err = e
+            for _ in range(len(sources)):
+                src_i = (src_i + 1) % len(sources)
+                if sources[src_i] not in dead:
+                    break
             if attempt + 1 < attempts:
                 time.sleep(retry_wait)
         else:
