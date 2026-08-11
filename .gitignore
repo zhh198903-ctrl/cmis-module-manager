@@ -29,9 +29,18 @@ CMIS_Module_Manager.spec
 docs/standards/
 
 # ═══════════════════════════════════════════════════
-#  Marketing material (large binaries — not source)
+#  Marketing material (not source — keep it out of git)
 # ═══════════════════════════════════════════════════
 docs/marketing/
+# Matched by name anywhere, not just under docs/: the two articles this repo
+# once tracked sat at the repository root, and `git add -A` would take any
+# replacement straight back in. The account QR that ships with the manual
+# (static/qrcode.jpg, CMIS2Customer/qrcode.jpg) is deliberately not matched.
+公众号*
+推广*
+*推广文章*
+*网盘*
+baidu_qr*
 
 # ═══════════════════════════════════════════════════
 #  Release binaries — use GitHub Releases instead
