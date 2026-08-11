@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.2.3'
+__version__ = '2.2.4'
 
 import sys
 import os
@@ -9,6 +9,7 @@ import shutil
 import struct
 import threading
 import time
+import urllib.parse
 import webbrowser
 
 from flask import Flask, jsonify, render_template, request
@@ -41,6 +42,21 @@ _state = {
     # when unknown. Never assume a page without having selected it.
     'page': None,
 }
+
+
+# Progress of the running self-update, polled by the page while the download
+# runs on a worker thread. Written only by that thread and read by request
+# handlers; with one worker and one request at a time there is nothing to lock.
+_update = {
+    'state': 'idle',   # idle|starting|probing|downloading|verifying|installing|ready|error
+    'version': '',
+    'done': 0,
+    'total': 0,
+    'source': '',      # which mirror won the speed probe
+    'message': '',
+}
+_UPDATE_BUSY = ('starting', 'probing', 'downloading', 'verifying',
+                'installing', 'ready')
 
 
 def _ok(data=None):
@@ -1187,18 +1203,8 @@ def api_update_check():
     })
 
 
-@app.route('/api/update/apply', methods=['POST'])
-def api_update_apply():
-    """Download the newer release and hand the swap to a detached helper."""
-    if not updater.is_frozen():
-        return _err('Running from source — upgrade with git pull instead of '
-                    'replacing an executable', 400)
-    rel = updater.fetch_latest_release()
-    if rel is None:
-        return _err('Could not reach GitHub to download the update', 502)
-    if not updater.is_newer(rel['version'], __version__):
-        return _err(f'Already on the newest version ({__version__})', 400)
-
+def _run_update(rel):
+    """Fetch and install one release. Runs on its own thread; see api_update_apply."""
     staged = updater.staging_dir()
     try:
         if os.path.isdir(staged):
@@ -1213,44 +1219,99 @@ def api_update_apply():
         # is measured rather than assumed. Both serve the same asset and the
         # digest below is what decides installability, so the mirror never
         # needs to be trusted - only to be quick.
+        _update['state'] = 'probing'
         ranked = updater.order_sources([
             rel['asset_url'],
             updater.mirror_url(rel['version'], rel['asset_name']),
         ])
+        _update['source'] = urllib.parse.urlparse(ranked[0][0]).hostname or ''
+        _update['state'] = 'downloading'
+
+        def progress(done, total):
+            _update['done'] = done
+            _update['total'] = total or rel['asset_size']
+
         updater.download_asset([u for u, _ in ranked], archive,
+                               progress_cb=progress,
                                total_hint=rel['asset_size'],
                                part_path=updater.partial_path(rel['asset_name']),
                                keep_partial=True)
+        _update['state'] = 'verifying'
         if not updater.verify_sha256(archive, rel['sha256']):
             shutil.rmtree(staged, ignore_errors=True)
             # Separate messages: "we checked and it was wrong" and "there was
             # nothing to check against" call for different reactions, and the
             # second one is not the user's fault.
             if not rel['sha256']:
-                return _err(
+                _fail_update(
                     f'Release {rel["version"]} publishes no SHA-256 digest, so the '
                     'download cannot be verified; nothing was installed. Download '
-                    'it from the release page by hand if you trust it.', 500)
-            return _err('Downloaded file failed its checksum; update aborted', 500)
+                    'it from the release page by hand if you trust it.')
+            else:
+                _fail_update('Downloaded file failed its checksum; update aborted')
+            return
+        _update['state'] = 'installing'
         updater.extract_payload(archive, staged)
         os.remove(archive)
     except Exception as e:
         shutil.rmtree(staged, ignore_errors=True)
-        return _err(f'Update download failed: {e}', 500)
+        _fail_update(f'Update download failed: {e}')
+        return
 
     updater.stage_and_swap(staged)
+    _update['state'] = 'ready'
     # The helper is now waiting for this process to release the exe. Give the
-    # response time to reach the browser, then quit so the swap can proceed.
+    # browser a moment to see 'ready', then quit so the swap can proceed.
     threading.Timer(1.5, lambda: os._exit(0)).start()
+
+
+def _fail_update(message):
+    _update['state'] = 'error'
+    _update['message'] = message
+
+
+@app.route('/api/update/apply', methods=['POST'])
+def api_update_apply():
+    """Start the download on a worker thread and report progress separately.
+
+    Doing the transfer inside this request meant the server answered nothing
+    else until it finished - the whole UI froze, with the only feedback a toast
+    that expired after twenty seconds. That is invisible on a fast link and
+    forty minutes of an apparently hung tool on a slow one, which is exactly
+    when a user gives up and kills the process.
+
+    The server stays single-threaded on purpose: one I2C connection and one
+    cached page selection cannot survive interleaved requests. That constraint
+    is about concurrent *requests*, though, and a worker thread doing network
+    I/O is not one - so the request loop is free to answer /api/update/progress
+    while the bytes arrive.
+    """
+    if not updater.is_frozen():
+        return _err('Running from source — upgrade with git pull instead of '
+                    'replacing an executable', 400)
+    if _update['state'] in _UPDATE_BUSY:
+        return _err(f'An update is already {_update["state"]}', 409)
+    rel = updater.fetch_latest_release()
+    if rel is None:
+        return _err('Could not reach GitHub to download the update', 502)
+    if not updater.is_newer(rel['version'], __version__):
+        return _err(f'Already on the newest version ({__version__})', 400)
+
+    _update.update(state='starting', version=rel['version'], done=0,
+                   total=rel['asset_size'], source='', message='')
+    threading.Thread(target=_run_update, args=(rel,), daemon=True).start()
     return _ok({
-        # The old build cannot reliably relaunch itself after replacing its own
-        # exe, so do not promise it will. app.js discards this and shows the
-        # completion screen, but a stale promise here would resurface the moment
-        # anything else read it.
-        'message': f'Updating to {rel["version"]}. This window closes; the page '
-                   'reconnects on its own if the new build comes back up.',
         'version': rel['version'],
+        'total': rel['asset_size'],
+        'message': f'Downloading {rel["version"]} in the background; '
+                   'poll /api/update/progress for how far along it is.',
     })
+
+
+@app.route('/api/update/progress', methods=['GET'])
+def api_update_progress():
+    """How far the running update has got. Cheap enough to poll every second."""
+    return _ok(dict(_update))
 
 
 @app.route('/')

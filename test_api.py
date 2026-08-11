@@ -333,22 +333,57 @@ class TestUpdater(unittest.TestCase):
             with open(dest, 'rb') as fh:
                 self.assertEqual(fh.read(), payload)
 
-    def test_a_download_that_never_finishes_leaves_nothing_behind(self):
-        """A .part left next to the staged files would be mistaken for the
-        asset by the next step."""
+    def test_a_download_that_gets_nowhere_gives_up_and_leaves_nothing(self):
+        """`attempts` bounds consecutive attempts that add nothing. A .part
+        left next to the staged files would be mistaken for the asset."""
         import tempfile
         import updater as u
-        payload = b'x' * 2048
-        fake, reqs = self._download_harness([(payload[:100], 200, len(payload))] * 3)
+        fake, reqs = self._download_harness([IOError('refused')] * 3)
         self._with_fake_open(fake)
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, 'a.zip')
             with self.assertRaises(Exception):
-                u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                u.download_asset(_GH_URL, dest, total_hint=2048,
                                  attempts=3, retry_wait=0)
             self.assertFalse(os.path.exists(dest))
             self.assertFalse(os.path.exists(dest + '.part'))
-        self.assertEqual(len(reqs), 3, 'it must stop after the given attempts')
+        self.assertEqual(len(reqs), 3, 'it must stop after that many dead rounds')
+
+    def test_a_download_still_inching_forward_is_not_given_up_on(self):
+        """A real 16 MB download here ran 44 minutes and died at 58% with six
+        attempts spent - every one of which had transferred megabytes. The
+        budget was protecting against "slow"; the only thing worth abandoning
+        is a transfer that has stopped moving.
+        """
+        import tempfile
+        import updater as u
+        payload = bytes(range(250)) * 4          # 1000 bytes
+        steps = [(payload[:200], 200, len(payload))]
+        for a in range(200, 1000, 200):
+            steps.append((payload[a:a + 200], 206, None))
+        fake, reqs = self._download_harness(steps)
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            u.download_asset(_GH_URL, dest, total_hint=len(payload),
+                             attempts=2, retry_wait=0)
+            with open(dest, 'rb') as fh:
+                self.assertEqual(fh.read(), payload)
+        self.assertEqual(len(reqs), 5, 'each partial delivery must buy another round')
+
+    def test_a_source_dribbling_forever_still_hits_a_ceiling(self):
+        """Progress resetting the budget must not become "never give up"."""
+        import tempfile
+        import updater as u
+        fake, reqs = self._download_harness([(b'x', 200, 10_000)] +
+                                            [(b'x', 206, None)] * 40)
+        self._with_fake_open(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, 'a.zip')
+            with self.assertRaises(Exception):
+                u.download_asset(_GH_URL, dest, total_hint=10_000,
+                                 attempts=3, retry_wait=0, max_rounds=6)
+        self.assertEqual(len(reqs), 6, 'max_rounds is the backstop')
 
     def test_a_definitive_http_error_is_not_retried(self):
         """A 404, or the handler's refusal to follow a redirect off GitHub,
@@ -736,6 +771,107 @@ class TestUpdateRoutes(CMISTestCase):
         rv = self.client.post('/api/update/apply')
         self.assertErr(rv, 400)
         self.assertIn('git pull', json.loads(rv.data)['message'])
+
+    def _arm_fake_update(self, download):
+        """Point the update machinery at temp dirs and a scripted download.
+
+        Never let a test reach the end of _run_update: it hands over to the
+        swap helper and then os._exit()s the process, which here is the test
+        runner. Every case below ends in the error branch.
+        """
+        import tempfile
+        import updater as u
+        tmp = tempfile.mkdtemp()
+        rel = {'version': '9.9.9', 'asset_name': 'CMIS_dist_v9_9_9.zip',
+               'asset_url': _GH_URL, 'asset_size': 10240, 'sha256': 'ab' * 32,
+               'tag': 'v9.9.9', 'html_url': '', 'notes': '', 'published_at': ''}
+        saved = {name: getattr(u, name) for name in
+                 ('is_frozen', 'fetch_latest_release', 'order_sources',
+                  'discard_stale_partials', 'staging_dir', 'partial_path',
+                  'download_asset')}
+        u.is_frozen = lambda: True
+        u.fetch_latest_release = lambda *a, **k: dict(rel)
+        u.order_sources = lambda urls, **k: [(urls[0], 1.0)]
+        u.discard_stale_partials = lambda name: []
+        u.staging_dir = lambda: os.path.join(tmp, '_cmis_update')
+        u.partial_path = lambda name: os.path.join(tmp, 'parts', name + '.part')
+        u.download_asset = download
+
+        def restore():
+            for name, fn in saved.items():
+                setattr(u, name, fn)
+            app_module._update.update(state='idle', version='', done=0,
+                                      total=0, source='', message='')
+        self.addCleanup(restore)
+        return rel
+
+    def _await_update_state(self, wanted, timeout=5.0):
+        import time as _t
+        deadline = _t.time() + timeout
+        while _t.time() < deadline:
+            if app_module._update['state'] in wanted:
+                return app_module._update['state']
+            _t.sleep(0.02)
+        return app_module._update['state']
+
+    def test_apply_returns_at_once_and_reports_progress_separately(self):
+        """Downloading inside the request froze every other endpoint for as
+        long as the transfer took - forty minutes on a slow link, with nothing
+        on screen. The request loop has to stay free to answer the poll."""
+        import threading as _th
+        gate = _th.Event()
+
+        def download(urls, dest, progress_cb=None, **kw):
+            progress_cb(4096, 10240)
+            gate.wait(5)
+            raise IOError('link died')
+
+        self.addCleanup(gate.set)
+        self._arm_fake_update(download)
+
+        rv = self.client.post('/api/update/apply')
+        body = self.assertOk(rv)['data']
+        self.assertEqual(body['version'], '9.9.9')
+
+        self.assertEqual(self._await_update_state(('downloading',)), 'downloading')
+        prog = self.assertOk(self.client.get('/api/update/progress'))['data']
+        self.assertEqual(prog['state'], 'downloading')
+        self.assertEqual((prog['done'], prog['total']), (4096, 10240))
+
+        gate.set()
+        self.assertEqual(self._await_update_state(('error',)), 'error')
+        prog = self.assertOk(self.client.get('/api/update/progress'))['data']
+        self.assertIn('link died', prog['message'])
+
+    def test_a_second_apply_is_refused_while_one_is_running(self):
+        """Two downloads into one staging directory would delete each other's
+        files halfway through."""
+        import threading as _th
+        gate = _th.Event()
+
+        def download(urls, dest, progress_cb=None, **kw):
+            progress_cb(1, 10240)
+            gate.wait(5)
+            raise IOError('stopped')
+
+        self.addCleanup(gate.set)
+        self._arm_fake_update(download)
+        self.assertOk(self.client.post('/api/update/apply'))
+        self._await_update_state(('downloading',))
+        self.assertErr(self.client.post('/api/update/apply'), 409)
+        gate.set()
+
+    def test_the_page_puts_the_download_percentage_on_screen(self):
+        """A number moving is the difference between "slow" and "hung", and
+        the user's response to the second one is to kill the tool."""
+        import io
+        js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js')
+        js = io.open(js_path, encoding='utf-8').read()
+        self.assertIn("fetch('/api/update/progress'", js)
+        body = js.split('async function _followUpdateProgress(')[1].split('\n}\n')[0]
+        self.assertIn('done / p.total', body.replace('p.done', 'done'))
+        self.assertIn('%', body)
 
     def test_check_reports_unreachable_rather_than_up_to_date(self):
         """A blocked network must never be reported as being current."""

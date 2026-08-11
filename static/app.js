@@ -573,12 +573,60 @@ async function checkForUpdate() {
   toast(`Downloading v${d.latest_version} (${mb} MB)…`, 'success', 20000);
 
   const applied = await apiPost('/api/update/apply', {});
-  if (applied.status === 'ok') {
+  if (applied.status !== 'ok') {
+    btn.disabled = false;
+    btn.textContent = `↑ v${d.latest_version}`;
+    toast(applied.message, 'error', 12000);
+    return;
+  }
+
+  const outcome = await _followUpdateProgress(btn);
+  if (outcome.state === 'ready') {
     await _waitForNewVersion(applied.data.version);
   } else {
     btn.disabled = false;
     btn.textContent = `↑ v${d.latest_version}`;
-    toast(applied.message, 'error', 12000);
+    toast(outcome.message || 'The update did not complete', 'error', 12000);
+  }
+}
+
+/**
+ * Report the background download until it finishes, one way or the other.
+ *
+ * Sixteen megabytes takes seconds on a good link and the better part of an
+ * hour on a slow one, and without a number on screen those two look identical
+ * - the second one looks like a hang, and the natural response is to kill the
+ * tool. So the button carries the percentage, and the source that won the
+ * speed probe is named once it is known.
+ */
+async function _followUpdateProgress(btn) {
+  let announced = '';
+  for (;;) {
+    await new Promise(r => setTimeout(r, 1000));
+    let p;
+    try {
+      const r = await fetch('/api/update/progress', { cache: 'no-store' });
+      p = (await r.json()).data;
+    } catch (e) {
+      // The old build exits as soon as the swap is handed over, so the poll
+      // failing is the expected end of a successful update, not a fault.
+      return { state: 'ready' };
+    }
+    if (p.state === 'ready' || p.state === 'error') return p;
+
+    if (p.state === 'downloading' && p.total) {
+      const pct = Math.floor(p.done / p.total * 100);
+      btn.textContent = `Updating… ${pct}%`;
+      if (p.source && p.source !== announced) {
+        announced = p.source;
+        toast(`Downloading from ${p.source}`, 'success', 6000);
+      }
+    } else {
+      btn.textContent = p.state === 'probing' ? 'Picking a source…'
+                      : p.state === 'verifying' ? 'Verifying…'
+                      : p.state === 'installing' ? 'Installing…'
+                      : 'Updating…';
+    }
   }
 }
 

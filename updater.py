@@ -275,7 +275,7 @@ def download_asset(url, dest_path: str,
                    chunk: int = 1 << 16, timeout: int = 30,
                    total_hint: int = 0, attempts: int = 6,
                    retry_wait: float = 2.0, part_path: Optional[str] = None,
-                   keep_partial: bool = False) -> str:
+                   keep_partial: bool = False, max_rounds: int = 400) -> str:
     """Stream url to dest_path via a .part file, resuming after a dropped link.
 
     A 16 MB asset over a slow or proxied connection routinely dies mid-transfer
@@ -301,6 +301,12 @@ def download_asset(url, dest_path: str,
     asset, which is what the SHA-256 the caller checks afterwards asserts. So
     the bytes already fetched from a source that has since died are still worth
     keeping, and the switch costs nothing.
+
+    `attempts` counts *consecutive* attempts that added nothing, not attempts
+    overall; max_rounds is only a backstop against a source that hands over a
+    byte at a time forever. A download inching along is still a download, and
+    the point of giving up is to stop waiting on something that has stopped
+    moving.
     """
     sources = [url] if isinstance(url, str) else list(url)
     if not sources:
@@ -317,8 +323,12 @@ def download_asset(url, dest_path: str,
     last_err = None
     src_i = 0
     dead = set()
+    stalled = 0
+    rounds = 0
+    complete = False
     try:
-        for attempt in range(attempts):
+        while True:
+            rounds += 1
             have = os.path.getsize(part) if os.path.exists(part) else 0
             # A leftover longer than the asset cannot be a prefix of it - the
             # release was rebuilt under the same name, or the file is junk.
@@ -326,6 +336,7 @@ def download_asset(url, dest_path: str,
                 open(part, 'wb').close()
                 have = 0
             if total and have == total:
+                complete = True
                 break
             headers = {'User-Agent': _USER_AGENT}
             if have:
@@ -350,6 +361,7 @@ def download_asset(url, dest_path: str,
                             if progress_cb:
                                 progress_cb(done, total)
                 if not total or done >= total:
+                    complete = True
                     break
                 last_err = IOError(
                     f'connection closed after {done} of {total} bytes')
@@ -377,9 +389,18 @@ def download_asset(url, dest_path: str,
                 src_i = (src_i + 1) % len(sources)
                 if sources[src_i] not in dead:
                     break
-            if attempt + 1 < attempts:
-                time.sleep(retry_wait)
-        else:
+            # An attempt that moved the file forward is not a failure to spend
+            # the budget on. A real 16 MB download here needed forty-four
+            # minutes and died at 58% with six attempts spent, every one of
+            # them having transferred megabytes - the retries were protecting
+            # against "slow", when the only thing worth giving up on is "no
+            # longer moving".
+            now_have = os.path.getsize(part) if os.path.exists(part) else 0
+            stalled = 0 if now_have > have else stalled + 1
+            if stalled >= attempts or rounds >= max_rounds:
+                break
+            time.sleep(retry_wait)
+        if not complete:
             raise last_err or IOError('download did not complete')
         os.replace(part, dest_path)
     except BaseException:
