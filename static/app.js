@@ -4,6 +4,11 @@
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
+// Marks a field CMIS 5.4 introduced. Which fields those are comes from the
+// server (/api/module/capabilities -> new_in_5_4), so the list is never
+// retyped here; this is only how it looks.
+const NEW54 = '<span class="badge-new54" title="CMIS 5.4 新增字段">5.4 新增</span>';
+
 const AppState = {
   connected: false,
   currentTab: 'info',
@@ -11,6 +16,10 @@ const AppState = {
   monitoringIntervalMs: 2000,
   monitoringManual: false,
   backendsCache: [],   // cached result of /api/backends
+  // Lanes the connected module actually has. Eight until it says otherwise;
+  // CMIS 5.4 allows up to 256, and every lane loop below sizes from this.
+  lanes: 8,
+  caps: {},
 };
 
 // Fallback optical power limits (dBm), used only until the module's own
@@ -273,7 +282,12 @@ async function connectModule() {
     return;
   }
   AppState.connected = true;
-  updateConnectionUI(true, `${backend}  bus:${bus}  addr:0x${address.toString(16).toUpperCase()}`);
+  AppState.lanes = res.data?.lanes || 8;
+  const caps = await apiGet('/api/module/capabilities');
+  AppState.caps = caps.status === 'ok' ? caps.data : {};
+  rebuildLaneColumns();
+  updateConnectionUI(true, `${backend}  bus:${bus}  addr:0x${address.toString(16).toUpperCase()}`
+    + (AppState.lanes > 8 ? `  ${AppState.lanes} lanes` : ''));
   updateBackendInfoArea(backend);
   toast('Connected', 'success');
   // Auto-load info tab
@@ -284,6 +298,8 @@ async function connectModule() {
 async function disconnectModule() {
   await apiGet('/api/disconnect');
   AppState.connected = false;
+  AppState.lanes = 8;
+  AppState.caps = {};
   // The next module advertises its own limits and its own Applications.
   _moduleThresholds = null;
   _advertisedApps = [];
@@ -451,6 +467,7 @@ async function loadInfo() {
     .map(([k, v]) => [k, typeof v === 'string' ? esc(v) : v]));
   const s = Object.fromEntries(Object.entries(statusRes.data)
     .map(([k, v]) => [k, typeof v === 'string' ? esc(v) : v]));
+  const c = AppState.caps || {};
 
   // [field, value, page, address, cmis_definition]
   const rows = [
@@ -472,6 +489,11 @@ async function loadInfo() {
     ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
+    ['Heatsink Type',   c.heatsink_type ? `Type ${c.heatsink_type} (SFF-8024)` : '— (not specified)', 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (Table 8-18)', true],
+    ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
+    ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],
+    ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', true],
+    ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', true],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes across all AppDescriptors'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes'],
     ['FW Revision',     d.fw_revision,                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
@@ -481,7 +503,7 @@ async function loadInfo() {
     ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
   ];
 
-  tbody.innerHTML = rows.map(([k, v, pg, addr, def]) => {
+  tbody.innerHTML = rows.map(([k, v, pg, addr, def, since]) => {
     const plain = String(v).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     const tip = esc([
       k,
@@ -490,13 +512,47 @@ async function loadInfo() {
       def,
     ].join('\n'));
     return `<tr title="${tip}">
-      <td style="color:var(--text-muted);width:140px">${k}</td>
+      <td style="color:var(--text-muted);width:140px">${k}${since ? NEW54 : ''}</td>
       <td>${v}</td>
       <td class="td-page">${pg}</td>
       <td class="td-addr">${addr}</td>
       <td class="td-def">${def}</td>
     </tr>`;
   }).join('');
+}
+
+function rebuildLaneColumns() {
+  // Five tables lay lanes out as columns, with L1..L8 written into the HTML.
+  // A 16-lane module fills sixteen data cells under eight headings otherwise:
+  // every reading after the eighth lines up under the wrong column.
+  document.querySelectorAll('tr[data-lane-cols="1"]').forEach(tr => {
+    const first = tr.cells[0];
+    tr.innerHTML = '';
+    tr.appendChild(first);
+    for (let i = 1; i <= AppState.lanes; i++) {
+      const th = document.createElement('th');
+      th.textContent = `L${i}`;
+      tr.appendChild(th);
+    }
+  });
+}
+
+function polaritySummary(list) {
+  if (!Array.isArray(list) || !list.length) return '—';
+  const tx = list.filter(l => l.input_tx_inverted).map(l => l.lane);
+  const rx = list.filter(l => l.output_rx_inverted).map(l => l.lane);
+  if (!tx.length && !rx.length) return 'All regular';
+  const part = [];
+  if (tx.length) part.push(`Tx inverted: ${tx.join(', ')}`);
+  if (rx.length) part.push(`Rx inverted: ${rx.join(', ')}`);
+  return part.join(' · ');
+}
+
+function extraPagesSummary(c) {
+  const on = [['0Ch', c.page_0ch_supported], ['0Dh', c.page_0dh_supported],
+              ['60h', c.page_60h_supported], ['61h', c.page_61h_supported],
+              ['62h', c.page_62h_supported]].filter(x => x[1]).map(x => x[0]);
+  return on.length ? on.join(', ') : '— (none advertised)';
 }
 
 // ---------------------------------------------------------------------------
@@ -872,16 +928,22 @@ async function loadDatapath() {
 
 async function applyDatapath() {
   const app_select = [];
-  let tx_disable_mask = 0, tx_pol_mask = 0, rx_pol_mask = 0;
+  // One mask byte per bank of eight lanes: a 16-lane module needs two, and
+  // sending a single byte would silently configure only the first half.
+  const banks = Math.ceil(AppState.lanes / 8);
+  const tx_disable_mask = new Array(banks).fill(0);
+  const tx_pol_mask = new Array(banks).fill(0);
+  const rx_pol_mask = new Array(banks).fill(0);
 
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= AppState.lanes; i++) {
     const appSel = document.getElementById(`app-sel-${i}`);
     const txEn   = document.getElementById(`tx-en-${i}`);
     if (!appSel || !txEn) continue;
     app_select.push(parseInt(appSel.value, 10));
-    if (!txEn.checked) tx_disable_mask |= (1 << (i - 1));
-    if (document.getElementById(`tx-pol-${i}`)?.checked) tx_pol_mask |= (1 << (i - 1));
-    if (document.getElementById(`rx-pol-${i}`)?.checked) rx_pol_mask |= (1 << (i - 1));
+    const b = Math.floor((i - 1) / 8), bit = (i - 1) % 8;
+    if (!txEn.checked) tx_disable_mask[b] |= (1 << bit);
+    if (document.getElementById(`tx-pol-${i}`)?.checked) tx_pol_mask[b] |= (1 << bit);
+    if (document.getElementById(`rx-pol-${i}`)?.checked) rx_pol_mask[b] |= (1 << bit);
   }
 
   const res = await apiPost('/api/module/datapath', {
@@ -1258,12 +1320,15 @@ function _populateBitmaskRow(prefix, mask, meta) {
 }
 
 function _readBitmaskRow(prefix) {
-  let mask = 0;
-  for (let i = 0; i < 8; i++) {
+  // One mask byte per bank of eight lanes; the checkbox index runs over every
+  // lane the module has, so the bit position restarts at each bank.
+  const banks = Math.ceil(AppState.lanes / 8);
+  const masks = new Array(banks).fill(0);
+  for (let i = 0; i < AppState.lanes; i++) {
     const cb = document.getElementById(`${prefix}-cb-${i}`);
-    if (cb && cb.checked) mask |= (1 << i);
+    if (cb && cb.checked) masks[Math.floor(i / 8)] |= (1 << (i % 8));
   }
-  return mask;
+  return banks === 1 ? masks[0] : masks;
 }
 
 async function loadSquelch() {
@@ -1590,7 +1655,7 @@ async function loadLaser() {
 
 async function applyLaser() {
   const lanes = [];
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= AppState.lanes; i++) {
     const gridSel = document.getElementById(`laser-grid-${i}`);
     const chInput = document.getElementById(`laser-ch-${i}`);
     const ftInput = document.getElementById(`laser-ft-${i}`);

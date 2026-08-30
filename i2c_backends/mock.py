@@ -84,6 +84,45 @@ _DR8_800G = {
     'link_lengths': {'smf_km_byte': 0x01},   # 500m rounds up to 1 km in advertised byte
 }
 
+_XD16_1600G = {
+    'display':         '1.6T 16-lane (CMIS 5.4, two banks)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-1600G-XD16 ",
+    'vendor_sn':       b"DEMO000000005   ",
+    'vendor_rev':      b"A0",
+    'vendor_oui':      (0x00, 0x00, 0x00),
+    'date_code':       b"26010100",
+    'clei':            b"DEMOCLEI16",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x28,             # MPO
+    'media_if_tech':       0x06,             # 1310 nm EML
+    'power_class_bits':    0xE0,             # Class 8
+    'max_power_0_25W':     0x50,
+    'max_power_0_25w':     0x50,             # 80 x 0.25 = 20 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1000,
+    'rx_power_uw_nom':     700,
+    'tx_bias_ma_nom':      75.0,
+    'temperature_c_nom':   58.0,
+    'base_ber':            8.0e-7,
+    'snr_db_nom':          21.0,
+    'app_descriptors': [
+        (0x58, 0x5A, 0x88, 0x01),
+        (0x51, 0x56, 0x88, 0x11),
+    ],
+    'link_lengths': {'smf_km_byte': 0x02},
+    # --- CMIS 5.4 ---
+    'cmis_rev':            0x54,
+    'lanes':               16,               # two banks; 01h:142.1-0 = 01b
+    'default_polarity_tx': 0b00000101,       # lanes 1 and 3 wired inverted
+    'default_polarity_rx': 0b00000010,       # lane 2 wired inverted
+    'pages_ext_173':       0b11000000,       # Pages 0Ch and 0Dh present
+    'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h present
+    'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
+    'module_subtype':      0x01,
+    'heatsink_fiber':      0x30,             # HeatsinkType 3, FiberFace 0
+}
+
 _SR8_800G = {
     'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
     'vendor_name':     b"OPENCMIS DEMO   ",
@@ -160,6 +199,7 @@ class MockBackend(I2CInterface):
         self._profile = self.PROFILE
         self._connected = False
         self._current_page = 0x00
+        self._current_bank = 0x00
         self._start_time = time.time()
         # State machine tracking
         self._module_state = 0b011      # ModuleReady
@@ -189,7 +229,7 @@ class MockBackend(I2CInterface):
         # ==== Lower Memory ====
         lower = {}
         lower[0x00] = 0x1E                  # QSFP-DD CMIS
-        lower[0x01] = 0x53                  # CMIS 5.3
+        lower[0x01] = p.get('cmis_rev', 0x53)   # 0x54 = CMIS 5.4
         lower[0x02] = 0x00                  # MemoryModel: paged
         lower[0x03] = (0b011 << 1)          # ModuleReady, interrupt deasserted
         for a in range(0x04, 0x0E): lower[a] = 0x00
@@ -253,6 +293,8 @@ class MockBackend(I2CInterface):
         p00[0xD2] = 0x00                    # MediaLaneInformation
         p00[0xD3] = 0x00                    # FarEndConfig
         p00[0xD4] = p['media_if_tech']      # Media Interface Technology
+        lower[0x3C] = p.get('module_subtype', 0x00)          # 60
+        lower[0x3D] = p.get('heatsink_fiber', 0x00)          # 61 (5.4 heatsink type)
         regs[0x00] = p00
 
         # ==== Page 01h — Advertising ====
@@ -266,7 +308,24 @@ class MockBackend(I2CInterface):
         p01[0x86] = ll.get('om4_m_byte', 0x00)
         p01[0x87] = ll.get('om3_m_byte', 0x00)
         p01[0x88] = ll.get('om2_m_byte', 0x00)
-        p01[0x8E] = 0x00                    # BanksSupported = Bank0 only
+        # BanksSupported: 00b/01b/10b are 8/16/32 lanes; 11b is the CMIS 5.4
+        # escape that sends the host to 01h:174 for the real count.
+        lanes = p.get('lanes', 8)
+        if lanes <= 8:
+            p01[0x8E] = 0x00
+        elif lanes <= 16:
+            p01[0x8E] = 0x01
+        elif lanes <= 32:
+            p01[0x8E] = 0x02
+        else:
+            p01[0x8E] = 0x03
+            p01[0xAE] = (lanes // 8 - 1) & 0x1F
+        if p.get('cmis_rev', 0x53) >= 0x54:
+            p01[0xAB] = p.get('default_polarity_tx', 0x00)   # 171 (5.4)
+            p01[0xAC] = p.get('default_polarity_rx', 0x00)   # 172 (5.4)
+            p01[0xAD] = p.get('pages_ext_173', 0x00)         # 173 (5.4)
+            p01[0xAE] = p01.get(0xAE, 0) | p.get('pages_ext_174', 0x00)
+            p01[0xFC] = p.get('misc_caps_252', 0x00)         # 252 (5.4)
         regs[0x01] = p01
 
         # ==== Page 02h — Thresholds ====
@@ -379,6 +438,28 @@ class MockBackend(I2CInterface):
             p14[0xD0 + lane * 2] = (w >> 8) & 0xFF
             p14[0xD0 + lane * 2 + 1] = w & 0xFF
         regs[0x14] = p14
+
+        # Lane-banked pages for modules with more than eight lanes. Bank b
+        # holds lanes 8b+1..8b+8 at the same addresses, so each extra bank is
+        # a copy of bank 0 - nudged, so a bug that silently serves bank 0 for
+        # every bank shows up as identical readings instead of hiding.
+        lane_count = p.get('lanes', 8)
+        if lane_count > 8:
+            for bank in range(1, (lane_count + 7) // 8):
+                for page in (0x10, 0x11, 0x12, 0x13, 0x14):
+                    if page not in regs:
+                        continue
+                    copy = dict(regs[page])
+                    if page == 0x11:
+                        for lane in range(8):
+                            for base, step in ((0x9A, 40), (0xBA, -30), (0xAA, 90)):
+                                a = base + lane * 2
+                                if a in copy:
+                                    v = ((copy[a] << 8) | copy.get(a + 1, 0))
+                                    v = max(0, min(0xFFFF, v + bank * step))
+                                    copy[a] = (v >> 8) & 0xFF
+                                    copy[a + 1] = v & 0xFF
+                    regs[(page, bank)] = copy
 
         return regs
 
@@ -646,7 +727,11 @@ class MockBackend(I2CInterface):
         if register < 0x80:
             page_dict = self._registers.get(None, {})
         else:
-            page_dict = self._registers.get(self._current_page, {})
+            # Bank-specific data when the profile supplies it, otherwise the
+            # page as-is: an 8-lane module has only bank 0 and never notices.
+            page_dict = self._registers.get(
+                (self._current_page, self._current_bank),
+                self._registers.get(self._current_page, {}))
         result = bytearray(length)
         for i in range(length):
             result[i] = page_dict.get(register + i, 0x00)
@@ -660,10 +745,15 @@ class MockBackend(I2CInterface):
             page_dict = self._registers.setdefault(None, {})
             for i, b in enumerate(data):
                 page_dict[register + i] = b
+            if register <= 0x7E <= register + len(data) - 1:
+                self._current_bank = data[0x7E - register]
             if register <= 0x7F <= register + len(data) - 1:
                 self._current_page = data[0x7F - register]
         else:
-            page_dict = self._registers.setdefault(self._current_page, {})
+            key = ((self._current_page, self._current_bank)
+                   if (self._current_page, self._current_bank) in self._registers
+                   else self._current_page)
+            page_dict = self._registers.setdefault(key, {})
             for i, b in enumerate(data):
                 page_dict[register + i] = b
 
@@ -688,6 +778,11 @@ class MockDR8Backend(MockBackend):
 class MockSR8Backend(MockBackend):
     PROFILE = _SR8_800G
     BACKEND_NAME = 'mock_sr8'
+
+
+@register_backend("mock_1600g_16lane")
+class Mock1600G16LaneBackend(MockBackend):
+    PROFILE = _XD16_1600G
 
 
 @register_backend("mock_fr4x2")

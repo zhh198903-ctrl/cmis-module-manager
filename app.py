@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.2.4'
+__version__ = '2.3.0'
 
 import sys
 import os
@@ -38,9 +38,15 @@ _state = {
     'connected': False,
     'bus': None,
     'address': None,
-    # Page currently selected in the module's PageMapping register, or None
-    # when unknown. Never assume a page without having selected it.
+    # Page and bank currently selected, or None when unknown. Never assume
+    # either without having selected it.
     'page': None,
+    'bank': None,
+    # Lanes this module actually has, from 01h:142/174. Eight until a module
+    # says otherwise; CMIS 5.4 raised the ceiling to 256.
+    'lanes': 8,
+    # The 5.4 advertisement block, read once at connect.
+    'caps': {},
 }
 
 
@@ -137,38 +143,106 @@ def _reject_foreign_requests():
 # ---------------------------------------------------------------------------
 
 def _invalidate_page():
-    """Forget which page is selected; the next access will re-select it.
+    """Forget which page and bank are selected; the next access re-selects.
 
     Call after anything that can move the PageMapping register out from under
-    us: connecting, a module reset, or a raw write touching byte 0x7F.
+    us: connecting, a module reset, or a raw write touching byte 0x7E or 0x7F.
     """
     _state['page'] = None
+    _state['bank'] = None
 
 
-def _set_page(page: int):
-    """Select an upper-memory page, waiting out the module's access hold-off.
+def _set_page(page: int, bank: int = 0):
+    """Select an upper-memory page and bank, waiting out the access hold-off.
 
-    CMIS 5.3 gives tBPC, the maximum Bank/Page Change time, as 10 ms; reading
-    sooner can return the previous page's contents. Re-selecting a page that is
+    CMIS gives tBPC, the maximum Bank/Page Change time, as 10 ms; reading
+    sooner can return the previous page's contents. Re-selecting what is
     already current costs another hold-off for nothing, and the panels read the
     same page repeatedly - a thresholds refresh alone re-selected page 02h
-    twenty times - so skip the write when the page is already known.
+    twenty times - so skip the write when both are already known.
+
+    Bank first, then page, always both: the module holds off acting on
+    BankSelect until PageSelect is written (CMIS 8.2.15), so writing only the
+    bank would leave the change pending and the next read would come from the
+    old one.
     """
-    if _state['page'] == page:
+    if _state['page'] == page and _state['bank'] == bank:
         return
-    _state['page'] = None  # unknown while the write is in flight
-    _state['backend'].write_bytes(0x7F, bytes([page]))
+    _state['page'] = None  # unknown while the writes are in flight
+    _state['bank'] = None
+    _state['backend'].write_bytes(0x7E, bytes([bank, page]))
     time.sleep(0.010)
     _state['page'] = page
+    _state['bank'] = bank
 
 
 def _read_lower(addr: int, length: int) -> bytes:
     return _state['backend'].read_bytes(addr, length)
 
 
-def _read_upper(page: int, addr: int, length: int) -> bytes:
-    _set_page(page)
+def _read_upper(page: int, addr: int, length: int, bank: int = 0) -> bytes:
+    _set_page(page, bank)
     return _state['backend'].read_bytes(addr, length)
+
+
+def _read_banks(page: int, addr: int, length: int, lanes: int = 0):
+    """Yield (bank, raw) for every bank covering the module's lanes.
+
+    For registers that pack several lanes into one byte - DataPath state is
+    four bits per lane, the enable masks one bit - the bytes cannot simply be
+    concatenated and sliced, so callers parse each bank and join the results.
+    """
+    lanes = lanes or _state['lanes']
+    for bank in range((lanes + 7) // 8):
+        yield bank, _read_upper(page, addr, length, bank)
+
+
+def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
+    """Read a lane-banked register for every lane the module has.
+
+    Lane-banked pages only ever show eight lanes at a time: lanes 9-16 are the
+    same addresses again in bank 1, and so on up to the 256 lanes CMIS 5.4
+    allows. Concatenating the banks here lets every caller stay written as if
+    the module were flat, which is what they all assumed when eight was the
+    only possibility.
+    """
+    lanes = lanes or _state['lanes']
+    out = bytearray()
+    for bank in range((lanes + 7) // 8):
+        out += _read_upper(page, addr, per_lane * 8, bank)
+    return bytes(out[:per_lane * lanes])
+
+
+def _discover_capabilities() -> dict:
+    """Read the advertisements that decide how the rest of the session behaves.
+
+    Lane count first: every panel sizes its tables from it, and CMIS 5.4 raised
+    the ceiling from 32 lanes to 256 by giving 01h:142's two-bit bank field an
+    escape value. Reading it once at connect beats guessing eight everywhere.
+
+    A pre-5.4 module has nothing at 01h:173-174; it is not required to answer
+    and may return zeros or garbage, so the escape value is what gates whether
+    those bytes are believed at all.
+    """
+    caps = {'max_lanes': 8, 'banks_supported': 1, 'cmis_revision': ''}
+    try:
+        rev = _read_lower(0x01, 1)[0]
+        caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
+        b142 = _read_upper(0x01, 0x8E, 1)[0]
+        ext = _read_upper(0x01, 0xAD, 2)
+        caps.update(cmis.parse_supported_pages(b142, ext))
+        caps.update(cmis.parse_misc_caps(_read_upper(0x01, 0xFC, 1)[0]))
+        caps['default_polarity'] = cmis.parse_default_polarity(
+            _read_upper(0x01, 0xAB, 2))
+        sub = _read_lower(0x3C, 1)[0]
+        hs = _read_lower(0x3D, 1)[0]
+        caps.update(cmis.parse_extended_module_info(sub, hs))
+    except Exception:
+        # A module that cannot answer the capability block is still usable at
+        # the default eight lanes; failing the whole connection over an
+        # optional advertisement would be worse than assuming the minimum.
+        pass
+    return caps
 
 
 def _compute_module_capacity(apps: list) -> tuple:
@@ -262,7 +336,12 @@ def api_connect():
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()
-    return _ok({'backend': backend_name, 'bus': bus, 'address': address})
+    caps = _discover_capabilities()
+    _state['lanes'] = caps.get('max_lanes', 8)
+    _state['caps'] = caps
+    return _ok({'backend': backend_name, 'bus': bus, 'address': address,
+                'lanes': _state['lanes'],
+                'cmis_revision': caps.get('cmis_revision', '')})
 
 
 @app.route('/api/disconnect', methods=['GET', 'POST'])
@@ -276,6 +355,9 @@ def api_disconnect():
     _state['connected'] = False
     _state['bus'] = None
     _state['address'] = None
+    # A stale lane count would size the next module's tables from this one.
+    _state['lanes'] = 8
+    _state['caps'] = {}
     _invalidate_page()
     return _ok({'message': 'Disconnected'})
 
@@ -410,24 +492,42 @@ def api_module_status():
         return _err(str(e), 500)
 
 
+@app.route('/api/module/capabilities', methods=['GET'])
+def api_module_capabilities():
+    """The advertisement block, plus which of its fields CMIS 5.4 introduced.
+
+    The new-in-5.4 list is served rather than duplicated in the page, so the
+    badge in the UI and the field list in the manual cannot drift apart from
+    what the decoder actually reads.
+    """
+    err = _require_connected()
+    if err:
+        return err
+    caps = dict(_state.get('caps') or {})
+    caps['lanes'] = _state['lanes']
+    caps['new_in_5_4'] = sorted(cmis.NEW_IN_5_4)
+    return _ok(caps)
+
+
 @app.route('/api/module/monitoring', methods=['GET'])
 def api_module_monitoring():
     err = _require_connected()
     if err:
         return err
     try:
-        # 4 bytes — DataPath state is 4 bits/lane (Page 11h:128-131)
-        dp_state_raw  = _read_upper(0x11, 0x80, 4)
-        tx_power_raw  = _read_upper(0x11, 0x9A, 16)
-        tx_bias_raw   = _read_upper(0x11, 0xAA, 16)
-        rx_power_raw  = _read_upper(0x11, 0xBA, 16)
-        cfg_status_raw= _read_upper(0x11, 0xCA, 4)
-
-        dp_states = cmis.parse_dp_states(dp_state_raw)
-        cfg_statuses = cmis.parse_config_status(cfg_status_raw)
+        # DataPath state and Config Status pack 4 bits per lane, so they are
+        # parsed per bank; the monitors are 2 bytes per lane and concatenate.
+        dp_states, cfg_statuses = [], []
+        for _bank, raw in _read_banks(0x11, 0x80, 4):
+            dp_states += cmis.parse_dp_states(raw)
+        for _bank, raw in _read_banks(0x11, 0xCA, 4):
+            cfg_statuses += cmis.parse_config_status(raw)
+        tx_power_raw  = _read_banked(0x11, 0x9A, 2)
+        tx_bias_raw   = _read_banked(0x11, 0xAA, 2)
+        rx_power_raw  = _read_banked(0x11, 0xBA, 2)
 
         lanes = []
-        for i in range(8):
+        for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
             rx_uw = cmis.parse_power_uw(rx_power_raw[i*2:(i+1)*2])
             bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2])
@@ -453,29 +553,43 @@ def api_datapath_get():
     if err:
         return err
     try:
-        dp_deinit_raw = _read_upper(*cmis.REG_DP_DEINIT)
-        tx_dis_raw    = _read_upper(*cmis.REG_TX_OUTPUT_DIS)
-        app_sel_raw   = _read_upper(*cmis.REG_APP_SELECT)
+        # Every one of these is per bank: a mask byte covers eight lanes and
+        # AppSelect one byte each, so lanes 9+ live at the same addresses in
+        # the next bank rather than further along the same page.
+        def mask_per_bank(reg):
+            page, addr, _ = reg
+            return [raw[0] for _bank, raw in _read_banks(page, addr, 1)]
+
+        dp_deinit_masks = mask_per_bank(cmis.REG_DP_DEINIT)
+        tx_disable_masks = mask_per_bank(cmis.REG_TX_OUTPUT_DIS)
         try:
-            tx_pol_mask = _read_upper(*cmis.REG_TX_POL_FLIP)[0]
-            rx_pol_mask = _read_upper(*cmis.REG_RX_POL_FLIP)[0]
+            tx_pol_masks = mask_per_bank(cmis.REG_TX_POL_FLIP)
+            rx_pol_masks = mask_per_bank(cmis.REG_RX_POL_FLIP)
         except Exception:
-            tx_pol_mask = 0
-            rx_pol_mask = 0
+            tx_pol_masks = rx_pol_masks = [0] * len(dp_deinit_masks)
 
-        tx_disable_mask = tx_dis_raw[0]
-        dp_deinit_mask = dp_deinit_raw[0]
-        app_select = cmis.unpack_appselect(app_sel_raw)
+        app_select = []
+        for _bank, raw in _read_banks(*cmis.REG_APP_SELECT):
+            app_select += cmis.unpack_appselect(raw)
 
+        # Bank 0's values are what the summary fields have always reported.
+        tx_disable_mask = tx_disable_masks[0]
+        dp_deinit_mask = dp_deinit_masks[0]
+        tx_pol_mask = tx_pol_masks[0]
+        rx_pol_mask = rx_pol_masks[0]
+
+        # One bit per lane means bank b covers lanes 8b+1..8b+8, so the bit
+        # index restarts at every bank boundary rather than running to 256.
         lanes = []
-        for i in range(8):
+        for i in range(_state['lanes']):
+            b, bit = divmod(i, 8)
             lanes.append({
                 'lane': i + 1,
-                'tx_enable': not bool((tx_disable_mask >> i) & 1),
-                'dp_deinit': bool((dp_deinit_mask >> i) & 1),
-                'app_select': app_select[i],
-                'tx_polarity_flip': bool((tx_pol_mask >> i) & 1),
-                'rx_polarity_flip': bool((rx_pol_mask >> i) & 1),
+                'tx_enable': not bool((tx_disable_masks[b] >> bit) & 1),
+                'dp_deinit': bool((dp_deinit_masks[b] >> bit) & 1),
+                'app_select': app_select[i] if i < len(app_select) else 0,
+                'tx_polarity_flip': bool((tx_pol_masks[b] >> bit) & 1),
+                'rx_polarity_flip': bool((rx_pol_masks[b] >> bit) & 1),
             })
 
         return _ok({
@@ -568,23 +682,39 @@ def api_datapath_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        tx_disable_mask = int(body.get('tx_disable_mask', 0)) & 0xFF
-        app_select = body.get('app_select', [1] * 8)
-        tx_pol_mask = int(body.get('tx_polarity_flip_mask', 0)) & 0xFF
-        rx_pol_mask = int(body.get('rx_polarity_flip_mask', 0)) & 0xFF
+        # Masks arrive either as one byte (the eight-lane case this API has
+        # always taken) or as one byte per bank. Accepting both keeps a caller
+        # written for an eight-lane module working unchanged.
+        def per_bank(value, banks):
+            if isinstance(value, list):
+                return [int(v) & 0xFF for v in value] + [0] * (banks - len(value))
+            return [int(value) & 0xFF] + [0] * (banks - 1)
+
+        banks = (_state['lanes'] + 7) // 8
+        tx_disable = per_bank(body.get('tx_disable_mask', 0), banks)
+        tx_pol = per_bank(body.get('tx_polarity_flip_mask', 0), banks)
+        rx_pol = per_bank(body.get('rx_polarity_flip_mask', 0), banks)
+        app_select = body.get('app_select', [1] * _state['lanes'])
         apply = bool(body.get('apply', False))
 
-        _set_page(0x10)
-        # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
-        _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],
-                                      bytes([tx_pol_mask, tx_disable_mask]))
-        _state['backend'].write_bytes(cmis.REG_RX_POL_FLIP[1], bytes([rx_pol_mask]))
-        _state['backend'].write_bytes(cmis.REG_APP_SELECT[1],
-                                      cmis.pack_appselect(app_select))
+        for bank in range(banks):
+            _set_page(0x10, bank)
+            # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
+            _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],
+                                          bytes([tx_pol[bank], tx_disable[bank]]))
+            _state['backend'].write_bytes(cmis.REG_RX_POL_FLIP[1],
+                                          bytes([rx_pol[bank]]))
+            _state['backend'].write_bytes(
+                cmis.REG_APP_SELECT[1],
+                cmis.pack_appselect(app_select[bank * 8:bank * 8 + 8]))
 
-        # ApplyDPInit latches the Staged Control Set into the active configuration
+        # ApplyDPInit latches the Staged Control Set into the active
+        # configuration. Every bank gets it: a module is not half configured.
         if apply:
-            _state['backend'].write_bytes(cmis.REG_APPLY_DATAPATH[1], bytes([0xFF]))
+            for bank in range(banks):
+                _set_page(0x10, bank)
+                _state['backend'].write_bytes(cmis.REG_APPLY_DATAPATH[1],
+                                              bytes([0xFF]))
             time.sleep(0.1)
 
         return _ok({'message': 'DataPath configuration written'})
@@ -600,9 +730,14 @@ def api_module_flags():
     try:
         # 11h:135-152 are contiguous lane flag bytes; one burst read beats 18
         # page-select + 5 ms settle cycles on real hardware.
-        block = _read_upper(0x11, 0x87, 18)
+        blocks = [raw for _bank, raw in _read_banks(0x11, 0x87, 18)]
 
-        def flags(addr): return cmis.parse_lane_flags(block[addr - 0x87])
+        def flags(addr):
+            # One bit per lane, so each bank contributes its own eight.
+            out = []
+            for blk in blocks:
+                out += cmis.parse_lane_flags(blk[addr - 0x87])
+            return out[:_state['lanes']]
 
         tx_fault  = flags(0x87)
         tx_los    = flags(0x88)
@@ -623,7 +758,7 @@ def api_module_flags():
         rxpwr_lw  = flags(0x98)
 
         lanes = []
-        for i in range(8):
+        for i in range(_state['lanes']):
             lanes.append({
                 'lane': i + 1,
                 'tx_fault':           tx_fault[i],
@@ -713,14 +848,23 @@ def api_squelch_get():
     if err:
         return err
     try:
-        # 131-132 contiguous, 138-139 contiguous
-        tx_sq, tx_sf = _read_upper(0x10, cmis.REG_TX_SQUELCH_DIS[1], 2)
-        rx_od, rx_sq = _read_upper(0x10, cmis.REG_RX_OUTPUT_DIS[1], 2)
+        # 131-132 contiguous, 138-139 contiguous; one byte covers eight lanes
+        # so a wider module has the same registers again in the next bank.
+        tx_sqs, tx_sfs, rx_ods, rx_sqs = [], [], [], []
+        for _bank, raw in _read_banks(0x10, cmis.REG_TX_SQUELCH_DIS[1], 2):
+            tx_sqs.append(raw[0]); tx_sfs.append(raw[1])
+        for _bank, raw in _read_banks(0x10, cmis.REG_RX_OUTPUT_DIS[1], 2):
+            rx_ods.append(raw[0]); rx_sqs.append(raw[1])
         return _ok({
-            'tx_squelch_disable': tx_sq,
-            'tx_squelch_force':   tx_sf,
-            'rx_output_disable':  rx_od,
-            'rx_squelch_disable': rx_sq,
+            # Scalars stay for the eight-lane case every existing caller assumes.
+            'tx_squelch_disable': tx_sqs[0],
+            'tx_squelch_force':   tx_sfs[0],
+            'rx_output_disable':  rx_ods[0],
+            'rx_squelch_disable': rx_sqs[0],
+            'tx_squelch_disable_banks': tx_sqs,
+            'tx_squelch_force_banks':   tx_sfs,
+            'rx_output_disable_banks':  rx_ods,
+            'rx_squelch_disable_banks': rx_sqs,
         })
     except Exception as e:
         return _err(str(e), 500)
@@ -860,14 +1004,16 @@ def api_module_snr():
         _state['backend'].write_bytes(0x80, bytes([0x06]))
         time.sleep(0.005)
         # Selector 0x06: bytes 192-207 reserved, 208-223 host SNR, 240-255 media SNR
-        data = _read_upper(0x14, 0xC0, 64)
+        # Host SNR at offset 16 (bytes 208-223), media SNR at offset 48.
+        # Each bank carries its own eight lanes at the same offsets.
         host_snr = []
         media_snr = []
-        # Host SNR at offset 16 (bytes 208-223 = data[16:32])
-        # Media SNR at offset 48 (bytes 240-255 = data[48:64])
-        for i in range(8):
-            host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
-            media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
+        for _bank, data in _read_banks(0x14, 0xC0, 64):
+            for i in range(8):
+                host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
+                media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
+        host_snr = host_snr[:_state['lanes']]
+        media_snr = media_snr[:_state['lanes']]
         return _ok({
             'host_snr_db':  host_snr,
             'media_snr_db': media_snr,
@@ -887,16 +1033,15 @@ def api_module_ber():
         _state['backend'].write_bytes(0x80, bytes([0x01]))
         time.sleep(0.005)
         # Host BER at 0xC0–0xCF, Media BER at 0xD0–0xDF (8 lanes × 2B each)
-        ber_raw = _read_upper(0x14, 0xC0, 32)
         lanes = []
-        for i in range(8):
-            host_ber = cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2])
-            media_ber = cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2])
-            lanes.append({
-                'lane': i + 1,
-                'host_ber': host_ber,
-                'media_ber': media_ber,
-            })
+        for _bank, ber_raw in _read_banks(0x14, 0xC0, 32):
+            for i in range(8):
+                lanes.append({
+                    'lane': len(lanes) + 1,
+                    'host_ber': cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2]),
+                    'media_ber': cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2]),
+                })
+        lanes = lanes[:_state['lanes']]
         return _ok({'lanes': lanes})
     except Exception as e:
         return _err(str(e), 500)
@@ -925,21 +1070,34 @@ def api_laser_get():
                 grids_supported.append(name)
         if (grid_sup[1] >> 6) & 1:
             grids_supported.append('150 GHz')
+        # CMIS 5.4 added the 300 GHz grid; a 5.3 module leaves this bit clear.
+        grid_300_supported = bool((grid_sup[1] >> 5) & 1)
+        if grid_300_supported:
+            grids_supported.append('300 GHz')
         fine_tuning_supported = bool((grid_sup[1] >> 7) & 1)
 
-        # Current state (Page 12h) — 8 lanes
-        grid_spacing = _read_upper(0x12, 0x80, 8)
-        channel_num  = _read_upper(0x12, 0x88, 16)
-        fine_offset  = _read_upper(0x12, 0x98, 16)
-        current_freq = _read_upper(0x12, 0xA8, 32)
-        target_pwr   = _read_upper(0x12, 0xC8, 16)
-        tuning_status= _read_upper(0x12, 0xDE, 8)
+        grid_300_range = None
+        if grid_300_supported:
+            g300 = _read_upper(0x04, 0xA6, 4)
+            grid_300_range = [struct.unpack('>h', g300[0:2])[0],
+                              struct.unpack('>h', g300[2:4])[0]]
+        # 04h:196.6 advertises the 5.4 power-relative supervision thresholds.
+        rel_supported = bool((_read_upper(0x04, 0xC4, 1)[0] >> 6) & 1)
+        rel_thresholds = (cmis.parse_relative_thresholds(_read_upper(0x12, 0xD8, 2))
+                          if rel_supported else {})
 
-        grid_codes = {0:'3.125 GHz',1:'6.25 GHz',2:'12.5 GHz',3:'25 GHz',
-                      4:'50 GHz',5:'100 GHz',6:'33 GHz',7:'75 GHz',8:'150 GHz'}
+        # Current state (Page 12h), bank by bank
+        grid_spacing = _read_banked(0x12, 0x80, 1)
+        channel_num  = _read_banked(0x12, 0x88, 2)
+        fine_offset  = _read_banked(0x12, 0x98, 2)
+        current_freq = _read_banked(0x12, 0xA8, 4)
+        target_pwr   = _read_banked(0x12, 0xC8, 2)
+        tuning_status= _read_banked(0x12, 0xDE, 1)
+
+        grid_codes = cmis.GRID_CODES
 
         lanes = []
-        for i in range(8):
+        for i in range(_state['lanes']):
             gs = grid_spacing[i]
             gc = (gs >> 4) & 0x0F
             fine_en = bool(gs & 0x01)
@@ -960,10 +1118,17 @@ def api_laser_get():
                 'target_power_dbm': round(tgt_pwr, 2),
                 'tuning_in_progress': bool((st >> 1) & 1),
                 'wavelength_locked': not bool(st & 1),
+                # 5.4: when set, Page 02h's absolute Tx power thresholds stop
+                # applying to this lane and the relative ones take over.
+                'relative_thresholds_enabled': bool((gs >> 1) & 1),
             })
 
         return _ok({
             'grids_supported': grids_supported,
+            'grid_300ghz_supported': grid_300_supported,
+            'grid_300ghz_range': grid_300_range,
+            'relative_power_thresholds_supported': rel_supported,
+            'relative_power_thresholds': rel_thresholds,
             'fine_tuning_supported': fine_tuning_supported,
             'fine_resolution_ghz': struct.unpack(">H", fine_res)[0] * 0.001,
             'fine_range_ghz': [
@@ -1021,21 +1186,25 @@ def api_module_counters():
         return err
     try:
         lanes = []
-        for sel, lane_start, side in [
+        banks = (_state['lanes'] + 7) // 8
+        for bank in range(banks):
+          for sel, lane_start, side in [
             (0x02, 0, 'host'), (0x03, 4, 'host'),
             (0x04, 0, 'media'), (0x05, 4, 'media'),
-        ]:
-            _set_page(0x14)
+          ]:
+            # The selector is written into the bank being read: each bank
+            # keeps its own diagnostic result window.
+            _set_page(0x14, bank)
             _state['backend'].write_bytes(0x80, bytes([sel]))
             time.sleep(0.005)
-            data = _read_upper(0x14, 0xC0, 64)
+            data = _read_upper(0x14, 0xC0, 64, bank)
             for li in range(4):
                 off = li * 16
                 error_count = struct.unpack("<Q", data[off:off+8])[0]
                 total_bits_raw = struct.unpack("<Q", data[off+8:off+16])[0]
                 psl = total_bits_raw & 1  # pattern sync loss indicator
                 total_bits = total_bits_raw & ~1
-                lane_idx = lane_start + li
+                lane_idx = bank * 8 + lane_start + li
                 # Find or create lane entry
                 entry = None
                 for e in lanes:
@@ -1169,7 +1338,7 @@ def api_register_write():
 def api_version():
     return _ok({
         'version': __version__,
-        'cmis_revision_supported': '5.3',
+        'cmis_revision_supported': '5.4',
         'frozen': bool(getattr(sys, 'frozen', False)),
     })
 

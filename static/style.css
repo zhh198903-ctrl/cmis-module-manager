@@ -1010,3 +1010,20 @@ input[type="checkbox"] {
 .settings-actions button {
   width: auto;
 }
+
+/* Marks a field that CMIS 5.4 introduced. Deliberately quiet: it labels a
+   provenance, not a warning, and sits beside a field name that is already
+   the thing being read. */
+.badge-new54 {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  color: var(--accent-fg);
+  background: transparent;
+  border: 1px solid var(--accent-fg);
+  vertical-align: middle;
+  white-space: nowrap;
+}

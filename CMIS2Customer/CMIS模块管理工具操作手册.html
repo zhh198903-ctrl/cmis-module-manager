@@ -355,9 +355,9 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.2.4<br>
+      <b>版本</b>　2.3.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
-      <b>更新日期</b>　2026-08-12<br>
+      <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
     </div>
   </div>
@@ -394,6 +394,74 @@
   <h2 class="section-title">1. 产品简介</h2>
   <p>CMIS Module Manager 是一款用于调测和管理符合 CMIS（Common Management Interface Specification）标准的光模块的桌面工具。支持读取模块身份信息、实时监控光功率与温度、配置数据通道（DataPath）、执行环回 / PRBS 诊断，以及直接读写任意寄存器。</p>
 
+  <h3>1.1 CMIS 5.4 支持情况（本版起）</h3>
+  <p>本工具自 <b>v2.3.0</b> 起按 <b>OIF CMIS 5.4</b>（2026-05-21 发布）解码。
+     <b>5.4 与 5.3 完全向后兼容</b>——规范原文即写明"5.3 合规的模块也是 5.4 合规的"，
+     所以手上的 5.3 模块行为不变，界面上只是不会出现 5.4 才有的那几项。
+     界面中凡是 5.4 才引入的字段，字段名后都带一个 <b>5.4 新增</b> 标记。</p>
+
+  <h4>5.4 相对 5.3 的全部变更，以及本工具的处理</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>5.4 变更</th><th>寄存器 / 章节</th><th>本工具</th></tr></thead>
+      <tbody>
+        <tr><td><b>E14</b> 模块通道数上限从 32 提升到 <b>256</b></td>
+            <td><code>01h:142[1:0]</code> = <code>11b</code> 时改读 <code>01h:174[4:0]</code></td>
+            <td><span class="badge badge-ok">已支持</span> 连接时读取，界面按实际通道数铺开，跨 Bank 读写</td></tr>
+        <tr><td><b>E1</b> 通道默认极性广告</td>
+            <td><code>01h:171–172</code>（Table 8-57）</td>
+            <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Default Polarity</b> 行</td></tr>
+        <tr><td>新增页广告（0Ch/0Dh/60h/61h/62h）</td>
+            <td><code>01h:173–174</code>（Table 8-58）</td>
+            <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Extra Pages</b> 行</td></tr>
+        <tr><td><b>E13</b> 媒体通道交换能力广告</td>
+            <td><code>01h:252[5]</code>（Table 8-62）</td>
+            <td><span class="badge badge-ok">已支持</span>（广告位）；Page 6Dh 的交换操作未实现</td></tr>
+        <tr><td><b>E10</b> 散热器类型</td>
+            <td><code>00h:61[7:4]</code>（Table 8-18）</td>
+            <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Heatsink Type</b> 行</td></tr>
+        <tr><td><b>E17</b> 300 GHz 频率栅格</td>
+            <td><code>04h:129[5]</code>、<code>04h:166–169</code>，栅格码 <code>1001b</code></td>
+            <td><span class="badge badge-ok">已支持</span> Laser Tuning 的栅格列表与下拉</td></tr>
+        <tr><td><b>E9</b> 可编程相对光功率监督门限</td>
+            <td><code>04h:196[6]</code>、<code>12h:216–217</code>、<code>12h:128–135[1]</code></td>
+            <td><span class="badge badge-ok">已支持</span> Laser Tuning 卡片显示门限偏移与每通道使能</td></tr>
+        <tr><td><b>E2</b> 接口 ID 扩展为 12 位 UID（4 位 GID + 8 位 ID）</td>
+            <td><code>1Ch</code> NAD 内的 GID 字段</td>
+            <td><span class="badge badge-neutral">暂不适用</span> 规范注明<b>现存所有 UID 的 GID 均为 0</b>，
+                非零 GID 只能经 NAD（Page 1Ch）广告，本工具读基本应用描述符</td></tr>
+        <tr><td><b>E12</b> 可复位收发采集计数器</td><td>Page 61h / 0Dh</td>
+            <td><span class="badge badge-neutral">未实现</span> 需新页读写</td></tr>
+        <tr><td><b>E4</b> 固件加载管理、<b>E11</b> 性能管理</td><td>Page 0Ch/0Dh + CDB</td>
+            <td><span class="badge badge-neutral">未实现</span> 本工具不实现 CDB 命令流程</td></tr>
+        <tr><td><b>E3/E6/E7/E8</b> 新增 CDB 命令</td><td>Chapter 9</td>
+            <td><span class="badge badge-neutral">未实现</span> 同上</td></tr>
+        <tr><td><b>E15</b> VDM 降采样省电选项</td><td>7.1.2 / 8.27.8</td>
+            <td><span class="badge badge-neutral">不适用</span> 本工具不实现 VDM（5.4 的 VDM 变更为 none）</td></tr>
+        <tr><td>命名变更：<code>DataPathID</code> → <b>DPIDX</b>、<code>NPID</code> → <b>NPIDX</b></td>
+            <td>6.2.3.2.2 等</td>
+            <td><span class="badge badge-ok">已同步</span> 见 §9.3 的 AppSelect 说明</td></tr>
+        <tr><td>术语变更："flat memory" 改称 <b>static memory</b></td><td>6.3.2.3</td>
+            <td><span class="badge badge-ok">已同步</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>关于 1.6T 模块</b>：CMIS 5.4 <b>没有</b>针对 1.6T 的专门条款——规范全文未出现 1.6T / 1600G，
+    接口编码仍引用 <b>SFF-8024 rev 4.10</b>（与 5.3 相同）。5.4 真正为高密度模块做的是<b>扩容</b>：
+    通道数上限 32 → 256，接口码空间 8 位 → 12 位。另需注意规范新增的 §6.4.1 明确：
+    <b>单个 Application / DataPath 仍限 8 条通道</b>（这一限制 5.3 就存在，5.4 才写明）。
+    因此 8×200G 的 1.6T 模块可用一个 8 通道数据通道承载，16×100G 则需要两个。</span>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>多 Bank（超过 8 通道）路径仅经 Mock 验证。</b>开发时没有 16 通道实机可测，
+    该路径的通道编号、Bank 切换与读写分组由 <code>mock_1600g_16lane</code> 覆盖。
+    首次接真实宽通道模块时，请先用 Raw Registers 核对 <code>01h:142</code> 与 <code>01h:174</code>
+    的广告值与界面显示的通道数是否一致。</span>
+  </div>
+
   <h3>支持的接口后端（Backend）</h3>
   <div class="table-wrap">
     <table>
@@ -403,6 +471,7 @@
         <tr><td><code>mock_dr8</code></td><td class="label">模拟 800GBASE-DR8（8×100G PAM4, SMF 500m, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_sr8</code></td><td class="label">模拟 800GBASE-SR8（8×100G PAM4, OM4 100m, VCSEL 850nm），无需硬件</td></tr>
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
+        <tr><td><code>mock_1600g_16lane</code></td><td class="label"><b>16 通道</b>、自报 <b>CMIS 5.4</b> 的模块，用于演示多 Bank 读写与 5.4 新增字段（默认极性、散热器类型、新增页广告等）</td></tr>
         <tr><td><code>ch341</code></td><td class="label">通过 CH341 USB 转 I2C 适配器连接真实模块</td></tr>
         <tr><td><code>ch347</code></td><td class="label">通过 CH347 USB 转 I2C 适配器连接真实模块</td></tr>
         <tr><td><code>ftdi</code></td><td class="label">通过 FTDI 系列芯片连接真实模块</td></tr>
@@ -510,8 +579,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.2.4 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.2.4</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.3.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.3.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -551,7 +620,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>字段名与地址均严格取自 <b>OIF CMIS 5.3</b> 原文（Table 8-69 / 8-72 / 8-99 / 8-109 / 8-121 等）。
+    <span>字段名与地址均严格取自 <b>OIF CMIS 5.4</b> 原文（Table 8-18 / 8-47 / 8-57 / 8-58 / 8-62 / 8-99 / 8-109 等）。
     多字节字段（如激光器频率）会显示完整字节范围与单位换算。</span>
   </div>
 
@@ -726,7 +795,7 @@
       </tbody>
     </table>
   </div>
-  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.3 规范和实际产品特征构造。仅 <code>mock_coherent</code> 支持 Laser Tuning 功能。</p>
+  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.4 规范和实际产品特征构造。仅 <code>mock_coherent</code> 支持 Laser Tuning 功能；<code>mock_1600g_16lane</code> 是一块 <b>16 通道、自报 CMIS 5.4</b> 的模块，用于演示多 Bank 与 5.4 新增字段。</p>
 
   <h4>真实硬件接口</h4>
   <ul>
@@ -760,7 +829,7 @@
 <!-- ══════════════ 7. Module Info ══════════════ -->
 <div class="section" id="s7">
   <h2 class="section-title">7. Module Info — 模块基本信息</h2>
-  <p>连接成功后自动加载，显示模块的身份信息、能力广告与当前运行状态。所有字段寄存器地址严格按 CMIS 5.3 规范（OIF-CMIS-05.3.pdf Table 8-26）。</p>
+  <p>连接成功后自动加载，显示模块的身份信息、能力广告与当前运行状态。所有字段寄存器地址严格按 CMIS 5.4 规范（OIF-CMIS-05.4.pdf Table 8-26）。</p>
 
   <h3>7.1 身份信息（Vendor Info）</h3>
   <div class="table-wrap">
@@ -768,7 +837,7 @@
       <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier（如 QSFP-DD、OSFP、CMIS-Compliant）</td><td><code>Lower / 0x00</code></td></tr>
-        <tr><td>CMIS Revision</td><td class="label">CMIS 规范版本（如 5.3）。上半字节=主版本，下半字节=次版本</td><td><code>Lower / 0x01</code></td></tr>
+        <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.3 模块完全兼容</td><td><code>Lower / 0x01</code></td></tr>
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Media Type</td><td class="label">MMF / SMF / Passive Copper / Active Cable / BASE-T</td><td><code>Lower / 0x55</code></td></tr>
         <tr><td>Module State</td><td class="label">当前状态机（见下表）</td><td><code>Lower / 0x03[3:1]</code></td></tr>
@@ -813,7 +882,7 @@
     </table>
   </div>
 
-  <h3>7.4 Module State 枚举（CMIS 5.3 Table 8-7）</h3>
+  <h3>7.4 Module State 枚举（CMIS 5.4 Table 8-7）</h3>
   <div class="table-wrap">
     <table>
       <thead><tr><th>状态</th><th>编码 (bits[3:1])</th><th>含义</th></tr></thead>
@@ -848,7 +917,7 @@
     </table>
   </div>
 
-  <h3>DataPath State 枚举（CMIS 5.3 Table 8-84）</h3>
+  <h3>DataPath State 枚举（CMIS 5.4 Table 8-84）</h3>
   <div class="table-wrap">
     <table>
       <thead><tr><th>编码</th><th>名称</th><th>说明</th></tr></thead>
@@ -1025,7 +1094,7 @@
             若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
             <code>App n — not advertised</code> 用于保留现值。
             寄存器本身：DPConfigLane，每 lane 1 字节，bits[7:4]=AppSelCode（0 表示"无应用"，不是 App 0），
-            bits[3:1]=DataPathID，bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
+            bits[3:1]=<b>DPIDX</b>（CMIS 5.4 起由 DataPathID 更名，强调它是索引而非编号），bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
         <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）</td><td><code>10h / 0x82[n−1]</code></td></tr>
         <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
         <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
@@ -1131,7 +1200,7 @@
 
   <h3>10.4 BER Results（误码率）</h3>
   <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x01</code> 选择 BER F16 诊断。Host BER 在 <code>14h/0xC0</code>，Media BER 在 <code>14h/0xD0</code>，每通道 2 字节。</p>
-  <p>F16 解码公式（CMIS 5.3 十进制浮点）：<code>BER = mantissa × 10^(exp − 24)</code>，其中 bits[15:11]=exp, bits[10:0]=mantissa。</p>
+  <p>F16 解码公式（CMIS 5.4 十进制浮点）：<code>BER = mantissa × 10^(exp − 24)</code>，其中 bits[15:11]=exp, bits[10:0]=mantissa。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>信号质量</th><th>典型 pre-FEC BER</th></tr></thead>
@@ -1183,6 +1252,17 @@
   </div>
 
   <h3>10.7 Laser Tuning（激光调谐）— 仅限可调谐模块</h3>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>CMIS 5.4 新增两项</b>，模块广告支持时才出现：
+    <br>· <b>300 GHz 栅格</b>（栅格码 <code>1001b</code>，广告位 <code>04h:129[5]</code>，
+    通道范围 <code>04h:166–169</code>）——栅格下拉里会多出一档 300 GHz。
+    <br>· <b>相对光功率监督门限</b>（广告位 <code>04h:196[6]</code>，门限 <code>12h:216–217</code>）——
+    门限以<b>相对标称发射功率的偏移</b>给出，而非绝对值，且<b>对所有通道共用一组</b>。
+    高门限 = 标称 + (1+offset)×0.5 dB，低门限 = 标称 − (1+offset)×0.5 dB。
+    每条通道单独用 <code>12h:128–135 的 bit1</code> 使能；<b>一旦某通道启用，Page 02h 的
+    模块级绝对功率门限对它不再适用</b>，不要再拿 Module Thresholds 卡片的值去判断该通道。</span>
+  </div>
   <p>适用于 C-band / L-band 可调谐激光器模块（Media Interface Technology = 0x10/0x11）。</p>
   <p><b>Page 04h</b>（只读能力广告）：支持的 Grid 列表、通道范围、Fine Tuning 分辨率/范围、可编程输出功率范围。</p>
   <p><b>Page 12h</b>（读写控制）：</p>
@@ -1326,7 +1406,7 @@
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.3 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 4 种 profile：<code>mock_coherent</code>（800G 相干可调谐）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，分别模拟不同类型 800G QSFP-DD 模块。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 5 种 profile：<code>mock_coherent</code>（800G 相干可调谐）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，分别模拟不同类型 800G QSFP-DD 模块。</div>
   </div>
 
   <div class="faq-item">
@@ -1406,7 +1486,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.2.4<br>
+    CMIS Module Manager 操作手册 v2.3.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

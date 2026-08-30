@@ -952,18 +952,103 @@ class TestModuleControlBits(CMISTestCase):
                          'SoftwareReset stayed set after the write')
 
 
+class TestMultiBankLanes(CMISTestCase):
+    """Modules wider than eight lanes, which CMIS 5.4 raised the ceiling for.
+
+    Verified against the mock only - no 16-lane hardware was available - so
+    what these pin is the lane arithmetic and the bank switching, not the
+    behaviour of any particular module.
+    """
+
+    def _connect16(self):
+        rv = self.client.post('/api/connect',
+                              data=json.dumps({'backend': 'mock_1600g_16lane',
+                                               'bus': 0, 'address': 80}),
+                              content_type='application/json')
+        return self.assertOk(rv)['data']
+
+    def test_lane_count_comes_from_the_advertisement(self):
+        d = self._connect16()
+        self.assertEqual(d['lanes'], 16)
+        self.assertEqual(d['cmis_revision'], '5.4')
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertEqual(caps['banks_supported'], 2)
+        self.assertEqual(caps['max_lanes'], 16)
+
+    def test_every_lane_panel_covers_all_the_lanes(self):
+        """Sizing a panel to eight would silently hide half the module."""
+        self._connect16()
+        for path, key in (('/api/module/monitoring', 'lanes'),
+                          ('/api/module/datapath', 'lanes'),
+                          ('/api/module/flags', 'lanes'),
+                          ('/api/module/ber', 'lanes')):
+            body = self.assertOk(self.client.get(path))['data']
+            self.assertEqual(len(body[key]), 16, path)
+        snr = self.assertOk(self.client.get('/api/module/snr'))['data']
+        self.assertEqual(len(snr['host_snr_db']), 16)
+
+    def test_the_second_bank_is_actually_read(self):
+        """Serving bank 0 for every bank yields plausible numbers for lanes
+        that were never looked at - the failure this is here to catch."""
+        self._connect16()
+        lanes = self.assertOk(self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes], list(range(1, 17)))
+        self.assertNotEqual(lanes[0]['tx_power_uw'], lanes[8]['tx_power_uw'],
+                            'lane 9 repeated lane 1: the bank never changed')
+
+    def test_the_escape_code_is_what_reaches_past_thirty_two_lanes(self):
+        """01h:142's two-bit field tops out at 32 lanes. CMIS 5.4 gave it the
+        value 11b meaning "the real count is in 01h:174", which is the only
+        route to the 256 lanes the revision allows. A module that does not use
+        the escape must not have 01h:174 read into its lane count - the byte
+        is not required to exist and may be anything.
+        """
+        import cmis_registers as c
+        self.assertEqual(c.parse_supported_pages(0b00)['max_lanes'], 8)
+        self.assertEqual(c.parse_supported_pages(0b01)['max_lanes'], 16)
+        self.assertEqual(c.parse_supported_pages(0b10)['max_lanes'], 32)
+        # Escape set: 174.4-0 = n means (n+1) banks of eight.
+        self.assertEqual(c.parse_supported_pages(0b11, bytes([0, 31]))['max_lanes'], 256)
+        self.assertEqual(c.parse_supported_pages(0b11, bytes([0, 0]))['max_lanes'], 8)
+        # Escape clear: the same byte must be ignored entirely.
+        self.assertEqual(c.parse_supported_pages(0b01, bytes([0, 31]))['max_lanes'], 16)
+        self.assertIsNone(c.parse_supported_pages(0b01, bytes([0, 31]))['extra_lane_banks'])
+
+    def test_an_eight_lane_module_is_unaffected(self):
+        self.connect()
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertEqual(caps['max_lanes'], 8)
+        self.assertEqual(caps['banks_supported'], 1)
+        lanes = self.assertOk(self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertEqual(len(lanes), 8)
+
+    def test_the_new_in_5_4_list_is_served_not_retyped(self):
+        """The UI badge and the manual both read this list, so it has to come
+        from the decoder rather than being written out again beside them."""
+        import cmis_registers as c
+        self._connect16()
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertEqual(set(caps['new_in_5_4']), set(c.NEW_IN_5_4))
+        self.assertIn('max_lanes', caps['new_in_5_4'])
+
+
 class TestRawWriteGuards(CMISTestCase):
 
     def test_write_through_page_select_is_refused(self):
         """A multi-byte write across 0x7F would reprogram the page mid-transfer
         and scatter the rest into whatever page that byte named."""
         self.connect()
+        before = _state['backend']._current_page
         rv = self.client.post('/api/register/write',
                               data=json.dumps({'page': 0, 'address': 0x7C,
                                                'data': [0, 0, 0, 0x12, 0x34]}),
                               content_type='application/json')
         self.assertErr(rv, 400)
-        self.assertEqual(_state['backend']._current_page, 0x00,
+        # Compared against where the page actually was, not against zero:
+        # connecting now reads the capability block and legitimately leaves
+        # another page selected. What must hold is that the refusal moved it
+        # nowhere, whatever it was.
+        self.assertEqual(_state['backend']._current_page, before,
                          'the refused write still moved the page')
 
     def test_single_byte_page_select_still_allowed(self):
@@ -977,15 +1062,60 @@ class TestRawWriteGuards(CMISTestCase):
 class TestPageSelection(CMISTestCase):
     """Page selection is cached; a stale cache silently reads the wrong page."""
 
-    def _page_writes(self, fn):
-        """Run fn and return the pages written to the PageMapping register."""
+    def test_bank_and_page_are_written_together_bank_first(self):
+        """CMIS 8.2.15: the module holds off acting on BankSelect until
+        PageSelect is written. Writing the bank on its own would leave the
+        change pending and the next read would come from the old bank - which
+        looks like correct data from the wrong lanes, not like an error.
+        """
+        import app as app_module
+        self.connect()
         backend = _state['backend']
         real = backend.write_bytes
         seen = []
 
         def spy(addr, data):
-            if addr == 0x7F:
-                seen.append(data[0])
+            seen.append((addr, bytes(data)))
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            app_module._invalidate_page()
+            app_module._set_page(0x11, bank=1)
+        finally:
+            backend.write_bytes = real
+
+        selects = [w for w in seen if w[0] <= 0x7F < w[0] + len(w[1])]
+        self.assertEqual(len(selects), 1, 'bank and page must be one transfer')
+        addr, data = selects[0]
+        self.assertEqual(addr, 0x7E, 'the transfer starts at BankSelect')
+        self.assertEqual(data[0], 1, 'bank byte comes first')
+        self.assertEqual(data[1], 0x11, 'page byte follows it')
+
+    def test_a_bank_change_alone_still_reselects(self):
+        """Same page, different bank is a different set of lanes."""
+        import app as app_module
+        self.connect()
+        app_module._invalidate_page()
+        app_module._set_page(0x11, bank=0)
+        app_module._set_page(0x11, bank=1)
+        self.assertEqual(_state['bank'], 1)
+        self.assertEqual(_state['page'], 0x11)
+
+    def _page_writes(self, fn):
+        """Run fn and return the pages written to the PageMapping register.
+
+        Page selection writes BankSelect and PageSelect together in one
+        transfer starting at 0x7E, because the module defers acting on the bank
+        until the page byte lands. The page is therefore the second byte.
+        """
+        backend = _state['backend']
+        real = backend.write_bytes
+        seen = []
+
+        def spy(addr, data):
+            if addr <= 0x7F < addr + len(data):
+                seen.append(data[0x7F - addr])
             return real(addr, data)
 
         backend.write_bytes = spy
@@ -2442,6 +2572,69 @@ class TestManualMatchesBehaviour(CMISTestCase):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
         return io.open(path, encoding='utf-8').read()
+
+    def test_the_page_marks_5_4_fields_and_reads_the_list_from_the_server(self):
+        """A reader has to be able to tell a 5.4 field from one that has always
+        been there. The badge is styling only - which fields get it comes from
+        /api/module/capabilities, so the list cannot drift from the decoder."""
+        import io as _io
+        js = _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'static', 'app.js'), encoding='utf-8').read()
+        self.assertIn('badge-new54', js)
+        self.assertIn('5.4 新增', js)
+        self.assertIn("apiGet('/api/module/capabilities')", js)
+        css = _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'static', 'style.css'), encoding='utf-8').read()
+        self.assertIn('.badge-new54', css, 'the badge has no styling')
+
+    def test_lane_columns_are_rebuilt_for_wide_modules(self):
+        """Five tables put lanes across the top with L1..L8 written into the
+        HTML. Sixteen data cells under eight headings puts every reading past
+        the eighth under the wrong column - wrong, and quietly so."""
+        import io as _io
+        base = os.path.dirname(os.path.abspath(__file__))
+        html = _io.open(os.path.join(base, 'templates', 'index.html'), encoding='utf-8').read()
+        js = _io.open(os.path.join(base, 'static', 'app.js'), encoding='utf-8').read()
+        self.assertEqual(html.count('data-lane-cols="1"'), 5,
+                         'a lane-column header lost its marker')
+        self.assertIn('rebuildLaneColumns', js)
+        idx = js.index('function rebuildLaneColumns(')
+        body = js[idx:idx + 600]
+        self.assertIn('AppState.lanes', body,
+                      'headers are not sized from the module')
+
+    def test_the_manual_says_which_cmis_revision_the_tool_decodes(self):
+        """It ships as the only description of the product, and "which
+        revision" is the first thing a reader checks against their module."""
+        manual = self._manual()
+        self.assertIn('CMIS 5.4', manual)
+        self.assertIn('OIF-CMIS-05.4.pdf', manual)
+        self.assertIn('向后兼容', manual, 'a 5.3 module must not look unsupported')
+
+    def test_the_manual_marks_what_5_4_actually_added(self):
+        """The badge in the UI and this list are the same claim; a reader who
+        sees "5.4 新增" beside a field has to be able to look it up."""
+        manual = self._manual()
+        self.assertIn('5.4 新增', manual)
+        for reg in ('01h:171', '01h:173', '00h:61', '01h:252', '04h:196', '12h:216'):
+            self.assertIn(reg, manual, f'{reg} is a 5.4 addition the tool reads')
+
+    def test_the_manual_does_not_claim_1_6t_support_that_5_4_lacks(self):
+        """5.4 never mentions 1.6T and still references SFF-8024 rev 4.10.
+        What it raised is the lane ceiling and the interface code space, and
+        one application is still capped at eight lanes - saying otherwise
+        would send someone looking for a feature that is not there.
+        """
+        manual = self._manual()
+        self.assertIn('256', manual, 'the lane ceiling 5.4 actually raised')
+        self.assertIn('SFF-8024 rev 4.10', manual)
+        self.assertIn('8 条通道', manual, 'the per-application limit still applies')
+
+    def test_the_manual_admits_multi_bank_was_only_mocked(self):
+        """No 16-lane hardware was available. Claiming otherwise is the kind
+        of thing this manual has already been corrected for once."""
+        manual = self._manual()
+        self.assertIn('仅经 Mock 验证', manual)
 
     def test_the_alarm_fallback_is_not_described_as_symmetric(self):
         """ALARM_FALLBACK is -10/+3 dBm; '±10' was never a value in the code."""

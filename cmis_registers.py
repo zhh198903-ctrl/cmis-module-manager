@@ -1,6 +1,11 @@
-"""CMIS 5.3 register definitions and parse/encode utilities.
+"""CMIS 5.4 register definitions and parse/encode utilities.
 
-Authoritative source: OIF-CMIS-05.3.pdf
+Authoritative source: OIF-CMIS-05.4.pdf
+
+CMIS 5.4 is backward compatible: a 5.3 module stays fully readable here. The
+fields it added are listed in NEW_IN_5_4 so the UI and the manual can mark them
+in one place instead of the tag being retyped beside every field - a module
+older than 5.4 simply reports them as absent rather than wrong.
 All byte addresses match the spec's decimal byte numbering (linear address
 within the 256-byte module memory window). Byte numbers >= 128 (0x80) are
 in upper memory and require selecting the appropriate page via byte 0x7F.
@@ -27,6 +32,8 @@ REG_CUSTOM_MON       = (None, 0x18, 2)
 REG_MODULE_CONTROL   = (None, 0x1A, 1)   # Module-level control register
 REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15)
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
+REG_MODULE_SUBTYPE   = (None, 0x3C, 1)   # Lower 60: [3:0] SFF8024ModuleSubtype
+REG_HEATSINK_FIBER   = (None, 0x3D, 1)   # Lower 61: [7:4] HeatsinkType (5.4), [1:0] FiberFaceType
 REG_MEDIA_TYPE       = (None, 0x55, 1)   # Lower 85: Media Type Encoding (Table 8-20)
 # Application Descriptors (AppSel 1..8) — 4 bytes per descriptor
 REG_APP_DESC_BASE    = (None, 0x56, 4 * 8)  # 86..117 (8 descriptors × 4 bytes)
@@ -64,6 +71,10 @@ REG_LENGTH_OM4       = (0x01, 0x86, 1)   # 134
 REG_LENGTH_OM3       = (0x01, 0x87, 1)   # 135
 REG_LENGTH_OM2       = (0x01, 0x88, 1)   # 136
 REG_BANKS_SUPPORTED  = (0x01, 0x8E, 1)   # 142  bits[1:0]
+# --- CMIS 5.4 additions on Page 01h ---
+REG_DEFAULT_POLARITY = (0x01, 0xAB, 2)   # 171-172 Default Input/Output polarity (Table 8-57)
+REG_PAGES_EXT        = (0x01, 0xAD, 2)   # 173-174 Supported pages + extra banks (Table 8-58)
+REG_MISC_CAPS        = (0x01, 0xFC, 1)   # 252  bit5 MediaLaneSwitchingSupported (Table 8-62)
 REG_CDB_CAPS         = (0x01, 0xA3, 4)   # 163-166
 
 # ---------------------------------------------------------------------------
@@ -151,6 +162,8 @@ REG_FINE_RESOLUTION  = (0x04, 0xBE, 2)   # 190-191: U16 0.001 GHz units
 REG_FINE_LOW_OFFSET  = (0x04, 0xC0, 2)   # 192-193: S16 0.001 GHz
 REG_FINE_HIGH_OFFSET = (0x04, 0xC2, 2)   # 194-195: S16 0.001 GHz
 REG_PROG_PWR_MIN     = (0x04, 0xC6, 2)   # 198-199: S16 0.01 dBm
+REG_GRID_300_CHANNELS= (0x04, 0xA6, 4)   # 166-169: S16 low/high for the 300 GHz grid (5.4)
+REG_REL_THR_CAP      = (0x04, 0xC4, 1)   # 196: bit6 relative Tx power thresholds supported (5.4)
 REG_PROG_PWR_MAX     = (0x04, 0xC8, 2)   # 200-201: S16 0.01 dBm
 
 # ---------------------------------------------------------------------------
@@ -161,6 +174,7 @@ REG_CHANNEL_NUM_TX   = (0x12, 0x88, 16)  # 136-151: S16/lane (2B × 8)
 REG_FINE_OFFSET_TX   = (0x12, 0x98, 16)  # 152-167: S16/lane (2B × 8)
 REG_CURRENT_FREQ_TX  = (0x12, 0xA8, 32)  # 168-199: U32/lane (4B × 8) in 0.001 GHz
 REG_TARGET_PWR_TX    = (0x12, 0xC8, 16)  # 200-215: S16/lane (0.01 dBm)
+REG_REL_THRESHOLDS   = (0x12, 0xD8, 2)   # 216-217: relative Tx power thresholds (5.4)
 REG_TUNING_STATUS_TX = (0x12, 0xDE, 8)   # 222-229: 1B/lane [1]=TuningInProgress [0]=Unlocked
 REG_TUNING_FLAGS_TX  = (0x12, 0xE7, 8)   # 231-238: 1B/lane latched flags
 
@@ -606,3 +620,133 @@ def update_module_control(current: int, **fields) -> int:
         else:
             val &= ~(1 << bit) & 0xFF
     return val
+
+
+# ---------------------------------------------------------------------------
+# CMIS 5.4 additions
+# ---------------------------------------------------------------------------
+# Every field this tool surfaces that did not exist in CMIS 5.3. The UI tags
+# these and the manual lists them from here, so the claim "new in 5.4" is made
+# in exactly one place and cannot drift from what the decoders actually read.
+NEW_IN_5_4 = frozenset({
+    'heatsink_type',
+    'abnormal_fw_flag',
+    'abnormal_fw_mask',
+    'default_input_polarity_tx',
+    'default_output_polarity_rx',
+    'page_0ch_supported',
+    'page_0dh_supported',
+    'page_60h_supported',
+    'page_61h_supported',
+    'page_62h_supported',
+    'extra_lane_banks',
+    'media_lane_switching_supported',
+    'max_lanes',
+    'grid_300ghz_supported',
+    'grid_300ghz_range',
+    'relative_power_thresholds_supported',
+    'relative_power_thresholds',
+    'relative_thresholds_enabled',
+})
+
+# Grid spacing code 1001b was added in CMIS 5.4; 5.3 stopped at 150 GHz.
+GRID_CODES = {0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz',
+              4: '50 GHz', 5: '100 GHz', 6: '33 GHz', 7: '75 GHz',
+              8: '150 GHz', 9: '300 GHz', 15: 'Not available'}
+
+
+def is_new_in_5_4(field: str) -> bool:
+    return field in NEW_IN_5_4
+
+
+def parse_supported_pages(byte_142: int, ext: bytes = b'') -> dict:
+    """Decode which optional pages and how many lane banks a module has.
+
+    01h:142 (Table 8-47) has advertised pages and a 2-bit bank count since 5.2.
+    CMIS 5.4 gave that field an escape value: 11b means "read the real count
+    from 01h:174", which is what lifts the ceiling from 32 lanes to 256. A
+    module answering 00b/01b/10b is pre-5.4 or simply small, and 01h:174 must
+    not be consulted for it - the byte is not required to exist.
+    """
+    banks_code = byte_142 & 0x03
+    b173 = ext[0] if len(ext) > 0 else 0
+    b174 = ext[1] if len(ext) > 1 else 0
+    if banks_code == 0x03:
+        extra = b174 & 0x1F           # n < 32, meaning (n+1) banks of 8 lanes
+        banks = extra + 1
+    else:
+        extra = None
+        banks = (1, 2, 4)[banks_code]
+    return {
+        'network_path_pages_supported': bool((byte_142 >> 7) & 1),
+        'vdm_pages_supported':          bool((byte_142 >> 6) & 1),
+        'diagnostic_pages_supported':   bool((byte_142 >> 5) & 1),
+        'coherent_pages_supported':     bool((byte_142 >> 4) & 1),
+        'cmis_ff_supported':            bool((byte_142 >> 3) & 1),
+        'page_03h_supported':           bool((byte_142 >> 2) & 1),
+        'banks_supported':              banks,
+        'max_lanes':                    banks * 8,
+        'extra_lane_banks':             extra,
+        'page_0ch_supported':           bool((b173 >> 7) & 1),
+        'page_0dh_supported':           bool((b173 >> 6) & 1),
+        'page_60h_supported':           bool((b174 >> 7) & 1),
+        'page_61h_supported':           bool((b174 >> 6) & 1),
+        'page_62h_supported':           bool((b174 >> 5) & 1),
+    }
+
+
+def parse_default_polarity(raw: bytes) -> list:
+    """Per-lane default polarity from 01h:171-172 (Table 8-57), lane 1 first.
+
+    'Inverted' here describes how the module is wired, not a control: it says
+    the host has to invert its own polarity setting to match. It is advertised
+    on Page 01h because a static-memory module has no other place to say so.
+    """
+    if len(raw) < 2:
+        return []
+    tx, rx = raw[0], raw[1]
+    return [{'lane': i + 1,
+             'input_tx_inverted':  bool((tx >> i) & 1),
+             'output_rx_inverted': bool((rx >> i) & 1)}
+            for i in range(8)]
+
+
+def parse_extended_module_info(subtype_byte: int, heatsink_byte: int) -> dict:
+    """Lower 60-61 (Table 8-18). HeatsinkType is the 5.4 addition.
+
+    The code meanings live in SFF-8024, not in CMIS, so the raw value is
+    reported rather than guessed at; zero is the spec's "not specified".
+    """
+    return {
+        'module_subtype':   subtype_byte & 0x0F,
+        'heatsink_type':    (heatsink_byte >> 4) & 0x0F,
+        'fiber_face_type':  heatsink_byte & 0x03,
+    }
+
+
+def parse_misc_caps(byte_252: int) -> dict:
+    """01h:252 (Table 8-62). Bit 5 is the 5.4 media lane switching advertisement."""
+    return {'media_lane_switching_supported': bool((byte_252 >> 5) & 1)}
+
+
+def parse_relative_thresholds(raw: bytes) -> dict:
+    """12h:216-217 (Table 8-109), the 5.4 power-relative supervision thresholds.
+
+    Offsets, not absolute powers, and deliberately not per-lane: the spec takes
+    the view that a meaningful monitoring window is a property of the optics,
+    not of which lane you are looking at. Both offsets are U4 counted from half
+    a dB, so the smallest window a module can express is nominal +/- 0.5 dB.
+
+    When a lane enables these (12h:128-135 bit 1), Page 02h's module-wide
+    absolute thresholds stop applying to it and must not be shown as if they
+    still did.
+    """
+    if len(raw) < 2:
+        return {}
+    hi, lo = raw[0], raw[1]
+    return {
+        'hi_alarm_offset_db': (1 + ((hi >> 4) & 0x0F)) * 0.5,
+        'hi_warn_offset_db':  (1 + (hi & 0x0F)) * 0.5,
+        'lo_alarm_offset_db': -(1 + ((lo >> 4) & 0x0F)) * 0.5,
+        'lo_warn_offset_db':  -(1 + (lo & 0x0F)) * 0.5,
+    }

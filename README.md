@@ -1,8 +1,8 @@
 # CMIS Module Manager
 
-A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G / 400G and other form factors), built with Flask and vanilla JavaScript. Strictly follows the OIF CMIS 5.3 specification.
+A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G / 400G and other form factors), built with Flask and vanilla JavaScript. Strictly follows the OIF CMIS 5.4 specification.
 
-基于 Flask + 原生 JS 的光模块可视化管理 Web 工具，严格遵循 OIF CMIS 5.3 规范，支持 QSFP-DD 800G / 400G 等 CMIS 兼容模块。
+基于 Flask + 原生 JS 的光模块可视化管理 Web 工具，严格遵循 OIF CMIS 5.4 规范，支持 QSFP-DD 800G / 400G 等 CMIS 兼容模块。
 
 ![Main UI](CMIS2Customer/screenshot_main.png)
 
@@ -78,7 +78,7 @@ Prebuilt Windows binaries are attached to each
 
 ```
 app.py                  Flask REST API + static hosting entry point
-cmis_registers.py       CMIS 5.3 register map / field decoding
+cmis_registers.py       CMIS 5.4 register map / field decoding
 i2c_interface.py        Backend factory (list_backends / create_backend)
 i2c_backends/           I2C adapter backends (ch341 / ch347 / ftdi / mock)
 templates/index.html    Single-page UI
