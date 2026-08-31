@@ -387,17 +387,14 @@ function clearTabContent() {
   // above does not touch, and the summary line keeps its last reading. Without
   // this, reconnecting to a different module briefly shows the previous one's
   // squelch settings, temperature and voltage as if they were the new module's.
+  // Cleared by id prefix rather than by counting to eight: on a wider module
+  // the cells past the eighth would keep the previous module's settings, which
+  // is the very thing this block exists to prevent.
   ['sq', 'sf', 'od', 'rd'].forEach(p => {
-    for (let i = 0; i < 8; i++) {
-      const td = document.getElementById(`${p}-td-${i}`);
-      if (td) td.innerHTML = '';
-    }
+    document.querySelectorAll(`[id^="${p}-td-"]`).forEach(td => { td.innerHTML = ''; });
   });
   ['mso', 'msi', 'hso', 'hsi'].forEach(p => {
-    for (let i = 0; i < 8; i++) {
-      const td = document.getElementById(`lb-${p}-${i}`);
-      if (td) td.innerHTML = '';
-    }
+    document.querySelectorAll(`[id^="lb-${p}-"]`).forEach(td => { td.innerHTML = ''; });
   });
   const summary = document.getElementById('monitor-summary');
   if (summary) summary.innerHTML = '';
@@ -536,6 +533,25 @@ function rebuildLaneColumns() {
       tr.appendChild(th);
     }
   });
+
+  // The Output Controls and Loopback rows carry one static cell per lane, so
+  // widening only their headers would leave checkboxes for eight lanes sitting
+  // under sixteen headings - the control for lane 9 simply would not exist.
+  [['sq', 'sf', 'od', 'rd'], ['lb-mso', 'lb-msi', 'lb-hso', 'lb-hsi']]
+    .flat().forEach(prefix => {
+      const cells = document.querySelectorAll(`[id^="${prefix}-"]`);
+      const first = cells[0];
+      if (!first) return;
+      const row = first.closest('tr');
+      if (!row) return;
+      // Rebuild from the label cell outwards so a reconnect to a narrower
+      // module drops the extra columns rather than leaving them stale.
+      while (row.cells.length > 1) row.deleteCell(1);
+      for (let i = 0; i < AppState.lanes; i++) {
+        const td = row.insertCell(-1);
+        td.id = prefix.startsWith('lb-') ? `${prefix}-${i}` : `${prefix}-td-${i}`;
+      }
+    });
 }
 
 function polaritySummary(list) {
@@ -1378,17 +1394,22 @@ function _mkCheckbox(id) {
 }
 
 function _populateBitmaskRow(prefix, mask, meta) {
-  for (let i = 0; i < 8; i++) {
+  // mask is one byte per bank once the module is wider than eight lanes, so
+  // the bit position restarts at each bank boundary.
+  const masks = Array.isArray(mask) ? mask : [mask];
+  for (let i = 0; i < AppState.lanes; i++) {
     const td = document.getElementById(`${prefix}-td-${i}`);
     if (!td) continue;
     td.innerHTML = _mkCheckbox(`${prefix}-cb-${i}`);
     const cb = document.getElementById(`${prefix}-cb-${i}`);
-    cb.checked = !!((mask >> i) & 1);
+    cb.checked = !!(((masks[Math.floor(i / 8)] || 0) >> (i % 8)) & 1);
     if (meta) {
+      const bankMask = masks[Math.floor(i / 8)] || 0;
+      const bit = i % 8;
       const tip = regTip({
         field: `${meta.field}${i + 1}`,
-        page: meta.page, addr: meta.addr, value: mask, bit: i,
-        note: ((mask >> i) & 1) ? meta.onNote : meta.offNote,
+        page: meta.page, addr: meta.addr, value: bankMask, bit,
+        note: ((bankMask >> bit) & 1) ? meta.onNote : meta.offNote,
       });
       cb.title = tip;
       td.title = tip;
@@ -1412,17 +1433,17 @@ async function loadSquelch() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/squelch');
   if (res.status !== 'ok') { toast(`Squelch error: ${res.message}`, 'error'); return; }
-  _populateBitmaskRow('sq', res.data.tx_squelch_disable, {
+  _populateBitmaskRow('sq', res.data.tx_squelch_disable_banks || res.data.tx_squelch_disable, {
     field: 'AutoSquelchDisableTx', page: 0x10, addr: 0x83,
     onNote: 'Auto-squelch controller disabled for this lane',
     offNote: 'Auto-squelch controller enabled for this lane' });
-  _populateBitmaskRow('sf', res.data.tx_squelch_force, {
+  _populateBitmaskRow('sf', res.data.tx_squelch_force_banks || res.data.tx_squelch_force, {
     field: 'OutputSquelchForceTx', page: 0x10, addr: 0x84,
     onNote: 'Tx output squelch forced on', offNote: 'Tx output not force-squelched' });
-  _populateBitmaskRow('od', res.data.rx_output_disable, {
+  _populateBitmaskRow('od', res.data.rx_output_disable_banks || res.data.rx_output_disable, {
     field: 'OutputDisableRx', page: 0x10, addr: 0x8A,
     onNote: 'Rx output disabled', offNote: 'Rx output enabled' });
-  _populateBitmaskRow('rd', res.data.rx_squelch_disable, {
+  _populateBitmaskRow('rd', res.data.rx_squelch_disable_banks || res.data.rx_squelch_disable, {
     field: 'AutoSquelchDisableRx', page: 0x10, addr: 0x8B,
     onNote: 'Auto-squelch controller disabled for this lane',
     offNote: 'Auto-squelch controller enabled for this lane' });
@@ -1441,17 +1462,20 @@ async function applySquelch() {
 // Loopback (Diagnostics tab)
 // ---------------------------------------------------------------------------
 function _populateLoopbackRow(prefix, mask, meta) {
-  for (let i = 0; i < 8; i++) {
+  const masks = Array.isArray(mask) ? mask : [mask];
+  for (let i = 0; i < AppState.lanes; i++) {
     const td = document.getElementById(`lb-${prefix}-${i}`);
     if (!td) continue;
     td.innerHTML = _mkCheckbox(`lb-cb-${prefix}-${i}`);
     const cb = document.getElementById(`lb-cb-${prefix}-${i}`);
-    cb.checked = !!((mask >> i) & 1);
+    const bankMask = masks[Math.floor(i / 8)] || 0;
+    const bit = i % 8;
+    cb.checked = !!((bankMask >> bit) & 1);
     if (meta) {
       const tip = regTip({
         field: `${meta.field}Lane${i + 1}`,
-        page: 0x13, addr: meta.addr, value: mask, bit: i,
-        note: ((mask >> i) & 1) ? 'Loopback engaged on this lane' : 'Normal non-loopback operation',
+        page: 0x13, addr: meta.addr, value: bankMask, bit,
+        note: ((bankMask >> bit) & 1) ? 'Loopback engaged on this lane' : 'Normal non-loopback operation',
       });
       cb.title = tip;
       td.title = tip;
@@ -1460,25 +1484,28 @@ function _populateLoopbackRow(prefix, mask, meta) {
 }
 
 function _readLoopbackRow(prefix) {
-  let mask = 0;
-  for (let i = 0; i < 8; i++) {
+  // One mask byte per bank of eight lanes, same as the squelch rows: sending
+  // a single byte on a wider module would loop back only its first half.
+  const banks = Math.ceil(AppState.lanes / 8);
+  const masks = new Array(banks).fill(0);
+  for (let i = 0; i < AppState.lanes; i++) {
     const cb = document.getElementById(`lb-cb-${prefix}-${i}`);
-    if (cb && cb.checked) mask |= (1 << i);
+    if (cb && cb.checked) masks[Math.floor(i / 8)] |= (1 << (i % 8));
   }
-  return mask;
+  return banks === 1 ? masks[0] : masks;
 }
 
 async function loadLoopback() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/loopback');
   if (res.status !== 'ok') { toast(`Loopback error: ${res.message}`, 'error'); return; }
-  _populateLoopbackRow('mso', res.data.media_side_output,
+  _populateLoopbackRow('mso', res.data.media_side_output_banks || res.data.media_side_output,
     { field: 'MediaSideOutputLoopbackEnable', addr: 0xB4 });
-  _populateLoopbackRow('msi', res.data.media_side_input,
+  _populateLoopbackRow('msi', res.data.media_side_input_banks || res.data.media_side_input,
     { field: 'MediaSideInputLoopbackEnable', addr: 0xB5 });
-  _populateLoopbackRow('hso', res.data.host_side_output,
+  _populateLoopbackRow('hso', res.data.host_side_output_banks || res.data.host_side_output,
     { field: 'HostSideOutputLoopbackEnable', addr: 0xB6 });
-  _populateLoopbackRow('hsi', res.data.host_side_input,
+  _populateLoopbackRow('hsi', res.data.host_side_input_banks || res.data.host_side_input,
     { field: 'HostSideInputLoopbackEnable', addr: 0xB7 });
 }
 
@@ -1498,45 +1525,54 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const isChecker = (lolMask !== undefined);
-  // Field names follow CMIS 5.3 Tables 8-109/8-111/8-113/8-115: each block is
+  // Field names follow CMIS 5.4 Tables 8-109/8-111/8-113/8-115: each block is
   // 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits, Pre/PostFECEnable,
   // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
   const role = isChecker ? 'Checker' : 'Generator';
   const fecName = isChecker ? 'PostFECEnable' : 'PreFECEnable';
   const tip = (suffix, off, mask, i, note) => esc(regTip({
     field: `${side}Side${role}${suffix}Lane${i + 1}`, page: 0x13, addr: base + off,
-    value: mask, bit: i, note,
+    value: mask, bit: i % 8, note,
   }));
-  tbody.innerHTML = Array.from({length: 8}, (_, i) => {
-    const en  = !!((block.enable_mask    >> i) & 1);
-    const inv = !!((block.invert_mask    >> i) & 1);
-    const sw  = !!((block.byte_swap_mask >> i) & 1);
-    const fec = !!((block.fec_mask       >> i) & 1);
+  // Masks repeat per bank of eight lanes; the per-bank arrays are used when
+  // the module is wider, so lane 9 reads its own bank rather than lane 1's.
+  const bankOf = (key) => (b) => {
+    const arr = block[`${key}_banks`];
+    return Array.isArray(arr) ? (arr[b] || 0) : block[key];
+  };
+  const enM = bankOf('enable_mask'), invM = bankOf('invert_mask');
+  const swM = bankOf('byte_swap_mask'), fecM = bankOf('fec_mask');
+  tbody.innerHTML = Array.from({length: AppState.lanes}, (_, i) => {
+    const b = Math.floor(i / 8), bit = i % 8;
+    const en  = !!((enM(b)  >> bit) & 1);
+    const inv = !!((invM(b) >> bit) & 1);
+    const sw  = !!((swM(b)  >> bit) & 1);
+    const fec = !!((fecM(b) >> bit) & 1);
     const pattern = block.patterns[i] || 0;
     const patOpts = PRBS_PATTERNS.map((name, idx) =>
       `<option value="${idx}" ${pattern === idx ? 'selected' : ''}>${name}</option>`
     ).join('');
     let lolCell = '';
     if (isChecker) {
-      const lol = !!((lolMask >> i) & 1);
+      const lol = !!((lolMask >> bit) & 1);
       lolCell = `<td>${lol ? '<span class="flag-active">LOL</span>' : '<span class="flag-ok">●</span>'}</td>`;
     }
     // Lane i's 4-bit pattern selector sits in the low or high nibble of
     // pattern byte base+4+(i>>1).
     // Lane i's 4-bit PatternSelect sits in byte base+4+(i>>1); odd lanes
     // (Lane 1, 3, 5, 7) occupy bits 3-0, even lanes bits 7-4.
-    const patAddr = base + 4 + (i >> 1);
+    const patAddr = base + 4 + (bit >> 1);
     const patTip = esc(regTip({
       field: `${side}Side${role}PatternSelectLane${i + 1}`, page: 0x13, addr: patAddr,
       note: `Bits ${(i % 2) ? '7-4' : '3-0'} = ${pattern} (${PRBS_PATTERNS[pattern] || '?'})`,
     }));
-    const tEn  = tip('Enable', 0, block.enable_mask, i,
+    const tEn  = tip('Enable', 0, enM(b), i,
                      en ? `${role} running on this lane` : `${role} stopped on this lane`);
-    const tInv = tip('DataInvert', 1, block.invert_mask, i,
+    const tInv = tip('DataInvert', 1, invM(b), i,
                      inv ? 'Pattern data inverted' : 'Pattern data not inverted');
-    const tSw  = tip('SwapSymbolBits', 2, block.byte_swap_mask, i,
+    const tSw  = tip('SwapSymbolBits', 2, swM(b), i,
                      sw ? 'Symbol bit order swapped' : 'Normal symbol bit order');
-    const tFec = tip(fecName, 3, block.fec_mask, i,
+    const tFec = tip(fecName, 3, fecM(b), i,
                      fec ? 'Applied at the FEC-coded side' : 'Applied at the raw side');
 
     return `<tr>
@@ -1552,17 +1588,27 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side) {
 }
 
 function _readPrbsSection(tbodyId) {
-  let en = 0, inv = 0, sw = 0, fec = 0;
+  const banks = Math.ceil(AppState.lanes / 8);
+  const en = new Array(banks).fill(0), inv = new Array(banks).fill(0);
+  const sw = new Array(banks).fill(0), fec = new Array(banks).fill(0);
   const patterns = [];
-  for (let i = 0; i < 8; i++) {
-    if (document.getElementById(`${tbodyId}-en-${i}`)?.checked)  en  |= (1 << i);
-    if (document.getElementById(`${tbodyId}-inv-${i}`)?.checked) inv |= (1 << i);
-    if (document.getElementById(`${tbodyId}-sw-${i}`)?.checked)  sw  |= (1 << i);
-    if (document.getElementById(`${tbodyId}-fec-${i}`)?.checked) fec |= (1 << i);
+  for (let i = 0; i < AppState.lanes; i++) {
+    const b = Math.floor(i / 8), bit = i % 8;
+    if (document.getElementById(`${tbodyId}-en-${i}`)?.checked)  en[b]  |= (1 << bit);
+    if (document.getElementById(`${tbodyId}-inv-${i}`)?.checked) inv[b] |= (1 << bit);
+    if (document.getElementById(`${tbodyId}-sw-${i}`)?.checked)  sw[b]  |= (1 << bit);
+    if (document.getElementById(`${tbodyId}-fec-${i}`)?.checked) fec[b] |= (1 << bit);
     const sel = document.getElementById(`${tbodyId}-pat-${i}`);
     patterns.push(sel ? parseInt(sel.value, 10) : 0);
   }
-  return { enable_mask: en, invert_mask: inv, byte_swap_mask: sw, fec_mask: fec, patterns };
+  const one = banks === 1;
+  return {
+    enable_mask: one ? en[0] : en,
+    invert_mask: one ? inv[0] : inv,
+    byte_swap_mask: one ? sw[0] : sw,
+    fec_mask: one ? fec[0] : fec,
+    patterns,
+  };
 }
 
 async function loadPrbs() {

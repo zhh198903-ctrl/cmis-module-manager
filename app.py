@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.5.0'
+__version__ = '2.5.1'
 
 import sys
 import os
@@ -197,6 +197,21 @@ def _read_banks(page: int, addr: int, length: int, lanes: int = 0):
         yield bank, _read_upper(page, addr, length, bank)
 
 
+def _masks_per_bank(value, banks: int) -> list:
+    """One mask byte per bank, from either a byte or a list of them.
+
+    A mask covers eight lanes, so a wider module needs one per bank. Callers
+    written for eight lanes still send a single number and must keep working -
+    and the page only sends a list once the module is actually wider, so both
+    forms genuinely arrive.
+    """
+    if isinstance(value, (list, tuple)):
+        vals = [int(v) & 0xFF for v in value]
+    else:
+        vals = [int(value) & 0xFF]
+    return (vals + [0] * banks)[:banks]
+
+
 def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
     """Read a lane-banked register for every lane the module has.
 
@@ -234,7 +249,7 @@ def _discover_capabilities() -> dict:
         caps.update(cmis.parse_misc_caps(_read_upper(0x01, 0xFC, 1)[0]))
         caps['default_polarity'] = cmis.parse_default_polarity(
             _read_upper(0x01, 0xAB, 2))
-        sub = _read_lower(0x3C, 1)[0]
+        sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
         hs = _read_lower(0x3D, 1)[0]
         ext = cmis.parse_extended_module_info(sub, hs)
         ext['heatsink_type_name'] = cmis.HEATSINK_TYPES.get(
@@ -379,7 +394,7 @@ def api_module_info():
         mem_model_raw = _read_lower(0x02, 1)
         media_type_raw = _read_lower(0x55, 1)
 
-        # Page 00h vendor information block (CORRECT addresses per CMIS 5.3 Table 8-26)
+        # Page 00h vendor information block (addresses per CMIS 5.4 Table 8-26)
         vendor_name_raw = _read_upper(0x00, 0x81, 16)
         vendor_oui_raw  = _read_upper(0x00, 0x91, 3)
         vendor_pn_raw   = _read_upper(0x00, 0x94, 16)
@@ -526,7 +541,7 @@ def api_module_ext54():
             for _b, raw in _read_banks(0x60, 0x80, 2):
                 polarity += cmis.parse_polarity_status(raw)
             out['polarity_status'] = polarity[:_state['lanes']]
-            out['acq_counter_advert'] = _read_upper(0x60, 0x82, 1)[0]
+            out['acq_counter_advert'] = _read_upper(*cmis.REG_ACQ_COUNTER_ADV)[0]
             out['available']['60h'] = True
 
         if caps.get('page_61h_supported'):
@@ -540,7 +555,7 @@ def api_module_ext54():
 
         if caps.get('page_62h_supported'):
             thresholds = []
-            for _b, raw in _read_banks(0x62, 0x80, 64):
+            for _b, raw in _read_banks(*cmis.REG_LANE_PWR_THRESHOLDS):
                 thresholds += cmis.parse_lane_power_thresholds(raw)
             for i, t in enumerate(thresholds):
                 t['lane'] = i + 1
@@ -826,18 +841,10 @@ def api_datapath_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        # Masks arrive either as one byte (the eight-lane case this API has
-        # always taken) or as one byte per bank. Accepting both keeps a caller
-        # written for an eight-lane module working unchanged.
-        def per_bank(value, banks):
-            if isinstance(value, list):
-                return [int(v) & 0xFF for v in value] + [0] * (banks - len(value))
-            return [int(value) & 0xFF] + [0] * (banks - 1)
-
         banks = (_state['lanes'] + 7) // 8
-        tx_disable = per_bank(body.get('tx_disable_mask', 0), banks)
-        tx_pol = per_bank(body.get('tx_polarity_flip_mask', 0), banks)
-        rx_pol = per_bank(body.get('rx_polarity_flip_mask', 0), banks)
+        tx_disable = _masks_per_bank(body.get('tx_disable_mask', 0), banks)
+        tx_pol = _masks_per_bank(body.get('tx_polarity_flip_mask', 0), banks)
+        rx_pol = _masks_per_bank(body.get('rx_polarity_flip_mask', 0), banks)
         app_select = body.get('app_select', [1] * _state['lanes'])
         apply = bool(body.get('apply', False))
 
@@ -1021,13 +1028,21 @@ def api_squelch_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        tx_sq = int(body.get('tx_squelch_disable', 0)) & 0xFF
-        tx_sf = int(body.get('tx_squelch_force',   0)) & 0xFF
-        rx_od = int(body.get('rx_output_disable',  0)) & 0xFF
-        rx_sq = int(body.get('rx_squelch_disable', 0)) & 0xFF
-        _set_page(0x10)
-        _state['backend'].write_bytes(cmis.REG_TX_SQUELCH_DIS[1], bytes([tx_sq, tx_sf]))
-        _state['backend'].write_bytes(cmis.REG_RX_OUTPUT_DIS[1], bytes([rx_od, rx_sq]))
+        # These read back per bank, so they have to be written per bank too:
+        # a 16-lane module was reading sixteen lanes of squelch state and
+        # writing only the first eight, and the page's per-bank list arrived
+        # here as a list where an int was expected.
+        banks = (_state['lanes'] + 7) // 8
+        tx_sq = _masks_per_bank(body.get('tx_squelch_disable', 0), banks)
+        tx_sf = _masks_per_bank(body.get('tx_squelch_force',   0), banks)
+        rx_od = _masks_per_bank(body.get('rx_output_disable',  0), banks)
+        rx_sq = _masks_per_bank(body.get('rx_squelch_disable', 0), banks)
+        for b in range(banks):
+            _set_page(0x10, b)
+            _state['backend'].write_bytes(cmis.REG_TX_SQUELCH_DIS[1],
+                                          bytes([tx_sq[b], tx_sf[b]]))
+            _state['backend'].write_bytes(cmis.REG_RX_OUTPUT_DIS[1],
+                                          bytes([rx_od[b], rx_sq[b]]))
         return _ok({'message': 'Squelch/output controls written'})
     except Exception as e:
         return _err(str(e), 500)
@@ -1039,15 +1054,20 @@ def api_loopback_get():
     if err:
         return err
     try:
-        media_out = _read_upper(0x13, 0xB4, 1)[0]
-        media_in  = _read_upper(0x13, 0xB5, 1)[0]
-        host_out  = _read_upper(0x13, 0xB6, 1)[0]
-        host_in   = _read_upper(0x13, 0xB7, 1)[0]
+        # Four contiguous bitmask bytes, one bit per lane, so a wider module
+        # has the same four again in the next bank.
+        blocks = [raw for _b, raw in _read_banks(0x13, 0xB4, 4)]
+        cols = [[blk[i] for blk in blocks] for i in range(4)]
         return _ok({
-            'media_side_output': media_out,
-            'media_side_input':  media_in,
-            'host_side_output':  host_out,
-            'host_side_input':   host_in,
+            # Bank 0 stays scalar for every caller written before banks existed.
+            'media_side_output': cols[0][0],
+            'media_side_input':  cols[1][0],
+            'host_side_output':  cols[2][0],
+            'host_side_input':   cols[3][0],
+            'media_side_output_banks': cols[0],
+            'media_side_input_banks':  cols[1],
+            'host_side_output_banks':  cols[2],
+            'host_side_input_banks':   cols[3],
         })
     except Exception as e:
         return _err(str(e), 500)
@@ -1060,26 +1080,41 @@ def api_loopback_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        media_out = int(body.get('media_side_output', 0)) & 0xFF
-        media_in  = int(body.get('media_side_input',  0)) & 0xFF
-        host_out  = int(body.get('host_side_output',  0)) & 0xFF
-        host_in   = int(body.get('host_side_input',   0)) & 0xFF
-        _set_page(0x13)
-        _state['backend'].write_bytes(0xB4, bytes([media_out, media_in, host_out, host_in]))
+        banks = (_state['lanes'] + 7) // 8
+        media_out = _masks_per_bank(body.get('media_side_output', 0), banks)
+        media_in  = _masks_per_bank(body.get('media_side_input',  0), banks)
+        host_out  = _masks_per_bank(body.get('host_side_output',  0), banks)
+        host_in   = _masks_per_bank(body.get('host_side_input',   0), banks)
+        for b in range(banks):
+            _set_page(0x13, b)
+            _state['backend'].write_bytes(0xB4, bytes([media_out[b], media_in[b],
+                                                       host_out[b], host_in[b]]))
         return _ok({'message': 'Loopback configuration written'})
     except Exception as e:
         return _err(str(e), 500)
 
 
 def _read_prbs_block(base_addr: int) -> dict:
-    """Read 8-byte PRBS block: enable, invert, swap, fec, pattern×4."""
-    data = _read_upper(0x13, base_addr, 8)
+    """Read the 8-byte PRBS block for every bank: masks, then pattern x4.
+
+    The masks are one bit per lane and the patterns four bits, so both repeat
+    per bank. Bank 0's values stay under the original keys because everything
+    written before banks existed reads them.
+    """
+    blocks = [raw for _b, raw in _read_banks(0x13, base_addr, 8)]
+    patterns = []
+    for raw in blocks:
+        patterns += cmis.unpack_prbs_patterns(raw[4:8])
     return {
-        'enable_mask':       data[0],
-        'invert_mask':       data[1],
-        'byte_swap_mask':    data[2],
-        'fec_mask':          data[3],   # PreFEC for gen, PostFEC for chk
-        'patterns':          cmis.unpack_prbs_patterns(data[4:8]),
+        'enable_mask':       blocks[0][0],
+        'invert_mask':       blocks[0][1],
+        'byte_swap_mask':    blocks[0][2],
+        'fec_mask':          blocks[0][3],   # PreFEC for gen, PostFEC for chk
+        'patterns':          patterns[:_state['lanes']],
+        'enable_mask_banks':    [b[0] for b in blocks],
+        'invert_mask_banks':    [b[1] for b in blocks],
+        'byte_swap_mask_banks': [b[2] for b in blocks],
+        'fec_mask_banks':       [b[3] for b in blocks],
     }
 
 
@@ -1115,7 +1150,7 @@ def api_prbs_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        _set_page(0x13)
+        banks = (_state['lanes'] + 7) // 8
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),
@@ -1125,13 +1160,19 @@ def api_prbs_set():
             section = body.get(key, {})
             if not section:
                 continue
-            en_mask  = int(section.get('enable_mask', 0))    & 0xFF
-            inv_mask = int(section.get('invert_mask', 0))    & 0xFF
-            sw_mask  = int(section.get('byte_swap_mask', 0)) & 0xFF
-            fec_mask = int(section.get('fec_mask', 0))       & 0xFF
-            patterns = section.get('patterns', [0] * 8)
-            block = bytes([en_mask, inv_mask, sw_mask, fec_mask]) + cmis.pack_prbs_patterns(patterns)
-            _state['backend'].write_bytes(base_addr, block)
+            en  = _masks_per_bank(section.get('enable_mask', 0), banks)
+            inv = _masks_per_bank(section.get('invert_mask', 0), banks)
+            sw  = _masks_per_bank(section.get('byte_swap_mask', 0), banks)
+            fec = _masks_per_bank(section.get('fec_mask', 0), banks)
+            # Patterns are one flat list over all lanes; each bank takes its
+            # own eight, so lanes 9-16 are not left on whatever was there.
+            patterns = list(section.get('patterns', [0] * _state['lanes']))
+            patterns += [0] * (banks * 8 - len(patterns))
+            for b in range(banks):
+                _set_page(0x13, b)
+                block = (bytes([en[b], inv[b], sw[b], fec[b]])
+                         + cmis.pack_prbs_patterns(patterns[b * 8:b * 8 + 8]))
+                _state['backend'].write_bytes(base_addr, block)
         return _ok({'message': 'PRBS configuration written'})
     except Exception as e:
         return _err(str(e), 500)
@@ -1222,12 +1263,13 @@ def api_laser_get():
 
         grid_300_range = None
         if grid_300_supported:
-            g300 = _read_upper(0x04, 0xA6, 4)
+            g300 = _read_upper(*cmis.REG_GRID_300_CHANNELS)
             grid_300_range = [struct.unpack('>h', g300[0:2])[0],
                               struct.unpack('>h', g300[2:4])[0]]
         # 04h:196.6 advertises the 5.4 power-relative supervision thresholds.
         rel_supported = bool((_read_upper(0x04, 0xC4, 1)[0] >> 6) & 1)
-        rel_thresholds = (cmis.parse_relative_thresholds(_read_upper(0x12, 0xD8, 2))
+        rel_thresholds = (cmis.parse_relative_thresholds(
+                              _read_upper(*cmis.REG_REL_THRESHOLDS))
                           if rel_supported else {})
 
         # Current state (Page 12h), bank by bank

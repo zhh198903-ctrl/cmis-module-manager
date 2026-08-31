@@ -90,7 +90,7 @@ CMIS2Customer/          Distribution package content (manual + assets)
 
 ## Notes / 说明
 
-- The OIF CMIS 5.3 specification itself is **not** included in this repository. Download it from the [OIF website](https://www.oiforum.com/technical-work/implementation-agreements-ias/).
+- The OIF CMIS 5.4 specification and SFF-8024 are **not** included in this repository. Get CMIS from the [OIF website](https://www.oiforum.com/technical-work/implementation-agreements-ias/) and SFF-8024 from [SNIA](https://www.snia.org/technology-communities/sff/specifications).
 - Vendor names appearing in the mock profiles are simulated demo data and do not imply any affiliation.
 
 ## License

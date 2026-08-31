@@ -1009,6 +1009,52 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertEqual(c.HEATSINK_TYPES[1], 'RHS — Riding Heatsink')
         self.assertEqual(c.FIBER_FACE_TYPES[2], 'APC (Angled Physical Contact)')
 
+    def test_every_masked_control_writes_as_many_banks_as_it_reads(self):
+        """Reading sixteen lanes and writing eight is the failure this change
+        kept producing: the panel shows the module, Apply configures half of
+        it, and nothing reports a problem. Squelch got as far as a 500,
+        because the page sent a list where an int was expected.
+        """
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_16lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+        def post(path, body):
+            return self.assertOk(self.client.post(
+                path, data=json.dumps(body), content_type='application/json'))
+
+        post('/api/module/squelch', {'tx_squelch_disable': [0x0F, 0xF0]})
+        got = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(got['tx_squelch_disable_banks'], [0x0F, 0xF0])
+
+        post('/api/module/loopback', {'media_side_output': [0x03, 0x0C]})
+        got = self.assertOk(self.client.get('/api/module/loopback'))['data']
+        self.assertEqual(got['media_side_output_banks'], [0x03, 0x0C])
+
+        # Distinct patterns per bank: identical ones cannot tell "split across
+        # banks" from "bank 0 written twice".
+        post('/api/module/prbs', {'host_gen': {'enable_mask': [0xFF, 0x0F],
+                                               'patterns': [3] * 8 + [5] * 8}})
+        got = self.assertOk(self.client.get('/api/module/prbs'))['data']['host_gen']
+        self.assertEqual(got['enable_mask_banks'], [0xFF, 0x0F])
+        self.assertEqual(len(got['patterns']), 16)
+        self.assertEqual(got['patterns'][0], 3)
+        self.assertEqual(got['patterns'][15], 5,
+                         "bank 1 was given bank 0's patterns")
+
+    def test_the_masked_controls_still_take_a_plain_byte(self):
+        """Every caller written before banks existed sends one, and an
+        eight-lane module is still the common case."""
+        self.connect()
+        self.assertOk(self.client.post(
+            '/api/module/squelch',
+            data=json.dumps({'tx_squelch_disable': 0x0F}),
+            content_type='application/json'))
+        got = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(got['tx_squelch_disable'], 0x0F)
+        self.assertEqual(got['tx_squelch_disable_banks'], [0x0F])
+
     def test_both_1_6t_shapes_are_modelled(self):
         """The two 1.6T layouts in the market exercise different code here:
         8x200G fits one bank, 16x100G needs two."""
@@ -2766,6 +2812,26 @@ class TestManualMatchesBehaviour(CMISTestCase):
         css = _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'static', 'style.css'), encoding='utf-8').read()
         self.assertIn('.badge-new54', css, 'the badge has no styling')
+
+    def test_the_masked_control_rows_are_rebuilt_too_not_just_headers(self):
+        """Output Controls and Loopback carry one static cell per lane in the
+        markup. Widening only their headings would leave checkboxes for eight
+        lanes under sixteen headings - the control for lane 9 would simply not
+        exist, while the header claimed it did.
+        """
+        import io as _io
+        base = os.path.dirname(os.path.abspath(__file__))
+        js = _io.open(os.path.join(base, 'static', 'app.js'), encoding='utf-8').read()
+        idx = js.index('function rebuildLaneColumns(')
+        body = js[idx:idx + 1600]
+        for prefix in ("'sq'", "'lb-mso'"):
+            self.assertIn(prefix, body, f'{prefix} row is never rebuilt')
+        self.assertIn('insertCell', body, 'no cells are created for extra lanes')
+        # And the renderers must size from the module, not from eight.
+        for fn in ('_populateBitmaskRow', '_populateLoopbackRow'):
+            i = js.index(f'function {fn}(')
+            self.assertIn('AppState.lanes', js[i:i + 500],
+                          f'{fn} still renders a fixed eight lanes')
 
     def test_lane_columns_are_rebuilt_for_wide_modules(self):
         """Five tables put lanes across the top with L1..L8 written into the
