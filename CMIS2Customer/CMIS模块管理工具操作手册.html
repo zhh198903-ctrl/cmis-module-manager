@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.5.3<br>
+      <b>版本</b>　2.5.4<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -384,7 +384,7 @@
     <li><a href="#s9">DataPath Config — 数据通道配置</a></li>
     <li><a href="#s10">Diagnostics — 诊断工具</a></li>
     <li><a href="#s11">Raw Registers — 寄存器直读写</a></li>
-    <li><a href="#s12b">CMIS 5.4 扩展页</a></li>
+    <li><a href="#s12b">CMIS 5.4 扩展功能</a></li>
 <li><a href="#s12">常见问题排查</a></li>
     <li><a href="#s13">附录：界面按钮速查</a></li>
   </ol>
@@ -616,8 +616,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.3 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.5.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.4 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.5.4</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1460,20 +1460,35 @@
   </div>
 </div>
 
-<!-- ══════════════ 12b. CMIS 5.4 扩展页 ══════════════ -->
+<!-- ══════════════ 12b. CMIS 5.4 扩展功能 ══════════════ -->
 <div class="section" id="s12b">
-  <h2 class="section-title">12. CMIS 5.4 扩展页</h2>
-  <p><b>CMIS 5.4</b> 标签页展示 5.4 新增的几个<b>可选</b>页。它们是否存在由模块在
+  <h2 class="section-title">12. CMIS 5.4 扩展功能</h2>
+  <p>CMIS 5.4 新增的几个<b>可选</b>页<b>不设单独标签页</b>，按用途放进对应的功能标签，
+     卡片右上角带 <b>「5.4 新增」</b>徽标：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>功能</th><th>所在标签页</th><th>寄存器页</th></tr></thead>
+      <tbody>
+        <tr><td>CMIS 5.4 Optional Pages（广告与页映射）</td><td class="label">Module Info</td><td><code>0Ch</code></td></tr>
+        <tr><td>Per-Lane Output Power Thresholds</td><td class="label">Monitoring</td><td><code>62h</code></td></tr>
+        <tr><td>Lane Polarity Status</td><td class="label">DataPath Config</td><td><code>60h</code></td></tr>
+        <tr><td>Media Lane Switching</td><td class="label">DataPath Config</td><td><code>6Dh</code></td></tr>
+        <tr><td>Acquisition Counters</td><td class="label">Diagnostics</td><td><code>61h</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>这些页是否存在由模块在
      <code>01h:173–174</code> / <code>01h:252[5]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
      未实现的页不保证返回有意义的内容，读了再渲染等于把总线上的残留值变成"每通道读数"。
-     5.3 模块以及不实现这些页的 5.4 模块，本页会明确显示"没有广告任何可选页"，这是正常的。</p>
+     没广告的页对应的卡片<b>直接不出现</b>；5.3 模块以及不实现这些页的 5.4 模块，
+     Module Info 里的 CMIS 5.4 Optional Pages 卡片会明确写"没有广告任何可选页"，这是正常的。</p>
 
-  <h3>12.1 Lane Polarity Status（<code>60h:128–129</code>）</h3>
+  <h3>12.1 Lane Polarity Status（<code>60h:128–129</code>，DataPath Config 标签页）</h3>
   <p>模块<b>当前实际生效</b>的通道极性。它与 Module Info 里的 <b>Default Polarity</b>
      （<code>01h:171–172</code>）<b>可以合法地不一致</b>：后者只广告上电时的极性，
      而支持可编程极性的模块把实时状态放在 60h。两处不同不是故障。</p>
 
-  <h3>12.2 Acquisition Counters（<code>61h:128–191</code>）</h3>
+  <h3>12.2 Acquisition Counters（<code>61h:128–191</code>，Diagnostics 标签页）</h3>
   <p>四类饱和计数器：通道 Tx/Rx、数据通道 Tx/Rx。统计的是数据通道投入使用后
      <b>接收侧重新锁定信号的次数</b>，模块在 DPInit 时自动清零。</p>
   <div class="callout callout-note">
@@ -1491,12 +1506,12 @@
     所以本工具不猜——需要时请用 Raw Registers 自行确认后写入。</span>
   </div>
 
-  <h3>12.3 Per-Lane Output Power Thresholds（<code>62h:128–191</code>）</h3>
+  <h3>12.3 Per-Lane Output Power Thresholds（<code>62h:128–191</code>，Monitoring 标签页）</h3>
   <p>按媒体通道给出的<b>绝对</b>发射功率门限（S16，0.01 dBm），每通道一组四个值。
      启用了相对门限（见 §10.7）的通道以这里的值为准，
      <b>Page 02h 的模块级门限对它不再适用</b>。</p>
 
-  <h3>12.4 Media Lane Switching（<code>6Dh:136–175</code>）</h3>
+  <h3>12.4 Media Lane Switching（<code>6Dh:136–191</code>，DataPath Config 标签页）</h3>
   <p>把内部媒体通道重定向到不同的外部通道。填入目标顺序（如 <code>2,1,4,3,5,6,7,8</code>
      表示内部 1→外部 2、内部 2→外部 1，依此类推），先<b>暂存</b>，确认无误再<b>提交</b>。</p>
   <ul>
@@ -1505,7 +1520,10 @@
         而那时你已经被告知"写入成功"了</li>
     <li>当前映射若不是置换，表格下方会以红色标出，<b>本工具不会替你排序修正</b>——
         那正是需要你看见的信息</li>
-    <li>「上次提交结果」逐通道显示模块回报的状态</li>
+    <li>「已下发」是暂存值（<code>6Dh:136–143</code>），「当前生效」是交换机实际在做的
+        （<code>6Dh:184–191</code>，只读）。<b>勾选 Enable 本身不会提交</b>，
+        两列不一致表示提交还没做或被拒绝</li>
+    <li>「上次提交结果」逐通道显示模块回报的状态：成功 / 进行中 / 四种拒绝原因</li>
   </ul>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
@@ -1513,7 +1531,7 @@
     点提交前会弹确认框。</span>
   </div>
 
-  <h3>12.5 Supported Pages Map（<code>0Ch:128–159</code>）</h3>
+  <h3>12.5 CMIS 5.4 Optional Pages（<code>0Ch:128–159</code>，Module Info 标签页）</h3>
   <p>模块用 32 字节位图声明自己实现了哪些页，比逐页试探可靠。下方另显示
      Consolidated PM 特性的支持情况（按哪个 CMIS 版本定义、选项与要求的符合度）。</p>
 </div>
@@ -1582,7 +1600,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.5.3<br>
+    CMIS Module Manager 操作手册 v2.5.4<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

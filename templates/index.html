@@ -97,7 +97,6 @@
       <button class="tab-btn"        data-tab="monitoring"  disabled>Monitoring</button>
       <button class="tab-btn"        data-tab="datapath"    disabled>DataPath Config</button>
       <button class="tab-btn"        data-tab="diagnostics" disabled>Diagnostics</button>
-      <button class="tab-btn"        data-tab="ext54"       disabled>CMIS 5.4</button>
       <button class="tab-btn"        data-tab="raw"         disabled>Raw Registers</button>
     </nav>
 
@@ -117,6 +116,19 @@
           </tbody>
         </table>
 </div>
+      </div>
+    
+      <div class="card" id="card-pagemap" style="display:none">
+        <h3>CMIS 5.4 Optional Pages<span class="reg-meta">0Ch / 128–159</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span>
+          <button class="btn-secondary btn-sm" id="btn-refresh-ext54">↻ Refresh</button></h3>
+        <p class="label" id="ext54-availability">—</p>
+        <div id="ext54-empty" class="label" style="display:none">
+          该模块没有广告任何 CMIS 5.4 可选页。这些页是可选的，5.3 模块与不实现它们的
+          5.4 模块都属正常。
+        </div>
+        <p class="label">模块用位图声明自己实现了哪些页（Page 0Ch）。各功能标签页里带「5.4 新增」徽标的卡片，只在模块广告了对应页时出现。</p>
+        <p id="ext54-pagemap" style="font-family:var(--font-mono)"></p>
+        <p class="label" id="ext54-pm"></p>
       </div>
     </div>
 
@@ -181,6 +193,15 @@
 </div>
       </div>
 
+      <div class="card" id="card-lanethr" style="display:none">
+        <h3>Per-Lane Output Power Thresholds<span class="reg-meta">62h / 128–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
+        <p class="label">按媒体通道给出的绝对发射功率门限。启用了相对门限的通道，
+           以这里的值为准，<b>Page 02h 的模块级门限对它不再适用</b>。</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Lane</th><th>Hi Alarm</th><th>Hi Warn</th><th>Lo Warn</th><th>Lo Alarm</th></tr></thead>
+          <tbody id="tbl-lanethr"></tbody></table></div>
+      </div>
+
       <!-- Lane Flags card -->
       <div class="card">
         <h3>Lane Flags</h3>
@@ -203,6 +224,7 @@
         </table>
 </div>
       </div>
+    
     </div>
 
     <!-- ===== Tab: DataPath Config ===== -->
@@ -329,6 +351,32 @@
           Checked = bit set (auto-squelch controller disabled / output disabled / squelch forced).
           CMIS defines no OutputSquelchForceRx counterpart.
         </p>
+      </div>
+    
+      <div class="card" id="card-polarity" style="display:none">
+        <h3>Lane Polarity Status<span class="reg-meta">60h / 128–129</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
+        <p class="label">模块当前实际生效的通道极性。与 Module Info 里的 <b>Default Polarity</b>
+           （01h:171–172，仅广告上电极性）可以合法地不一致——可编程极性的模块把实时状态放在这里。</p>
+        <div class="table-scroll"><table><thead><tr data-lane-cols="1">
+          <th style="width:150px">方向</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+          <th>L5</th><th>L6</th><th>L7</th><th>L8</th><!--lane-cols-->
+        </tr></thead><tbody id="tbl-polarity"></tbody></table></div>
+      </div>
+      <div class="card" id="card-mls" style="display:none">
+        <h3>Media Lane Switching<span class="reg-meta">6Dh / 136–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
+        <p class="label">把内部媒体通道重定向到不同的外部通道。映射<b>必须是通道的一个置换</b>；
+           不是置换的映射会被本工具拒绝下发（模块也会校验后拒绝）。<br>
+           <b>「已下发」是暂存值（6Dh:136–143，可写），「当前生效」是交换机实际在做的（6Dh:184–191，只读）。</b>
+           勾选 Enable 本身<b>不会</b>提交，两列不一致就说明提交还没做或被拒绝——看提交结果那一列。</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>内部通道</th><th>已下发</th><th>当前生效</th><th>上次提交结果</th></tr></thead>
+          <tbody id="tbl-mls"></tbody></table></div>
+        <div style="margin-top:10px">
+          <input type="text" id="mls-mapping" placeholder="目标顺序，如 2,1,4,3,5,6,7,8" style="width:220px">
+          <label style="margin-left:8px"><input type="checkbox" id="mls-enable"> Enable</label>
+          <button class="btn-secondary btn-sm" id="btn-stage-mls">暂存</button>
+          <button class="btn-danger btn-sm" id="btn-commit-mls">提交（会影响在途业务）</button>
+        </div>
       </div>
     </div>
 
@@ -528,34 +576,9 @@
 </div>
       </div>
 
-    </div>
-
-
-    <!-- ===== Tab: CMIS 5.4 extensions ===== -->
-    <div class="tab-panel" id="tab-ext54">
-      <div class="card">
-        <h3>CMIS 5.4 扩展页
-          <button class="btn-secondary btn-sm" id="btn-refresh-ext54">↻ Refresh</button>
-        </h3>
-        <p class="label" id="ext54-availability">—</p>
-        <div id="ext54-empty" class="label" style="display:none">
-          该模块没有广告任何 CMIS 5.4 可选页。这些页是可选的，5.3 模块与不实现它们的
-          5.4 模块都属正常。
-        </div>
-      </div>
-
-      <div class="card" id="card-polarity" style="display:none">
-        <h3>Lane Polarity Status<span class="reg-meta">60h / 128–129</span></h3>
-        <p class="label">模块当前实际生效的通道极性。与 Module Info 里的 <b>Default Polarity</b>
-           （01h:171–172，仅广告上电极性）可以合法地不一致——可编程极性的模块把实时状态放在这里。</p>
-        <div class="table-scroll"><table><thead><tr data-lane-cols="1">
-          <th style="width:150px">方向</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
-          <th>L5</th><th>L6</th><th>L7</th><th>L8</th><!--lane-cols-->
-        </tr></thead><tbody id="tbl-polarity"></tbody></table></div>
-      </div>
-
+    
       <div class="card" id="card-acq" style="display:none">
-        <h3>Acquisition Counters<span class="reg-meta">61h / 128–191</span></h3>
+        <h3>Acquisition Counters<span class="reg-meta">61h / 128–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
         <p class="label">数据通道投入使用后，接收侧重新锁定信号的累计次数（饱和计数）。
            模块在 DPInit 时自动清零。<b>链路看起来正常但该计数在涨，说明它在反复失锁重锁。</b></p>
         <div class="table-scroll"><table><thead><tr data-lane-cols="1">
@@ -568,40 +591,11 @@
           <span class="label">仅复位通道计数器（60h:192–193）</span>
         </div>
       </div>
-
-      <div class="card" id="card-lanethr" style="display:none">
-        <h3>Per-Lane Output Power Thresholds<span class="reg-meta">62h / 128–191</span></h3>
-        <p class="label">按媒体通道给出的绝对发射功率门限。启用了相对门限的通道，
-           以这里的值为准，<b>Page 02h 的模块级门限对它不再适用</b>。</p>
-        <div class="table-scroll"><table>
-          <thead><tr><th>Lane</th><th>Hi Alarm</th><th>Hi Warn</th><th>Lo Warn</th><th>Lo Alarm</th></tr></thead>
-          <tbody id="tbl-lanethr"></tbody></table></div>
-      </div>
-
-      <div class="card" id="card-mls" style="display:none">
-        <h3>Media Lane Switching<span class="reg-meta">6Dh / 136–191</span></h3>
-        <p class="label">把内部媒体通道重定向到不同的外部通道。映射<b>必须是通道的一个置换</b>；
-           不是置换的映射会被本工具拒绝下发（模块也会校验后拒绝）。<br>
-           <b>「已下发」是暂存值（6Dh:136–143，可写），「当前生效」是交换机实际在做的（6Dh:184–191，只读）。</b>
-           勾选 Enable 本身<b>不会</b>提交，两列不一致就说明提交还没做或被拒绝——看提交结果那一列。</p>
-        <div class="table-scroll"><table>
-          <thead><tr><th>内部通道</th><th>已下发</th><th>当前生效</th><th>上次提交结果</th></tr></thead>
-          <tbody id="tbl-mls"></tbody></table></div>
-        <div style="margin-top:10px">
-          <input type="text" id="mls-mapping" placeholder="目标顺序，如 2,1,4,3,5,6,7,8" style="width:220px">
-          <label style="margin-left:8px"><input type="checkbox" id="mls-enable"> Enable</label>
-          <button class="btn-secondary btn-sm" id="btn-stage-mls">暂存</button>
-          <button class="btn-danger btn-sm" id="btn-commit-mls">提交（会影响在途业务）</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-pagemap" style="display:none">
-        <h3>Supported Pages Map<span class="reg-meta">0Ch / 128–159</span></h3>
-        <p class="label">模块用位图声明自己实现了哪些页。</p>
-        <p id="ext54-pagemap" style="font-family:var(--font-mono)"></p>
-        <p class="label" id="ext54-pm"></p>
-      </div>
     </div>
+
+
+    <!-- ===== Tab: CMIS 5.4 extensions ===== -->
+    
     <!-- ===== Tab: Raw Registers ===== -->
     <div class="tab-panel" id="tab-raw">
       <div class="card">

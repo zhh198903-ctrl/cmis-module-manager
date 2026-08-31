@@ -383,6 +383,16 @@ function clearTabContent() {
   const laserCaps = document.getElementById('laser-caps');
   if (laserCaps) laserCaps.innerHTML = '';
 
+  // The 5.4 optional-page cards sit inside the functional tabs, so a module
+  // that lacks those pages must not inherit the previous module's cards -
+  // hide them and drop their tables until the next module advertises them.
+  ['card-polarity', 'card-acq', 'card-lanethr', 'card-mls', 'card-pagemap']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  ['tbl-polarity', 'tbl-acq', 'tbl-lanethr', 'tbl-mls']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+  const avail = document.getElementById('ext54-availability');
+  if (avail) avail.textContent = '—';
+
   // The Output Controls and Loopback checkboxes live in cells the table sweep
   // above does not touch, and the summary line keeps its last reading. Without
   // this, reconnecting to a different module briefly shows the previous one's
@@ -425,9 +435,14 @@ function switchTab(name) {
   // Auto-load data for tab
   if (name === 'info')        loadInfo();
   if (name === 'monitoring')  startMonitoring();
+  // The 5.4 optional-page cards live inside the functional tabs (badged
+  // "5.4 新增"), so each hosting tab pulls them alongside its own data.
+  if (['info', 'monitoring', 'datapath', 'diagnostics'].includes(name)
+      && AppState.connected) {
+    loadExt54();
+  }
   // The AppSelect dropdown is built from the advertised Applications, so they
   // must be in hand before the DataPath table renders.
-  if (name === 'ext54')       loadExt54();
   if (name === 'datapath') {
     loadModuleControl();
     loadSquelch();
@@ -587,7 +602,7 @@ async function loadExt54() {
   show('card-acq', !!d.acquisition_counters);
   show('card-lanethr', !!d.lane_power_thresholds);
   show('card-mls', !!d.media_lane_switching);
-  show('card-pagemap', !!d.supported_pages);
+  show('card-pagemap', true);
 
   const mark = v => v ? '<span class="flag-warn">▲ 反</span>' : '<span class="flag-ok">●</span>';
   if (d.polarity_status) {
@@ -624,6 +639,8 @@ async function loadExt54() {
       + (m.committed === false && m.is_permutation
          ? '<tr><td colspan="4"><span class="flag-active">■ 已下发的映射尚未生效——需要点 Commit</span></td></tr>' : '');
   }
+  document.getElementById('ext54-pagemap').textContent = '';
+  document.getElementById('ext54-pm').textContent = '';
   if (d.supported_pages) {
     document.getElementById('ext54-pagemap').textContent =
       d.supported_pages.map(p => '0x' + p.toString(16).toUpperCase().padStart(2, '0')).join('  ');
