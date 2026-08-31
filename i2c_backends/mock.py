@@ -84,43 +84,100 @@ _DR8_800G = {
     'link_lengths': {'smf_km_byte': 0x01},   # 500m rounds up to 1 km in advertised byte
 }
 
-_XD16_1600G = {
-    'display':         '1.6T 16-lane (CMIS 5.4, two banks)',
+# ---------------------------------------------------------------------------
+# 1.6T profiles
+# ---------------------------------------------------------------------------
+# Two shapes exist in the market and they exercise different code paths here:
+# eight lanes of 200G fits one bank, sixteen lanes of 100G needs two. Both
+# advertise CMIS 5.4, because the 256-lane escape and the optional pages are
+# what a module this wide has reason to use.
+#
+# Interface ID codes come from SFF-8024, which is not part of this repository
+# and which CMIS itself only refers to by name - the 1.6T entries could not be
+# verified here, so the values below follow this file's existing numbering
+# convention (0x4F 400GAUI-4, 0x51 800GAUI-8) and are illustrative. Everything
+# that governs behaviour - lane counts, power class, optical budget, the 5.4
+# advertisements - is modelled properly.
+_DR8_1600G = {
+    'display':         '1.6T 1600GBASE-DR8 (8×200G PAM4, SMF 500m)',
     'vendor_name':     b"OPENCMIS DEMO   ",
-    'vendor_pn':       b"DEMO-1600G-XD16 ",
+    'vendor_pn':       b"DEMO-1600G-DR8  ",
     'vendor_sn':       b"DEMO000000005   ",
     'vendor_rev':      b"A0",
     'vendor_oui':      (0x00, 0x00, 0x00),
     'date_code':       b"26010100",
     'clei':            b"DEMOCLEI16",
     'media_type':          0x02,             # SMF
+    'connector_type':      0x28,             # MPO 1×16
+    'media_if_tech':       0x06,             # 1310 nm EML
+    'power_class_bits':    0xE0,             # Class 8 (111b << 5)
+    'max_power_0_25w':     0x68,             # 104 × 0.25 = 26.0 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1585,             # +2.0 dBm per lane
+    'rx_power_uw_nom':     631,              # -2.0 dBm per lane
+    'tx_bias_ma_nom':      85.0,
+    'temperature_c_nom':   64.0,             # 1.6T optics run hot
+    # 200G/lane PAM4 leans on much stronger FEC than 100G/lane did, so a
+    # healthy pre-FEC BER here is orders of magnitude worse than on an 800G
+    # module and must not be read as a fault.
+    'base_ber':            1.5e-4,
+    'snr_db_nom':          17.5,             # PAM4 at 200G/lane
+    'app_descriptors': [
+        (0x53, 0x5C, 0x88, 0x01),            # AppSel 1: 1.6TAUI-8 → 1600GBASE-DR8 (8H/8M)
+        (0x51, 0x56, 0x88, 0x11),            # AppSel 2: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
+    ],
+    'link_lengths': {'smf_km_byte': 0x01},   # 500 m
+    'cmis_rev':            0x54,
+    'lanes':               8,
+    'default_polarity_tx': 0x00,
+    'default_polarity_rx': 0x00,
+    'pages_ext_173':       0b11000000,       # Pages 0Ch, 0Dh
+    'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h
+    'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
+    'module_subtype':      0x01,
+    'heatsink_fiber':      0x30,
+}
+
+_XD16_1600G = {
+    'display':         '1.6T 16×100G (two banks, CMIS 5.4)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-1600G-XD16 ",
+    'vendor_sn':       b"DEMO000000006   ",
+    'vendor_rev':      b"A0",
+    'vendor_oui':      (0x00, 0x00, 0x00),
+    'date_code':       b"26010100",
+    'clei':            b"DEMOCLEI17",
+    'media_type':          0x02,             # SMF
     'connector_type':      0x28,             # MPO
     'media_if_tech':       0x06,             # 1310 nm EML
     'power_class_bits':    0xE0,             # Class 8
-    'max_power_0_25W':     0x50,
-    'max_power_0_25w':     0x50,             # 80 x 0.25 = 20 W
+    'max_power_0_25w':     0x70,             # 112 × 0.25 = 28.0 W
     'tunable':             False,
-    'tx_power_uw_nom':     1000,
-    'rx_power_uw_nom':     700,
-    'tx_bias_ma_nom':      75.0,
-    'temperature_c_nom':   58.0,
-    'base_ber':            8.0e-7,
-    'snr_db_nom':          21.0,
+    'tx_power_uw_nom':     1259,             # +1.0 dBm per lane
+    'rx_power_uw_nom':     794,              # -1.0 dBm per lane
+    'tx_bias_ma_nom':      72.0,
+    'temperature_c_nom':   66.0,
+    'base_ber':            8.0e-6,           # 100G/lane PAM4, KP4 territory
+    'snr_db_nom':          20.5,
     'app_descriptors': [
-        (0x58, 0x5A, 0x88, 0x01),
-        (0x51, 0x56, 0x88, 0x11),
+        # An Application is capped at eight lanes (5.4 section 6.4.1), so a
+        # 16-lane module does not advertise a 16-lane Application: it
+        # advertises ones that fit in a lane group and instantiates them per
+        # group. HostLaneAssignmentOptions is a bitmap of permissible starting
+        # lanes within the group, hence 0x11 for lanes 1 and 5.
+        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
+        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
     'link_lengths': {'smf_km_byte': 0x02},
-    # --- CMIS 5.4 ---
     'cmis_rev':            0x54,
     'lanes':               16,               # two banks; 01h:142.1-0 = 01b
     'default_polarity_tx': 0b00000101,       # lanes 1 and 3 wired inverted
     'default_polarity_rx': 0b00000010,       # lane 2 wired inverted
-    'pages_ext_173':       0b11000000,       # Pages 0Ch and 0Dh present
-    'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h present
-    'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
+    'pages_ext_173':       0b11000000,
+    'pages_ext_174':       0b11100000,
+    'misc_caps_252':       0b00100000,
     'module_subtype':      0x01,
-    'heatsink_fiber':      0x30,             # HeatsinkType 3, FiberFace 0
+    'heatsink_fiber':      0x30,
 }
 
 _SR8_800G = {
@@ -820,6 +877,11 @@ class MockDR8Backend(MockBackend):
 class MockSR8Backend(MockBackend):
     PROFILE = _SR8_800G
     BACKEND_NAME = 'mock_sr8'
+
+
+@register_backend("mock_1600g_dr8")
+class Mock1600GDr8Backend(MockBackend):
+    PROFILE = _DR8_1600G
 
 
 @register_backend("mock_1600g_16lane")

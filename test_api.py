@@ -967,6 +967,49 @@ class TestMultiBankLanes(CMISTestCase):
                               content_type='application/json')
         return self.assertOk(rv)['data']
 
+    def test_both_1_6t_shapes_are_modelled(self):
+        """The two 1.6T layouts in the market exercise different code here:
+        8x200G fits one bank, 16x100G needs two."""
+        for backend, lanes, banks in (('mock_1600g_dr8', 8, 1),
+                                      ('mock_1600g_16lane', 16, 2)):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+            self.assertEqual((caps['max_lanes'], caps['banks_supported']),
+                             (lanes, banks), backend)
+            self.assertEqual(caps['cmis_revision'], '5.4', backend)
+            info = self.assertOk(self.client.get('/api/module/info'))['data']
+            self.assertEqual(info['power_class'], 8, f'{backend} draws 1.6T power')
+            self.assertGreater(info['max_power_w'], 20, backend)
+
+    def test_the_200g_per_lane_ber_is_modelled_as_the_spec_expects(self):
+        """A healthy pre-FEC BER at 200G/lane sits around 1e-4 - orders worse
+        than an 800G module and not a fault. A mock that copied the 800G
+        figure would teach the opposite."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        ber = self.assertOk(self.client.get('/api/module/ber'))['data']['lanes']
+        self.assertGreater(ber[0]['media_ber'], 1e-5)
+        self.assertLess(ber[0]['media_ber'], 1e-3)
+
+    def test_an_application_never_claims_more_than_eight_lanes(self):
+        """CMIS 5.4 section 6.4.1 caps one Application at eight lanes, so a
+        16-lane module advertises Applications that fit a lane group rather
+        than one 16-lane Application."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_16lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        apps = self.assertOk(self.client.get('/api/module/applications'))['data']['applications']
+        self.assertTrue(apps)
+        for a in apps:
+            self.assertLessEqual(a['host_lanes'], 8, 'an Application exceeded 8 lanes')
+            self.assertLessEqual(a['media_lanes'], 8)
+
     def test_lane_count_comes_from_the_advertisement(self):
         d = self._connect16()
         self.assertEqual(d['lanes'], 16)
