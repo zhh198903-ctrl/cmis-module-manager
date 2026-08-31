@@ -967,6 +967,48 @@ class TestMultiBankLanes(CMISTestCase):
                               content_type='application/json')
         return self.assertOk(rv)['data']
 
+    def test_interface_ids_decode_to_their_sff_8024_names(self):
+        """CMIS stores a number and points at SFF-8024 for the meaning, so
+        without these tables the UI can only show hex. The two anchors this
+        project already used independently confirm the transcription."""
+        import cmis_registers as c
+        self.assertEqual(c.host_interface_name(0x51), '800GAUI-8 S C2M')
+        self.assertEqual(c.host_interface_name(0x4F), '400GAUI-4-S C2M')
+        self.assertEqual(c.host_interface_name(0x83), '1.6TAUI-8 C2M')
+        self.assertEqual(c.media_interface_name(0x56), '800GBASE-DR8')
+        self.assertEqual(c.media_interface_name(0x1C), '400GBASE-DR4')
+        self.assertEqual(c.media_interface_name(0x7F), '1.6TBASE-DR8')
+        # The same code is a different interface on multimode fibre.
+        self.assertEqual(c.media_interface_name(0x12, 0x01), '800GBASE-SR8')
+        self.assertNotEqual(c.media_interface_name(0x12, 0x01),
+                            c.media_interface_name(0x12, 0x02))
+
+    def test_an_unknown_interface_code_is_shown_not_blanked(self):
+        """A module using a code newer than this table is worth seeing; an
+        empty cell reads as though the module said nothing."""
+        import cmis_registers as c
+        self.assertIn('0xEE', c.host_interface_name(0xEE))
+        self.assertIn('Unknown', c.host_interface_name(0xEE))
+
+    def test_the_1_6t_mock_uses_the_real_1_6t_codes(self):
+        """It advertised invented codes before SFF-8024 was to hand; a
+        simulator that reports a code no module would is worse than useless
+        for anyone checking their decode against it."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        apps = self.assertOk(self.client.get('/api/module/applications'))['data']['applications']
+        self.assertEqual(apps[0]['host_if_id'], 0x83)
+        self.assertEqual(apps[0]['media_if_id'], 0x7F)
+        self.assertEqual(apps[0]['host_if_name'], '1.6TAUI-8 C2M')
+        self.assertEqual(apps[0]['media_if_name'], '1.6TBASE-DR8')
+
+    def test_heatsink_and_fiber_face_decode_to_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.HEATSINK_TYPES[1], 'RHS — Riding Heatsink')
+        self.assertEqual(c.FIBER_FACE_TYPES[2], 'APC (Angled Physical Contact)')
+
     def test_both_1_6t_shapes_are_modelled(self):
         """The two 1.6T layouts in the market exercise different code here:
         8x200G fits one bank, 16x100G needs two."""

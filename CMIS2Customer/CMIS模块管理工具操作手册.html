@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.4.1<br>
+      <b>版本</b>　2.5.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -450,7 +450,7 @@
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>关于 1.6T 模块</b>：CMIS 5.4 <b>没有</b>针对 1.6T 的专门条款——规范全文未出现 1.6T / 1600G，
-    接口编码仍引用 <b>SFF-8024 rev 4.10</b>（与 5.3 相同）。5.4 真正为高密度模块做的是<b>扩容</b>：
+    接口编码仍引用 <b>SFF-8024 rev 4.10</b>（与 5.3 相同；本工具内置的编码表取自更新的 <b>rev 4.14</b>，新版只增不改，两者都能正确解码）。5.4 真正为高密度模块做的是<b>扩容</b>：
     通道数上限 32 → 256，接口码空间 8 位 → 12 位。另需注意规范新增的 §6.4.1 明确：
     <b>单个 Application / DataPath 仍限 8 条通道</b>（这一限制 5.3 就存在，5.4 才写明）。
     因此 8×200G 的 1.6T 模块可用一个 8 通道数据通道承载，16×100G 则需要两个。<br>本工具内置两块 1.6T 模拟模块覆盖这两种形态：<code>mock_1600g_dr8</code>（8×200G，单 Bank）与 <code>mock_1600g_16lane</code>（16×100G，双 Bank）。<br><b>看 1.6T 模块的 BER 时注意</b>：200G/lane PAM4 依赖远强于 100G/lane 的 FEC，其健康的 pre-FEC BER 本就在 <code>1e-4</code> 量级，比 800G 模块差几个数量级，<b>这不是故障</b>。<code>mock_1600g_dr8</code> 按此建模。</span>
@@ -581,8 +581,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.4.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.4.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.5.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -863,6 +863,7 @@
         <tr><td>Max Power</td><td class="label">最大功耗（W），原始值 × 0.25</td><td><code>00h / 0xC9</code></td></tr>
         <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效，光模块显示 "—"</td><td><code>00h / 0xCA</code></td></tr>
         <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
+        <tr><td>Host / Media Interface ID</td><td class="label">应用码里的主机电接口与媒体接口编号，本工具按 <b>SFF-8024 Rev 4.14</b> 解出名称一并显示（如 <code>0x83</code> = 1.6TAUI-8 C2M、<code>0x7F</code> = 1.6TBASE-DR8）。<b>CMIS 本身不定义这些编码</b>，只存编号并指向 SFF-8024。同一编号在多模与单模光纤上含义不同，按模块的 Media Type 选表。遇到比编码表更新的编号会显示 <code>Unknown (0x..)</code> 而不是留空——留空会让人以为模块什么都没报</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
         <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
@@ -1546,7 +1547,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.4.1<br>
+    CMIS Module Manager 操作手册 v2.5.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

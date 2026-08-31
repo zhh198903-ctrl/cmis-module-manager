@@ -490,7 +490,7 @@ async function loadInfo() {
     ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
-    ['Heatsink Type',   c.heatsink_type ? `Type ${c.heatsink_type} (SFF-8024)` : '— (not specified)', 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (Table 8-18)', true],
+    ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],
     ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', true],
@@ -953,7 +953,7 @@ async function loadDatapath() {
     const opts = _advertisedApps.length
       ? _advertisedApps.map(a =>
           `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
-          + `App ${a.app_sel} — ${hex8(a.host_if_id)}/${hex8(a.media_if_id)} `
+          + `App ${a.app_sel} — ${a.media_if_name || hex8(a.media_if_id)} `
           + `${a.host_lanes}H/${a.media_lanes}M</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
@@ -1155,8 +1155,8 @@ async function loadApplications() {
       + 'Bit n set = this Application may start on host lane n+1';
     return `<tr>
       <td title="AppSelCode ${a.app_sel} (dec), 1-15">${a.app_sel}</td>
-      <td title="Host Interface ID ${hostHex} hex = ${a.host_if_id} dec (SFF-8024)">${hostHex}</td>
-      <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec">${mediaHex}</td>
+      <td title="Host Interface ID ${hostHex} hex = ${a.host_if_id} dec (SFF-8024)">${hostHex}<br><small style="color:var(--text-muted)">${esc(a.host_if_name || '')}</small></td>
+      <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec (SFF-8024)">${mediaHex}<br><small style="color:var(--text-muted)">${esc(a.media_if_name || '')}</small></td>
       <td title="Host lane count (dec)">${a.host_lanes || '—'}</td>
       <td title="Media lane count (dec)">${a.media_lanes || '—'}</td>
       <td title="${esc(lanesTip)}"><code>${assignBin}</code></td>

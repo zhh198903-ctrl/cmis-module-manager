@@ -92,12 +92,9 @@ _DR8_800G = {
 # advertise CMIS 5.4, because the 256-lane escape and the optional pages are
 # what a module this wide has reason to use.
 #
-# Interface ID codes come from SFF-8024, which is not part of this repository
-# and which CMIS itself only refers to by name - the 1.6T entries could not be
-# verified here, so the values below follow this file's existing numbering
-# convention (0x4F 400GAUI-4, 0x51 800GAUI-8) and are illustrative. Everything
-# that governs behaviour - lane counts, power class, optical budget, the 5.4
-# advertisements - is modelled properly.
+# Interface ID codes are the real ones, checked against SFF-8024 Rev 4.14:
+# 0x83 1.6TAUI-8 C2M and 0x7F 1.6TBASE-DR8 for the 8x200G module, 0x55
+# 1.6TAUI-16-S C2M for the 16x100G one.
 _DR8_1600G = {
     'display':         '1.6T 1600GBASE-DR8 (8×200G PAM4, SMF 500m)',
     'vendor_name':     b"OPENCMIS DEMO   ",
@@ -123,8 +120,8 @@ _DR8_1600G = {
     'base_ber':            1.5e-4,
     'snr_db_nom':          17.5,             # PAM4 at 200G/lane
     'app_descriptors': [
-        (0x53, 0x5C, 0x88, 0x01),            # AppSel 1: 1.6TAUI-8 → 1600GBASE-DR8 (8H/8M)
-        (0x51, 0x56, 0x88, 0x11),            # AppSel 2: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
+        (0x83, 0x7F, 0x88, 0x01),            # AppSel 1: 1.6TAUI-8 C2M → 1.6TBASE-DR8 (8H/8M)
+        (0x51, 0x56, 0x88, 0x11),            # AppSel 2: 800GAUI-8 S C2M → 800GBASE-DR8 (8H/8M)
     ],
     'link_lengths': {'smf_km_byte': 0x01},   # 500 m
     'cmis_rev':            0x54,
@@ -165,8 +162,8 @@ _XD16_1600G = {
         # advertises ones that fit in a lane group and instantiates them per
         # group. HostLaneAssignmentOptions is a bitmap of permissible starting
         # lanes within the group, hence 0x11 for lanes 1 and 5.
-        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
-        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
+        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M → 800GBASE-DR8 (8H/8M)
+        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M → 400GBASE-DR4 (4H/4M)
     ],
     'link_lengths': {'smf_km_byte': 0x02},
     'cmis_rev':            0x54,

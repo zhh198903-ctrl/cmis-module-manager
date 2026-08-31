@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.4.1'
+__version__ = '2.5.0'
 
 import sys
 import os
@@ -236,7 +236,12 @@ def _discover_capabilities() -> dict:
             _read_upper(0x01, 0xAB, 2))
         sub = _read_lower(0x3C, 1)[0]
         hs = _read_lower(0x3D, 1)[0]
-        caps.update(cmis.parse_extended_module_info(sub, hs))
+        ext = cmis.parse_extended_module_info(sub, hs)
+        ext['heatsink_type_name'] = cmis.HEATSINK_TYPES.get(
+            ext['heatsink_type'], f"Reserved (0x{ext['heatsink_type']:X})")
+        ext['fiber_face_name'] = cmis.FIBER_FACE_TYPES.get(
+            ext['fiber_face_type'], f"Reserved (0x{ext['fiber_face_type']:X})")
+        caps.update(ext)
     except Exception:
         # A module that cannot answer the capability block is still usable at
         # the default eight lanes; failing the whole connection over an
@@ -394,7 +399,9 @@ def api_module_info():
         # Parse ALL Application Descriptors (lower mem bytes 86-117)
         # and compute module aggregate capacity across non-overlapping apps.
         appdesc_raw = _read_lower(0x56, 32)
-        apps = cmis.parse_application_descriptors(appdesc_raw)
+        # The same Media Interface ID means different things on MMF and SMF,
+        # so the module's global media type picks the table.
+        apps = cmis.parse_application_descriptors(appdesc_raw, media_type_raw[0])
         host_lanes_app1 = apps[0]['host_lanes'] if apps else 0
         media_lanes_app1 = apps[0]['media_lanes'] if apps else 0
         host_total, media_total = _compute_module_capacity(apps)
@@ -748,7 +755,8 @@ def api_applications():
         return err
     try:
         data = _read_lower(0x56, 32)  # 8 descriptors × 4 bytes
-        apps = cmis.parse_application_descriptors(data)
+        media_type = _read_lower(0x55, 1)[0]
+        apps = cmis.parse_application_descriptors(data, media_type)
         return _ok({'applications': apps})
     except Exception as e:
         return _err(str(e), 500)
