@@ -1,14 +1,16 @@
-"""Mock/simulation I2C backends for 4 different 800G QSFP-DD module types.
+"""Mock/simulation I2C backends for six QSFP-DD / OSFP-XD module types.
 
-All register addresses match the CMIS 5.3 spec (OIF-CMIS-05.3.pdf).
+All register addresses match the CMIS 5.4 spec (OIF-CMIS-05.4.pdf).
 Profile-driven design: a single MockBackend base class reads `self.PROFILE`
 (class attribute) to customize vendor info, capabilities, optical parameters,
-and application descriptors. Four subclasses register different profiles:
+and application descriptors. Six subclasses register different profiles:
 
-  - mock_coherent : 800G Coherent tunable (C-band, DWDM, DP-16QAM)
-  - mock_dr8      : 800GBASE-DR8 (8×100G PAM4, SMF 500m, EML 1310nm)
-  - mock_sr8      : 800GBASE-SR8 (8×100G PAM4, OM4 100m, VCSEL 850nm)
-  - mock_fr4x2    : 2× 400GBASE-FR4 (CWDM4, SMF 2km, EML 1310nm)
+  - mock_coherent        : 800G Coherent tunable (C-band, DWDM, DP-16QAM)
+  - mock_dr8             : 800GBASE-DR8 (8×100G PAM4, SMF 500m, EML 1310nm)
+  - mock_sr8             : 800GBASE-SR8 (8×100G PAM4, OM4 100m, VCSEL 850nm)
+  - mock_fr4x2           : 2× 400GBASE-FR4 (CWDM4, SMF 2km, EML 1310nm)
+  - mock_1600g_dr8       : 1.6TBASE-DR8 (IEEE P802.3dj Clause 180)
+  - mock_1600g_16lane    : 1.6T over 16 host lanes (1.6TAUI-16 C2M)
 
 Dynamic behavior (state machine, ApplyDataPath, Reset, LowPwr, TxDisable,
 PRBS LOL, BER/SNR, counters, laser tuning) is shared across all profiles.
@@ -19,6 +21,11 @@ import time
 
 from i2c_interface import I2CInterface, register_backend
 import cmis_registers as cmis
+
+
+def _dbm_to_raw(dbm):
+    """dBm -> the 16-bit optical power register encoding (units of 0.1 uW)."""
+    return int(round(10 ** (dbm / 10.0) * 10000))
 
 
 # ============================================================================
@@ -81,22 +88,46 @@ _DR8_800G = {
         (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
-    'link_lengths': {'smf_km_byte': 0x01},   # 500m rounds up to 1 km in advertised byte
+    'link_lengths': {'smf_km_byte': 0x05},   # 5 × 0.1 km = 500 m
 }
 
 # ---------------------------------------------------------------------------
 # 1.6T profiles
 # ---------------------------------------------------------------------------
-# Two shapes exist in the market and they exercise different code paths here:
-# eight lanes of 200G fits one bank, sixteen lanes of 100G needs two. Both
-# advertise CMIS 5.4, because the 256-lane escape and the optional pages are
-# what a module this wide has reason to use.
+# Two shapes reach 1.6 Tb/s and they exercise different code paths here: eight
+# lanes at 200G fits one bank, sixteen lanes at 100G needs two. Both advertise
+# CMIS 5.4, because the 256-lane escape and the optional pages are what a module
+# this wide has reason to use.
 #
-# Interface ID codes are the real ones, checked against SFF-8024 Rev 4.14:
-# 0x83 1.6TAUI-8 C2M and 0x7F 1.6TBASE-DR8 for the 8x200G module, 0x55
-# 1.6TAUI-16-S C2M for the 16x100G one.
+# Interface ID codes are the real ones, checked against SFF-8024 Rev 4.14.
+# The optical and error-ratio numbers of the eight-lane profile come from
+# IEEE P802.3dj/D3.1 (4 June 2026), which is where 1.6 Tb/s Ethernet is defined:
+#
+#   Clause 180   200GBASE-DR1 / 400GBASE-DR2 / 800GBASE-DR4 / 1.6TBASE-DR8
+#   Table 180-6  operating range 2 m to 500 m
+#   Table 180-7  106.25 GBd PAM4 per lane, 1304.5-1317.5 nm, launch power
+#                per lane -3.1 to +4 dBm
+#   Table 180-8  average receive power per lane -6.1 to +4 dBm
+#   180.2        PMD error allocation BERadded = 6.4e-5 at the PMA
+#   174A.6       pre-FEC BER (BERtotal) for a 1.6TBASE-R PHY must stay under
+#                2.921e-4, the ratio the RS-FEC can still clean up
+#
+# The spec name is 1.6TBASE-DR8, not "1600GBASE-DR8" -- 802.3dj spells every
+# 1.6 Tb/s PHY type with the 1.6T prefix, and SFF-8024 follows it.
+#
+# What 802.3dj does NOT specify is anything about the module as a package:
+# power class, case temperature and the CMIS SNR diagnostic are demo values
+# chosen to look plausible, not limits read out of a spec.
+#
+# The sixteen-lane profile's 802.3dj anchor is its host interface only:
+# 1.6TAUI-16 C2M lives in Annex 120G, the 100 Gb/s per lane C2M annex. Its
+# optics run at 100G per lane, so they are 802.3df PMDs rather than Clause 180
+# ones, and its thresholds stay at the generic mock values. It also cannot
+# advertise 0x55 1.6TAUI-16-S C2M as an Application, wide as it is: CMIS 5.4
+# caps one Application at eight lanes, so a 16-lane host interface can only
+# appear as two eight-lane instances.
 _DR8_1600G = {
-    'display':         '1.6T 1600GBASE-DR8 (8×200G PAM4, SMF 500m)',
+    'display':         '1.6TBASE-DR8 (8 × 106.25 GBd PAM4, SMF 500m, 802.3dj)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-1600G-DR8  ",
     'vendor_sn':       b"DEMO000000005   ",
@@ -110,20 +141,33 @@ _DR8_1600G = {
     'power_class_bits':    0xE0,             # Class 8 (111b << 5)
     'max_power_0_25w':     0x68,             # 104 × 0.25 = 26.0 W
     'tunable':             False,
-    'tx_power_uw_nom':     1585,             # +2.0 dBm per lane
-    'rx_power_uw_nom':     631,              # -2.0 dBm per lane
+    'tx_power_uw_nom':     1585,             # +2.0 dBm, inside Table 180-7
+    'rx_power_uw_nom':     631,              # -2.0 dBm, inside Table 180-8
     'tx_bias_ma_nom':      85.0,
     'temperature_c_nom':   64.0,             # 1.6T optics run hot
     # 200G/lane PAM4 leans on much stronger FEC than 100G/lane did, so a
     # healthy pre-FEC BER here is orders of magnitude worse than on an 800G
-    # module and must not be read as a fault.
-    'base_ber':            1.5e-4,
-    'snr_db_nom':          17.5,             # PAM4 at 200G/lane
+    # module and must not be read as a fault. This is the error ratio 802.3dj
+    # 180.2 allocates to the PMD itself; the PHY may not exceed 2.921e-4
+    # (174A.6) before the RS-FEC stops keeping up.
+    'base_ber':            6.4e-5,
+    'snr_db_nom':          17.5,             # demo value: 802.3dj has no optical SNR limit
     'app_descriptors': [
         (0x83, 0x7F, 0x88, 0x01),            # AppSel 1: 1.6TAUI-8 C2M → 1.6TBASE-DR8 (8H/8M)
-        (0x51, 0x56, 0x88, 0x11),            # AppSel 2: 800GAUI-8 S C2M → 800GBASE-DR8 (8H/8M)
+        # Half the optic, same 200G lanes: 800GBASE-DR4 sits in the very same
+        # Clause 180 table, so a DR8 can break out into two of them. The old
+        # second Application here was 800GBASE-DR8, which would have meant
+        # 100G media lanes on a module whose lasers only run at 200G.
+        (0x82, 0x77, 0x44, 0x11),            # AppSel 2: 800GAUI-4 C2M → 800GBASE-DR4 (4H/4M)
     ],
-    'link_lengths': {'smf_km_byte': 0x01},   # 500 m
+    # Table 180-6: 2 m to 500 m. Byte 132 is 0.1 km per count under multiplier 00b.
+    'link_lengths': {'smf_km_byte': 0x05},   # 0.5 km
+    # Table 180-7 (launch) and Table 180-8 (receive), per lane:
+    # hi alarm, lo alarm, hi warning, lo warning in dBm.
+    'power_thresholds_dbm': {
+        'tx': (4.0, -3.1, 3.5, -2.6),
+        'rx': (4.0, -6.1, 3.5, -5.6),
+    },
     'cmis_rev':            0x54,
     'lanes':               8,
     'default_polarity_tx': 0x00,
@@ -136,7 +180,7 @@ _DR8_1600G = {
 }
 
 _XD16_1600G = {
-    'display':         '1.6T 16×100G (two banks, CMIS 5.4)',
+    'display':         '1.6T 16×100G host (1.6TAUI-16 C2M, two banks)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-1600G-XD16 ",
     'vendor_sn':       b"DEMO000000006   ",
@@ -165,7 +209,7 @@ _XD16_1600G = {
         (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M → 800GBASE-DR8 (8H/8M)
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M → 400GBASE-DR4 (4H/4M)
     ],
-    'link_lengths': {'smf_km_byte': 0x02},
+    'link_lengths': {'smf_km_byte': 0x05},   # 0.5 km, the DR reach of its optics
     'cmis_rev':            0x54,
     'lanes':               16,               # two banks; 01h:142.1-0 = 01b
     'default_polarity_tx': 0b00000101,       # lanes 1 and 3 wired inverted
@@ -202,7 +246,7 @@ _SR8_800G = {
         (0x51, 0x12, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800G-SR8 (8H/8M)
         (0x4F, 0x10, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-SR8 (4H/4M)
     ],
-    'link_lengths': {'om4_m_byte': 0x0A},    # 10 × 10m = 100 m
+    'link_lengths': {'om4_m_byte': 0x32},    # 50 × 2 m = 100 m
 }
 
 _FR4X2_800G = {
@@ -231,7 +275,7 @@ _FR4X2_800G = {
         (0x4F, 0x1D, 0x44, 0x01),            # AppSel 1: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 1
         (0x4F, 0x1D, 0x44, 0x10),            # AppSel 2: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 5
     ],
-    'link_lengths': {'smf_km_byte': 0x02},   # 2 km
+    'link_lengths': {'smf_km_byte': 0x14},   # 20 × 0.1 km = 2 km
 }
 
 
@@ -383,13 +427,21 @@ class MockBackend(I2CInterface):
         regs[0x01] = p01
 
         # ==== Page 02h — Thresholds ====
+        # Optical power limits come from the profile when it knows the PMD it is
+        # modelling, so a module built to a standard alarms where that standard
+        # says it should. The generic values below stand in otherwise.
+        thr = p.get('power_thresholds_dbm', {})
+        tx_thr = [_dbm_to_raw(v) for v in thr['tx']] if 'tx' in thr else             [0x7B84, 0x062C, 0x6220, 0x09CE]
+        rx_thr = [_dbm_to_raw(v) for v in thr['rx']] if 'rx' in thr else             [0x2710, 0x0064, 0x1F04, 0x00A0]
         p02 = {}
         for addr, val in [
             (0x80, 0x5000), (0x82, 0x0000), (0x84, 0x4B00), (0x86, 0x0500),  # Temp
             (0x88, 0x8CA0), (0x8A, 0x7530), (0x8C, 0x88B8), (0x8E, 0x7918),  # Vcc
-            (0xB0, 0x7B84), (0xB2, 0x062C), (0xB4, 0x6220), (0xB6, 0x09CE),  # TxPwr
+            (0xB0, tx_thr[0]), (0xB2, tx_thr[1]),                            # TxPwr
+            (0xB4, tx_thr[2]), (0xB6, tx_thr[3]),
             (0xB8, 0xEA60), (0xBA, 0x1388), (0xBC, 0xC350), (0xBE, 0x2710),  # TxBias
-            (0xC0, 0x2710), (0xC2, 0x0064), (0xC4, 0x1F04), (0xC6, 0x00A0),  # RxPwr
+            (0xC0, rx_thr[0]), (0xC2, rx_thr[1]),                            # RxPwr
+            (0xC4, rx_thr[2]), (0xC6, rx_thr[3]),
         ]:
             p02[addr] = (val >> 8) & 0xFF
             p02[addr + 1] = val & 0xFF
@@ -518,10 +570,13 @@ class MockBackend(I2CInterface):
             regs[0x61] = p61
 
             p62 = {}
+            # Page 62h states the same limits per lane, but in 0.01 dBm rather
+            # than in 0.1 uW, so it is the profile's dBm figures unscaled.
+            lane_thr = tuple(int(round(v * 100)) for v in thr['tx'])                 if 'tx' in thr else (350, -1000, 250, -850)
             for lane in range(8):
                 off = 0x80 + lane * 8
                 # hi alarm, lo alarm, hi warn, lo warn in 0.01 dBm
-                for k, val in enumerate((350, -1000, 250, -850)):
+                for k, val in enumerate(lane_thr):
                     v = val & 0xFFFF
                     p62[off + k * 2] = (v >> 8) & 0xFF
                     p62[off + k * 2 + 1] = v & 0xFF

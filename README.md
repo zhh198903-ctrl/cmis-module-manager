@@ -30,7 +30,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 - **DataPath control 数据通道配置** — AppSel provisioning, DataPath state machine, output/squelch controls
 - **Diagnostics 诊断** — loopback, PRBS generator/checker, BER, SNR, error counters
 - **Laser tuning 激光器调谐** — grid/channel selection and fine tuning for tunable (coherent) modules
-- **4 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_dr8` / `mock_sr8` / `mock_fr4x2`, full demo without any hardware
+- **6 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane`, full demo without any hardware. The 1.6T DR8 profile models its optical thresholds and error ratios on IEEE P802.3dj/D3.1 Clause 180 (1.6TBASE-DR8).
 
 ## Supported hardware / 支持的硬件
 
@@ -58,7 +58,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-91 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+245 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 
@@ -90,7 +90,7 @@ CMIS2Customer/          Distribution package content (manual + assets)
 
 ## Notes / 说明
 
-- The OIF CMIS 5.4 specification and SFF-8024 are **not** included in this repository. Get CMIS from the [OIF website](https://www.oiforum.com/technical-work/implementation-agreements-ias/) and SFF-8024 from [SNIA](https://www.snia.org/technology-communities/sff/specifications).
+- The OIF CMIS 5.4 specification, SFF-8024 and IEEE P802.3dj are **not** included in this repository. Get CMIS from the [OIF website](https://www.oiforum.com/technical-work/implementation-agreements-ias/), SFF-8024 from [SNIA](https://www.snia.org/technology-communities/sff/specifications), and 802.3dj from the [IEEE 802.3 task force](https://www.ieee802.org/3/dj/).
 - Vendor names appearing in the mock profiles are simulated demo data and do not imply any affiliation.
 
 ## License

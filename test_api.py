@@ -1258,6 +1258,122 @@ class TestCmis54Pages(CMISTestCase):
         self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
 
 
+class TestAdvertisedRevisionIsSingleSourced(CMISTestCase):
+
+    def test_the_footer_says_what_the_api_says(self):
+        """The footer sat at "OIF CMIS 5.3" for the whole 5.4 release because it
+        was typed into the page while the API was updated in app.py. Whoever
+        reads the corner of the window is entitled to the same answer."""
+        api = self.assertOk(self.client.get('/api/version'))['data']
+        page = self.client.get('/').get_data(as_text=True)
+        self.assertIn('OIF CMIS %s' % api['cmis_revision_supported'], page)
+        self.assertNotIn('OIF CMIS 5.3', page)
+
+
+class TestDj1600GAlignment(CMISTestCase):
+    """The 1.6T DR8 profile models a PMD that IEEE P802.3dj/D3.1 specifies, so
+    its optical numbers are checked against the standard rather than against
+    whatever the profile happens to say. Clause 180 covers 200GBASE-DR1,
+    400GBASE-DR2, 800GBASE-DR4 and 1.6TBASE-DR8 -- all 200G per lane, 500 m."""
+
+    # 802.3dj D3.1, 174A.6: above this pre-correction BER the RS-FEC of a
+    # 1.6TBASE-R PHY can no longer hold the frame loss ratio.
+    PRE_FEC_BER_LIMIT = 2.921e-4
+    # 802.3dj D3.1, 180.2: the share of that budget allocated to the PMD.
+    PMD_BER_ALLOCATION = 6.4e-5
+
+    def _connect_dr8(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_it_advertises_the_interfaces_802_3dj_names(self):
+        """1.6TBASE-DR8 is the spec's own spelling; 1600GBASE-DR8 is not a PHY
+        type anyone defines. The breakout Application has to stay on 200G media
+        lanes too -- a DR8 optic has no 100G lasers to offer."""
+        self._connect_dr8()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        pairs = [(a['host_if_name'], a['media_if_name'],
+                  a['host_lanes'], a['media_lanes']) for a in apps]
+        self.assertEqual(pairs[0], ('1.6TAUI-8 C2M', '1.6TBASE-DR8', 8, 8))
+        self.assertEqual(pairs[1], ('800GAUI-4 C2M', '800GBASE-DR4', 4, 4))
+
+    def test_power_thresholds_come_from_tables_180_7_and_180_8(self):
+        """Table 180-7 bounds launch power per lane at -3.1 to +4 dBm and
+        Table 180-8 bounds average receive power at -6.1 to +4 dBm. A module
+        that alarms somewhere else is not modelling this PMD."""
+        self._connect_dr8()
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertEqual(t['tx_power_high_alarm_dbm'], 4.0)
+        self.assertEqual(t['tx_power_low_alarm_dbm'], -3.1)
+        self.assertEqual(t['rx_power_high_alarm_dbm'], 4.0)
+        self.assertEqual(t['rx_power_low_alarm_dbm'], -6.1)
+        self.assertEqual(t['tx_power_high_warn_dbm'], 3.5)
+        self.assertEqual(t['tx_power_low_warn_dbm'], -2.6)
+        self.assertEqual(t['rx_power_high_warn_dbm'], 3.5)
+        self.assertEqual(t['rx_power_low_warn_dbm'], -5.6)
+
+    def test_the_5_4_per_lane_thresholds_say_the_same_thing(self):
+        """Page 62h restates the Tx limits per lane in 0.01 dBm. Two encodings
+        of one PMD limit that disagree would send a user chasing a lane that
+        is not actually out of spec."""
+        self._connect_dr8()
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        for lane in d['lane_power_thresholds']:
+            self.assertEqual(lane['hi_alarm_dbm'], t['tx_power_high_alarm_dbm'])
+            self.assertEqual(lane['lo_alarm_dbm'], t['tx_power_low_alarm_dbm'])
+            self.assertEqual(lane['hi_warn_dbm'], t['tx_power_high_warn_dbm'])
+            self.assertEqual(lane['lo_warn_dbm'], t['tx_power_low_warn_dbm'])
+
+    def test_the_modelled_ber_sits_where_802_3dj_allocates_it(self):
+        """A 200G/lane link runs at a pre-FEC BER that would be a fault on an
+        800G module, so the demo has to show that -- but not so high that the
+        PHY it claims to be would have stopped working."""
+        self._connect_dr8()
+        lanes = self.assertOk(self.client.get('/api/module/ber'))['data']['lanes']
+        for lane in lanes:
+            for key in ('host_ber', 'media_ber'):
+                self.assertLess(lane[key], self.PRE_FEC_BER_LIMIT)
+                self.assertGreater(lane[key], self.PMD_BER_ALLOCATION / 2)
+
+    def test_the_demo_never_alarms_against_its_own_limits(self):
+        """Nominal powers drift a few percent. If a threshold edit ever pushes
+        that drift past an alarm, every lane lights up red on connect and the
+        demo looks broken rather than tight."""
+        self._connect_dr8()
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        for lane in m['lanes']:
+            self.assertLess(lane['tx_power_dbm'], t['tx_power_high_warn_dbm'])
+            self.assertGreater(lane['tx_power_dbm'], t['tx_power_low_warn_dbm'])
+            self.assertLess(lane['rx_power_dbm'], t['rx_power_high_warn_dbm'])
+            self.assertGreater(lane['rx_power_dbm'], t['rx_power_low_warn_dbm'])
+
+    def test_the_advertised_reach_is_the_500_m_of_table_180_6(self):
+        """Byte 132 counts 0.1 km per step under multiplier 00b, so 500 m is 5.
+        Writing 1 there advertises 100 m, which is what this used to say."""
+        self._connect_dr8()
+        rv = self.client.post('/api/register/read',
+                              data=json.dumps({'page': 0x01, 'address': 132,
+                                               'length': 1}),
+                              content_type='application/json')
+        byte = self.assertOk(rv)['data']['data'][0]
+        self.assertEqual(byte >> 6, 0b00)
+        self.assertEqual((byte & 0x3F) * 0.1, 0.5)
+
+    def test_profiles_without_a_modelled_pmd_keep_generic_thresholds(self):
+        """Only a profile that names the standard it follows gets the standard's
+        limits. Applying 1.6T numbers to every mock would make the 800G ones
+        wrong instead."""
+        self.connect()
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertEqual(t['tx_power_high_alarm_dbm'], 5.0)
+        self.assertEqual(t['rx_power_high_alarm_dbm'], 0.0)
+
+
 class TestRawWriteGuards(CMISTestCase):
 
     def test_write_through_page_select_is_refused(self):
