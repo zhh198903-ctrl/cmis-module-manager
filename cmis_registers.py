@@ -773,6 +773,7 @@ REG_MLS_REDIRECTION     = (0x6D, 0x88, 8)    # 6Dh:136-143 target lane per lane
 REG_MLS_ENABLE          = (0x6D, 0x98, 1)    # 6Dh:152 bit0 enable
 REG_MLS_COMMIT          = (0x6D, 0xA0, 1)    # 6Dh:160 bit0 commit (WO/SC)
 REG_MLS_RESULT          = (0x6D, 0xA8, 8)    # 6Dh:168-175 per-lane commit result
+REG_MLS_STATUS          = (0x6D, 0xB8, 8)    # 6Dh:184-191 committed mapping (RO)
 
 
 def parse_supported_pages_map(raw: bytes) -> list:
@@ -834,9 +835,13 @@ def parse_acquisition_counters(raw: bytes) -> list:
     def u16(base, i):
         off = base + i * 2
         return (raw[off] << 8) | raw[off + 1]
+    # Table 8-191 orders the four arrays Rx first: 61h:128-143 per Rx media
+    # lane, 144-159 per Tx host lane, then the same order for the Data Path
+    # counters. Reading them Tx-first sends the user to the wrong side of the
+    # module - a media receiver losing lock would show up under "Lane Tx".
     return [{'lane': i + 1,
-             'acq_tx': u16(0, i), 'acq_rx': u16(16, i),
-             'dp_acq_tx': u16(32, i), 'dp_acq_rx': u16(48, i)}
+             'acq_rx': u16(0, i), 'acq_tx': u16(16, i),
+             'dp_acq_rx': u16(32, i), 'dp_acq_tx': u16(48, i)}
             for i in range(8)]
 
 
@@ -862,12 +867,30 @@ def parse_lane_power_thresholds(raw: bytes) -> list:
     return out
 
 
-MLS_RESULT_NAMES = {0: 'No status', 1: 'In progress', 2: 'Success'}
+# Table 8-196, 6Dh:168-175. Success is 1 and in-progress is 2, not the other
+# way round: reporting a commit still running as "Success" invites the operator
+# to move traffic onto a switch configuration that is not in effect yet.
+MLS_RESULT_NAMES = {
+    0: 'No status',
+    1: 'Success',
+    2: 'In progress',
+    3: 'Rejected: validation failure',
+    4: 'Rejected: not a permutation',
+    5: 'Rejected: conflicts with active DataPath',
+    6: 'Rejected: lane ordering unsupported',
+}
 
 
 def parse_media_lane_switching(advert: int, redirection: bytes,
-                               enable: int, result: bytes) -> dict:
+                               enable: int, result: bytes,
+                               status: bytes = b'') -> dict:
     """6Dh (Table 8-196): which external media lane each internal one feeds.
+
+    Table 8-196 keeps two arrays apart on purpose: 136-143 is what the host has
+    staged (RW) and 184-191 is what the switch is actually doing (RO). They
+    differ whenever a commit was rejected or never issued - and the spec notes
+    enabling alone does not commit - so showing only the staged one would report
+    a mapping the hardware is not using.
 
     A valid redirection is a permutation, so a duplicate or a zero here is the
     module reporting something the host should not commit; the UI shows the raw
@@ -878,6 +901,7 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
         lanes.append({
             'lane': i + 1,
             'redirected_to': redirection[i],
+            'active_target': status[i] if i < len(status) else None,
             'commit_result': result[i] if i < len(result) else 0,
             'commit_result_name': MLS_RESULT_NAMES.get(
                 result[i] if i < len(result) else 0, f'Code {result[i]}'),
@@ -890,6 +914,9 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
         # Called out rather than corrected: a non-permutation is a module bug
         # or an unfinished commit, and committing it would be the wrong move.
         'is_permutation': sorted(targets) == list(range(1, len(targets) + 1)),
+        # True only when every lane's staged target is the one in effect.
+        'committed': bool(status) and all(
+            l['active_target'] == l['redirected_to'] for l in lanes),
     }
 
 

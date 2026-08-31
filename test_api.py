@@ -1258,6 +1258,24 @@ class TestCmis54Pages(CMISTestCase):
         self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
 
 
+class TestReadmeCountsTheSuiteItDescribes(unittest.TestCase):
+
+    def test_the_readme_test_count_is_the_real_one(self):
+        """The README number was stale the moment it was last hand-edited.
+        Counting the loaded suite means it can only ever be right or fail."""
+        readme = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'README.md')
+        with open(readme, encoding='utf-8') as f:
+            text = f.read()
+        stated = re.search(r'(\d+) end-to-end API tests', text)
+        self.assertIsNotNone(stated, 'README no longer states a test count')
+        actual = unittest.TestLoader().loadTestsFromModule(
+            sys.modules[__name__]).countTestCases()
+        self.assertEqual(int(stated.group(1)), actual,
+                         'README says %s tests, the suite has %d'
+                         % (stated.group(1), actual))
+
+
 class TestAdvertisedRevisionIsSingleSourced(CMISTestCase):
 
     def test_the_footer_says_what_the_api_says(self):
@@ -1279,8 +1297,10 @@ class TestDj1600GAlignment(CMISTestCase):
     # 802.3dj D3.1, 174A.6: above this pre-correction BER the RS-FEC of a
     # 1.6TBASE-R PHY can no longer hold the frame loss ratio.
     PRE_FEC_BER_LIMIT = 2.921e-4
-    # 802.3dj D3.1, 180.2: the share of that budget allocated to the PMD.
-    PMD_BER_ALLOCATION = 6.4e-5
+    # Table 174A-1 divides that budget: this much to the PMD-to-PMD link, the
+    # rest to the AUIs either side. Not to be confused with the 6.4e-5 BERadded
+    # of 180.2, which is the allocation for everything EXCEPT the PMD.
+    PMD_BER_ALLOCATION = 2.28e-4
 
     def _connect_dr8(self):
         self.assertOk(self.client.post(
@@ -1300,10 +1320,13 @@ class TestDj1600GAlignment(CMISTestCase):
         self.assertEqual(pairs[0], ('1.6TAUI-8 C2M', '1.6TBASE-DR8', 8, 8))
         self.assertEqual(pairs[1], ('800GAUI-4 C2M', '800GBASE-DR4', 4, 4))
 
-    def test_power_thresholds_come_from_tables_180_7_and_180_8(self):
+    def test_alarm_levels_come_from_tables_180_7_and_180_8(self):
         """Table 180-7 bounds launch power per lane at -3.1 to +4 dBm and
         Table 180-8 bounds average receive power at -6.1 to +4 dBm. A module
-        that alarms somewhere else is not modelling this PMD."""
+        that alarms somewhere else is not modelling this PMD.
+
+        The warning levels are checked too, but they are a demo choice: neither
+        table has a warning level, and 802.3dj has no such concept."""
         self._connect_dr8()
         t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
         self.assertEqual(t['tx_power_high_alarm_dbm'], 4.0)
@@ -1315,10 +1338,11 @@ class TestDj1600GAlignment(CMISTestCase):
         self.assertEqual(t['rx_power_high_warn_dbm'], 3.5)
         self.assertEqual(t['rx_power_low_warn_dbm'], -5.6)
 
-    def test_the_5_4_per_lane_thresholds_say_the_same_thing(self):
-        """Page 62h restates the Tx limits per lane in 0.01 dBm. Two encodings
-        of one PMD limit that disagree would send a user chasing a lane that
-        is not actually out of spec."""
+    def test_the_5_4_per_lane_thresholds_agree_with_the_module_wide_ones(self):
+        """Page 62h carries the Tx limits per lane in 0.01 dBm; once a lane
+        moves to power-relative supervision (5.4 section 7.5.3) they supersede
+        Page 02h. No lane here has, so the two must agree -- disagreeing would
+        send a user chasing a lane that is not actually out of spec."""
         self._connect_dr8()
         t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
         d = self.assertOk(self.client.get('/api/module/ext54'))['data']
@@ -1330,14 +1354,16 @@ class TestDj1600GAlignment(CMISTestCase):
 
     def test_the_modelled_ber_sits_where_802_3dj_allocates_it(self):
         """A 200G/lane link runs at a pre-FEC BER that would be a fault on an
-        800G module, so the demo has to show that -- but not so high that the
-        PHY it claims to be would have stopped working."""
+        800G module, so the demo has to show that -- but a conformant module
+        stays inside the share Table 174A-1 gives the PMD, which is stricter
+        than the whole path's 2.921e-4."""
         self._connect_dr8()
         lanes = self.assertOk(self.client.get('/api/module/ber'))['data']['lanes']
+        self.assertLess(self.PMD_BER_ALLOCATION, self.PRE_FEC_BER_LIMIT)
         for lane in lanes:
             for key in ('host_ber', 'media_ber'):
-                self.assertLess(lane[key], self.PRE_FEC_BER_LIMIT)
-                self.assertGreater(lane[key], self.PMD_BER_ALLOCATION / 2)
+                self.assertLess(lane[key], self.PMD_BER_ALLOCATION)
+                self.assertGreater(lane[key], 1e-5)
 
     def test_the_demo_never_alarms_against_its_own_limits(self):
         """Nominal powers drift a few percent. If a threshold edit ever pushes
@@ -1351,6 +1377,117 @@ class TestDj1600GAlignment(CMISTestCase):
             self.assertGreater(lane['tx_power_dbm'], t['tx_power_low_warn_dbm'])
             self.assertLess(lane['rx_power_dbm'], t['rx_power_high_warn_dbm'])
             self.assertGreater(lane['rx_power_dbm'], t['rx_power_low_warn_dbm'])
+
+    def test_every_profile_that_serves_page_62h_agrees_with_its_page_02h(self):
+        """The 16-lane profile also advertises Page 62h but names no PMD, so it
+        took the fallback quad while its Page 02h kept the generic one --
+        the same contradiction, on the profile the other test never connects."""
+        for backend in ('mock_1600g_dr8', 'mock_1600g_16lane'):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+            d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+            for lane in d['lane_power_thresholds']:
+                self.assertAlmostEqual(lane['hi_alarm_dbm'],
+                                       t['tx_power_high_alarm_dbm'], places=1,
+                                       msg='%s lane %d' % (backend, lane['lane']))
+                self.assertAlmostEqual(lane['lo_alarm_dbm'],
+                                       t['tx_power_low_alarm_dbm'], places=1,
+                                       msg='%s lane %d' % (backend, lane['lane']))
+            self.client.post('/api/disconnect')
+
+    def test_the_page_map_lists_only_pages_the_module_answers(self):
+        """Page 0Ch exists to end the disagreement between scattered page
+        advertisements. A map built from a fixed list claimed the laser pages
+        04h and 12h on a module with no tunable laser."""
+        self._connect_dr8()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        pages = set(d['supported_pages'])
+        self.assertIn(0x0C, pages)
+        self.assertIn(0x62, pages)
+        for absent in (0x04, 0x12, 0x0D):
+            self.assertNotIn(absent, pages,
+                             'page %02Xh advertised but never answered' % absent)
+
+    def test_the_acquisition_counter_advertisement_uses_the_top_nibble(self):
+        """Table 8-188 puts the four supported bits at 60h:130.7-4 and reserves
+        3-0. Advertising 0x0F said no category was supported while Page 61h was
+        full of counters, and set four reserved bits doing it."""
+        self._connect_dr8()
+        rv = self.client.post('/api/register/read',
+                              data=json.dumps({'page': 0x60, 'address': 130,
+                                               'length': 1}),
+                              content_type='application/json')
+        byte = self.assertOk(rv)['data']['data'][0]
+        self.assertEqual(byte >> 4, 0x0F, 'four categories should be advertised')
+        self.assertEqual(byte & 0x0F, 0, 'bits 3-0 are reserved')
+
+    def test_acquisition_counters_keep_rx_and_tx_on_the_right_sides(self):
+        """Table 8-191 orders Page 61h Rx first: 128-143 per Rx media lane,
+        144-159 per Tx host lane, then the same order for the Data Path pair.
+        Reading it Tx-first points the user at the host electrical side while
+        the fiber receiver is the one losing lock."""
+        self._connect_dr8()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        lane1 = d['acquisition_counters'][0]
+        self.assertEqual(lane1['acq_rx'], 1)
+        self.assertEqual(lane1['acq_tx'], 2)
+        self.assertEqual(lane1['dp_acq_rx'], 3)
+        self.assertEqual(lane1['dp_acq_tx'], 4)
+
+    def test_a_staged_redirection_is_not_reported_as_the_active_one(self):
+        """Table 8-196 keeps the staged mapping (136-143, RW) apart from what
+        the switch is doing (184-191, RO), and says enabling alone does not
+        commit. Reporting the staged one as the module's mapping would show a
+        lane assignment the hardware is not using."""
+        self._connect_dr8()
+        staged = [2, 1, 3, 4, 5, 6, 7, 8]
+        self.assertOk(self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps({'redirection': staged, 'enable': True}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        mls = d['media_lane_switching']
+        self.assertEqual([l['redirected_to'] for l in mls['lanes']], staged)
+        self.assertEqual([l['active_target'] for l in mls['lanes']],
+                         [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertFalse(mls['committed'])
+
+        self.assertOk(self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps({'commit': True}),
+            content_type='application/json'))
+        mls = self.assertOk(
+            self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+        self.assertEqual([l['active_target'] for l in mls['lanes']], staged)
+        self.assertTrue(mls['committed'])
+        self.assertEqual(mls['lanes'][0]['commit_result_name'], 'Success')
+
+    def test_a_finished_commit_is_not_called_in_progress(self):
+        """Table 8-196: 1 is success and 2 is in progress. Swapped, a commit
+        still running reads as done and the operator moves traffic onto a
+        switch configuration that is not in effect."""
+        import cmis_registers as c
+        self.assertEqual(c.MLS_RESULT_NAMES[1], 'Success')
+        self.assertEqual(c.MLS_RESULT_NAMES[2], 'In progress')
+        for rejected in (3, 4, 5, 6):
+            self.assertIn('Rejected', c.MLS_RESULT_NAMES[rejected])
+
+    def test_the_breakout_application_says_where_its_media_lanes_start(self):
+        """CMIS 5.4 Table 8-60 keeps MediaLaneAssignmentOptions on Page 01h,
+        apart from the four descriptor bytes, and a paged module has to supply
+        it. Without it the host has no permissible media lane for the second
+        DR4 -- exactly the Application that needs one, being a breakout."""
+        self._connect_dr8()
+        rv = self.client.post('/api/register/read',
+                              data=json.dumps({'page': 0x01, 'address': 176,
+                                               'length': 2}),
+                              content_type='application/json')
+        opts = self.assertOk(rv)['data']['data']
+        self.assertEqual(opts[0], 0x01, 'the 8-lane Application starts at lane 1')
+        self.assertEqual(opts[1], 0x11, 'the 4-lane one starts at lane 1 or 5')
 
     def test_the_advertised_reach_is_the_500_m_of_table_180_6(self):
         """Byte 132 counts 0.1 km per step under multiplier 00b, so 500 m is 5.

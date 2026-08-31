@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.5.2<br>
+      <b>版本</b>　2.5.3<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -459,22 +459,33 @@
     <span class="callout-icon">ℹ</span>
     <span><b>1.6T 模拟模块的光参数取自 IEEE P802.3dj</b>：CMIS 只规定寄存器怎么放，不规定光口指标；
     1.6 Tb/s 以太网本身定义在 <b>IEEE P802.3dj/D3.1（2026-06-04）</b>。<code>mock_1600g_dr8</code> 按该草案
-    <b>第 180 章</b>建模，告警门限与误码率都直接取自其中，不是随手编的数：
+    <b>第 180 章</b>建模，下表每一行都能在规范里查到出处；<b>表里没有的项目一律是演示数据</b>（见表下说明）。</span>
+  </div>
+  <div class="table-wrap">
     <table>
-      <tr><th>项目</th><th>取值</th><th>出处</th></tr>
+      <thead><tr><th>项目</th><th>取值</th><th>出处</th></tr></thead>
+      <tbody>
       <tr><td>PHY 类型名</td><td class="label"><b>1.6TBASE-DR8</b>（<b>不是</b> 1600GBASE-DR8）</td><td>Clause 180</td></tr>
       <tr><td>每通道波特率 / 调制</td><td class="label">106.25 GBd PAM4（约 200 Gb/s）</td><td>Table 180–7</td></tr>
       <tr><td>波长范围</td><td class="label">1304.5 ~ 1317.5 nm</td><td>Table 180–7</td></tr>
       <tr><td>传输距离</td><td class="label">2 m ~ 500 m</td><td>Table 180–6</td></tr>
-      <tr><td>每通道发送光功率</td><td class="label">−3.1 ~ +4 dBm → 即本工具显示的 Tx 高/低告警门限</td><td>Table 180–7</td></tr>
-      <tr><td>每通道接收光功率</td><td class="label">−6.1 ~ +4 dBm → 即 Rx 高/低告警门限</td><td>Table 180–8</td></tr>
-      <tr><td>pre-FEC 误码率上限</td><td class="label">2.921×10⁻⁴（超过它 RS-FEC 就纠不动了）</td><td>§174A.6</td></tr>
-      <tr><td>分给光模块的误码率份额</td><td class="label">6.4×10⁻⁵ → <code>mock_1600g_dr8</code> 就按这个值模拟</td><td>§180.2</td></tr>
+      <tr><td>每通道发送光功率</td><td class="label">−3.1 ~ +4 dBm → 即本工具显示的 Tx 高/低<b>告警</b>门限</td><td>Table 180–7</td></tr>
+      <tr><td>每通道接收光功率</td><td class="label">−6.1 ~ +4 dBm → 即 Rx 高/低<b>告警</b>门限</td><td>Table 180–8</td></tr>
+      <tr><td>整条链路 pre-FEC 误码率上限</td><td class="label">2.921×10⁻⁴（超过它 RS-FEC 就纠不动了）</td><td>§174A.6</td></tr>
+      <tr><td>其中分给光模块本身的份额</td><td class="label"><b>2.28×10⁻⁴</b>（余下分给两端的 AUI）→ <code>mock_1600g_dr8</code> 模拟在 1.5×10⁻⁴，落在这个份额之内</td><td>Table 174A–1</td></tr>
+      </tbody>
     </table>
-    <b>看 1.6T 模块的 BER 时注意</b>：200G/lane PAM4 依赖远强于 100G/lane 的 FEC，其健康的 pre-FEC BER 本就在
-    <code>1e-5 ~ 1e-4</code> 量级，比 800G 模块差几个数量级，<b>这不是故障</b>；只要没超过 2.921×10⁻⁴ 就还在规范内。<br>
-    <b>802.3dj 不管的部分照旧是演示数据</b>：功率等级、壳温、CMIS 的 SNR 诊断值都属于模块封装/厂商范畴，
-    802.3dj 不给限值，这几项是编来好看的，别当一致性依据。<br>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>看 1.6T 模块的 BER 时注意</b>：200G/lane PAM4 依赖远强于 100G/lane 的 FEC，其健康的 pre-FEC BER 本就在
+    <code>1e-4</code> 量级，比 800G 模块差几个数量级，<b>这不是故障</b>；判定要用分给模块的 <b>2.28×10⁻⁴</b>，
+    不是整条链路的 2.921×10⁻⁴。<br>
+    <b>别把 §180.2 里的 6.4×10⁻⁵ 当成模块的份额</b>——那是 BERadded，代表链路上<b>除该模块以外</b>所有环节的预算
+    （§174A.9），测模块时用来替代它们注入的噪声。按它判定会把一块合规的 1.6T 模块误判成超标三倍。<br>
+    <b>802.3dj 不管的部分是演示数据</b>：功率等级、壳温、CMIS 的 SNR 诊断值属于模块封装/厂商范畴，
+    802.3dj 不给限值。<b>「警告」门限同样不是规范值</b>——Table 180–7/180–8 只给告警用的工作上下限，
+    802.3dj 里没有警告这一档，本工具的警告门限取在告警内侧 0.5 dB，是演示取值，别当一致性依据。<br>
     <code>mock_1600g_16lane</code> 只有<b>主机侧</b>对得上 802.3dj——16 通道 × 约 100 Gb/s 即
     <b>1.6TAUI-16 C2M</b>（Annex 120G）；它的光口跑 100G/lane，属 802.3df 的 PMD 而非第 180 章，
     所以门限保持通用值。</span>
@@ -605,8 +616,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.2 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.5.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.3 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.5.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1571,7 +1582,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.5.2<br>
+    CMIS Module Manager 操作手册 v2.5.3<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

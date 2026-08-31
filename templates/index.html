@@ -579,11 +579,13 @@
       </div>
 
       <div class="card" id="card-mls" style="display:none">
-        <h3>Media Lane Switching<span class="reg-meta">6Dh / 136–175</span></h3>
+        <h3>Media Lane Switching<span class="reg-meta">6Dh / 136–191</span></h3>
         <p class="label">把内部媒体通道重定向到不同的外部通道。映射<b>必须是通道的一个置换</b>；
-           不是置换的映射会被本工具拒绝下发（模块也会校验后拒绝）。</p>
+           不是置换的映射会被本工具拒绝下发（模块也会校验后拒绝）。<br>
+           <b>「已下发」是暂存值（6Dh:136–143，可写），「当前生效」是交换机实际在做的（6Dh:184–191，只读）。</b>
+           勾选 Enable 本身<b>不会</b>提交，两列不一致就说明提交还没做或被拒绝——看提交结果那一列。</p>
         <div class="table-scroll"><table>
-          <thead><tr><th>内部通道</th><th>重定向到</th><th>上次提交结果</th></tr></thead>
+          <thead><tr><th>内部通道</th><th>已下发</th><th>当前生效</th><th>上次提交结果</th></tr></thead>
           <tbody id="tbl-mls"></tbody></table></div>
         <div style="margin-top:10px">
           <input type="text" id="mls-mapping" placeholder="目标顺序，如 2,1,4,3,5,6,7,8" style="width:220px">

@@ -25,7 +25,18 @@ import cmis_registers as cmis
 
 def _dbm_to_raw(dbm):
     """dBm -> the 16-bit optical power register encoding (units of 0.1 uW)."""
-    return int(round(10 ** (dbm / 10.0) * 10000))
+    raw = int(round(10 ** (dbm / 10.0) * 10000))
+    # The register is 16 bits, so anything above about +8.2 dBm has no
+    # encoding. Truncating would turn a high alarm into a plausible-looking
+    # low one, so refuse instead of storing a lie.
+    if not 0 <= raw <= 0xFFFF:
+        raise ValueError('%.2f dBm does not fit the 16-bit power register' % dbm)
+    return raw
+
+
+def _raw_to_dbm_centi(raw):
+    """The same encoding -> hundredths of a dBm, as Page 62h states it."""
+    return int(round(10 * math.log10(raw / 10000.0) * 100)) if raw else -32768
 
 
 # ============================================================================
@@ -88,7 +99,7 @@ _DR8_800G = {
         (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800GBASE-DR8 (8H/8M)
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
-    'link_lengths': {'smf_km_byte': 0x05},   # 5 × 0.1 km = 500 m
+    'link_lengths': {'smf_len_byte': 0x05},   # 5 × 0.1 km = 500 m
 }
 
 # ---------------------------------------------------------------------------
@@ -108,9 +119,15 @@ _DR8_800G = {
 #   Table 180-7  106.25 GBd PAM4 per lane, 1304.5-1317.5 nm, launch power
 #                per lane -3.1 to +4 dBm
 #   Table 180-8  average receive power per lane -6.1 to +4 dBm
-#   180.2        PMD error allocation BERadded = 6.4e-5 at the PMA
 #   174A.6       pre-FEC BER (BERtotal) for a 1.6TBASE-R PHY must stay under
 #                2.921e-4, the ratio the RS-FEC can still clean up
+#   Table 174A-1 how that 2.921e-4 is divided: 2.28e-4 to the PMD-to-PMD link
+#                and 0.08e-4 / 0.24e-4 to each AUI either side of it
+#
+# Careful with the 6.4e-5 that 180.2 names: BERadded is the budget for every
+# OTHER link in the path (174A.9), the noise a PMD test injects to stand in for
+# them - not the PMD's own share. Reading it as the PMD's allocation understates
+# a conformant 1.6T module by a factor of three and makes it look broken.
 #
 # The spec name is 1.6TBASE-DR8, not "1600GBASE-DR8" -- 802.3dj spells every
 # 1.6 Tb/s PHY type with the 1.6T prefix, and SFF-8024 follows it.
@@ -147,10 +164,10 @@ _DR8_1600G = {
     'temperature_c_nom':   64.0,             # 1.6T optics run hot
     # 200G/lane PAM4 leans on much stronger FEC than 100G/lane did, so a
     # healthy pre-FEC BER here is orders of magnitude worse than on an 800G
-    # module and must not be read as a fault. This is the error ratio 802.3dj
-    # 180.2 allocates to the PMD itself; the PHY may not exceed 2.921e-4
-    # (174A.6) before the RS-FEC stops keeping up.
-    'base_ber':            6.4e-5,
+    # module and must not be read as a fault. Table 174A-1 allocates 2.28e-4
+    # of the path's 2.921e-4 budget (174A.6) to the PMD-to-PMD link itself,
+    # so this sits comfortably inside a conformant module's own share.
+    'base_ber':            1.5e-4,
     'snr_db_nom':          17.5,             # demo value: 802.3dj has no optical SNR limit
     'app_descriptors': [
         (0x83, 0x7F, 0x88, 0x01),            # AppSel 1: 1.6TAUI-8 C2M → 1.6TBASE-DR8 (8H/8M)
@@ -161,9 +178,12 @@ _DR8_1600G = {
         (0x82, 0x77, 0x44, 0x11),            # AppSel 2: 800GAUI-4 C2M → 800GBASE-DR4 (4H/4M)
     ],
     # Table 180-6: 2 m to 500 m. Byte 132 is 0.1 km per count under multiplier 00b.
-    'link_lengths': {'smf_km_byte': 0x05},   # 0.5 km
-    # Table 180-7 (launch) and Table 180-8 (receive), per lane:
-    # hi alarm, lo alarm, hi warning, lo warning in dBm.
+    'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km
+    # Alarm levels are the operating limits of Table 180-7 (launch) and
+    # Table 180-8 (receive), per lane. The WARNING levels are not in either
+    # table - 802.3dj has no such concept - so they are set half a dB inside
+    # the alarms, which is a demo choice and not a spec limit.
+    # Order: hi alarm, lo alarm, hi warning, lo warning, in dBm.
     'power_thresholds_dbm': {
         'tx': (4.0, -3.1, 3.5, -2.6),
         'rx': (4.0, -6.1, 3.5, -5.6),
@@ -172,7 +192,9 @@ _DR8_1600G = {
     'lanes':               8,
     'default_polarity_tx': 0x00,
     'default_polarity_rx': 0x00,
-    'pages_ext_173':       0b11000000,       # Pages 0Ch, 0Dh
+    # Bit 7 is Page 0Ch. Bit 6 would claim Page 0Dh (firmware management),
+    # which this mock does not serve, so it stays clear.
+    'pages_ext_173':       0b10000000,       # Page 0Ch
     'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h
     'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
     'module_subtype':      0x01,
@@ -209,12 +231,12 @@ _XD16_1600G = {
         (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M → 800GBASE-DR8 (8H/8M)
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M → 400GBASE-DR4 (4H/4M)
     ],
-    'link_lengths': {'smf_km_byte': 0x05},   # 0.5 km, the DR reach of its optics
+    'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km, the DR reach of its optics
     'cmis_rev':            0x54,
     'lanes':               16,               # two banks; 01h:142.1-0 = 01b
     'default_polarity_tx': 0b00000101,       # lanes 1 and 3 wired inverted
     'default_polarity_rx': 0b00000010,       # lane 2 wired inverted
-    'pages_ext_173':       0b11000000,
+    'pages_ext_173':       0b10000000,       # Page 0Ch only, as above
     'pages_ext_174':       0b11100000,
     'misc_caps_252':       0b00100000,
     'module_subtype':      0x01,
@@ -246,7 +268,7 @@ _SR8_800G = {
         (0x51, 0x12, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800G-SR8 (8H/8M)
         (0x4F, 0x10, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-SR8 (4H/4M)
     ],
-    'link_lengths': {'om4_m_byte': 0x32},    # 50 × 2 m = 100 m
+    'link_lengths': {'om4_len_byte': 0x32},    # 50 × 2 m = 100 m
 }
 
 _FR4X2_800G = {
@@ -275,7 +297,7 @@ _FR4X2_800G = {
         (0x4F, 0x1D, 0x44, 0x01),            # AppSel 1: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 1
         (0x4F, 0x1D, 0x44, 0x10),            # AppSel 2: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 5
     ],
-    'link_lengths': {'smf_km_byte': 0x14},   # 20 × 0.1 km = 2 km
+    'link_lengths': {'smf_len_byte': 0x14},   # 20 × 0.1 km = 2 km
 }
 
 
@@ -399,13 +421,16 @@ class MockBackend(I2CInterface):
         p01 = {}
         p01[0x80] = 1; p01[0x81] = 0        # Inactive FW 1.0
         p01[0x82] = 1; p01[0x83] = 2        # HW Rev 1.2
-        # Link lengths (profile-dependent)
+        # Link lengths (profile-dependent). The keys say "len" rather than a
+        # unit on purpose: these are the encoded bytes, and byte 132 counts
+        # 0.1 km per step while 133-135 count 2 m - reading them as km and m
+        # is what produced the reaches this code used to advertise.
         ll = p['link_lengths']
-        p01[0x84] = ll.get('smf_km_byte', 0x00)
-        p01[0x85] = ll.get('om5_m_byte', 0x00)
-        p01[0x86] = ll.get('om4_m_byte', 0x00)
-        p01[0x87] = ll.get('om3_m_byte', 0x00)
-        p01[0x88] = ll.get('om2_m_byte', 0x00)
+        p01[0x84] = ll.get('smf_len_byte', 0x00)
+        p01[0x85] = ll.get('om5_len_byte', 0x00)
+        p01[0x86] = ll.get('om4_len_byte', 0x00)
+        p01[0x87] = ll.get('om3_len_byte', 0x00)
+        p01[0x88] = ll.get('om2_len_byte', 0x00)
         # BanksSupported: 00b/01b/10b are 8/16/32 lanes; 11b is the CMIS 5.4
         # escape that sends the host to 01h:174 for the real count.
         lanes = p.get('lanes', 8)
@@ -418,6 +443,17 @@ class MockBackend(I2CInterface):
         else:
             p01[0x8E] = 0x03
             p01[0xAE] = (lanes // 8 - 1) & 0x1F
+        # MediaLaneAssignmentOptions (01h:176-183, Table 8-60) is stored apart
+        # from the first four descriptor bytes and is required on a paged
+        # module. An Application that uses m of the eight media lanes can start
+        # on every m-th one, which is what a breakout Application needs the
+        # host to know.
+        for i, desc in enumerate(p['app_descriptors'][:8]):
+            media_lanes = desc[2] & 0x0F
+            if media_lanes:
+                p01[0xB0 + i] = sum(1 << (k * media_lanes)
+                                    for k in range(8 // media_lanes))
+
         if p.get('cmis_rev', 0x53) >= 0x54:
             p01[0xAB] = p.get('default_polarity_tx', 0x00)   # 171 (5.4)
             p01[0xAC] = p.get('default_polarity_rx', 0x00)   # 172 (5.4)
@@ -548,31 +584,39 @@ class MockBackend(I2CInterface):
         # ==== CMIS 5.4 optional pages, only for profiles that advertise them ====
         if p.get('cmis_rev', 0x53) >= 0x54 and p.get('pages_ext_173', 0):
             p0c = {}
-            # Page map: mark the pages this mock actually serves.
-            for page in (0x00, 0x01, 0x02, 0x04, 0x0C, 0x10, 0x11, 0x12,
-                         0x13, 0x14, 0x60, 0x61, 0x62, 0x6D):
-                p0c[0x80 + page // 8] = p0c.get(0x80 + page // 8, 0) | (1 << (page % 8))
+            # Page map: mark the pages this mock actually serves. Built from
+            # regs rather than from a fixed list, because Page 0Ch exists to
+            # end the disagreement between scattered advertisements and what
+            # the module answers - a hardcoded list here would recreate it
+            # (04h and 12h only exist on tunable profiles).
             p0c[0xA0] = 0x54          # ConsolidatedPM defined in CMIS 5.4
             p0c[0xA1] = 0x33          # fully compliant on both counts
-            regs[0x0C] = p0c
+            regs[0x0C] = p0c          # filled in below, once every page exists
 
             p60 = {0x80: p.get('default_polarity_tx', 0),
                    0x81: p.get('default_polarity_rx', 0),
-                   0x82: 0x0F}       # all four counter kinds supported
+                   # Table 8-188: Rx/Tx/DpRx/DpTx supported are bits 7-4;
+                   # bits 3-0 are reserved, so 0x0F advertised nothing at all.
+                   0x82: 0xF0}
             regs[0x60] = p60
 
             p61 = {}
             for lane in range(8):
-                for base, seed in ((0x80, 1), (0x90, 2), (0xA0, 0), (0xB0, 1)):
+                # Four distinct seeds: identical ones would let a parser that
+                # crosses Rx with Tx read back as if it were correct.
+                for base, seed in ((0x80, 1), (0x90, 2), (0xA0, 3), (0xB0, 4)):
                     v = seed + lane
                     p61[base + lane * 2] = (v >> 8) & 0xFF
                     p61[base + lane * 2 + 1] = v & 0xFF
             regs[0x61] = p61
 
             p62 = {}
-            # Page 62h states the same limits per lane, but in 0.01 dBm rather
-            # than in 0.1 uW, so it is the profile's dBm figures unscaled.
-            lane_thr = tuple(int(round(v * 100)) for v in thr['tx'])                 if 'tx' in thr else (350, -1000, 250, -850)
+            # Page 62h carries the per-lane Tx thresholds in 0.01 dBm. Once a
+            # lane switches to power-relative supervision (5.4 section 7.5.3)
+            # these supersede Page 02h; no lane here has, so they agree with it
+            # - and they are derived from the same raw values so that they
+            # cannot drift, whether or not the profile names a PMD.
+            lane_thr = tuple(_raw_to_dbm_centi(v) for v in tx_thr)
             for lane in range(8):
                 off = 0x80 + lane * 8
                 # hi alarm, lo alarm, hi warn, lo warn in 0.01 dBm
@@ -585,8 +629,12 @@ class MockBackend(I2CInterface):
             if p.get('misc_caps_252', 0) & 0x20:
                 p6d = {0x80: 0x30}                     # commit duration code 3
                 for lane in range(8):
-                    p6d[0x88 + lane] = lane + 1        # identity mapping
-                    p6d[0xA8 + lane] = 0               # no commit status yet
+                    p6d[0x88 + lane] = lane + 1        # staged (RW), identity
+                    p6d[0xA8 + lane] = 0               # no commit result yet
+                    # 6Dh:184-191 is what the switch is actually doing. The
+                    # spec says it starts unpermuted and that enabling alone
+                    # does not commit, so it only moves on a commit command.
+                    p6d[0xB8 + lane] = lane + 1
                 p6d[0x98] = 0x00                       # redirection disabled
                 regs[0x6D] = p6d
 
@@ -611,6 +659,14 @@ class MockBackend(I2CInterface):
                                     copy[a] = (v >> 8) & 0xFF
                                     copy[a + 1] = v & 0xFF
                     regs[(page, bank)] = copy
+
+        # Page 0Ch's map, filled in last so it describes what was actually
+        # built rather than what someone meant to build.
+        if 0x0C in regs:
+            for page in regs:
+                if isinstance(page, int):
+                    a = 0x80 + page // 8
+                    regs[0x0C][a] = regs[0x0C].get(a, 0) | (1 << (page % 8))
 
         return regs
 
@@ -849,7 +905,34 @@ class MockBackend(I2CInterface):
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
                 self._prbs_enable_times[prbs_map[register]] = time.time()
+        elif self._current_page == 0x6D:
+            span = range(register, register + len(data))
+            if 0xA0 in span and data[0xA0 - register] & 1:
+                self._commit_media_lane_redirection()
+                # CommitMediaLaneRedirection is WO/SC (Table 8-196).
+                buf = bytearray(data)
+                buf[0xA0 - register] &= ~1
+                data = bytes(buf)
         return data
+
+    def _commit_media_lane_redirection(self):
+        """Move the staged mapping (6Dh:136-143) into effect (6Dh:184-191).
+
+        The command is validated before execution and nothing changes on a
+        validation failure, so a rejected commit leaves the switch where it
+        was and says why in the per-lane result codes.
+        """
+        p6d = self._registers.get((0x6D, self._current_bank))
+        if p6d is None:
+            p6d = self._registers.get(0x6D)
+        if p6d is None or not (p6d.get(0x98, 0) & 1):
+            return                              # disabled: commit has no effect
+        staged = [p6d.get(0x88 + i, 0) for i in range(8)]
+        ok = sorted(staged) == list(range(1, 9))
+        for i in range(8):
+            p6d[0xA8 + i] = 1 if ok else 4      # success / not a permutation
+            if ok:
+                p6d[0xB8 + i] = staged[i]
 
     # ------------------------------------------------------------------
     def connect(self, bus: int, address: int) -> None:

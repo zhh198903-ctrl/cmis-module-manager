@@ -610,10 +610,19 @@ async function loadExt54() {
   if (d.media_lane_switching) {
     const m = d.media_lane_switching;
     document.getElementById('mls-enable').checked = m.enabled;
-    document.getElementById('tbl-mls').innerHTML = m.lanes.map(l =>
-      `<tr><td>${l.lane}</td><td>${l.redirected_to}</td><td>${esc(l.commit_result_name)}</td></tr>`).join('')
+    document.getElementById('tbl-mls').innerHTML = m.lanes.map(l => {
+      const active = l.active_target == null ? '—' : l.active_target;
+      // Staged and active differing is the state worth seeing, not an error:
+      // it means the commit has not happened or was rejected.
+      const cls = (l.active_target != null && l.active_target !== l.redirected_to)
+        ? ' class="flag-active"' : '';
+      return `<tr><td>${l.lane}</td><td>${l.redirected_to}</td>`
+        + `<td${cls}>${active}</td><td>${esc(l.commit_result_name)}</td></tr>`;
+    }).join('')
       + (m.is_permutation ? ''
-         : '<tr><td colspan="3"><span class="flag-active">■ 当前映射不是一个置换，模块会拒绝提交</span></td></tr>');
+         : '<tr><td colspan="4"><span class="flag-active">■ 当前映射不是一个置换，模块会拒绝提交</span></td></tr>')
+      + (m.committed === false && m.is_permutation
+         ? '<tr><td colspan="4"><span class="flag-active">■ 已下发的映射尚未生效——需要点 Commit</span></td></tr>' : '');
   }
   if (d.supported_pages) {
     document.getElementById('ext54-pagemap').textContent =
