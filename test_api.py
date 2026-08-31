@@ -1032,6 +1032,101 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertIn('max_lanes', caps['new_in_5_4'])
 
 
+class TestCmis54Pages(CMISTestCase):
+    """The optional pages CMIS 5.4 added. Mock-only: no module that carries
+    them was available."""
+
+    def _connect54(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_16lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_the_new_pages_are_read_when_advertised(self):
+        self._connect54()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertEqual(set(d['available']), {'0Ch', '60h', '61h', '62h', '6Dh'})
+        self.assertEqual(len(d['polarity_status']), 16)
+        self.assertEqual(len(d['acquisition_counters']), 16)
+        self.assertEqual(len(d['lane_power_thresholds']), 16)
+        self.assertTrue(d['consolidated_pm']['supported'])
+        self.assertEqual(d['consolidated_pm']['defined_in'], '5.4')
+
+    def test_a_module_without_them_exposes_nothing(self):
+        """An unsupported page is not required to answer meaningfully, so
+        reading it anyway would turn whatever was left on the bus into
+        per-lane numbers that look like readings."""
+        self.connect()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertEqual(d['available'], {})
+        self.assertNotIn('acquisition_counters', d)
+        self.assertErr(self.client.post(
+            '/api/module/acq_counters/reset',
+            data=json.dumps({'lanes': [1]}), content_type='application/json'), 400)
+
+    def test_counter_reset_masks_are_grouped_by_bank(self):
+        """Lane 9 is bit 0 of bank 1, not bit 8 of anything. Folding it into
+        bank 0's mask would clear lane 1's counter and leave lane 9 running -
+        the reset would look like it worked and the wrong counter would move.
+        """
+        self._connect54()
+        backend = _state['backend']
+        real = backend.write_bytes
+        seen = []
+
+        def spy(addr, data):
+            if addr in (0x7E, 0xC0, 0xC1):
+                seen.append((addr, bytes(data), backend._current_bank))
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            self.assertOk(self.client.post(
+                '/api/module/acq_counters/reset',
+                data=json.dumps({'lanes': [1, 3, 9], 'side': 'rx'}),
+                content_type='application/json'))
+        finally:
+            backend.write_bytes = real
+
+        writes = [(bank, data[0]) for addr, data, bank in seen if addr == 0xC0]
+        self.assertIn((0, 0b00000101), writes, 'lanes 1 and 3 belong to bank 0')
+        self.assertIn((1, 0b00000001), writes, 'lane 9 is bit 0 of bank 1')
+
+        self.assertErr(self.client.post(
+            '/api/module/acq_counters/reset',
+            data=json.dumps({'lanes': []}), content_type='application/json'), 400)
+
+    def test_a_redirection_that_is_not_a_permutation_is_refused(self):
+        """The spec requires a permutation; a module validates the command and
+        rejects it, but only after the host was told the write went through."""
+        self._connect54()
+        rv = self.client.post('/api/module/media_lane_switching',
+                              data=json.dumps({'redirection': [1, 1, 3, 4, 5, 6, 7, 8]}),
+                              content_type='application/json')
+        self.assertErr(rv, 400)
+        self.assertIn('permutation', json.loads(rv.data)['message'])
+
+    def test_a_valid_redirection_is_staged_and_reads_back(self):
+        self._connect54()
+        self.assertOk(self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps({'redirection': [2, 1, 4, 3, 5, 6, 7, 8],
+                             'enable': True, 'commit': True}),
+            content_type='application/json'))
+        m = self.assertOk(self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+        self.assertEqual([l['redirected_to'] for l in m['lanes']],
+                         [2, 1, 4, 3, 5, 6, 7, 8])
+        self.assertTrue(m['enabled'])
+        self.assertTrue(m['is_permutation'])
+
+    def test_a_broken_mapping_is_reported_not_tidied(self):
+        """Silently sorting it would hide the one thing worth seeing."""
+        import cmis_registers as c
+        d = c.parse_media_lane_switching(0, bytes([1, 1, 3, 4, 5, 6, 7, 8]), 1, bytes(8))
+        self.assertFalse(d['is_permutation'])
+        self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
+
+
 class TestRawWriteGuards(CMISTestCase):
 
     def test_write_through_page_select_is_refused(self):
@@ -2595,13 +2690,34 @@ class TestManualMatchesBehaviour(CMISTestCase):
         base = os.path.dirname(os.path.abspath(__file__))
         html = _io.open(os.path.join(base, 'templates', 'index.html'), encoding='utf-8').read()
         js = _io.open(os.path.join(base, 'static', 'app.js'), encoding='utf-8').read()
-        self.assertEqual(html.count('data-lane-cols="1"'), 5,
-                         'a lane-column header lost its marker')
+        # Counted from the markup rather than pinned to a number: every header
+        # row that lays lanes out as columns needs the marker, and a new table
+        # is exactly when one gets forgotten.
+        import re as _re
+        rows = _re.findall(r'<tr[^>]*>.*?</tr>', html, _re.S)
+        lane_rows = [r for r in rows if '<th>L1</th>' in r.replace(' ', '')
+                     or '<th>L1</th>' in r]
+        self.assertTrue(lane_rows, 'no lane-column headers found at all')
+        for r in lane_rows:
+            self.assertIn('data-lane-cols="1"', r,
+                          'a lane-column header lost its marker')
         self.assertIn('rebuildLaneColumns', js)
         idx = js.index('function rebuildLaneColumns(')
         body = js[idx:idx + 600]
         self.assertIn('AppState.lanes', body,
                       'headers are not sized from the module')
+
+    def test_the_manual_documents_the_5_4_pages_and_their_traps(self):
+        """Each of these is a place the tool deliberately does something the
+        reader would not guess, so the manual has to say which and why."""
+        manual = self._manual()
+        for reg in ('60h:128', '61h:128', '62h:128', '6Dh:136', '0Ch:128'):
+            self.assertIn(reg, manual, f'{reg} panel is undocumented')
+        # The reasons, not just the addresses.
+        self.assertIn('可以合法地不一致', manual, '60h vs 01h polarity')
+        self.assertIn('必须是通道的一个置换', manual, 'the redirection rule')
+        self.assertIn('都印成了字节 195', manual, 'the spec typo behind the missing reset')
+        self.assertIn('没有广告的页本工具不会去读', manual, 'why unadvertised pages are skipped')
 
     def test_the_manual_says_which_cmis_revision_the_tool_decodes(self):
         """It ships as the only description of the product, and "which

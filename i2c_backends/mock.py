@@ -439,6 +439,48 @@ class MockBackend(I2CInterface):
             p14[0xD0 + lane * 2 + 1] = w & 0xFF
         regs[0x14] = p14
 
+        # ==== CMIS 5.4 optional pages, only for profiles that advertise them ====
+        if p.get('cmis_rev', 0x53) >= 0x54 and p.get('pages_ext_173', 0):
+            p0c = {}
+            # Page map: mark the pages this mock actually serves.
+            for page in (0x00, 0x01, 0x02, 0x04, 0x0C, 0x10, 0x11, 0x12,
+                         0x13, 0x14, 0x60, 0x61, 0x62, 0x6D):
+                p0c[0x80 + page // 8] = p0c.get(0x80 + page // 8, 0) | (1 << (page % 8))
+            p0c[0xA0] = 0x54          # ConsolidatedPM defined in CMIS 5.4
+            p0c[0xA1] = 0x33          # fully compliant on both counts
+            regs[0x0C] = p0c
+
+            p60 = {0x80: p.get('default_polarity_tx', 0),
+                   0x81: p.get('default_polarity_rx', 0),
+                   0x82: 0x0F}       # all four counter kinds supported
+            regs[0x60] = p60
+
+            p61 = {}
+            for lane in range(8):
+                for base, seed in ((0x80, 1), (0x90, 2), (0xA0, 0), (0xB0, 1)):
+                    v = seed + lane
+                    p61[base + lane * 2] = (v >> 8) & 0xFF
+                    p61[base + lane * 2 + 1] = v & 0xFF
+            regs[0x61] = p61
+
+            p62 = {}
+            for lane in range(8):
+                off = 0x80 + lane * 8
+                # hi alarm, lo alarm, hi warn, lo warn in 0.01 dBm
+                for k, val in enumerate((350, -1000, 250, -850)):
+                    v = val & 0xFFFF
+                    p62[off + k * 2] = (v >> 8) & 0xFF
+                    p62[off + k * 2 + 1] = v & 0xFF
+            regs[0x62] = p62
+
+            if p.get('misc_caps_252', 0) & 0x20:
+                p6d = {0x80: 0x30}                     # commit duration code 3
+                for lane in range(8):
+                    p6d[0x88 + lane] = lane + 1        # identity mapping
+                    p6d[0xA8 + lane] = 0               # no commit status yet
+                p6d[0x98] = 0x00                       # redirection disabled
+                regs[0x6D] = p6d
+
         # Lane-banked pages for modules with more than eight lanes. Bank b
         # holds lanes 8b+1..8b+8 at the same addresses, so each extra bank is
         # a copy of bank 0 - nudged, so a bug that silently serves bank 0 for
@@ -446,7 +488,7 @@ class MockBackend(I2CInterface):
         lane_count = p.get('lanes', 8)
         if lane_count > 8:
             for bank in range(1, (lane_count + 7) // 8):
-                for page in (0x10, 0x11, 0x12, 0x13, 0x14):
+                for page in (0x10, 0x11, 0x12, 0x13, 0x14, 0x60, 0x61, 0x62, 0x6D):
                     if page not in regs:
                         continue
                     copy = dict(regs[page])

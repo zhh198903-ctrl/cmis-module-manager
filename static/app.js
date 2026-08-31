@@ -430,6 +430,7 @@ function switchTab(name) {
   if (name === 'monitoring')  startMonitoring();
   // The AppSelect dropdown is built from the advertised Applications, so they
   // must be in hand before the DataPath table renders.
+  if (name === 'ext54')       loadExt54();
   if (name === 'datapath') {
     loadModuleControl();
     loadSquelch();
@@ -553,6 +554,82 @@ function extraPagesSummary(c) {
               ['60h', c.page_60h_supported], ['61h', c.page_61h_supported],
               ['62h', c.page_62h_supported]].filter(x => x[1]).map(x => x[0]);
   return on.length ? on.join(', ') : '— (none advertised)';
+}
+
+async function loadExt54() {
+  if (!AppState.connected) return;
+  const res = await apiGet('/api/module/ext54');
+  if (res.status !== 'ok') { toast(`5.4 pages error: ${res.message}`, 'error'); return; }
+  const d = res.data, have = d.available || {};
+  const names = Object.keys(have);
+  document.getElementById('ext54-availability').textContent =
+    names.length ? `本模块广告的 5.4 可选页：${names.join(', ')}` : '';
+  document.getElementById('ext54-empty').style.display = names.length ? 'none' : '';
+
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show('card-polarity', !!d.polarity_status);
+  show('card-acq', !!d.acquisition_counters);
+  show('card-lanethr', !!d.lane_power_thresholds);
+  show('card-mls', !!d.media_lane_switching);
+  show('card-pagemap', !!d.supported_pages);
+
+  const mark = v => v ? '<span class="flag-warn">▲ 反</span>' : '<span class="flag-ok">●</span>';
+  if (d.polarity_status) {
+    document.getElementById('tbl-polarity').innerHTML =
+      `<tr><td>Input (Tx)</td>${d.polarity_status.map(l => `<td>${mark(l.input_tx_inverted)}</td>`).join('')}</tr>` +
+      `<tr><td>Output (Rx)</td>${d.polarity_status.map(l => `<td>${mark(l.output_rx_inverted)}</td>`).join('')}</tr>`;
+  }
+  if (d.acquisition_counters) {
+    const row = (label, key) =>
+      `<tr><td>${label}</td>${d.acquisition_counters.map(l => `<td>${l[key]}</td>`).join('')}</tr>`;
+    document.getElementById('tbl-acq').innerHTML =
+      row('Lane Tx', 'acq_tx') + row('Lane Rx', 'acq_rx') +
+      row('DP Tx', 'dp_acq_tx') + row('DP Rx', 'dp_acq_rx');
+  }
+  if (d.lane_power_thresholds) {
+    document.getElementById('tbl-lanethr').innerHTML = d.lane_power_thresholds.map(t =>
+      `<tr><td>${t.lane}</td><td>${t.hi_alarm_dbm.toFixed(2)}</td><td>${t.hi_warn_dbm.toFixed(2)}</td>`
+      + `<td>${t.lo_warn_dbm.toFixed(2)}</td><td>${t.lo_alarm_dbm.toFixed(2)}</td></tr>`).join('');
+  }
+  if (d.media_lane_switching) {
+    const m = d.media_lane_switching;
+    document.getElementById('mls-enable').checked = m.enabled;
+    document.getElementById('tbl-mls').innerHTML = m.lanes.map(l =>
+      `<tr><td>${l.lane}</td><td>${l.redirected_to}</td><td>${esc(l.commit_result_name)}</td></tr>`).join('')
+      + (m.is_permutation ? ''
+         : '<tr><td colspan="3"><span class="flag-active">■ 当前映射不是一个置换，模块会拒绝提交</span></td></tr>');
+  }
+  if (d.supported_pages) {
+    document.getElementById('ext54-pagemap').textContent =
+      d.supported_pages.map(p => '0x' + p.toString(16).toUpperCase().padStart(2, '0')).join('  ');
+    const pm = d.consolidated_pm;
+    document.getElementById('ext54-pm').textContent = pm && pm.supported
+      ? `Consolidated PM：按 CMIS ${pm.defined_in} 定义，选项符合度 ${pm.options_profile_compliance}，要求符合度 ${pm.requirements_compliance}`
+      : 'Consolidated PM：不支持';
+  }
+}
+
+async function resetAcqCounters() {
+  const raw = document.getElementById('acq-reset-lanes').value.trim();
+  const lanes = raw.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AppState.lanes);
+  if (!lanes.length) { toast('填入要复位的通道号，如 1,3,9', 'error'); return; }
+  const r = await apiPost('/api/module/acq_counters/reset', { lanes, side: 'both' });
+  toast(r.status === 'ok' ? `已复位通道 ${lanes.join(', ')} 的计数`
+                          : `复位失败：${r.message}`,
+        r.status === 'ok' ? 'success' : 'error');
+  if (r.status === 'ok') loadExt54();
+}
+
+async function applyMls(commit) {
+  const raw = document.getElementById('mls-mapping').value.trim();
+  const body = { enable: document.getElementById('mls-enable').checked, commit };
+  if (raw) body.redirection = raw.split(/[\s,]+/).map(Number);
+  if (commit && !confirm('提交媒体通道重定向？重定向发生变化的通道会中断业务。')) return;
+  const r = await apiPost('/api/module/media_lane_switching', body);
+  toast(r.status === 'ok' ? (commit ? '重定向已提交' : '重定向已暂存')
+                          : r.message,
+        r.status === 'ok' ? 'success' : 'error', r.status === 'ok' ? 3000 : 9000);
+  loadExt54();
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,6 +1798,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-refresh-monitor')?.addEventListener('click', loadMonitoring);
 
   // DataPath apply
+  document.getElementById('btn-refresh-ext54')?.addEventListener('click', loadExt54);
+  document.getElementById('btn-reset-acq')?.addEventListener('click', resetAcqCounters);
+  document.getElementById('btn-stage-mls')?.addEventListener('click', () => applyMls(false));
+  document.getElementById('btn-commit-mls')?.addEventListener('click', () => applyMls(true));
   document.getElementById('btn-apply-datapath')?.addEventListener('click', applyDatapath);
   document.getElementById('btn-refresh-datapath')?.addEventListener('click', loadDatapath);
 

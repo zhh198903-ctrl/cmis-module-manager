@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.3.0'
+__version__ = '2.4.0'
 
 import sys
 import os
@@ -488,6 +488,142 @@ def api_module_status():
             'alarm_active': any_alarm,
             **temp_alarms,
         })
+    except Exception as e:
+        return _err(str(e), 500)
+
+
+@app.route('/api/module/ext54', methods=['GET'])
+def api_module_ext54():
+    """The optional pages CMIS 5.4 added, for whichever of them exist.
+
+    Each is gated on its advertisement in 01h:173-174 rather than probed: an
+    unsupported page is not required to return anything meaningful, and
+    rendering whatever came back would invent per-lane readings out of
+    whatever the module happened to leave on the bus.
+    """
+    err = _require_connected()
+    if err:
+        return err
+    caps = _state.get('caps') or {}
+    out = {'available': {}}
+    try:
+        if caps.get('page_0ch_supported'):
+            out['supported_pages'] = cmis.parse_supported_pages_map(
+                _read_upper(*cmis.REG_SUPPORTED_PAGES_MAP))
+            out['consolidated_pm'] = cmis.parse_feature_advertisement(
+                _read_upper(*cmis.REG_CONSOLIDATED_PM))
+            out['available']['0Ch'] = True
+
+        if caps.get('page_60h_supported'):
+            polarity = []
+            for _b, raw in _read_banks(0x60, 0x80, 2):
+                polarity += cmis.parse_polarity_status(raw)
+            out['polarity_status'] = polarity[:_state['lanes']]
+            out['acq_counter_advert'] = _read_upper(0x60, 0x82, 1)[0]
+            out['available']['60h'] = True
+
+        if caps.get('page_61h_supported'):
+            counters = []
+            for _b, raw in _read_banks(0x61, 0x80, 64):
+                counters += cmis.parse_acquisition_counters(raw)
+            for i, c in enumerate(counters):
+                c['lane'] = i + 1
+            out['acquisition_counters'] = counters[:_state['lanes']]
+            out['available']['61h'] = True
+
+        if caps.get('page_62h_supported'):
+            thresholds = []
+            for _b, raw in _read_banks(0x62, 0x80, 64):
+                thresholds += cmis.parse_lane_power_thresholds(raw)
+            for i, t in enumerate(thresholds):
+                t['lane'] = i + 1
+            out['lane_power_thresholds'] = thresholds[:_state['lanes']]
+            out['available']['62h'] = True
+
+        if caps.get('media_lane_switching_supported'):
+            out['media_lane_switching'] = cmis.parse_media_lane_switching(
+                _read_upper(*cmis.REG_MLS_ADVERT)[0],
+                _read_upper(*cmis.REG_MLS_REDIRECTION),
+                _read_upper(*cmis.REG_MLS_ENABLE)[0],
+                _read_upper(*cmis.REG_MLS_RESULT))
+            out['available']['6Dh'] = True
+        return _ok(out)
+    except Exception as e:
+        return _err(str(e), 500)
+
+
+@app.route('/api/module/acq_counters/reset', methods=['POST'])
+def api_reset_acq_counters():
+    """Clear acquisition counters for the given lanes (60h:192-193).
+
+    Only the two lane-counter registers are offered. Table 8-189 prints byte
+    195 twice, for the media-side and host-side data path resets both, so
+    which one lives at 194 cannot be read off the document - and a reset
+    command sent to the wrong address clears counters nobody asked about.
+    """
+    err = _require_connected()
+    if err:
+        return err
+    caps = _state.get('caps') or {}
+    if not caps.get('page_60h_supported'):
+        return _err('This module does not advertise Page 60h', 400)
+    body = request.get_json(silent=True) or {}
+    lanes = body.get('lanes') or []
+    side = body.get('side', 'both')
+    if not lanes:
+        return _err('No lanes given', 400)
+    try:
+        by_bank = {}
+        for lane in lanes:
+            b, bit = divmod(int(lane) - 1, 8)
+            by_bank[b] = by_bank.get(b, 0) | (1 << bit)
+        for bank, mask in by_bank.items():
+            _set_page(0x60, bank)
+            if side in ('rx', 'both'):
+                _state['backend'].write_bytes(cmis.REG_RESET_ACQ_RX[1], bytes([mask]))
+            if side in ('tx', 'both'):
+                _state['backend'].write_bytes(cmis.REG_RESET_ACQ_TX[1], bytes([mask]))
+        return _ok({'lanes': lanes, 'side': side})
+    except Exception as e:
+        return _err(str(e), 500)
+
+
+@app.route('/api/module/media_lane_switching', methods=['POST'])
+def api_media_lane_switching():
+    """Stage a media lane redirection, and optionally commit it.
+
+    Refused unless the mapping is a permutation of the lanes: the spec
+    requires one, and a module that validates the command would reject it
+    anyway - after the host had already been told the write succeeded.
+    """
+    err = _require_connected()
+    if err:
+        return err
+    caps = _state.get('caps') or {}
+    if not caps.get('media_lane_switching_supported'):
+        return _err('This module does not advertise media lane switching', 400)
+    body = request.get_json(silent=True) or {}
+    mapping = body.get('redirection') or []
+    enable = body.get('enable')
+    commit = bool(body.get('commit', False))
+    try:
+        if mapping:
+            targets = [int(v) for v in mapping][:8]
+            if sorted(targets) != list(range(1, len(targets) + 1)):
+                return _err('Redirection must be a permutation of the media '
+                            'lanes; the module would reject anything else', 400)
+            _set_page(0x6D)
+            _state['backend'].write_bytes(cmis.REG_MLS_REDIRECTION[1],
+                                          bytes(targets))
+        if enable is not None:
+            _set_page(0x6D)
+            _state['backend'].write_bytes(cmis.REG_MLS_ENABLE[1],
+                                          bytes([1 if enable else 0]))
+        if commit:
+            _set_page(0x6D)
+            _state['backend'].write_bytes(cmis.REG_MLS_COMMIT[1], bytes([1]))
+            time.sleep(0.1)
+        return _ok({'committed': commit})
     except Exception as e:
         return _err(str(e), 500)
 

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.3.0<br>
+      <b>版本</b>　2.4.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -384,7 +384,8 @@
     <li><a href="#s9">DataPath Config — 数据通道配置</a></li>
     <li><a href="#s10">Diagnostics — 诊断工具</a></li>
     <li><a href="#s11">Raw Registers — 寄存器直读写</a></li>
-    <li><a href="#s12">常见问题排查</a></li>
+    <li><a href="#s12b">CMIS 5.4 扩展页</a></li>
+<li><a href="#s12">常见问题排查</a></li>
     <li><a href="#s13">附录：界面按钮速查</a></li>
   </ol>
 </div>
@@ -416,7 +417,7 @@
             <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Extra Pages</b> 行</td></tr>
         <tr><td><b>E13</b> 媒体通道交换能力广告</td>
             <td><code>01h:252[5]</code>（Table 8-62）</td>
-            <td><span class="badge badge-ok">已支持</span>（广告位）；Page 6Dh 的交换操作未实现</td></tr>
+            <td><span class="badge badge-ok">已支持</span> 广告位 + <b>Page 6Dh 的重定向暂存/使能/提交</b>（见 §12）</td></tr>
         <tr><td><b>E10</b> 散热器类型</td>
             <td><code>00h:61[7:4]</code>（Table 8-18）</td>
             <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Heatsink Type</b> 行</td></tr>
@@ -430,8 +431,8 @@
             <td><code>1Ch</code> NAD 内的 GID 字段</td>
             <td><span class="badge badge-neutral">暂不适用</span> 规范注明<b>现存所有 UID 的 GID 均为 0</b>，
                 非零 GID 只能经 NAD（Page 1Ch）广告，本工具读基本应用描述符</td></tr>
-        <tr><td><b>E12</b> 可复位收发采集计数器</td><td>Page 61h / 0Dh</td>
-            <td><span class="badge badge-neutral">未实现</span> 需新页读写</td></tr>
+        <tr><td><b>E12</b> 可复位收发采集计数器</td><td>Page 61h / 60h:192–193</td>
+            <td><span class="badge badge-ok">已支持</span> 四类计数器读取 + 按通道复位（见 §12）</td></tr>
         <tr><td><b>E4</b> 固件加载管理、<b>E11</b> 性能管理</td><td>Page 0Ch/0Dh + CDB</td>
             <td><span class="badge badge-neutral">未实现</span> 本工具不实现 CDB 命令流程</td></tr>
         <tr><td><b>E3/E6/E7/E8</b> 新增 CDB 命令</td><td>Chapter 9</td>
@@ -579,8 +580,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.3.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.3.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.4.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.4.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1361,7 +1362,7 @@
 
 <!-- ══════════════ 12. 常见问题 ══════════════ -->
 <div class="section" id="s12">
-  <h2 class="section-title">12. 常见问题排查</h2>
+  <h2 class="section-title">13. 常见问题排查</h2>
 
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q1</span>双击 EXE 后控制台窗口一闪而过</div>
@@ -1422,9 +1423,67 @@
   </div>
 </div>
 
+<!-- ══════════════ 12b. CMIS 5.4 扩展页 ══════════════ -->
+<div class="section" id="s12b">
+  <h2 class="section-title">12. CMIS 5.4 扩展页</h2>
+  <p><b>CMIS 5.4</b> 标签页展示 5.4 新增的几个<b>可选</b>页。它们是否存在由模块在
+     <code>01h:173–174</code> / <code>01h:252[5]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
+     未实现的页不保证返回有意义的内容，读了再渲染等于把总线上的残留值变成"每通道读数"。
+     5.3 模块以及不实现这些页的 5.4 模块，本页会明确显示"没有广告任何可选页"，这是正常的。</p>
+
+  <h3>12.1 Lane Polarity Status（<code>60h:128–129</code>）</h3>
+  <p>模块<b>当前实际生效</b>的通道极性。它与 Module Info 里的 <b>Default Polarity</b>
+     （<code>01h:171–172</code>）<b>可以合法地不一致</b>：后者只广告上电时的极性，
+     而支持可编程极性的模块把实时状态放在 60h。两处不同不是故障。</p>
+
+  <h3>12.2 Acquisition Counters（<code>61h:128–191</code>）</h3>
+  <p>四类饱和计数器：通道 Tx/Rx、数据通道 Tx/Rx。统计的是数据通道投入使用后
+     <b>接收侧重新锁定信号的次数</b>，模块在 DPInit 时自动清零。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>这是本页最有诊断价值的一项</b>：链路状态看起来一切正常、误码率也不高，
+    但该计数持续增长，说明接收端在反复失锁重锁——这种间歇性问题在瞬时读数里看不出来。</span>
+  </div>
+  <p>填入通道号（如 <code>1,3,9</code>）点<b>复位所选通道计数</b>即可清零，写的是
+     <code>60h:192–193</code>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>只提供通道计数器的复位，不提供数据通道（DP）计数器的复位。</b>
+    规范 Table 8-189 把媒体侧与主机侧 DP 复位寄存器<b>都印成了字节 195</b>，
+    因此 194 号究竟属于哪一个无法从文档判定。复位命令写错地址会清掉没人要求清的计数器，
+    所以本工具不猜——需要时请用 Raw Registers 自行确认后写入。</span>
+  </div>
+
+  <h3>12.3 Per-Lane Output Power Thresholds（<code>62h:128–191</code>）</h3>
+  <p>按媒体通道给出的<b>绝对</b>发射功率门限（S16，0.01 dBm），每通道一组四个值。
+     启用了相对门限（见 §10.7）的通道以这里的值为准，
+     <b>Page 02h 的模块级门限对它不再适用</b>。</p>
+
+  <h3>12.4 Media Lane Switching（<code>6Dh:136–175</code>）</h3>
+  <p>把内部媒体通道重定向到不同的外部通道。填入目标顺序（如 <code>2,1,4,3,5,6,7,8</code>
+     表示内部 1→外部 2、内部 2→外部 1，依此类推），先<b>暂存</b>，确认无误再<b>提交</b>。</p>
+  <ul>
+    <li>映射<b>必须是通道的一个置换</b>——每条外部通道恰好被用一次。
+        不是置换的映射本工具直接拒绝下发，因为模块校验后也会拒绝，
+        而那时你已经被告知"写入成功"了</li>
+    <li>当前映射若不是置换，表格下方会以红色标出，<b>本工具不会替你排序修正</b>——
+        那正是需要你看见的信息</li>
+    <li>「上次提交结果」逐通道显示模块回报的状态</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>提交会中断业务</b>：重定向发生变化的通道会断流（未变化的通道按规范不受影响）。
+    点提交前会弹确认框。</span>
+  </div>
+
+  <h3>12.5 Supported Pages Map（<code>0Ch:128–159</code>）</h3>
+  <p>模块用 32 字节位图声明自己实现了哪些页，比逐页试探可靠。下方另显示
+     Consolidated PM 特性的支持情况（按哪个 CMIS 版本定义、选项与要求的符合度）。</p>
+</div>
+
 <!-- ══════════════ 13. 附录 ══════════════ -->
 <div class="section" id="s13">
-  <h2 class="section-title">13. 附录：界面按钮速查</h2>
+  <h2 class="section-title">14. 附录：界面按钮速查</h2>
   <div class="table-wrap">
     <table>
       <thead><tr><th>按钮</th><th>位置</th><th>功能</th></tr></thead>
@@ -1486,7 +1545,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.3.0<br>
+    CMIS Module Manager 操作手册 v2.4.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

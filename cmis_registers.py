@@ -750,3 +750,140 @@ def parse_relative_thresholds(raw: bytes) -> dict:
         'lo_alarm_offset_db': -(1 + ((lo >> 4) & 0x0F)) * 0.5,
         'lo_warn_offset_db':  -(1 + (lo & 0x0F)) * 0.5,
     }
+
+
+# ---------------------------------------------------------------------------
+# CMIS 5.4 optional pages
+# ---------------------------------------------------------------------------
+# Presence is advertised in 01h:173-174; none of these may be read blindly.
+REG_SUPPORTED_PAGES_MAP = (0x0C, 0x80, 32)   # 0Ch:128-159 U8[32] page bitmap
+REG_CONSOLIDATED_PM     = (0x0C, 0xA0, 2)    # 0Ch:160-161 FeatureAdvertisement
+REG_POLARITY_STATUS     = (0x60, 0x80, 2)    # 60h:128-129 actual lane polarity
+REG_ACQ_COUNTER_ADV     = (0x60, 0x82, 1)    # 60h:130 counter support (bank 0)
+REG_RESET_ACQ_RX        = (0x60, 0xC0, 1)    # 60h:192 WO bitmask, media lanes
+REG_RESET_ACQ_TX        = (0x60, 0xC1, 1)    # 60h:193 WO bitmask, host lanes
+REG_ACQ_COUNTERS        = (0x61, 0x80, 64)   # 61h:128-191 four U16[8] arrays
+REG_LANE_PWR_THRESHOLDS = (0x62, 0x80, 64)   # 62h:128-191 8B quad per lane
+REG_MLS_ADVERT          = (0x6D, 0x80, 1)    # 6Dh:128 commit duration code
+REG_MLS_REDIRECTION     = (0x6D, 0x88, 8)    # 6Dh:136-143 target lane per lane
+REG_MLS_ENABLE          = (0x6D, 0x98, 1)    # 6Dh:152 bit0 enable
+REG_MLS_COMMIT          = (0x6D, 0xA0, 1)    # 6Dh:160 bit0 commit (WO/SC)
+REG_MLS_RESULT          = (0x6D, 0xA8, 8)    # 6Dh:168-175 per-lane commit result
+
+
+def parse_supported_pages_map(raw: bytes) -> list:
+    """Page indices a module says it has, from the 0Ch bitmap (Table 8-70).
+
+    Bit k of byte 128+n means page n*8+k. Returned as page numbers rather than
+    a bitfield because that is the only form anyone reads it in.
+    """
+    pages = []
+    for n, byte in enumerate(raw[:32]):
+        for k in range(8):
+            if (byte >> k) & 1:
+                pages.append(n * 8 + k)
+    return pages
+
+
+def parse_feature_advertisement(raw: bytes) -> dict:
+    """Table 8-71. Byte 0 is the CMIS revision the feature is defined by, and
+    zero there means the feature is absent - not "revision 0.0"."""
+    if len(raw) < 2:
+        return {'supported': False}
+    rev, comp = raw[0], raw[1]
+    return {
+        'supported': rev != 0,
+        'defined_in': f'{(rev >> 4) & 0x0F}.{rev & 0x0F}' if rev else '',
+        'options_profile_compliance': (comp >> 4) & 0x0F,
+        'requirements_compliance': comp & 0x0F,
+    }
+
+
+COMPLIANCE_NAMES = {0: 'undefined', 1: 'noncompliant',
+                    2: 'partially compliant', 3: 'fully compliant'}
+
+
+def parse_polarity_status(raw: bytes) -> list:
+    """60h:128-129 (Table 8-188): the polarity actually in effect.
+
+    Distinct from 01h:171-172, which only advertises power-up polarity. A
+    module with programmable inversion reflects the live state here and leaves
+    the Page 01h advertisement alone, so the two can legitimately disagree.
+    """
+    if len(raw) < 2:
+        return []
+    tx, rx = raw[0], raw[1]
+    return [{'lane': i + 1,
+             'input_tx_inverted': bool((tx >> i) & 1),
+             'output_rx_inverted': bool((rx >> i) & 1)} for i in range(8)]
+
+
+def parse_acquisition_counters(raw: bytes) -> list:
+    """61h:128-191 (Table 8-191): four U16[8] arrays, lane 1 first.
+
+    Saturating counters of how often a receiver re-acquired lock since the
+    data path was commissioned; the module clears them itself on DPInit. A
+    rising count on a link that looks up is the signal worth having.
+    """
+    if len(raw) < 64:
+        return []
+    def u16(base, i):
+        off = base + i * 2
+        return (raw[off] << 8) | raw[off + 1]
+    return [{'lane': i + 1,
+             'acq_tx': u16(0, i), 'acq_rx': u16(16, i),
+             'dp_acq_tx': u16(32, i), 'dp_acq_rx': u16(48, i)}
+            for i in range(8)]
+
+
+def parse_lane_power_thresholds(raw: bytes) -> list:
+    """62h:128-191 (Tables 8-193/8-194): per media lane, a quad of S16 in
+    0.01 dBm - hi alarm, lo alarm, hi warning, lo warning, in that order.
+
+    These are the absolute thresholds that result once a lane switches to
+    power-relative supervision, which is why they are per lane while the
+    offsets that produce them (12h:216-217) are not.
+    """
+    out = []
+    for i in range(8):
+        off = i * 8
+        if off + 8 > len(raw):
+            break
+        vals = struct.unpack('>4h', raw[off:off + 8])
+        out.append({'lane': i + 1,
+                    'hi_alarm_dbm': vals[0] * 0.01,
+                    'lo_alarm_dbm': vals[1] * 0.01,
+                    'hi_warn_dbm': vals[2] * 0.01,
+                    'lo_warn_dbm': vals[3] * 0.01})
+    return out
+
+
+MLS_RESULT_NAMES = {0: 'No status', 1: 'In progress', 2: 'Success'}
+
+
+def parse_media_lane_switching(advert: int, redirection: bytes,
+                               enable: int, result: bytes) -> dict:
+    """6Dh (Table 8-196): which external media lane each internal one feeds.
+
+    A valid redirection is a permutation, so a duplicate or a zero here is the
+    module reporting something the host should not commit; the UI shows the raw
+    mapping rather than tidying it, because tidying would hide exactly that.
+    """
+    lanes = []
+    for i in range(min(8, len(redirection))):
+        lanes.append({
+            'lane': i + 1,
+            'redirected_to': redirection[i],
+            'commit_result': result[i] if i < len(result) else 0,
+            'commit_result_name': MLS_RESULT_NAMES.get(
+                result[i] if i < len(result) else 0, f'Code {result[i]}'),
+        })
+    targets = [l['redirected_to'] for l in lanes]
+    return {
+        'commit_duration_code': (advert >> 4) & 0x0F,
+        'enabled': bool(enable & 1),
+        'lanes': lanes,
+        # Called out rather than corrected: a non-permutation is a module bug
+        # or an unfinished commit, and committing it would be the wrong move.
+        'is_permutation': sorted(targets) == list(range(1, len(targets) + 1)),
+    }
