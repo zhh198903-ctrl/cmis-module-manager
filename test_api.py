@@ -1227,6 +1227,31 @@ class TestCmis54Pages(CMISTestCase):
             '/api/module/acq_counters/reset',
             data=json.dumps({'lanes': []}), content_type='application/json'), 400)
 
+    def test_the_reset_actually_zeroes_the_lanes_it_names(self):
+        """The masks were right while the counters never moved, because the
+        mock stored the command instead of acting on it. A reset that reports
+        success and changes nothing is the one failure a demo cannot show."""
+        self._connect54()
+
+        def counts():
+            d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+            return {l['lane']: (l['acq_rx'], l['acq_tx'])
+                    for l in d['acquisition_counters']}
+
+        before = counts()
+        self.assertTrue(any(v != (0, 0) for v in before.values()),
+                        'nothing to clear, so the test proves nothing')
+        self.assertOk(self.client.post(
+            '/api/module/acq_counters/reset',
+            data=json.dumps({'lanes': [1, 3, 9]}),
+            content_type='application/json'))
+        after = counts()
+        for lane in (1, 3, 9):
+            self.assertEqual(after[lane], (0, 0), 'lane %d not cleared' % lane)
+        for lane in (2, 4, 10):
+            self.assertEqual(after[lane], before[lane],
+                             'lane %d was cleared without being asked' % lane)
+
     def test_a_redirection_that_is_not_a_permutation_is_refused(self):
         """The spec requires a permutation; a module validates the command and
         rejects it, but only after the host was told the write went through."""

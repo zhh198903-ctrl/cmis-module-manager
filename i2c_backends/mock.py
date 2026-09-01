@@ -905,6 +905,18 @@ class MockBackend(I2CInterface):
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
                 self._prbs_enable_times[prbs_map[register]] = time.time()
+        elif self._current_page == 0x60:
+            # 60h:192-193 are write-only bitmasks that zero the per-lane
+            # acquisition counters on Page 61h. Storing the mask and leaving
+            # the counters alone would let a reset look accepted while every
+            # count stayed where it was.
+            span = range(register, register + len(data))
+            cleared = bytearray(data)
+            for addr, base in ((0xC0, 0x80), (0xC1, 0x90)):
+                if addr in span:
+                    self._clear_acq_counters(data[addr - register], base)
+                    cleared[addr - register] = 0        # WO/SC
+            data = bytes(cleared)
         elif self._current_page == 0x6D:
             span = range(register, register + len(data))
             if 0xA0 in span and data[0xA0 - register] & 1:
@@ -914,6 +926,22 @@ class MockBackend(I2CInterface):
                 buf[0xA0 - register] &= ~1
                 data = bytes(buf)
         return data
+
+    def _clear_acq_counters(self, mask, base):
+        """Zero the lanes named in a 60h reset mask, within the current bank.
+
+        The mask covers the eight lanes of one bank, so lane 9 is bit 0 of
+        bank 1 - clearing by absolute lane number would zero lane 1 instead.
+        """
+        p61 = self._registers.get((0x61, self._current_bank))
+        if p61 is None:
+            p61 = self._registers.get(0x61)
+        if p61 is None:
+            return
+        for lane in range(8):
+            if mask & (1 << lane):
+                p61[base + lane * 2] = 0
+                p61[base + lane * 2 + 1] = 0
 
     def _commit_media_lane_redirection(self):
         """Move the staged mapping (6Dh:136-143) into effect (6Dh:184-191).
