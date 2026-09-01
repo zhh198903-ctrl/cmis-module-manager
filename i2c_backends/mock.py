@@ -1,11 +1,12 @@
-"""Mock/simulation I2C backends for six QSFP-DD / OSFP-XD module types.
+"""Mock/simulation I2C backends for seven QSFP-DD / OSFP-XD module types.
 
 All register addresses match the CMIS 5.4 spec (OIF-CMIS-05.4.pdf).
 Profile-driven design: a single MockBackend base class reads `self.PROFILE`
 (class attribute) to customize vendor info, capabilities, optical parameters,
-and application descriptors. Six subclasses register different profiles:
+and application descriptors. Seven subclasses register different profiles:
 
-  - mock_coherent        : 800G Coherent tunable (C-band, DWDM, DP-16QAM)
+  - mock_coherent        : 800GBASE-LR1 coherent lite (IEEE P802.3dj Clause 185)
+  - mock_coherent_zr     : 800G Coherent tunable (C-band DWDM, ZR-class)
   - mock_dr8             : 800GBASE-DR8 (8×100G PAM4, SMF 500m, EML 1310nm)
   - mock_sr8             : 800GBASE-SR8 (8×100G PAM4, OM4 100m, VCSEL 850nm)
   - mock_fr4x2           : 2× 400GBASE-FR4 (CWDM4, SMF 2km, EML 1310nm)
@@ -44,32 +45,89 @@ def _raw_to_dbm_centi(raw):
 # Each profile is a dict of every field that differs between module types.
 # ============================================================================
 
+# The datacenter "coherent lite" PMD of IEEE P802.3dj/D3.1: single wavelength,
+# O-band, 10 km. Everything optical below is Clause 185:
+#
+#   Table 185-4  operating range 2 m to 10 km
+#   Table 185-5  123.6364 GBd DP-16QAM, carrier 228.675 THz +/- 20 GHz
+#                (~1311 nm), launch power -11.2 to -6 dBm
+#   Table 185-6  average receive power tolerance -17.5 to -4 dBm
+#   185.2        BLER 1.45e-11 at the Inner FEC with BERadded 6.4e-5
+#
+# The carrier frequency is a fixed point with a tolerance, not a tuning range:
+# LR1 has no grid and no tunable laser, which is most of what separates
+# coherent lite from a ZR module. The tunable C-band profile this one used to
+# be still exists below as _ZR_800G.
 _COHERENT_800G = {
-    'display':         '800G Coherent tunable (C-band DWDM)',
+    'display':         '800GBASE-LR1 coherent lite (DP-16QAM, SMF 10km, 802.3dj)',
     'vendor_name':     b"OPENCMIS DEMO   ",
-    'vendor_pn':       b"DEMO-DP800G-QDD ",
+    'vendor_pn':       b"DEMO-LR1-800GQDD",
     'vendor_sn':       b"DEMO000000001   ",
     'vendor_rev':      b"A1",
     'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
-    'date_code':       b"24010100",
+    'date_code':       b"26010100",
     'clei':            b"DEMOCLEI00",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x07,             # LC: one fibre pair, one wavelength
+    'media_if_tech':       0x04,             # 1310 nm DFB - O-band, fixed carrier
+    'power_class_bits':    0x80,             # Class 5
+    'max_power_0_25w':     0x34,             # 52 x 0.25 = 13.0 W (demo: dj says nothing about module power)
+    'tunable':             False,
+    # Per-lane nominal optical values, both inside their Clause 185 windows
+    'tx_power_uw_nom':     158,              # -8.0 dBm
+    'rx_power_uw_nom':     63,               # -12.0 dBm
+    'tx_bias_ma_nom':      60.0,             # MZM / coherent driver
+    'temperature_c_nom':   62.0,             # DSP+TEC
+    # Table 174A-1 covers PHYs with an Inner FEC and allocates the PMD-to-PMD
+    # link 2.28e-4 of the path's 2.921e-4, measured after Inner FEC decoding.
+    # The raw line-side ratio before that FEC is far larger and is not what
+    # this table budgets, so it is not what this models.
+    'base_ber':            1.2e-4,
+    'snr_db_nom':          18.0,             # demo: dj sets no optical SNR limit
+    # Application Descriptors: (HostIfID, MediaIfID, LaneCount[7:4]H[3:0]M, HostLaneAssignMask)
+    # One wavelength means one media lane, whichever host width drives it.
+    'app_descriptors': [
+        (0x51, 0x7C, 0x81, 0x01),            # AppSel 1: 800GAUI-8 S C2M -> 800GBASE-LR1 (8H/1M)
+        (0x82, 0x7C, 0x41, 0x01),            # AppSel 2: 800GAUI-4 C2M -> 800GBASE-LR1 (4H/1M)
+    ],
+    # Table 185-4: 2 m to 10 km. Multiplier 01b counts 1 km per step.
+    'link_lengths': {'smf_len_byte': 0x4A},  # 01b << 6 | 10 = 10 km
+    'power_thresholds_dbm': {
+        # Alarms are the Clause 185 operating limits; the warnings half a dB
+        # inside them are a demo choice, as 802.3dj has no warning level.
+        'tx': (-6.0, -11.2, -6.5, -10.7),
+        'rx': (-4.0, -17.5, -4.5, -17.0),
+    },
+}
+
+# The C-band tunable coherent module the profile above used to be. Not an
+# 802.3dj PMD - ZR-class optics are specified by OIF - but it is the only
+# profile with a tunable laser, so Pages 04h and 12h would otherwise have
+# nothing to demonstrate.
+_ZR_800G = {
+    'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-DP800G-QDD ",
+    'vendor_sn':       b"DEMO000000007   ",
+    'vendor_rev':      b"A1",
+    'vendor_oui':      (0x00, 0x00, 0x00),
+    'date_code':       b"24010100",
+    'clei':            b"DEMOCLEI07",
     'media_type':          0x02,             # SMF
     'connector_type':      0x07,             # LC
     'media_if_tech':       0x10,             # C-band tunable laser
-    'power_class_bits':    0x80,             # Class 5 (100b << 5)
-    'max_power_0_25w':     0x40,             # 64 × 0.25 = 16.0 W
+    'power_class_bits':    0x80,             # Class 5
+    'max_power_0_25w':     0x40,             # 64 x 0.25 = 16.0 W
     'tunable':             True,
-    # Per-lane nominal optical values
     'tx_power_uw_nom':     1000,             # 0 dBm
     'rx_power_uw_nom':     158,              # -8 dBm
-    'tx_bias_ma_nom':      60.0,             # MZM / coherent driver
-    'temperature_c_nom':   62.0,             # DSP+TEC
+    'tx_bias_ma_nom':      60.0,
+    'temperature_c_nom':   62.0,
     'base_ber':            1.0e-9,
     'snr_db_nom':          18.0,
-    # Application Descriptors: (HostIfID, MediaIfID, LaneCount[7:4]H[3:0]M, HostLaneAssignMask)
     'app_descriptors': [
-        (0x51, 0x48, 0x81, 0x01),            # AppSel 1: 800GAUI-8 → 800G coherent (8H/1M)
-        (0x4F, 0x41, 0x41, 0x11),            # AppSel 2: 400GAUI-4 → 400ZR (4H/1M)
+        (0x51, 0x48, 0x81, 0x01),            # AppSel 1: 800GAUI-8 S C2M -> ZR200-OFEC-QPSK (8H/1M)
+        (0x4F, 0x41, 0x41, 0x01),            # AppSel 2: 400GAUI-4-S C2M -> 200GBASE-ER4 (4H/1M)
     ],
     'link_lengths': {},                      # no cable length advertised
 }
@@ -1050,6 +1108,11 @@ class Mock1600GDr8Backend(MockBackend):
 @register_backend("mock_1600g_16lane")
 class Mock1600G16LaneBackend(MockBackend):
     PROFILE = _XD16_1600G
+
+
+@register_backend("mock_coherent_zr")
+class MockCoherentZRBackend(MockBackend):
+    PROFILE = _ZR_800G
 
 
 @register_backend("mock_fr4x2")

@@ -7,7 +7,7 @@
 // Marks a field CMIS 5.4 introduced. Which fields those are comes from the
 // server (/api/module/capabilities -> new_in_5_4), so the list is never
 // retyped here; this is only how it looks.
-const NEW54 = '<span class="badge-new54" title="CMIS 5.4 新增字段">5.4 新增</span>';
+const NEW54 = '<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span>';
 
 const AppState = {
   connected: false,
@@ -436,7 +436,7 @@ function switchTab(name) {
   if (name === 'info')        loadInfo();
   if (name === 'monitoring')  startMonitoring();
   // The 5.4 optional-page cards live inside the functional tabs (badged
-  // "5.4 新增"), so each hosting tab pulls them alongside its own data.
+  // "5.4"), so each hosting tab pulls them alongside its own data.
   if (['info', 'monitoring', 'datapath', 'diagnostics'].includes(name)
       && AppState.connected) {
     loadExt54();
@@ -594,7 +594,7 @@ async function loadExt54() {
   const d = res.data, have = d.available || {};
   const names = Object.keys(have);
   document.getElementById('ext54-availability').textContent =
-    names.length ? `本模块广告的 5.4 可选页：${names.join(', ')}` : '';
+    names.length ? `Advertised by this module: ${names.join(', ')}` : '';
   document.getElementById('ext54-empty').style.display = names.length ? 'none' : '';
 
   const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
@@ -604,7 +604,7 @@ async function loadExt54() {
   show('card-mls', !!d.media_lane_switching);
   show('card-pagemap', true);
 
-  const mark = v => v ? '<span class="flag-warn">▲ 反</span>' : '<span class="flag-ok">●</span>';
+  const mark = v => v ? '<span class="flag-warn">▲ inverted</span>' : '<span class="flag-ok">●</span>';
   if (d.polarity_status) {
     document.getElementById('tbl-polarity').innerHTML =
       `<tr><td>Input (Tx)</td>${d.polarity_status.map(l => `<td>${mark(l.input_tx_inverted)}</td>`).join('')}</tr>` +
@@ -635,9 +635,9 @@ async function loadExt54() {
         + `<td${cls}>${active}</td><td>${esc(l.commit_result_name)}</td></tr>`;
     }).join('')
       + (m.is_permutation ? ''
-         : '<tr><td colspan="4"><span class="flag-active">■ 当前映射不是一个置换，模块会拒绝提交</span></td></tr>')
+         : '<tr><td colspan="4"><span class="flag-active">■ Not a permutation — the module will reject this commit</span></td></tr>')
       + (m.committed === false && m.is_permutation
-         ? '<tr><td colspan="4"><span class="flag-active">■ 已下发的映射尚未生效——需要点 Commit</span></td></tr>' : '');
+         ? '<tr><td colspan="4"><span class="flag-active">■ Staged mapping is not in effect yet — press Commit</span></td></tr>' : '');
   }
   document.getElementById('ext54-pagemap').textContent = '';
   document.getElementById('ext54-pm').textContent = '';
@@ -646,18 +646,18 @@ async function loadExt54() {
       d.supported_pages.map(p => '0x' + p.toString(16).toUpperCase().padStart(2, '0')).join('  ');
     const pm = d.consolidated_pm;
     document.getElementById('ext54-pm').textContent = pm && pm.supported
-      ? `Consolidated PM：按 CMIS ${pm.defined_in} 定义，选项符合度 ${pm.options_profile_compliance}，要求符合度 ${pm.requirements_compliance}`
-      : 'Consolidated PM：不支持';
+      ? `Consolidated PM: defined by CMIS ${pm.defined_in}, options compliance ${pm.options_profile_compliance}, requirements compliance ${pm.requirements_compliance}`
+      : 'Consolidated PM: not supported';
   }
 }
 
 async function resetAcqCounters() {
   const raw = document.getElementById('acq-reset-lanes').value.trim();
   const lanes = raw.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AppState.lanes);
-  if (!lanes.length) { toast('填入要复位的通道号，如 1,3,9', 'error'); return; }
+  if (!lanes.length) { toast('Enter the lanes to reset, e.g. 1,3,9', 'error'); return; }
   const r = await apiPost('/api/module/acq_counters/reset', { lanes, side: 'both' });
-  toast(r.status === 'ok' ? `已复位通道 ${lanes.join(', ')} 的计数`
-                          : `复位失败：${r.message}`,
+  toast(r.status === 'ok' ? `Counters reset on lane ${lanes.join(', ')}`
+                          : `Reset failed: ${r.message}`,
         r.status === 'ok' ? 'success' : 'error');
   if (r.status === 'ok') loadExt54();
 }
@@ -666,9 +666,10 @@ async function applyMls(commit) {
   const raw = document.getElementById('mls-mapping').value.trim();
   const body = { enable: document.getElementById('mls-enable').checked, commit };
   if (raw) body.redirection = raw.split(/[\s,]+/).map(Number);
-  if (commit && !confirm('提交媒体通道重定向？重定向发生变化的通道会中断业务。')) return;
+  if (commit && !confirm('Commit the media lane redirection? Lanes whose target '
+                         + 'changes will drop traffic.')) return;
   const r = await apiPost('/api/module/media_lane_switching', body);
-  toast(r.status === 'ok' ? (commit ? '重定向已提交' : '重定向已暂存')
+  toast(r.status === 'ok' ? (commit ? 'Redirection committed' : 'Redirection staged')
                           : r.message,
         r.status === 'ok' ? 'success' : 'error', r.status === 'ok' ? 3000 : 9000);
   loadExt54();

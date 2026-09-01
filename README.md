@@ -30,7 +30,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 - **DataPath control 数据通道配置** — AppSel provisioning, DataPath state machine, output/squelch controls
 - **Diagnostics 诊断** — loopback, PRBS generator/checker, BER, SNR, error counters
 - **Laser tuning 激光器调谐** — grid/channel selection and fine tuning for tunable (coherent) modules
-- **6 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane`, full demo without any hardware. The 1.6T DR8 profile models its optical thresholds and error ratios on IEEE P802.3dj/D3.1 Clause 180 (1.6TBASE-DR8).
+- **7 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_coherent_zr` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane`, full demo without any hardware. Two profiles are modelled on IEEE P802.3dj/D3.1: `mock_1600g_dr8` on Clause 180 (1.6TBASE-DR8) and `mock_coherent` on Clause 185 (800GBASE-LR1, the datacenter coherent-lite PMD). `mock_coherent_zr` is the tunable C-band module, which is where laser tuning is demonstrated.
 
 ## Supported hardware / 支持的硬件
 
@@ -58,7 +58,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-259 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+264 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

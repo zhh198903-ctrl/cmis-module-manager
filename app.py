@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.5.5'
+__version__ = '2.6.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1345,6 +1345,12 @@ def api_laser_set():
         body = request.get_json(silent=True) or {}
         _set_page(0x12)
         lanes = body.get('lanes', [])
+        # A body this handler does not understand used to come back as
+        # "parameters written" having written nothing, so a caller with the
+        # wrong shape was told its tuning had been applied.
+        if not isinstance(lanes, list) or not lanes:
+            return _err('No lanes given; expected {"lanes": [{"lane": 1, ...}]}', 400)
+        written = 0
         for ldata in lanes:
             lane = int(ldata.get('lane', 1)) - 1
             if not (0 <= lane < 8):
@@ -1363,7 +1369,10 @@ def api_laser_set():
             if 'target_power_dbm' in ldata:
                 pwr = int(round(float(ldata['target_power_dbm']) / 0.01))
                 _state['backend'].write_bytes(0xC8 + lane * 2, struct.pack(">h", pwr))
-        return _ok({'message': 'Laser tuning parameters written'})
+            written += 1
+        if not written:
+            return _err('No lane in range 1-8 was given', 400)
+        return _ok({'message': 'Laser tuning parameters written', 'lanes': written})
     except Exception as e:
         return _err(str(e), 500)
 

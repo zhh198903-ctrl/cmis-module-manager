@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.5.5<br>
+      <b>版本</b>　2.6.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -399,7 +399,7 @@
   <p>本工具自 <b>v2.3.0</b> 起按 <b>OIF CMIS 5.4</b>（2026-05-21 发布）解码。
      <b>5.4 与 5.3 完全向后兼容</b>——规范原文即写明"5.3 合规的模块也是 5.4 合规的"，
      所以手上的 5.3 模块行为不变，界面上只是不会出现 5.4 才有的那几项。
-     界面中凡是 5.4 才引入的字段，字段名后都带一个 <b>5.4 新增</b> 标记。</p>
+     界面中凡是 5.4 才引入的内容，名称后都带一个 <b>5.4</b> 徽标——字段名后如此，卡片标题后也如此。</p>
 
   <h4>5.4 相对 5.3 的全部变更，以及本工具的处理</h4>
   <div class="table-wrap">
@@ -503,7 +503,8 @@
     <table>
       <thead><tr><th>Backend</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td><code>mock_coherent</code></td><td class="label">模拟 800G QSFP-DD 可调谐相干模块（C-band DWDM, DP-16QAM），无需硬件</td></tr>
+        <tr><td><code>mock_coherent</code></td><td class="label">模拟 <b>800GBASE-LR1</b> 数据中心 coherent lite（DP-16QAM, 单波长 O 波段, SMF 10km），光参数按 <b>IEEE P802.3dj/D3.1 第 185 章</b>建模，无需硬件</td></tr>
+        <tr><td><code>mock_coherent_zr</code></td><td class="label">模拟 800G 可调谐相干模块（C-band DWDM, ZR 类），<b>本工具唯一支持 Laser Tuning 的 profile</b></td></tr>
         <tr><td><code>mock_dr8</code></td><td class="label">模拟 800GBASE-DR8（8×100G PAM4, SMF 500m, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_sr8</code></td><td class="label">模拟 800GBASE-SR8（8×100G PAM4, OM4 100m, VCSEL 850nm），无需硬件</td></tr>
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
@@ -616,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.5.5 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.5.5</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.6.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.6.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -807,9 +808,15 @@
       <tbody>
         <tr>
           <td><code>mock_coherent</code></td>
-          <td class="label">800G QSFP-DD 相干（C-band 可调谐）</td>
+          <td class="label">800GBASE-LR1（802.3dj 第 185 章）</td>
+          <td class="label">数据中心 coherent lite / 园区 10km</td>
+          <td class="label">DP-16QAM 123.6364 GBd，单波长固定载波（228.675 THz ± 20 GHz，约 1311 nm），<b>不可调谐</b>，13 W</td>
+        </tr>
+        <tr>
+          <td><code>mock_coherent_zr</code></td>
+          <td class="label">800G 相干可调谐（C-band，ZR 类）</td>
           <td class="label">DWDM 长途 / DCI</td>
-          <td class="label">DP-16QAM，支持 Laser Tuning，Pre-FEC BER ~1e-9，16 W</td>
+          <td class="label">支持 Laser Tuning，Pre-FEC BER ~1e-9，16 W</td>
         </tr>
         <tr>
           <td><code>mock_dr8</code></td>
@@ -832,7 +839,7 @@
       </tbody>
     </table>
   </div>
-  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.4 规范和实际产品特征构造。仅 <code>mock_coherent</code> 支持 Laser Tuning 功能；<code>mock_1600g_16lane</code> 是一块 <b>16 通道、自报 CMIS 5.4</b> 的模块，用于演示多 Bank 与 5.4 新增字段。</p>
+  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.4 规范和实际产品特征构造。仅 <code>mock_coherent_zr</code> 支持 Laser Tuning 功能（<code>mock_coherent</code> 建模的 800GBASE-LR1 是固定载波，802.3dj 未给它定义调谐栅格）；<code>mock_1600g_16lane</code> 是一块 <b>16 通道、自报 CMIS 5.4</b> 的模块，用于演示多 Bank 与 5.4 新增字段。</p>
 
   <h4>真实硬件接口</h4>
   <ul>
@@ -1444,13 +1451,13 @@
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 6 种 profile：<code>mock_coherent</code>（800G 相干可调谐）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，分别模拟不同类型 800G QSFP-DD 模块。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 7 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，以及两块 1.6T 模块。</div>
   </div>
 
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q7</span>为什么 <code>mock_dr8/sr8/fr4x2</code> 的 Laser Tuning 卡片显示"非可调谐模块"？</div>
     <div class="faq-reason">原因：这些 profile 模拟的是固定波长激光器（EML / VCSEL），Media Interface Technology ≠ C-band/L-band tunable。</div>
-    <div class="faq-solve">正常现象。只有 <code>mock_coherent</code>（Media Interface Tech = 0x10 C-band tunable）支持 Laser Tuning 功能。真实模块的 Page 04h GridSupported 寄存器若为 0，说明不支持调谐。</div>
+    <div class="faq-solve">正常现象。只有 <code>mock_coherent_zr</code>（Media Interface Tech = 0x10 C-band tunable）支持 Laser Tuning 功能。真实模块的 Page 04h GridSupported 寄存器若为 0，说明不支持调谐。</div>
   </div>
 
   <div class="faq-item">
@@ -1464,7 +1471,7 @@
 <div class="section" id="s12b">
   <h2 class="section-title">12. CMIS 5.4 扩展功能</h2>
   <p>CMIS 5.4 新增的几个<b>可选</b>页<b>不设单独标签页</b>，按用途放进对应的功能标签，
-     卡片右上角带 <b>「5.4 新增」</b>徽标：</p>
+     卡片标题后带 <b>5.4</b> 徽标（与字段名后的标记同一个），5.4 新增内容一望可辨：</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>功能</th><th>所在标签页</th><th>寄存器页</th></tr></thead>
@@ -1600,7 +1607,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.5.5<br>
+    CMIS Module Manager 操作手册 v2.6.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

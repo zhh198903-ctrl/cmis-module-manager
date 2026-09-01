@@ -1283,6 +1283,87 @@ class TestCmis54Pages(CMISTestCase):
         self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
 
 
+class TestCoherentProfiles(CMISTestCase):
+    """The coherent mock models IEEE P802.3dj/D3.1 Clause 185 800GBASE-LR1,
+    the datacenter coherent-lite PMD, and the tunable C-band module it used to
+    be lives on beside it because nothing else exercises laser tuning."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_the_coherent_mock_is_the_802_3dj_lr1_pmd(self):
+        """One wavelength, one media lane, whichever host width drives it.
+        The old profile advertised a 200G ZR media code under an 800G host,
+        which is not a combination any module can have."""
+        self._connect('mock_coherent')
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        for a in apps:
+            self.assertEqual(a['media_if_name'], '800GBASE-LR1')
+            self.assertEqual(a['media_lanes'], 1, 'LR1 is a single wavelength')
+        self.assertEqual([a['host_if_name'] for a in apps],
+                         ['800GAUI-8 S C2M', '800GAUI-4 C2M'])
+
+    def test_its_power_windows_come_from_tables_185_5_and_185_6(self):
+        """Table 185-5 bounds launch power at -11.2 to -6 dBm and Table 185-6
+        bounds average receive power tolerance at -17.5 to -4 dBm. Coherent
+        lite launches far below a DR8, so borrowing DR8 limits would put the
+        module in alarm from the moment it connects."""
+        self._connect('mock_coherent')
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertEqual(t['tx_power_high_alarm_dbm'], -6.0)
+        self.assertEqual(t['tx_power_low_alarm_dbm'], -11.2)
+        self.assertEqual(t['rx_power_high_alarm_dbm'], -4.0)
+        self.assertEqual(t['rx_power_low_alarm_dbm'], -17.5)
+        m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        for lane in m['lanes']:
+            self.assertLess(lane['tx_power_dbm'], t['tx_power_high_warn_dbm'])
+            self.assertGreater(lane['tx_power_dbm'], t['tx_power_low_warn_dbm'])
+            self.assertLess(lane['rx_power_dbm'], t['rx_power_high_warn_dbm'])
+            self.assertGreater(lane['rx_power_dbm'], t['rx_power_low_warn_dbm'])
+
+    def test_lr1_advertises_no_tuning_grid(self):
+        """Clause 185 gives one carrier frequency with a tolerance, not a grid.
+        A module that offered grids here would be claiming to be a ZR."""
+        self._connect('mock_coherent')
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        self.assertEqual(d['grids_supported'], [])
+
+    def test_the_tunable_profile_still_tunes(self):
+        """Laser tuning had no test at all, so moving the only tunable profile
+        to its own name could have taken the feature with it silently."""
+        self._connect('mock_coherent_zr')
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        self.assertIn('100 GHz', d['grids_supported'])
+        self.assertOk(self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [{'lane': 1, 'grid_code': 5, 'channel': 20,
+                                        'fine_offset_ghz': 2.5,
+                                        'target_power_dbm': -1.5}]}),
+            content_type='application/json'))
+        lane = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+        self.assertEqual(lane['channel'], 20)
+        self.assertAlmostEqual(lane['frequency_thz'], 195.1, places=3)
+        self.assertAlmostEqual(lane['fine_offset_ghz'], 2.5, places=3)
+        self.assertAlmostEqual(lane['target_power_dbm'], -1.5, places=2)
+
+    def test_a_tuning_request_it_cannot_read_is_refused(self):
+        """A body in the wrong shape came back as "parameters written" having
+        written nothing, so the caller believed the laser had been retuned."""
+        self._connect('mock_coherent_zr')
+        # 'oops' is iterable, so without the type check the loop would walk its
+        # characters and fail with a 500 instead of saying what was wrong.
+        for body in ({}, {'lanes': []}, {'lane': 1, 'channel': 20},
+                     {'lanes': 'oops'}, {'lanes': [{'lane': 99, 'channel': 20}]}):
+            self.assertErr(self.client.post(
+                '/api/module/laser', data=json.dumps(body),
+                content_type='application/json'), 400)
+
+
 class TestFiveFourCardsLiveWithTheirFunction(CMISTestCase):
     """The 5.4 optional-page cards were moved out of a revision-named tab and
     into the tab for the job each one belongs to. Nothing else in the page
@@ -3178,7 +3259,7 @@ class TestManualMatchesBehaviour(CMISTestCase):
         js = _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    'static', 'app.js'), encoding='utf-8').read()
         self.assertIn('badge-new54', js)
-        self.assertIn('5.4 新增', js)
+        self.assertIn('>5.4<', js, 'the badge no longer says what it marks')
         self.assertIn("apiGet('/api/module/capabilities')", js)
         css = _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'static', 'style.css'), encoding='utf-8').read()

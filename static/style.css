@@ -1011,6 +1011,15 @@ input[type="checkbox"] {
   width: auto;
 }
 
+/* Groups a card's name with the badge and address that qualify it, so the
+   h3's space-between does not fling them to opposite edges of the card. */
+.card-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 8px;
+}
+
 /* Marks a field that CMIS 5.4 introduced. Deliberately quiet: it labels a
    provenance, not a warning, and sits beside a field name that is already
    the thing being read. */

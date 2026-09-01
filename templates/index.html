@@ -119,16 +119,17 @@
       </div>
     
       <div class="card" id="card-pagemap" style="display:none">
-        <h3>CMIS 5.4 Optional Pages<span class="reg-meta">0Ch / 128–159</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span>
+        <h3><span class="card-title">CMIS 5.4 Optional Pages<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">0Ch / 128–159</span></span>
           <button class="btn-secondary btn-sm" id="btn-refresh-ext54">↻ Refresh</button></h3>
         <p class="label" id="ext54-availability">—</p>
         <div id="ext54-empty" class="label" style="display:none">
-          该模块没有广告任何 CMIS 5.4 可选页。这些页是可选的，5.3 模块与不实现它们的
-          5.4 模块都属正常。
+          This module advertises no CMIS 5.4 optional pages.
         </div>
-        <p class="label">模块用位图声明自己实现了哪些页（Page 0Ch）。各功能标签页里带「5.4 新增」徽标的卡片，只在模块广告了对应页时出现。</p>
         <p id="ext54-pagemap" style="font-family:var(--font-mono)"></p>
         <p class="label" id="ext54-pm"></p>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Bitmap of the pages the module implements. Cards badged 5.4 appear in their own tabs only when the page behind them is advertised; 5.3 modules and 5.4 modules that implement none of these pages show nothing here.
+        </p>
       </div>
     </div>
 
@@ -194,12 +195,13 @@
       </div>
 
       <div class="card" id="card-lanethr" style="display:none">
-        <h3>Per-Lane Output Power Thresholds<span class="reg-meta">62h / 128–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
-        <p class="label">按媒体通道给出的绝对发射功率门限。启用了相对门限的通道，
-           以这里的值为准，<b>Page 02h 的模块级门限对它不再适用</b>。</p>
+        <h3><span class="card-title">Per-Lane Output Power Thresholds<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">62h / 128–191</span></span></h3>
         <div class="table-scroll"><table>
           <thead><tr><th>Lane</th><th>Hi Alarm</th><th>Hi Warn</th><th>Lo Warn</th><th>Lo Alarm</th></tr></thead>
           <tbody id="tbl-lanethr"></tbody></table></div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Absolute Tx thresholds per media lane, in dBm. On a lane using power-relative supervision these replace the module-wide Page 02h thresholds, which no longer apply to it.
+        </p>
       </div>
 
       <!-- Lane Flags card -->
@@ -354,29 +356,29 @@
       </div>
     
       <div class="card" id="card-polarity" style="display:none">
-        <h3>Lane Polarity Status<span class="reg-meta">60h / 128–129</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
-        <p class="label">模块当前实际生效的通道极性。与 Module Info 里的 <b>Default Polarity</b>
-           （01h:171–172，仅广告上电极性）可以合法地不一致——可编程极性的模块把实时状态放在这里。</p>
+        <h3><span class="card-title">Lane Polarity Status<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">60h / 128–129</span></span></h3>
         <div class="table-scroll"><table><thead><tr data-lane-cols="1">
-          <th style="width:150px">方向</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+          <th style="width:150px">Direction</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
           <th>L5</th><th>L6</th><th>L7</th><th>L8</th><!--lane-cols-->
         </tr></thead><tbody id="tbl-polarity"></tbody></table></div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          The polarity in effect now. It may legitimately differ from Default Polarity (01h:171–172) in Module Info, which advertises only the power-up polarity of a module whose polarity is programmable.
+        </p>
       </div>
       <div class="card" id="card-mls" style="display:none">
-        <h3>Media Lane Switching<span class="reg-meta">6Dh / 136–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
-        <p class="label">把内部媒体通道重定向到不同的外部通道。映射<b>必须是通道的一个置换</b>；
-           不是置换的映射会被本工具拒绝下发（模块也会校验后拒绝）。<br>
-           <b>「已下发」是暂存值（6Dh:136–143，可写），「当前生效」是交换机实际在做的（6Dh:184–191，只读）。</b>
-           勾选 Enable 本身<b>不会</b>提交，两列不一致就说明提交还没做或被拒绝——看提交结果那一列。</p>
+        <h3><span class="card-title">Media Lane Switching<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">6Dh / 136–191</span></span></h3>
         <div class="table-scroll"><table>
-          <thead><tr><th>内部通道</th><th>已下发</th><th>当前生效</th><th>上次提交结果</th></tr></thead>
+          <thead><tr><th>Internal Lane</th><th>Staged</th><th>Active</th><th>Last Commit Result</th></tr></thead>
           <tbody id="tbl-mls"></tbody></table></div>
         <div style="margin-top:10px">
-          <input type="text" id="mls-mapping" placeholder="目标顺序，如 2,1,4,3,5,6,7,8" style="width:220px">
+          <input type="text" id="mls-mapping" placeholder="target order, e.g. 2,1,4,3,5,6,7,8" style="width:230px">
           <label style="margin-left:8px"><input type="checkbox" id="mls-enable"> Enable</label>
-          <button class="btn-secondary btn-sm" id="btn-stage-mls">暂存</button>
-          <button class="btn-danger btn-sm" id="btn-commit-mls">提交（会影响在途业务）</button>
+          <button class="btn-secondary btn-sm" id="btn-stage-mls">Stage</button>
+          <button class="btn-danger btn-sm" id="btn-commit-mls">Commit (disrupts traffic)</button>
         </div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Staged (6Dh:136–143, RW) is what the host has written; Active (6Dh:184–191, RO) is what the switch is doing. Enabling alone does not commit, so the two differ until a commit succeeds. The mapping must be a permutation of the lanes — anything else is refused here, because the module rejects it after reporting the write as successful.
+        </p>
       </div>
     </div>
 
@@ -578,18 +580,18 @@
 
     
       <div class="card" id="card-acq" style="display:none">
-        <h3>Acquisition Counters<span class="reg-meta">61h / 128–191</span><span class="badge-new54" title="CMIS 5.4 新增">5.4 新增</span></h3>
-        <p class="label">数据通道投入使用后，接收侧重新锁定信号的累计次数（饱和计数）。
-           模块在 DPInit 时自动清零。<b>链路看起来正常但该计数在涨，说明它在反复失锁重锁。</b></p>
+        <h3><span class="card-title">Acquisition Counters<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">61h / 128–191</span></span></h3>
         <div class="table-scroll"><table><thead><tr data-lane-cols="1">
-          <th style="width:150px">计数器</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+          <th style="width:150px">Counter</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
           <th>L5</th><th>L6</th><th>L7</th><th>L8</th><!--lane-cols-->
         </tr></thead><tbody id="tbl-acq"></tbody></table></div>
         <div style="margin-top:10px">
-          <input type="text" id="acq-reset-lanes" placeholder="通道号，如 1,3,9" style="width:150px">
-          <button class="btn-secondary btn-sm" id="btn-reset-acq">复位所选通道计数</button>
-          <span class="label">仅复位通道计数器（60h:192–193）</span>
+          <input type="text" id="acq-reset-lanes" placeholder="lanes, e.g. 1,3,9" style="width:150px">
+          <button class="btn-secondary btn-sm" id="btn-reset-acq">Reset selected lanes</button>
         </div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Times the receiver re-acquired lock after the data path came up, cleared by the module at DPInit. Counts rising on a link that otherwise looks healthy mean it is repeatedly losing and regaining lock. Reset writes the lane counters only (60h:192–193).
+        </p>
       </div>
     </div>
 
