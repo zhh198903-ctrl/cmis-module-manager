@@ -259,6 +259,9 @@ async function loadBackends() {
   if (previousValue && sel.querySelector(`option[value="${CSS.escape(previousValue)}"]`)) {
     sel.value = previousValue;
   }
+  // Describe whatever ends up selected, so the first screen already says what
+  // the default backend is rather than waiting for Connect.
+  if (!AppState.connected) updateBackendInfoArea(sel.value);
 }
 
 async function connectModule() {
@@ -362,6 +365,13 @@ function updateBackendInfoArea(backendName) {
 }
 
 function clearBackendInfoArea() {
+  // Not empty: the list is already loaded, so say what the current selection
+  // is rather than asking the reader to press Connect to find out.
+  const sel = document.getElementById('sel-backend');
+  if (sel && sel.value && AppState.backendsCache.length) {
+    updateBackendInfoArea(sel.value);
+    return;
+  }
   const area = document.getElementById('backend-info-area');
   if (area) {
     area.innerHTML = 'Select a backend and connect to view info.';
@@ -1892,6 +1902,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-check-update')?.addEventListener('click', checkForUpdate);
 
   // Monitoring interval selector
+  document.getElementById('sel-backend')?.addEventListener('change', e => {
+    // Describing the selection before Connect is pressed matters most for the
+    // adapters that are not there: their description says what is missing,
+    // and it used to take a failed connection attempt to read it.
+    if (!AppState.connected) updateBackendInfoArea(e.target.value);
+  });
+
   document.getElementById('sel-refresh-interval')?.addEventListener('change', e => {
     const v = e.target.value;
     if (v === 'manual') {

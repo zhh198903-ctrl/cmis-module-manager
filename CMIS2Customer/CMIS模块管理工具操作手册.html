@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.7.1<br>
+      <b>版本</b>　2.7.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.7.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.7.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.7.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.7.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1373,6 +1373,29 @@
     <span class="callout-icon">ℹ</span>
     <span>地址 ≥ <code>0x80</code> 为上页寄存器，工具自动切页；地址 &lt; <code>0x80</code> 为下页，忽略 Page 字段。</span>
   </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>本页对写入不设任何护栏，这是有意的。</b>其它标签页只暴露安全的操作，这里能写模块的<b>任意</b>字节——
+    它存在的理由正是让你做界面没有提供的事。代价是：<b>在跑着业务的模块上，一次误写就可能断流。</b><br>
+    几个后果最直接的地址见下表（工具不会拦，模块会照做）。</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>地址</th><th>写下去会发生什么</th></tr></thead>
+      <tbody>
+      <tr><td><code>Lower 0x1A</code> bit 3</td><td class="label"><b>软复位</b>——模块重启，所有数据通道重新初始化，链路中断数秒</td></tr>
+      <tr><td><code>10h:0x8F</code> = FF</td><td class="label"><b>ApplyDataPathInit</b>——按当前暂存配置重新初始化数据通道，相应通道断流</td></tr>
+      <tr><td><code>10h:0x82</code></td><td class="label">关闭对应通道的发送端，该通道立即无光</td></tr>
+      <tr><td><code>Lower 0x7E / 0x7F</code></td><td class="label">直接改动 Bank / Page 选择。工具会察觉并作废自己的缓存，
+          所以后续读取仍然正确；但如果你在中途改页，<b>紧接着的那次读取读到的是你选的页，不是你以为的页</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>唯一会被拒绝的是<b>跨页越界</b>（起始地址 + 长度超过 0xFF），因为那不是一次能成立的传输。
+    只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
+  </div>
 
   <h4>写完之后工具会回读比对——看懂那条红色提示</h4>
   <p>写操作返回成功只代表 I2C 传输完成，<b>不代表模块真的接受了这个值</b>。所以工具写完会立刻
@@ -1607,7 +1630,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.7.1<br>
+    CMIS Module Manager 操作手册 v2.7.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

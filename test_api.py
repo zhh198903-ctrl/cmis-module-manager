@@ -1163,6 +1163,112 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertIn('max_lanes', caps['new_in_5_4'])
 
 
+class TestTheManualsMarkupHolds(CMISTestCase):
+    """The manual is one hand-edited file that ships to customers, and a
+    callout wraps its text in a span. Putting a table in one renders today
+    only because .callout is display:flex; any change to that puts flow
+    content inside an inline box and the layout collapses. This has been
+    written twice now."""
+
+    def _manual(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_no_table_sits_inside_a_span(self):
+        manual = self._manual()
+        offenders = [manual[:m.start()].count('\n') + 1
+                     for m in re.finditer(r'<span[^>]*>(.*?)</span>', manual, re.S)
+                     if '<table' in m.group(1)]
+        self.assertEqual(offenders, [],
+                         'a table is nested in a span at line(s) %s' % offenders)
+
+    def test_the_tags_balance(self):
+        manual = self._manual()
+        for tag in ('div', 'table', 'tbody', 'thead'):
+            self.assertEqual(manual.count('<%s' % tag), manual.count('</%s>' % tag),
+                             '<%s> tags do not balance' % tag)
+
+    def test_the_raw_register_chapter_warns_what_a_write_can_do(self):
+        """That tab writes any byte on any page by design - it exists to do
+        what the guarded panels will not. On a live module that includes
+        resetting it. Every other disruptive action in this tool is called
+        out; this one was not documented at all."""
+        manual = self._manual()
+        start = manual.index('id="s11"')
+        chapter = manual[start:manual.index('id="s12b"')]
+        self.assertIn('不设任何护栏', chapter,
+                      'the raw register chapter does not say it is unguarded')
+        for addr in ('0x1A', '0x8F', '0x7E'):
+            self.assertIn(addr, chapter,
+                          '%s can be written from that tab and is not mentioned' % addr)
+        self.assertIn('软复位', chapter,
+                      'the chapter never says a raw write can reset the module')
+
+
+class TestTheFirstScreenExplainsItself(CMISTestCase):
+    """What someone sees before they have pressed anything. The backend list
+    already carries a description of each entry - including why an adapter is
+    unavailable - and withholding it until after Connect meant the only way to
+    read it was to try and fail."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_backend_list_carries_a_description_for_every_entry(self):
+        rows = self.assertOk(self.client.get('/api/backends'))['data']
+        for row in rows:
+            self.assertTrue(row.get('description'),
+                            '%s has nothing to say for itself' % row['name'])
+            self.assertIn('available', row)
+
+    def test_an_unavailable_adapter_says_what_is_missing(self):
+        """A user without the adapter should learn that from the panel, not
+        from a failed connection."""
+        rows = {r['name']: r for r in
+                self.assertOk(self.client.get('/api/backends'))['data']}
+        for name in ('ch341', 'ch347', 'ftdi'):
+            row = rows.get(name)
+            if row and not row['available']:
+                self.assertGreater(len(row['description']), 10,
+                                   '%s is unavailable without saying why' % name)
+
+    def test_the_page_describes_the_selection_before_connecting(self):
+        js = self._js()
+        self.assertIn("getElementById('sel-backend')?.addEventListener('change'", js,
+                      'changing the backend does not update its description')
+        idx = js.index("getElementById('sel-backend')?.addEventListener('change'")
+        handler = js[idx:idx + 400]
+        self.assertIn('updateBackendInfoArea', handler)
+        self.assertIn('AppState.connected', handler,
+                      'the description would be overwritten while connected')
+        # and the default selection is described as soon as the list arrives
+        load = js[js.index('async function loadBackends('):]
+        load = load[:load.index('\n}')]
+        self.assertIn('updateBackendInfoArea', load,
+                      'the first screen says nothing about the default backend')
+
+    def test_connecting_with_the_defaults_works(self):
+        """The whole first-run path: press Connect without touching anything."""
+        rows = self.assertOk(self.client.get('/api/backends'))['data']
+        first_available = next(r['name'] for r in rows if r['available'])
+        self.assertTrue(first_available.startswith('mock'),
+                        'the first working entry is not a simulation, so a user '
+                        'without hardware cannot get started')
+        body = self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': first_available, 'bus': 0, 'address': 0x50}),
+            content_type='application/json'))
+        self.assertEqual(body['data']['backend'], first_available)
+        info = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertTrue(info.get('vendor_name'),
+                        'a fresh connection shows no module identity')
+
+
 class TestAPulledModuleRecoversHonestly(CMISTestCase):
     """Pulling a module mid-session is routine in a lab. The tool stops the
     refresh so a dead bus cannot spam, and marks the readings stale so nobody
