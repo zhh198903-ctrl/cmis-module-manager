@@ -2089,6 +2089,66 @@ class TestPageSelection(CMISTestCase):
         self.assertEqual(body['data']['rx_squelch_disable'], 0x44)
 
 
+class TestPageCacheNeverOutlivesItsWrite(CMISTestCase):
+    """Two ways the cached page can end up claiming something that is not true.
+    Neither shows up as an error: the next read simply comes from the wrong
+    page, which is a plausible-looking number rather than a failure."""
+
+    def test_a_page_write_that_fails_leaves_no_cached_page(self):
+        """The write is what makes the cache true. If it raises after the bank
+        byte has gone out, the module may be on neither page, so believing the
+        old one reads the wrong page for as long as the session lasts."""
+        self.connect()
+        self.client.get('/api/module/thresholds')       # settle on Page 02h
+        backend = _state['backend']
+        real = backend.write_bytes
+
+        def explode(addr, data):
+            if addr == 0x7E:
+                raise IOError('bus wedged mid-write')
+            return real(addr, data)
+
+        backend.write_bytes = explode
+        try:
+            self.client.get('/api/module/monitoring')    # wants Page 11h, cannot get there
+        except Exception:
+            pass
+        finally:
+            backend.write_bytes = real
+
+        self.assertIsNone(app_module._state['page'],
+                          'a failed page write left a page cached')
+        self.assertIsNone(app_module._state['bank'],
+                          'a failed page write left a bank cached')
+
+        # And the next read must actually re-select rather than trust the cache.
+        seen = []
+
+        def spy(addr, data):
+            if addr == 0x7E:
+                seen.append(bytes(data))
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            self.assertOk(self.client.get('/api/module/monitoring'))
+        finally:
+            backend.write_bytes = real
+        self.assertTrue(seen, 'the next read trusted a cache that had no write behind it')
+
+    def test_disconnect_leaves_no_page_cached_for_the_next_module(self):
+        """Connect invalidates too, so this is the second lock on the same
+        door - but it is the one that holds if the first is ever removed, and
+        the failure it prevents is silent."""
+        self.connect()
+        self.client.get('/api/module/thresholds')
+        self.assertIsNotNone(app_module._state['page'])
+        self.assertOk(self.client.get('/api/disconnect'))
+        self.assertIsNone(app_module._state['page'],
+                          'the page selected on the last module is still cached')
+        self.assertIsNone(app_module._state['bank'])
+
+
 class TestRegisterTooltips(CMISTestCase):
     """The UI hover tooltips quote CMIS field names and addresses at the user.
 
