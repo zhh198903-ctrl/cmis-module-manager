@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.6.2'
+__version__ = '2.6.3'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -179,13 +179,31 @@ def _set_page(page: int, bank: int = 0):
     _state['bank'] = bank
 
 
+def _checked(raw: bytes, where: str, length: int) -> bytes:
+    """Refuse a read that came back short, naming the register that did it.
+
+    An adapter that NAKs partway through returns fewer bytes than were asked
+    for, and every decoder downstream unpacks a fixed width. Without this the
+    user gets "unpack requires a buffer of 2 bytes" and no idea which register,
+    which module, or that the cause is a flaky bus rather than the tool.
+    """
+    if len(raw) != length:
+        raise IOError('short read from %s: asked %d byte%s, got %d'
+                      % (where, length, '' if length == 1 else 's', len(raw)))
+    return raw
+
+
 def _read_lower(addr: int, length: int) -> bytes:
-    return _state['backend'].read_bytes(addr, length)
+    return _checked(_state['backend'].read_bytes(addr, length),
+                    'Lower:0x%02X' % addr, length)
 
 
 def _read_upper(page: int, addr: int, length: int, bank: int = 0) -> bytes:
     _set_page(page, bank)
-    return _state['backend'].read_bytes(addr, length)
+    return _checked(_state['backend'].read_bytes(addr, length),
+                    '%02Xh:0x%02X%s' % (page, addr,
+                                        '' if bank == 0 else ' bank %d' % bank),
+                    length)
 
 
 def _read_banks(page: int, addr: int, length: int, lanes: int = 0):

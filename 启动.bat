@@ -1,6 +1,11 @@
 @echo off
 title CMIS Module Manager
 
+REM Run from this script's own folder. A shortcut, a taskbar pin or a
+REM terminal sitting somewhere else all start the batch file with a
+REM different current directory, and app.py is then nowhere to be found.
+cd /d "%~dp0"
+
 REM Try py launcher first, then python, then python3
 set PYTHON=
 where py >nul 2>&1 && set PYTHON=py
@@ -30,7 +35,13 @@ if errorlevel 1 (
 echo Starting CMIS Module Manager...
 echo Open browser: http://127.0.0.1:5000
 %PYTHON% app.py
+set EXITCODE=%errorlevel%
 
 echo.
-echo Server stopped. Press any key to close.
+if not "%EXITCODE%"=="0" (
+    echo The server exited with code %EXITCODE%. The message above says why.
+) else (
+    echo Server stopped.
+)
+echo Press any key to close.
 pause >nul

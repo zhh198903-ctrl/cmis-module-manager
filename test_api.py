@@ -1524,6 +1524,133 @@ class TestManualCountsWhatIsActuallyRegistered(CMISTestCase):
                           'the manual documents %s, which is not a route' % route)
 
 
+class TestAShortReadSaysWhatWasShort(CMISTestCase):
+    """An adapter that NAKs partway through returns fewer bytes than were
+    asked for. Every decoder downstream unpacks a fixed width, so without a
+    check at the read itself the user gets "unpack requires a buffer of 2
+    bytes" and no idea which register, or that the cause is the bus."""
+
+    def _truncate_by(self, n):
+        backend = _state['backend']
+        real = backend.read_bytes
+        backend.read_bytes = lambda addr, length: real(addr, length)[:max(0, length - n)]
+        return real
+
+    def test_the_error_names_the_register_and_the_shortfall(self):
+        self.connect()
+        real = self._truncate_by(1)
+        try:
+            rv = self.client.get('/api/module/monitoring')
+            body = self.assertErr(rv, 500)
+        finally:
+            _state['backend'].read_bytes = real
+        msg = body['message']
+        self.assertIn('short read', msg)
+        self.assertRegex(msg, r'\b[0-9A-F]{2}h:0x[0-9A-F]{2}',
+                         'the message does not name the register: %r' % msg)
+        self.assertNotIn('unpack requires', msg,
+                         'the struct error is still what reaches the user')
+
+    def test_a_short_read_does_not_poison_the_next_one(self):
+        """The failure has to be transient: a flaky bus recovers, and the tool
+        must recover with it rather than needing a reconnect."""
+        self.connect()
+        real = self._truncate_by(1)
+        try:
+            self.assertErr(self.client.get('/api/module/monitoring'), 500)
+        finally:
+            _state['backend'].read_bytes = real
+        self.assertOk(self.client.get('/api/module/monitoring'))
+
+    def test_a_full_length_read_is_untouched(self):
+        """The check must not cost anything when the bus is behaving."""
+        self.connect()
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertEqual(len(d['lanes']), 8)
+
+
+class TestTheLauncherFindsItsOwnFiles(unittest.TestCase):
+    """启动.bat is what someone runs when they have the source rather than the
+    exe. It used to run `python app.py` against whatever the current directory
+    happened to be, so a desktop shortcut, a taskbar pin or a terminal sitting
+    anywhere else failed with "can't open file 'C:\\Windows\\app.py'"."""
+
+    def _script(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '启动.bat')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_it_moves_to_its_own_directory_first(self):
+        s = self._script()
+        self.assertIn('cd /d "%~dp0"', s,
+                      'the launcher does not move to its own folder, so it only '
+                      'works when the current directory already happens to be right')
+        # and it has to happen before the line that actually opens the file,
+        # not merely before some mention of it
+        self.assertLess(s.index('cd /d "%~dp0"'), s.index('%PYTHON% app.py'),
+                        'the directory change comes after the file it protects')
+
+    def test_it_does_not_call_a_failed_start_a_stopped_server(self):
+        """Printing "Server stopped" after python could not even open app.py
+        tells the reader the run was fine."""
+        s = self._script()
+        self.assertIn('%errorlevel%', s.lower(),
+                      'the launcher never looks at whether the server failed')
+
+    def test_it_still_prefers_the_py_launcher(self):
+        """py resolves a real installation; python.exe on a stock Windows is an
+        App Execution Alias that opens the Microsoft Store instead."""
+        s = self._script()
+        self.assertLess(s.index('where py '), s.index('where python '),
+                        'python is probed before py')
+
+    def test_the_file_keeps_the_line_endings_cmd_needs(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '启动.bat')
+        with open(path, 'rb') as f:
+            raw = f.read()
+        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''),
+                         'a bare LF in a batch file breaks label and goto parsing')
+
+
+class TestTheServerStaysSingleThreaded(unittest.TestCase):
+    """One I2C connection and one cached page selection cannot survive
+    interleaved requests, and nothing but this stops someone turning threading
+    on to "make it faster".
+
+    Measured, not assumed: the same app run with threaded=True, hammered with
+    three endpoints that each need a different page, returned 40 of 90 reads
+    from the wrong page - vendor name arriving as raw register bytes, alarm
+    limits inverted. Single-threaded, 0 of 90.
+    """
+
+    def test_app_run_is_not_threaded(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        m = re.search(r'app\.run\(([^)]*)\)', src)
+        self.assertIsNotNone(m, 'app.run() is gone; the serving model changed')
+        args = m.group(1)
+        self.assertIn('threaded=False', args,
+                      'the server must stay single-threaded: with threading on, '
+                      'reads come back from whatever page another request '
+                      'selected in between')
+        self.assertNotIn('debug=True', args,
+                         "the reloader would run two copies, each holding the "
+                         "same adapter open")
+
+    def test_the_page_helper_still_assumes_it(self):
+        """_set_page caches what it wrote. That is only sound while no other
+        request can write the page register between the cache and the read."""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        idx = src.index('def _set_page(')
+        body = src[idx:idx + 1400]
+        self.assertIn("_state['page'] = page", body,
+                      'the page cache is gone; if that was deliberate, this '
+                      'test and the threading constraint should go together')
+
+
 class TestRegisterMapIsTheOnlySourceOfAddresses(unittest.TestCase):
     """Page and address belong in cmis_registers.py. A call site that spells
     them out drifts from the map silently - which is how v2.0.0 shipped Page
