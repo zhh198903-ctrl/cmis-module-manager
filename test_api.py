@@ -1163,6 +1163,71 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertIn('max_lanes', caps['new_in_5_4'])
 
 
+class TestAPulledModuleRecoversHonestly(CMISTestCase):
+    """Pulling a module mid-session is routine in a lab. The tool stops the
+    refresh so a dead bus cannot spam, and marks the readings stale so nobody
+    reads minutes-old power as current. The recovery path has to restore both
+    facts together, or the page ends up clear-bannered and frozen - which is
+    the exact hazard the stale marking was written to prevent."""
+
+    def test_the_api_recovers_without_a_reconnect(self):
+        self.connect()
+        backend = _state['backend']
+        real_read, real_write = backend.read_bytes, backend.write_bytes
+
+        def gone(*a, **k):
+            raise IOError('no ACK from 0x50')
+
+        backend.read_bytes = backend.write_bytes = gone
+        try:
+            for path in ('/api/module/monitoring', '/api/module/status',
+                         '/api/module/flags'):
+                body = self.assertErr(self.client.get(path), 500)
+                self.assertIn('ACK', body['message'],
+                              '%s hid what the adapter said' % path)
+            self.assertTrue(_state['connected'],
+                            'a read failure dropped the connection; a pulled '
+                            'module may be back in a second')
+        finally:
+            backend.read_bytes, backend.write_bytes = real_read, real_write
+
+        self.assertOk(self.client.get('/api/module/monitoring'))
+
+    def test_the_banner_says_the_refresh_stopped_and_how_to_restart_it(self):
+        js = self._js()
+        idx = js.index('function markMonitoringStale(')
+        body = js[idx:idx + 500]
+        self.assertIn('STALE', body)
+        self.assertIn('Auto-refresh is stopped', body,
+                      'the banner does not say the page stopped updating')
+        self.assertIn('Now', body,
+                      'the banner names no way to resume')
+
+    def test_a_recovered_read_starts_the_refresh_again(self):
+        """The banner clears on the read that succeeds. If the interval is not
+        restarted with it, the page looks live and never updates again."""
+        js = self._js()
+        self.assertIn('_monitoringHaltedByError', js,
+                      'nothing records that a failure stopped the refresh')
+        idx = js.index('async function _loadMonitoringOnce(')
+        body = js[idx:idx + 3600]
+        clear_at = body.index('clearMonitoringStale();')
+        resume = re.search(r'_monitoringHaltedByError\s*&&[^)]*\)\s*\{[^}]*setInterval',
+                           body[clear_at:], re.S)
+        self.assertIsNotNone(
+            resume, 'the success path clears the stale banner without restarting '
+                    'the refresh, leaving a frozen page that looks live')
+        # and a user who chose Manual must not have it turned back on for them
+        self.assertIn('AppState.monitoringManual', body[clear_at:clear_at + 400],
+                      'manual mode would be overridden by the recovery')
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+
 class TestFlagsFollowTheReadings(CMISTestCase):
     """A module that reports a value outside its own limits and raises nothing
     contradicts itself: the display colours the cell from the threshold while

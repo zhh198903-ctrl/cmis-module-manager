@@ -872,7 +872,8 @@ function markMonitoringStale(reason) {
   const el = document.getElementById('monitor-stale');
   if (el) {
     el.innerHTML = `⚠ Readings below are STALE — last refresh failed: `
-      + `${esc(reason || 'unknown error')}`;
+      + `${esc(reason || 'unknown error')}. Auto-refresh is stopped; `
+      + `press ↻ Now once the module responds again.`;
     el.style.display = '';
   }
   document.getElementById('tbl-monitoring')?.closest('table')
@@ -894,6 +895,13 @@ function clearMonitoringStale() {
 // the server takes them one at a time, the display falls further behind with
 // every tick, and the module is hammered with back-to-back traffic.
 let _monitoringInFlight = false;
+
+// Set when a failed read stopped the refresh, so a later success knows to
+// start it again. Without it the recovery path reintroduced the very hazard
+// the stale marking exists to prevent: the banner cleared on the manual
+// refresh that succeeded, leaving a page that looked live and never updated
+// again.
+let _monitoringHaltedByError = false;
 
 async function loadMonitoring() {
   if (!AppState.connected) return;
@@ -919,17 +927,27 @@ async function _loadMonitoringOnce() {
   if (monRes.status !== 'ok') {
     toast(`Monitoring error: ${monRes.message}`, 'error');
     markMonitoringStale(monRes.message);
+    _monitoringHaltedByError = !AppState.monitoringManual;
     stopMonitoring();  // halt auto-refresh so a dead server doesn't spam toasts
     return;
   }
   if (statusRes.status !== 'ok') {
     toast(`Status error: ${statusRes.message}`, 'error');
     markMonitoringStale(statusRes.message);
+    _monitoringHaltedByError = !AppState.monitoringManual;
     return;
   }
   if (flagsRes.status === 'ok') {
     renderFlags(flagsRes.data.lanes);
     clearMonitoringStale();
+    // A module that was pulled and put back must not leave the page frozen
+    // with a clear banner, which reads as live.
+    if (_monitoringHaltedByError && !AppState.monitoringManual) {
+      _monitoringHaltedByError = false;
+      AppState.monitoringInterval = setInterval(loadMonitoring,
+                                                AppState.monitoringIntervalMs);
+      toast('Module responding again — auto-refresh resumed', 'success');
+    }
   } else {
     toast(`Lane flags error: ${flagsRes.message}`, 'error');
     markMonitoringStale(flagsRes.message);
