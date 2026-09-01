@@ -1361,6 +1361,51 @@ class TestBadInputIsNotAServerError(CMISTestCase):
             data=json.dumps({'lanes': [8]}), content_type='application/json'))
 
 
+class TestManualCountsWhatIsActuallyRegistered(CMISTestCase):
+    """The manual ships beside the exe and is what a customer trusts when the
+    UI and their expectation disagree. Every number in it that the code also
+    knows should be asked of the code, not retyped."""
+
+    def _manual_text(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _mocks(self):
+        import i2c_interface
+        import i2c_backends            # noqa: F401 - triggers registration
+        return {n for n in i2c_interface._BACKENDS if n.startswith('mock')}
+
+    def test_every_stated_profile_count_matches_the_registry(self):
+        """One of these said "4 种 Mock" long after there were seven, and it
+        described the coherent one as long-haul after it became coherent lite."""
+        manual = self._manual_text()
+        n = len(self._mocks())
+        for m in re.finditer(r'(\d+)\s*种\s*(?:Mock|profile)', manual):
+            self.assertEqual(int(m.group(1)), n,
+                             'the manual states %s profiles; %d are registered'
+                             % (m.group(1), n))
+
+    def test_every_mock_the_manual_names_exists_and_none_is_missing(self):
+        manual = self._manual_text()
+        named = set(re.findall(r'<code>(mock_[a-z0-9_]+)</code>', manual))
+        registered = self._mocks()
+        self.assertEqual(named - registered, set(),
+                         'the manual names backends that are not registered')
+        self.assertEqual(registered - named, set(),
+                         'a registered backend the manual never mentions')
+
+    def test_the_manual_documents_no_endpoint_the_app_does_not_serve(self):
+        manual = self._manual_text()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
+                  encoding='utf-8') as f:
+            app_src = f.read()
+        for route in sorted(set(re.findall(r'<code>(/api/[\w/]+)</code>', manual))):
+            self.assertIn("'%s'" % route, app_src,
+                          'the manual documents %s, which is not a route' % route)
+
+
 class TestRegisterMapIsTheOnlySourceOfAddresses(unittest.TestCase):
     """Page and address belong in cmis_registers.py. A call site that spells
     them out drifts from the map silently - which is how v2.0.0 shipped Page
