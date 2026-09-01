@@ -1969,6 +1969,84 @@ class TestTheLauncherFindsItsOwnFiles(unittest.TestCase):
                          'a bare LF in a batch file breaks label and goto parsing')
 
 
+class TestAskingGitHubSurvivesAFlakyLink(unittest.TestCase):
+    """Every other test replaces fetch_latest_release outright, so its own
+    retry loop had never run. On the link this tool is used over, the first
+    request failing and the second succeeding is the common case, not the
+    exception."""
+
+    def setUp(self):
+        self._real_open = updater_module._open
+        self.calls = []
+
+    def tearDown(self):
+        updater_module._open = self._real_open
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n=-1):
+            return self._body
+
+    def _payload(self):
+        return json.dumps({
+            'tag_name': 'v9.9.9',
+            'html_url': 'https://github.com/o/r/releases/tag/v9.9.9',
+            'body': 'notes', 'published_at': '2026-01-01T00:00:00Z',
+            'assets': [{
+                'name': 'CMIS_dist_v9_9_9.zip', 'size': 123,
+                'digest': 'sha256:' + 'ab' * 32,
+                'browser_download_url':
+                    'https://github.com/o/r/releases/download/v9.9.9/'
+                    'CMIS_dist_v9_9_9.zip',
+            }],
+        }).encode()
+
+    def test_a_first_attempt_that_fails_does_not_end_the_check(self):
+        def fake_open(req, timeout):
+            self.calls.append(req.full_url)
+            if len(self.calls) < 3:
+                raise IOError('connection reset by peer')
+            return self._Resp(self._payload())
+        updater_module._open = fake_open
+
+        rel = updater_module.fetch_latest_release(attempts=3, retry_wait=0)
+
+        self.assertIsNotNone(rel, 'gave up with attempts still in hand')
+        self.assertEqual(rel['version'], '9.9.9')
+        self.assertEqual(len(self.calls), 3)
+
+    def test_running_out_of_attempts_answers_none_not_up_to_date(self):
+        """None means "could not ask". Reporting it as "you are current" would
+        leave someone on a version with a known fault believing otherwise."""
+        def fake_open(req, timeout):
+            self.calls.append(req.full_url)
+            raise IOError('no route to host')
+        updater_module._open = fake_open
+
+        self.assertIsNone(
+            updater_module.fetch_latest_release(attempts=2, retry_wait=0))
+        self.assertEqual(len(self.calls), 2, 'the attempt budget was not spent')
+
+    def test_a_reply_that_is_not_json_is_a_failure_not_a_crash(self):
+        def fake_open(req, timeout):
+            self.calls.append(req.full_url)
+            return self._Resp(b'<html>proxy login page</html>')
+        updater_module._open = fake_open
+
+        # A captive portal or proxy answering HTML is exactly what this sees on
+        # a lab network, and it must not escape as an exception.
+        self.assertIsNone(
+            updater_module.fetch_latest_release(attempts=2, retry_wait=0))
+
+
 class TestTheUpdateWorkerHandlesItsFailures(unittest.TestCase):
     """The worker that downloads and installs a release has never been run by
     the suite - only the pure pieces it calls have. Its own job is the
