@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.7.2'
+__version__ = '2.7.3'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1665,7 +1665,20 @@ def _run_update(rel):
         _fail_update(f'Update download failed: {e}')
         return
 
-    updater.stage_and_swap(staged)
+    # Outside the block above on purpose - the download is finished and
+    # verified by here, so a failure now is a different problem with a
+    # different remedy - but still inside one: this writes a helper script and
+    # spawns it, which a locked file or an antivirus can refuse. Unhandled, the
+    # worker thread would die and leave the UI polling 'installing' for ever,
+    # which is how an update fails without anyone being told.
+    try:
+        updater.stage_and_swap(staged)
+    except Exception as e:
+        _fail_update(
+            f'The update was downloaded and verified but could not be '
+            f'installed: {e}. The unpacked files are in {staged} — close this '
+            f'tool and copy them over the old ones by hand.')
+        return
     _update['state'] = 'ready'
     # The helper is now waiting for this process to release the exe. Give the
     # browser a moment to see 'ready', then quit so the swap can proceed.

@@ -5,12 +5,16 @@ import sys
 import json
 import math
 import struct
+import time
+import shutil
+import tempfile
 import unittest
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import app as app_module
+import updater as updater_module
 from app import app, _state
 
 # Shape of a real release-asset URL. The updater refuses anything that is not
@@ -1334,6 +1338,92 @@ class TestAPulledModuleRecoversHonestly(CMISTestCase):
             return f.read()
 
 
+class TestTheDataPathPassesThroughItsStates(CMISTestCase):
+    """Applying a configuration is not instant on a real module: the lanes go
+    DPInit, DPTxTurnOn, then DataPathActivated, and the UI shows each. The
+    suite only ever checked where they ended up, so a regression that jumped
+    straight to Activated - or stalled in the middle - would show as the tool
+    never displaying a transition, which nobody would notice."""
+
+    def _states(self):
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        return [l['datapath_state'] for l in d['lanes']]
+
+    def test_the_lanes_move_through_init_and_turn_on(self):
+        self.connect()
+        self.assertEqual(set(self._states()), {'Activated'})
+
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            content_type='application/json'))
+
+        seen = set()
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            seen.update(self._states())
+            if 'Activated' in seen and len(seen) > 1:
+                break
+            time.sleep(0.05)
+
+        self.assertIn('Activated', seen, 'the lanes never came up: %s' % sorted(seen))
+        # Both steps, not merely "something happened": Init and TxTurnOn are
+        # different failures to be stuck in, and the tool shows which.
+        self.assertIn('Init', seen,
+                      'the lanes never reported Init, so a data path stuck '
+                      'there would look like one that never started: %s' % sorted(seen))
+        self.assertIn('TxTurnOn', seen,
+                      'the lanes never reported TxTurnOn, so a laser that fails '
+                      'to come up is indistinguishable from a config that was '
+                      'rejected: %s' % sorted(seen))
+
+    def test_a_disabled_lane_ends_deactivated_not_activated(self):
+        """Tx disabled means that lane has nothing to bring up. Reporting it
+        Activated alongside the others hides which lanes are actually carrying
+        traffic."""
+        self.connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'tx_disable_mask': 0b00000101,
+                             'apply': True}),
+            content_type='application/json'))
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            states = self._states()
+            if states[0] != 'Activated' and states[1] == 'Activated':
+                break
+            time.sleep(0.05)
+        states = self._states()
+        self.assertEqual(states[0], 'Deactivated', 'lane 1 was disabled')
+        self.assertEqual(states[2], 'Deactivated', 'lane 3 was disabled')
+        self.assertEqual(states[1], 'Activated', 'lane 2 was not disabled')
+
+    def test_a_reset_takes_the_module_down_and_brings_it_back(self):
+        """The module state machine has intermediate steps too, and the tool
+        shows them; only the endpoints were ever asserted."""
+        self.connect()
+        start = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertEqual(start['module_state'], 'ModuleReady')
+
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+
+        seen = set()
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            seen.add(self.assertOk(
+                self.client.get('/api/module/status'))['data']['module_state'])
+            if 'ModuleReady' in seen and len(seen) > 1:
+                break
+            time.sleep(0.05)
+        self.assertTrue(seen - {'ModuleReady'},
+                        'the module never left ModuleReady, so the reset did '
+                        'nothing observable: %s' % sorted(seen))
+        self.assertIn('ModuleReady', seen, 'the module never came back up')
+
+
 class TestFlagsFollowTheReadings(CMISTestCase):
     """A module that reports a value outside its own limits and raises nothing
     contradicts itself: the display colours the cell from the threshold while
@@ -1877,6 +1967,129 @@ class TestTheLauncherFindsItsOwnFiles(unittest.TestCase):
             raw = f.read()
         self.assertNotIn(b'\n', raw.replace(b'\r\n', b''),
                          'a bare LF in a batch file breaks label and goto parsing')
+
+
+class TestTheUpdateWorkerHandlesItsFailures(unittest.TestCase):
+    """The worker that downloads and installs a release has never been run by
+    the suite - only the pure pieces it calls have. Its own job is the
+    orchestration: which state it reports, which message a user gets, and
+    whether it leaves a half-unpacked staging directory behind."""
+
+    def setUp(self):
+        self.staged = tempfile.mkdtemp()
+        self._saved = {
+            'download': updater_module.download_asset,
+            'verify': updater_module.verify_sha256,
+            'extract': updater_module.extract_payload,
+            'staging': updater_module.staging_dir,
+            'partial': updater_module.partial_path,
+            'order': updater_module.order_sources,
+        }
+        updater_module.staging_dir = lambda: self.staged
+        updater_module.partial_path = lambda name: os.path.join(self.staged, name + '.part')
+        updater_module.order_sources = lambda urls, **kw: [(u, 1.0) for u in urls]
+        app_module._update.update(state='idle', message='', done=0, total=0)
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            setattr(updater_module, {
+                'download': 'download_asset', 'verify': 'verify_sha256',
+                'extract': 'extract_payload', 'staging': 'staging_dir',
+                'partial': 'partial_path', 'order': 'order_sources'}[key], value)
+        shutil.rmtree(self.staged, ignore_errors=True)
+        app_module._update.update(state='idle', message='', done=0, total=0)
+
+    def _release(self, sha='ab' * 32):
+        return {'version': '9.9.9', 'tag': 'v9.9.9',
+                'asset_name': 'CMIS_dist_v9_9_9.zip',
+                'asset_url': 'https://github.com/o/r/releases/download/v9.9.9/CMIS_dist_v9_9_9.zip',
+                'asset_size': 1234, 'sha256': sha, 'notes': '', 'html_url': ''}
+
+    def _wrote_archive(self, urls, dest, **kw):
+        with open(dest, 'wb') as fh:
+            fh.write(b'not really a zip')
+
+    def test_a_digest_mismatch_says_so_and_installs_nothing(self):
+        updater_module.download_asset = self._wrote_archive
+        updater_module.verify_sha256 = lambda path, expected: False
+        updater_module.extract_payload = lambda *a: self.fail('installed a bad download')
+
+        app_module._run_update(self._release())
+
+        self.assertEqual(app_module._update['state'], 'error')
+        self.assertIn('checksum', app_module._update['message'].lower())
+        self.assertFalse(os.path.isdir(self.staged),
+                         'a failed verification left the staging directory behind')
+
+    def test_a_release_with_no_digest_is_a_different_message(self):
+        """"We checked and it was wrong" and "there was nothing to check
+        against" call for different reactions, and the second is not the
+        user's fault."""
+        updater_module.download_asset = self._wrote_archive
+        updater_module.verify_sha256 = lambda path, expected: False
+        updater_module.extract_payload = lambda *a: self.fail('installed unverified')
+
+        app_module._run_update(self._release(sha=None))
+
+        self.assertEqual(app_module._update['state'], 'error')
+        msg = app_module._update['message']
+        self.assertIn('SHA-256', msg)
+        self.assertIn('release page', msg,
+                      'the user is told it failed but not what they can do')
+        self.assertNotIn('failed its checksum', msg,
+                         'a missing digest is reported as a mismatch')
+
+    def test_a_download_that_raises_is_reported_not_swallowed(self):
+        def explode(*a, **kw):
+            raise IOError('connection reset')
+        updater_module.download_asset = explode
+
+        app_module._run_update(self._release())
+
+        self.assertEqual(app_module._update['state'], 'error')
+        self.assertIn('connection reset', app_module._update['message'])
+        self.assertFalse(os.path.isdir(self.staged))
+
+    def test_a_swap_that_cannot_run_is_reported_not_left_hanging(self):
+        """The download is finished and verified by then, so the thread dying
+        here would leave the UI polling 'installing' for ever - an update that
+        fails without anyone being told, which this project has shipped once
+        before."""
+        updater_module.download_asset = self._wrote_archive
+        updater_module.verify_sha256 = lambda path, expected: True
+        updater_module.extract_payload = lambda *a: ['CMIS_Module_Manager.exe']
+
+        # Running from source, the swap refuses outright, which is the same
+        # shape as a locked file or an antivirus blocking the helper.
+        app_module._run_update(self._release())
+
+        self.assertEqual(app_module._update['state'], 'error',
+                         'the worker left the update stuck at %r'
+                         % app_module._update['state'])
+        msg = app_module._update['message']
+        self.assertIn('downloaded and verified', msg,
+                      'the message does not say the payload is fine')
+        self.assertIn(self.staged, msg,
+                      'the user is not told where the unpacked files are')
+
+    def test_a_good_download_reaches_the_installing_state(self):
+        seen = []
+        updater_module.download_asset = self._wrote_archive
+        updater_module.verify_sha256 = lambda path, expected: True
+        def extract(archive, dest):
+            seen.append(('extract', os.path.basename(archive)))
+            return ['CMIS_Module_Manager.exe']
+        updater_module.extract_payload = extract
+
+        app_module._run_update(self._release())
+
+        # The swap itself cannot run from source, so this stops at the step
+        # before it: the payload was fetched, verified and unpacked, and the
+        # archive cleaned up.
+        self.assertEqual(seen, [('extract', 'CMIS_dist_v9_9_9.zip')])
+        self.assertFalse(
+            os.path.exists(os.path.join(self.staged, 'CMIS_dist_v9_9_9.zip')),
+            'the archive was left in the staging directory after unpacking')
 
 
 class TestTheServerStaysSingleThreaded(unittest.TestCase):

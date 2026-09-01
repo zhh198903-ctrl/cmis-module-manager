@@ -588,23 +588,6 @@ MODULE_CONTROL_BITS = {
 }
 
 
-def encode_module_control(low_pwr: bool = False, software_reset: bool = False,
-                          allow_lp_hw: bool = True, squelch_method: int = 0,
-                          bank_broadcast: bool = False) -> int:
-    """Build a complete Module Control byte (0x1A) from scratch.
-
-    Prefer update_module_control when only some fields are being changed: this
-    one forces every unnamed field back to its default.
-    """
-    val = 0
-    if bank_broadcast:    val |= (1 << 7)
-    if allow_lp_hw:       val |= (1 << 6)
-    if squelch_method:    val |= (1 << 5)
-    if low_pwr:           val |= (1 << 4)
-    if software_reset:    val |= (1 << 3)
-    return val
-
-
 def update_module_control(current: int, **fields) -> int:
     """Change only the named bits of an already-read Module Control byte.
 
