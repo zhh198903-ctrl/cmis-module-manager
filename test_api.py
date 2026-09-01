@@ -1258,6 +1258,99 @@ class TestCmis54Pages(CMISTestCase):
         self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
 
 
+class TestFiveFourCardsLiveWithTheirFunction(CMISTestCase):
+    """The 5.4 optional-page cards were moved out of a revision-named tab and
+    into the tab for the job each one belongs to. Nothing else in the page
+    records where they went, so this does."""
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        return self._read('templates', 'index.html')
+
+    def _js(self):
+        return self._read('static', 'app.js')
+
+    def _manual(self):
+        return self._read('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+
+    # card id -> (tab panel it belongs in, tab name the manual must give)
+    PLACEMENT = {
+        'card-pagemap':  ('tab-info',        'Module Info'),
+        'card-lanethr':  ('tab-monitoring',  'Monitoring'),
+        'card-polarity': ('tab-datapath',    'DataPath Config'),
+        'card-mls':      ('tab-datapath',    'DataPath Config'),
+        'card-acq':      ('tab-diagnostics', 'Diagnostics'),
+    }
+
+    def _panels(self, html):
+        """Map each tab panel id to its own markup, by balancing <div>s."""
+        panels = {}
+        for m in re.finditer(r'<div class="tab-panel[^"]*" id="(tab-[a-z0-9]+)">', html):
+            depth, start = 0, m.start()
+            for d in re.finditer(r'</?div', html[start:]):
+                depth += 1 if d.group(0) == '<div' else -1
+                if depth == 0:
+                    end = html.index('>', start + d.end()) + 1
+                    panels[m.group(1)] = html[start:end]
+                    break
+        return panels
+
+    def test_each_card_sits_in_the_tab_for_its_job(self):
+        html = self._html()
+        self.assertNotIn('data-tab="ext54"', html,
+                         'the revision-named tab is back')
+        panels = self._panels(html)
+        for card, (panel, _tab) in self.PLACEMENT.items():
+            holders = [p for p, markup in panels.items()
+                       if 'id="%s"' % card in markup]
+            self.assertEqual(holders, [panel],
+                             '%s should live in %s, found in %s'
+                             % (card, panel, holders or 'no panel'))
+
+    def test_the_manual_sends_the_reader_to_the_same_tab(self):
+        """A card in one tab and a manual pointing at another is worse than
+        either being wrong on its own: the reader trusts the manual and
+        concludes the module does not support the feature."""
+        manual = self._manual()
+        for card, (_panel, tab) in self.PLACEMENT.items():
+            self.assertIn(tab, manual,
+                          'the manual never names the %s tab, where %s lives'
+                          % (tab, card))
+        self.assertNotIn('CMIS 5.4 扩展页', manual,
+                         'the manual still describes a separate 5.4 tab')
+
+    def test_a_module_without_the_pages_shows_none_of_the_cards(self):
+        """The cards now sit among cards that are always there, so an
+        unadvertised page must leave nothing behind that looks like a reading
+        from this module."""
+        self.connect()                       # mock_dr8: CMIS 5.3, no 5.4 pages
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertEqual(d['available'], {})
+        for key in ('polarity_status', 'acquisition_counters',
+                    'lane_power_thresholds', 'media_lane_switching',
+                    'supported_pages'):
+            self.assertNotIn(key, d)
+
+    def test_disconnect_empties_them_rather_than_leaving_them_up(self):
+        """Every card the JS hides on disconnect has to be named there; one
+        left out keeps the previous module's table under the next module's
+        heading."""
+        js = self._js()
+        idx = js.index('function clearTabContent(')
+        end = js.index('\nfunction ', idx + 1)
+        body = js[idx:end]
+        for card in self.PLACEMENT:
+            self.assertIn("'%s'" % card, body,
+                          '%s is never hidden on disconnect' % card)
+        for table in ('tbl-polarity', 'tbl-acq', 'tbl-lanethr', 'tbl-mls'):
+            self.assertIn("'%s'" % table, body,
+                          '%s keeps its rows across a disconnect' % table)
+
+
 class TestReadmeCountsTheSuiteItDescribes(unittest.TestCase):
 
     def test_the_readme_test_count_is_the_real_one(self):
