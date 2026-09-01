@@ -1283,6 +1283,216 @@ class TestCmis54Pages(CMISTestCase):
         self.assertEqual([l['redirected_to'] for l in d['lanes']][:2], [1, 1])
 
 
+class TestBadInputIsNotAServerError(CMISTestCase):
+    """A 500 is what a failed I2C transfer looks like. Answering one to a
+    malformed request tells the user their module is broken when the request
+    was, and buries the reason in a traceback nobody sees."""
+
+    GARBAGE = [
+        {},
+        {'lanes': 'nope'},
+        {'lanes': [999]},
+        {'lanes': [{'lane': 'x'}]},
+        {'appsel': 99},
+        {'redirection': [1, 1, 1, 1, 1, 1, 1, 1]},
+        {'page': 'x', 'address': -5},
+        {'page': 1, 'address': 2, 'data': ['zz']},
+        {'address': 0x7F, 'data': [0]},
+    ]
+
+    def _routes(self, method):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
+                   encoding='utf-8').read()
+        out = []
+        for route, methods in re.findall(
+                r"@app\.route\('(/api/[^']+)', methods=\[([^\]]+)\]\)", src):
+            if "'%s'" % method in methods:
+                out.append(route)
+        return out
+
+    def test_every_module_endpoint_answers_503_while_disconnected(self):
+        for route in self._routes('GET') + self._routes('POST'):
+            if '/api/module' not in route and '/api/diagnostics' not in route:
+                continue
+            for call in (self.client.get, lambda r: self.client.post(r, json={})):
+                rv = call(route)
+                if rv.status_code == 405:
+                    continue          # that verb is not offered on this route
+                self.assertEqual(rv.status_code, 503, '%s while disconnected' % route)
+                self.assertTrue(rv.headers['Content-Type'].startswith('application/json'),
+                                '%s answered with something other than JSON' % route)
+
+    def test_no_post_endpoint_turns_bad_input_into_a_500(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_16lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        for route in self._routes('POST'):
+            if route in ('/api/connect', '/api/disconnect'):
+                continue
+            for body in self.GARBAGE:
+                rv = self.client.post(route, data=json.dumps(body),
+                                      content_type='application/json')
+                self.assertLess(rv.status_code, 500,
+                                '%s answered %d to %s' % (route, rv.status_code, body))
+                self.assertTrue(
+                    rv.headers['Content-Type'].startswith('application/json'),
+                    '%s answered with something other than JSON' % route)
+            # a body that is not JSON at all
+            rv = self.client.post(route, data=b'not json',
+                                  content_type='application/json')
+            self.assertLess(rv.status_code, 500, '%s on unparseable body' % route)
+
+    def test_the_lane_numbers_a_module_does_not_have_are_refused(self):
+        """Eight-lane module, lane 9: the mask would fold onto lane 1 and reset
+        a counter nobody asked about."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_1600g_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        # This module does advertise Page 60h, so a refusal here can only come
+        # from the lane check. mock_dr8 would have been refused for not having
+        # the page at all, proving nothing.
+        self.assertErr(self.client.post(
+            '/api/module/acq_counters/reset',
+            data=json.dumps({'lanes': [9]}), content_type='application/json'), 400)
+        self.assertOk(self.client.post(
+            '/api/module/acq_counters/reset',
+            data=json.dumps({'lanes': [8]}), content_type='application/json'))
+
+
+class TestRegisterMapIsTheOnlySourceOfAddresses(unittest.TestCase):
+    """Page and address belong in cmis_registers.py. A call site that spells
+    them out drifts from the map silently - which is how v2.0.0 shipped Page
+    10h controls one byte off, flipping TX Disable polarity on real modules."""
+
+    def _src(self, name):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name),
+                  encoding='utf-8') as f:
+            return f.read()
+
+    def test_no_call_site_spells_out_an_address_the_map_defines(self):
+        app_src = self._src('app.py')
+        reg_src = self._src('cmis_registers.py')
+        # Keyed by page as well as address: 0x87 means one thing on Page 01h
+        # and another on Page 11h, so matching on the address alone invents
+        # collisions that are not there.
+        known, lower = {}, {}
+        for name, page, addr, _ln in re.findall(
+                r'^(REG_\w+)\s*=\s*\((None|0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),\s*(\d+)\)',
+                reg_src, re.M):
+            if page == 'None':
+                lower.setdefault(int(addr, 16), []).append(name)
+            else:
+                known.setdefault((int(page, 16), int(addr, 16)), []).append(name)
+
+        offenders = []
+        # Reads that name both a page and an address outright.
+        for m in re.finditer(r'(_read_upper|_read_banked|_read_banks)\('
+                             r'\s*(0x[0-9A-Fa-f]+)\s*,\s*(0x[0-9A-Fa-f]+)', app_src):
+            key = (int(m.group(2), 16), int(m.group(3), 16))
+            if key in known:
+                offenders.append('%s reads %02Xh:0x%02X, which %s defines'
+                                 % (m.group(1), key[0], key[1], known[key][0]))
+        # Writes always land on the page already selected, so only the lower
+        # page's own registers can be matched without tracking that state.
+        for m in re.finditer(r'write_bytes\(\s*(0x[0-9A-Fa-f]+)', app_src):
+            addr = int(m.group(1), 16)
+            if addr in lower:
+                offenders.append('write_bytes to 0x%02X, which %s defines'
+                                 % (addr, lower[addr][0]))
+        self.assertEqual(offenders, [],
+                         'call sites bypassing the register map: ' + '; '.join(offenders))
+
+
+class TestEveryProfileIsHealthyOnConnect(CMISTestCase):
+    """A demo module that alarms the moment it connects reads as broken
+    hardware. Each profile's own thresholds have to contain its own nominals."""
+
+    PROFILES = ['mock_coherent', 'mock_coherent_zr', 'mock_dr8', 'mock_sr8',
+                'mock_fr4x2', 'mock_1600g_dr8', 'mock_1600g_16lane']
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_no_monitored_value_sits_outside_its_own_alarms(self):
+        for backend in self.PROFILES:
+            self._connect(backend)
+            t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+            m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+            for lane in m['lanes']:
+                for kind in ('tx', 'rx'):
+                    v = lane.get('%s_power_dbm' % kind)
+                    if v is None:
+                        continue
+                    self.assertLess(v, t['%s_power_high_alarm_dbm' % kind],
+                                    '%s lane %d %s power' % (backend, lane['lane'], kind))
+                    self.assertGreater(v, t['%s_power_low_alarm_dbm' % kind],
+                                       '%s lane %d %s power' % (backend, lane['lane'], kind))
+                bias = lane.get('tx_bias_ma')
+                if bias is not None and t.get('tx_bias_high_alarm_ma') is not None:
+                    self.assertLess(bias, t['tx_bias_high_alarm_ma'],
+                                    '%s lane %d bias' % (backend, lane['lane']))
+                    self.assertGreater(bias, t['tx_bias_low_alarm_ma'],
+                                       '%s lane %d bias: a VCSEL runs at a fraction '
+                                       'of an EML current, so one generic window '
+                                       'cannot serve both' % (backend, lane['lane']))
+            self.client.post('/api/disconnect')
+
+    def test_every_application_describes_a_module_that_could_exist(self):
+        """Lane counts are not free text: an interface name fixes how many
+        lanes it has, and a descriptor that disagrees describes no module."""
+        host_width = {'1.6TAUI-16': 16, '1.6TAUI-8': 8, '800GAUI-8': 8,
+                      '800GAUI-4': 4, '400GAUI-8': 8, '400GAUI-4': 4,
+                      '400GAUI-2': 2, '200GAUI-2': 2, '200GAUI-1': 1}
+        media_width = {'1.6TBASE-DR8': 8, '800GBASE-DR8': 8, '800GBASE-DR4': 4,
+                       '800GBASE-LR1': 1, '800GBASE-SR8': 8, '400GBASE-DR4': 4,
+                       '400GBASE-SR8': 8, '400GBASE-SR4': 4, '400GBASE-FR4': 1,
+                       '400GBASE-DR2': 2, '200GBASE-ER4': 1}
+
+        def width(name, table):
+            for key in sorted(table, key=len, reverse=True):
+                if name.startswith(key):
+                    return table[key]
+            return None
+
+        for backend in self.PROFILES:
+            self._connect(backend)
+            apps = self.assertOk(
+                self.client.get('/api/module/applications'))['data']['applications']
+            for i, a in enumerate(apps, 1):
+                for key in ('host_if_name', 'media_if_name'):
+                    self.assertNotIn('Unknown', str(a[key]),
+                                     '%s AppSel %d %s' % (backend, i, key))
+                hw = width(a['host_if_name'], host_width)
+                if hw is not None:
+                    self.assertEqual(a['host_lanes'], hw,
+                                     '%s AppSel %d: %s is %d lanes wide'
+                                     % (backend, i, a['host_if_name'], hw))
+                mw = width(a['media_if_name'], media_width)
+                if mw is not None:
+                    self.assertEqual(a['media_lanes'], mw,
+                                     '%s AppSel %d: %s is %d lanes wide'
+                                     % (backend, i, a['media_if_name'], mw))
+                self.assertLessEqual(a['host_lanes'], 8, '%s AppSel %d' % (backend, i))
+                self.assertLessEqual(a['media_lanes'], 8, '%s AppSel %d' % (backend, i))
+            self.client.post('/api/disconnect')
+
+    def test_bias_thresholds_follow_the_profile_that_names_them(self):
+        """The VCSEL module and the EML modules cannot share one window."""
+        self._connect('mock_sr8')
+        vcsel = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.client.post('/api/disconnect')
+        self._connect('mock_dr8')
+        eml = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertNotEqual(vcsel['tx_bias_low_alarm_ma'], eml['tx_bias_low_alarm_ma'],
+                            'both modules alarm at the same bias current')
+        self.assertLess(vcsel['tx_bias_high_alarm_ma'], eml['tx_bias_high_alarm_ma'])
+
+
 class TestCoherentProfiles(CMISTestCase):
     """The coherent mock models IEEE P802.3dj/D3.1 Clause 185 800GBASE-LR1,
     the datacenter coherent-lite PMD, and the tunable C-band module it used to

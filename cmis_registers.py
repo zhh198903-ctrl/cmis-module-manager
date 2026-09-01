@@ -37,6 +37,9 @@ REG_HEATSINK_FIBER   = (None, 0x3D, 1)   # Lower 61: [7:4] HeatsinkType (5.4), [
 REG_MEDIA_TYPE       = (None, 0x55, 1)   # Lower 85: Media Type Encoding (Table 8-20)
 # Application Descriptors (AppSel 1..8) — 4 bytes per descriptor
 REG_APP_DESC_BASE    = (None, 0x56, 4 * 8)  # 86..117 (8 descriptors × 4 bytes)
+# Bank and page select are adjacent and are written together: the module
+# defers a BankSelect until PageSelect is written (5.4 section 8.2.15).
+REG_BANK_SELECT      = (None, 0x7E, 1)
 REG_PAGE_SELECT      = (None, 0x7F, 1)
 
 # ---------------------------------------------------------------------------

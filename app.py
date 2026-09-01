@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.6.0'
+__version__ = '2.6.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -173,7 +173,7 @@ def _set_page(page: int, bank: int = 0):
         return
     _state['page'] = None  # unknown while the writes are in flight
     _state['bank'] = None
-    _state['backend'].write_bytes(0x7E, bytes([bank, page]))
+    _state['backend'].write_bytes(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
     time.sleep(0.010)
     _state['page'] = page
     _state['bank'] = bank
@@ -246,12 +246,12 @@ def _discover_capabilities() -> dict:
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
-        b142 = _read_upper(0x01, 0x8E, 1)[0]
-        ext = _read_upper(0x01, 0xAD, 2)
+        b142 = _read_upper(*cmis.REG_BANKS_SUPPORTED)[0]
+        ext = _read_upper(*cmis.REG_PAGES_EXT)
         caps.update(cmis.parse_supported_pages(b142, ext))
-        caps.update(cmis.parse_misc_caps(_read_upper(0x01, 0xFC, 1)[0]))
+        caps.update(cmis.parse_misc_caps(_read_upper(*cmis.REG_MISC_CAPS)[0]))
         caps['default_polarity'] = cmis.parse_default_polarity(
-            _read_upper(0x01, 0xAB, 2))
+            _read_upper(*cmis.REG_DEFAULT_POLARITY))
         sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
         hs = _read_lower(0x3D, 1)[0]
         ext = cmis.parse_extended_module_info(sub, hs)
@@ -398,21 +398,21 @@ def api_module_info():
         media_type_raw = _read_lower(0x55, 1)
 
         # Page 00h vendor information block (addresses per CMIS 5.4 Table 8-26)
-        vendor_name_raw = _read_upper(0x00, 0x81, 16)
-        vendor_oui_raw  = _read_upper(0x00, 0x91, 3)
-        vendor_pn_raw   = _read_upper(0x00, 0x94, 16)
-        vendor_rev_raw  = _read_upper(0x00, 0xA4, 2)
-        vendor_sn_raw   = _read_upper(0x00, 0xA6, 16)
-        date_code_raw   = _read_upper(0x00, 0xB6, 8)
-        clei_raw        = _read_upper(0x00, 0xBE, 10)
+        vendor_name_raw = _read_upper(*cmis.REG_VENDOR_NAME)
+        vendor_oui_raw  = _read_upper(*cmis.REG_VENDOR_OUI)
+        vendor_pn_raw   = _read_upper(*cmis.REG_VENDOR_PN)
+        vendor_rev_raw  = _read_upper(*cmis.REG_VENDOR_REV)
+        vendor_sn_raw   = _read_upper(*cmis.REG_VENDOR_SN)
+        date_code_raw   = _read_upper(*cmis.REG_DATE_CODE)
+        clei_raw        = _read_upper(*cmis.REG_CLEI_CODE)
 
         # Capabilities
-        pwr_class_raw    = _read_upper(0x00, 0xC8, 1)
-        max_pwr_raw      = _read_upper(0x00, 0xC9, 1)
-        cable_len_raw    = _read_upper(0x00, 0xCA, 1)
-        connector_raw    = _read_upper(0x00, 0xCB, 1)
-        media_lane_raw   = _read_upper(0x00, 0xD2, 1)
-        media_if_tech_raw= _read_upper(0x00, 0xD4, 1)
+        pwr_class_raw    = _read_upper(*cmis.REG_MODULE_PWR_CLASS)
+        max_pwr_raw      = _read_upper(*cmis.REG_MODULE_MAX_POWER)
+        cable_len_raw    = _read_upper(*cmis.REG_CABLE_LENGTH)
+        connector_raw    = _read_upper(*cmis.REG_CONNECTOR_TYPE)
+        media_lane_raw   = _read_upper(*cmis.REG_MEDIA_LANE_INFO)
+        media_if_tech_raw= _read_upper(*cmis.REG_MEDIA_IF_TECH)
 
         # Parse ALL Application Descriptors (lower mem bytes 86-117)
         # and compute module aggregate capacity across non-overlapping apps.
@@ -433,7 +433,10 @@ def api_module_info():
         except Exception:
             fw_rev = "N/A"
         try:
-            hw_rev_raw = _read_upper(0x01, 0x82, 2)
+            # Major and minor are adjacent single-byte registers, so this
+            # spans both rather than matching either constant's length.
+            hw_rev_raw = _read_upper(cmis.REG_HW_REV_MAJOR[0],
+                                     cmis.REG_HW_REV_MAJOR[1], 2)
             hw_rev = f"{hw_rev_raw[0]}.{hw_rev_raw[1]}"
         except Exception:
             hw_rev = "N/A"
@@ -541,7 +544,7 @@ def api_module_ext54():
 
         if caps.get('page_60h_supported'):
             polarity = []
-            for _b, raw in _read_banks(0x60, 0x80, 2):
+            for _b, raw in _read_banks(*cmis.REG_POLARITY_STATUS):
                 polarity += cmis.parse_polarity_status(raw)
             out['polarity_status'] = polarity[:_state['lanes']]
             out['acq_counter_advert'] = _read_upper(*cmis.REG_ACQ_COUNTER_ADV)[0]
@@ -549,7 +552,7 @@ def api_module_ext54():
 
         if caps.get('page_61h_supported'):
             counters = []
-            for _b, raw in _read_banks(0x61, 0x80, 64):
+            for _b, raw in _read_banks(*cmis.REG_ACQ_COUNTERS):
                 counters += cmis.parse_acquisition_counters(raw)
             for i, c in enumerate(counters):
                 c['lane'] = i + 1
@@ -596,8 +599,16 @@ def api_reset_acq_counters():
     body = request.get_json(silent=True) or {}
     lanes = body.get('lanes') or []
     side = body.get('side', 'both')
-    if not lanes:
-        return _err('No lanes given', 400)
+    if not isinstance(lanes, list) or not lanes:
+        return _err('No lanes given; expected {"lanes": [1, 3, ...]}', 400)
+    try:
+        lanes = [_as_int(l, 'Lane') for l in lanes]
+    except ValueError as e:
+        return _err(str(e), 400)
+    out_of_range = [l for l in lanes if not 1 <= l <= _state['lanes']]
+    if out_of_range:
+        return _err('This module has %d lanes; %s out of range'
+                    % (_state['lanes'], out_of_range), 400)
     try:
         by_bank = {}
         for lane in lanes:
@@ -680,13 +691,13 @@ def api_module_monitoring():
         # DataPath state and Config Status pack 4 bits per lane, so they are
         # parsed per bank; the monitors are 2 bytes per lane and concatenate.
         dp_states, cfg_statuses = [], []
-        for _bank, raw in _read_banks(0x11, 0x80, 4):
+        for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
             dp_states += cmis.parse_dp_states(raw)
-        for _bank, raw in _read_banks(0x11, 0xCA, 4):
+        for _bank, raw in _read_banks(*cmis.REG_CONFIG_STATUS):
             cfg_statuses += cmis.parse_config_status(raw)
-        tx_power_raw  = _read_banked(0x11, 0x9A, 2)
-        tx_bias_raw   = _read_banked(0x11, 0xAA, 2)
-        rx_power_raw  = _read_banked(0x11, 0xBA, 2)
+        tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
+        tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
+        rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
 
         lanes = []
         for i in range(_state['lanes']):
@@ -828,7 +839,7 @@ def api_module_control_set():
                 bank_broadcast=body.get('bank_broadcast'),
             )
 
-        _state['backend'].write_bytes(0x1A, bytes([val]))
+        _state['backend'].write_bytes(cmis.REG_MODULE_CONTROL[1], bytes([val]))
         time.sleep(0.05)
         # A reset restarts the module, which restores PageMapping to its
         # default, so the page we think is selected no longer applies.
@@ -885,7 +896,7 @@ def api_module_flags():
     try:
         # 11h:135-152 are contiguous lane flag bytes; one burst read beats 18
         # page-select + 5 ms settle cycles on real hardware.
-        blocks = [raw for _bank, raw in _read_banks(0x11, 0x87, 18)]
+        blocks = [raw for _bank, raw in _read_banks(*cmis.REG_TX_FAULT_FLAGS[:2], 18)]
 
         def flags(addr):
             # One bit per lane, so each bank contributes its own eight.
@@ -1060,7 +1071,7 @@ def api_loopback_get():
     try:
         # Four contiguous bitmask bytes, one bit per lane, so a wider module
         # has the same four again in the next bank.
-        blocks = [raw for _b, raw in _read_banks(0x13, 0xB4, 4)]
+        blocks = [raw for _b, raw in _read_banks(cmis.REG_MEDIA_OUT_LB[0], cmis.REG_MEDIA_OUT_LB[1], 4)]
         cols = [[blk[i] for blk in blocks] for i in range(4)]
         return _ok({
             # Bank 0 stays scalar for every caller written before banks existed.
@@ -1091,7 +1102,7 @@ def api_loopback_set():
         host_in   = _masks_per_bank(body.get('host_side_input',   0), banks)
         for b in range(banks):
             _set_page(0x13, b)
-            _state['backend'].write_bytes(0xB4, bytes([media_out[b], media_in[b],
+            _state['backend'].write_bytes(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
                                                        host_out[b], host_in[b]]))
         return _ok({'message': 'Loopback configuration written'})
     except Exception as e:
@@ -1130,8 +1141,8 @@ def api_prbs_get():
     try:
         # Try to also read pattern checker LOL flags from Page 14h
         try:
-            host_lol = _read_upper(0x14, 0x8A, 1)[0]
-            media_lol = _read_upper(0x14, 0x8B, 1)[0]
+            host_lol = _read_upper(*cmis.REG_HOST_PRBS_LOL)[0]
+            media_lol = _read_upper(*cmis.REG_MEDIA_PRBS_LOL)[0]
         except Exception:
             host_lol = 0
             media_lol = 0
@@ -1190,14 +1201,14 @@ def api_module_snr():
         return err
     try:
         _set_page(0x14)
-        _state['backend'].write_bytes(0x80, bytes([0x06]))
+        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x06]))
         time.sleep(0.005)
         # Selector 0x06: bytes 192-207 reserved, 208-223 host SNR, 240-255 media SNR
         # Host SNR at offset 16 (bytes 208-223), media SNR at offset 48.
         # Each bank carries its own eight lanes at the same offsets.
         host_snr = []
         media_snr = []
-        for _bank, data in _read_banks(0x14, 0xC0, 64):
+        for _bank, data in _read_banks(*cmis.REG_DIAG_DATA):
             for i in range(8):
                 host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
                 media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
@@ -1219,11 +1230,11 @@ def api_module_ber():
     try:
         # Write selector 0x01 = BER F16
         _set_page(0x14)
-        _state['backend'].write_bytes(0x80, bytes([0x01]))
+        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x01]))
         time.sleep(0.005)
         # Host BER at 0xC0–0xCF, Media BER at 0xD0–0xDF (8 lanes × 2B each)
         lanes = []
-        for _bank, ber_raw in _read_banks(0x14, 0xC0, 32):
+        for _bank, ber_raw in _read_banks(*cmis.REG_DIAG_DATA[:2], 32):
             for i in range(8):
                 lanes.append({
                     'lane': len(lanes) + 1,
@@ -1244,12 +1255,12 @@ def api_laser_get():
         return err
     try:
         # Capabilities (Page 04h)
-        grid_sup = _read_upper(0x04, 0x80, 2)
-        fine_res = _read_upper(0x04, 0xBE, 2)
-        fine_low = _read_upper(0x04, 0xC0, 2)
-        fine_high = _read_upper(0x04, 0xC2, 2)
-        pwr_min = _read_upper(0x04, 0xC6, 2)
-        pwr_max = _read_upper(0x04, 0xC8, 2)
+        grid_sup = _read_upper(*cmis.REG_GRID_SUPPORTED)
+        fine_res = _read_upper(*cmis.REG_FINE_RESOLUTION)
+        fine_low = _read_upper(*cmis.REG_FINE_LOW_OFFSET)
+        fine_high = _read_upper(*cmis.REG_FINE_HIGH_OFFSET)
+        pwr_min = _read_upper(*cmis.REG_PROG_PWR_MIN)
+        pwr_max = _read_upper(*cmis.REG_PROG_PWR_MAX)
 
         grids_supported = []
         grid_names = ['3.125 GHz','6.25 GHz','12.5 GHz','25 GHz',
@@ -1271,18 +1282,18 @@ def api_laser_get():
             grid_300_range = [struct.unpack('>h', g300[0:2])[0],
                               struct.unpack('>h', g300[2:4])[0]]
         # 04h:196.6 advertises the 5.4 power-relative supervision thresholds.
-        rel_supported = bool((_read_upper(0x04, 0xC4, 1)[0] >> 6) & 1)
+        rel_supported = bool((_read_upper(*cmis.REG_REL_THR_CAP)[0] >> 6) & 1)
         rel_thresholds = (cmis.parse_relative_thresholds(
                               _read_upper(*cmis.REG_REL_THRESHOLDS))
                           if rel_supported else {})
 
         # Current state (Page 12h), bank by bank
-        grid_spacing = _read_banked(0x12, 0x80, 1)
-        channel_num  = _read_banked(0x12, 0x88, 2)
-        fine_offset  = _read_banked(0x12, 0x98, 2)
-        current_freq = _read_banked(0x12, 0xA8, 4)
-        target_pwr   = _read_banked(0x12, 0xC8, 2)
-        tuning_status= _read_banked(0x12, 0xDE, 1)
+        grid_spacing = _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)
+        channel_num  = _read_banked(*cmis.REG_CHANNEL_NUM_TX[:2], 2)
+        fine_offset  = _read_banked(*cmis.REG_FINE_OFFSET_TX[:2], 2)
+        current_freq = _read_banked(*cmis.REG_CURRENT_FREQ_TX[:2], 4)
+        target_pwr   = _read_banked(*cmis.REG_TARGET_PWR_TX[:2], 2)
+        tuning_status= _read_banked(*cmis.REG_TUNING_STATUS_TX[:2], 1)
 
         grid_codes = cmis.GRID_CODES
 
@@ -1352,23 +1363,31 @@ def api_laser_set():
             return _err('No lanes given; expected {"lanes": [{"lane": 1, ...}]}', 400)
         written = 0
         for ldata in lanes:
-            lane = int(ldata.get('lane', 1)) - 1
+            if not isinstance(ldata, dict):
+                return _err('Each lane entry must be an object, got %r' % (ldata,), 400)
+            try:
+                lane = _as_int(ldata.get('lane', 1), 'Lane') - 1
+            except ValueError as e:
+                return _err(str(e), 400)
             if not (0 <= lane < 8):
                 continue
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0
-                _state['backend'].write_bytes(0x80 + lane, bytes([(gc << 4) | fine_en]))
+                _state['backend'].write_bytes(cmis.REG_GRID_SPACING_TX[1] + lane,
+                                              bytes([(gc << 4) | fine_en]))
             if 'channel' in ldata:
                 ch = int(ldata['channel'])
                 ch_bytes = struct.pack(">h", ch)
-                _state['backend'].write_bytes(0x88 + lane * 2, ch_bytes)
+                _state['backend'].write_bytes(cmis.REG_CHANNEL_NUM_TX[1] + lane * 2, ch_bytes)
             if 'fine_offset_ghz' in ldata:
                 ft = int(round(float(ldata['fine_offset_ghz']) / 0.001))
-                _state['backend'].write_bytes(0x98 + lane * 2, struct.pack(">h", ft))
+                _state['backend'].write_bytes(cmis.REG_FINE_OFFSET_TX[1] + lane * 2,
+                                              struct.pack(">h", ft))
             if 'target_power_dbm' in ldata:
                 pwr = int(round(float(ldata['target_power_dbm']) / 0.01))
-                _state['backend'].write_bytes(0xC8 + lane * 2, struct.pack(">h", pwr))
+                _state['backend'].write_bytes(cmis.REG_TARGET_PWR_TX[1] + lane * 2,
+                                              struct.pack(">h", pwr))
             written += 1
         if not written:
             return _err('No lane in range 1-8 was given', 400)
@@ -1394,9 +1413,9 @@ def api_module_counters():
             # The selector is written into the bank being read: each bank
             # keeps its own diagnostic result window.
             _set_page(0x14, bank)
-            _state['backend'].write_bytes(0x80, bytes([sel]))
+            _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
             time.sleep(0.005)
-            data = _read_upper(0x14, 0xC0, 64, bank)
+            data = _read_upper(*cmis.REG_DIAG_DATA, bank)
             for li in range(4):
                 off = li * 16
                 error_count = struct.unpack("<Q", data[off:off+8])[0]
@@ -1427,6 +1446,19 @@ def api_module_counters():
         return _err(str(e), 500)
 
 
+def _as_int(value, what):
+    """Parse a page/address/length from the UI, which sends hex or decimal.
+
+    Raises ValueError with a message meant for the user; the callers turn that
+    into a 400. Letting int() raise instead produced a 500, which is what a
+    failed I2C transfer looks like.
+    """
+    try:
+        return int(value, 0) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError):
+        raise ValueError('%s must be a number, got %r' % (what, value))
+
+
 @app.route('/api/register/read', methods=['POST'])
 def api_register_read():
     err = _require_connected()
@@ -1434,19 +1466,12 @@ def api_register_read():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        page_raw = body.get('page', 0)
-        if isinstance(page_raw, str):
-            page = int(page_raw, 0)
-        else:
-            page = int(page_raw)
-
-        addr_raw = body.get('address', 0)
-        if isinstance(addr_raw, str):
-            address = int(addr_raw, 0)
-        else:
-            address = int(addr_raw)
-
-        length = int(body.get('length', 1))
+        try:
+            page = _as_int(body.get('page', 0), 'Page')
+            address = _as_int(body.get('address', 0), 'Address')
+            length = _as_int(body.get('length', 1), 'Length')
+        except ValueError as e:
+            return _err(str(e))
         if length < 1 or length > 128:
             return _err("Length must be 1–128")
         if not (0 <= page <= 0xFF):
@@ -1479,24 +1504,20 @@ def api_register_write():
         return err
     try:
         body = request.get_json(silent=True) or {}
-        page_raw = body.get('page', 0)
-        if isinstance(page_raw, str):
-            page = int(page_raw, 0)
-        else:
-            page = int(page_raw)
-
-        addr_raw = body.get('address', 0)
-        if isinstance(addr_raw, str):
-            address = int(addr_raw, 0)
-        else:
-            address = int(addr_raw)
-
-        data_list = body.get('data', [])
-        if not data_list:
-            return _err("No data provided")
-        if isinstance(data_list, str):
-            data_list = [int(h, 16) for h in data_list.split()]
-        data = bytes(int(b) & 0xFF for b in data_list)
+        try:
+            page = _as_int(body.get('page', 0), 'Page')
+            address = _as_int(body.get('address', 0), 'Address')
+            data_list = body.get('data', [])
+            if not data_list:
+                return _err("No data provided")
+            if isinstance(data_list, str):
+                # A string of bytes has always meant space-separated hex, with
+                # no 0x prefixes, so it keeps being read that way.
+                data = bytes(int(h, 16) & 0xFF for h in data_list.split())
+            else:
+                data = bytes(_as_int(b, 'Data byte') & 0xFF for b in data_list)
+        except ValueError as e:
+            return _err(str(e))
 
         if not (0 <= page <= 0xFF):
             return _err("Page must be 0x00–0xFF")

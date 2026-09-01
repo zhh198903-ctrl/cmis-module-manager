@@ -323,10 +323,16 @@ _SR8_800G = {
     'base_ber':            1.0e-5,
     'snr_db_nom':          19.0,
     'app_descriptors': [
-        (0x51, 0x12, 0x88, 0x01),            # AppSel 1: 800GAUI-8 → 800G-SR8 (8H/8M)
-        (0x4F, 0x10, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-SR8 (4H/4M)
+        (0x51, 0x12, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M → 800GBASE-SR8 (8H/8M)
+        # 400GBASE-SR8 is eight media lanes of 50G, which this 4H/4M breakout
+        # cannot be. Four of the module's own 100G lanes is 400GBASE-SR4.
+        (0x4F, 0x11, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M → 400GBASE-SR4 (4H/4M)
     ],
     'link_lengths': {'om4_len_byte': 0x32},    # 50 × 2 m = 100 m
+    # An 850 nm VCSEL runs near 8 mA; the generic EML window starts at 10 mA,
+    # so every lane of this module used to sit under its own low alarm.
+    # Demo values: no standard sets a module's bias limits.
+    'bias_thresholds_ma': (14.0, 4.0, 12.0, 5.0),
 }
 
 _FR4X2_800G = {
@@ -525,6 +531,12 @@ class MockBackend(I2CInterface):
         # modelling, so a module built to a standard alarms where that standard
         # says it should. The generic values below stand in otherwise.
         thr = p.get('power_thresholds_dbm', {})
+        # Bias limits belong to the laser, not to a PMD standard - a VCSEL runs
+        # at a fraction of an EML's current, so one generic quad cannot serve
+        # both. A profile whose nominal sits outside them alarms on connect.
+        bias = p.get('bias_thresholds_ma')
+        bias_thr = ([int(round(v / 0.002)) for v in bias] if bias
+                    else [0xEA60, 0x1388, 0xC350, 0x2710])
         tx_thr = [_dbm_to_raw(v) for v in thr['tx']] if 'tx' in thr else             [0x7B84, 0x062C, 0x6220, 0x09CE]
         rx_thr = [_dbm_to_raw(v) for v in thr['rx']] if 'rx' in thr else             [0x2710, 0x0064, 0x1F04, 0x00A0]
         p02 = {}
@@ -533,7 +545,8 @@ class MockBackend(I2CInterface):
             (0x88, 0x8CA0), (0x8A, 0x7530), (0x8C, 0x88B8), (0x8E, 0x7918),  # Vcc
             (0xB0, tx_thr[0]), (0xB2, tx_thr[1]),                            # TxPwr
             (0xB4, tx_thr[2]), (0xB6, tx_thr[3]),
-            (0xB8, 0xEA60), (0xBA, 0x1388), (0xBC, 0xC350), (0xBE, 0x2710),  # TxBias
+            (0xB8, bias_thr[0]), (0xBA, bias_thr[1]),                        # TxBias
+            (0xBC, bias_thr[2]), (0xBE, bias_thr[3]),
             (0xC0, rx_thr[0]), (0xC2, rx_thr[1]),                            # RxPwr
             (0xC4, rx_thr[2]), (0xC6, rx_thr[3]),
         ]:
