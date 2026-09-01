@@ -888,9 +888,25 @@ function clearMonitoringStale() {
     .forEach(node => node.classList.remove('stale-data'));
 }
 
+// True while a poll is out. A wide module reads slower than the refresh
+// interval - 256 lanes is 32 banks, and every bank change owes the spec its
+// 10 ms - so ticking regardless would queue reads faster than they complete:
+// the server takes them one at a time, the display falls further behind with
+// every tick, and the module is hammered with back-to-back traffic.
+let _monitoringInFlight = false;
+
 async function loadMonitoring() {
   if (!AppState.connected) return;
+  if (_monitoringInFlight) return;
+  _monitoringInFlight = true;
+  try {
+    await _loadMonitoringOnce();
+  } finally {
+    _monitoringInFlight = false;
+  }
+}
 
+async function _loadMonitoringOnce() {
   const [monRes, statusRes, flagsRes] = await Promise.all([
     apiGet('/api/module/monitoring'),
     apiGet('/api/module/status'),

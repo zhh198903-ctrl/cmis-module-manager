@@ -1163,6 +1163,124 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertIn('max_lanes', caps['new_in_5_4'])
 
 
+class TestVeryWideModules(CMISTestCase):
+    """CMIS 5.4 allows 256 lanes and the widest shipped mock is 16, so the
+    banked path past two banks had never been driven. These register throwaway
+    profiles rather than shipping ones nobody would pick from the dropdown."""
+
+    WIDTHS = (24, 32, 256)
+
+    @classmethod
+    def setUpClass(cls):
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+        for lanes in cls.WIDTHS:
+            profile = copy.deepcopy(mock._XD16_1600G)
+            profile['lanes'] = lanes
+            profile['display'] = '%d-lane fixture' % lanes
+            i2c_interface._BACKENDS['test_%dlane' % lanes] = type(
+                'Fixture%d' % lanes, (mock.MockBackend,), {'PROFILE': profile})
+
+    @classmethod
+    def tearDownClass(cls):
+        import i2c_interface
+        for lanes in cls.WIDTHS:
+            i2c_interface._BACKENDS.pop('test_%dlane' % lanes, None)
+
+    def _connect(self, lanes):
+        rv = self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'test_%dlane' % lanes, 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        return rv
+
+    def test_a_lane_count_the_legacy_field_cannot_spell_uses_the_escape(self):
+        """01h:142 encodes one, two or four banks and nothing else. A 24-lane
+        module rounded up to 32 there, advertising eight lanes that do not
+        exist; every table then sized itself to the wrong module."""
+        rv = self._connect(24)
+        self.assertEqual(rv['data']['lanes'], 24)
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertEqual([l['lane'] for l in d['lanes']], list(range(1, 25)))
+
+    def test_every_lane_is_read_and_written_at_any_width(self):
+        for lanes in self.WIDTHS:
+            self._connect(lanes)
+            for path, key in (('/api/module/monitoring', 'lanes'),
+                              ('/api/module/flags', 'lanes'),
+                              ('/api/module/ber', 'lanes')):
+                d = self.assertOk(self.client.get(path))['data']
+                self.assertEqual(len(d[key]), lanes,
+                                 '%s at %d lanes' % (path, lanes))
+
+            # A different value per bank, so a mask folded onto bank 0 cannot
+            # read back looking correct.
+            banks = (lanes + 7) // 8
+            want = [(b * 7 + 1) & 0xFF for b in range(banks)]
+            self.assertOk(self.client.post(
+                '/api/module/squelch',
+                data=json.dumps({'tx_squelch_disable': want}),
+                content_type='application/json'))
+            got = self.assertOk(self.client.get('/api/module/squelch'))['data']
+            self.assertEqual(got['tx_squelch_disable_banks'], want,
+                             'squelch at %d lanes' % lanes)
+            self.client.post('/api/disconnect')
+
+    def test_the_last_lane_exists_and_the_one_past_it_does_not(self):
+        for lanes in self.WIDTHS:
+            self._connect(lanes)
+            self.assertOk(self.client.post(
+                '/api/module/acq_counters/reset',
+                data=json.dumps({'lanes': [lanes]}),
+                content_type='application/json'))
+            self.assertErr(self.client.post(
+                '/api/module/acq_counters/reset',
+                data=json.dumps({'lanes': [lanes + 1]}),
+                content_type='application/json'), 400)
+            self.client.post('/api/disconnect')
+
+    def test_a_lane_count_that_is_not_a_group_of_eight_is_refused(self):
+        """CMIS counts lanes in groups of eight. A profile saying 20 would be
+        advertised as 16 and quietly lose four."""
+        import copy
+        from i2c_backends import mock
+        profile = copy.deepcopy(mock._XD16_1600G)
+        profile['lanes'] = 20
+        cls = type('Bad20', (mock.MockBackend,), {'PROFILE': profile})
+        # The register map is built up front, so the refusal lands there
+        # rather than waiting for a read to notice.
+        with self.assertRaises(ValueError):
+            cls().connect(0, 0x50)
+
+    def test_the_refresh_loop_does_not_queue_reads_it_cannot_finish(self):
+        """A 256-lane read is 32 bank changes, each owing the spec 10 ms, so it
+        outlasts the refresh interval. Ticking regardless would stack requests
+        the server takes one at a time - the display falls further behind every
+        tick and the module is hammered."""
+        js = self._read('static', 'app.js')
+        self.assertIn('_monitoringInFlight', js,
+                      'the refresh loop has no in-flight guard')
+        idx = js.index('async function loadMonitoring(')
+        head = js[idx:idx + 400]
+        self.assertIn('if (_monitoringInFlight) return;', head,
+                      'loadMonitoring does not skip a tick while one is out')
+        # The guard has to be released in a finally, and released there: a
+        # finally that no longer clears it leaves monitoring dead after the
+        # first read that throws, with no error to show for it.
+        released = re.search(r'finally\s*\{[^}]*_monitoringInFlight\s*=\s*false',
+                             head)
+        self.assertIsNotNone(
+            released, 'the in-flight guard is not cleared in a finally, so one '
+                      'failed read would stop the refresh for good')
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+
 class TestCmis54Pages(CMISTestCase):
     """The optional pages CMIS 5.4 added. Mock-only: no module that carries
     them was available."""

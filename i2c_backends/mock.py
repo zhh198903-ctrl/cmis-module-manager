@@ -498,13 +498,20 @@ class MockBackend(I2CInterface):
         # BanksSupported: 00b/01b/10b are 8/16/32 lanes; 11b is the CMIS 5.4
         # escape that sends the host to 01h:174 for the real count.
         lanes = p.get('lanes', 8)
-        if lanes <= 8:
+        if lanes % 8:
+            raise ValueError('lane counts come in groups of eight; %d does not'
+                             % lanes)
+        if lanes == 8:
             p01[0x8E] = 0x00
-        elif lanes <= 16:
+        elif lanes == 16:
             p01[0x8E] = 0x01
-        elif lanes <= 32:
+        elif lanes == 32:
             p01[0x8E] = 0x02
         else:
+            # The legacy field encodes one, two or four banks and nothing else,
+            # so a 24-lane module has no legacy spelling: rounding it up to 32
+            # advertises eight lanes that do not exist. The 5.4 escape states
+            # the count exactly, which is what it is for.
             p01[0x8E] = 0x03
             p01[0xAE] = (lanes // 8 - 1) & 0x1F
         # MediaLaneAssignmentOptions (01h:176-183, Table 8-60) is stored apart
