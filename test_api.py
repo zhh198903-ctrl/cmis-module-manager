@@ -1163,6 +1163,102 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertIn('max_lanes', caps['new_in_5_4'])
 
 
+class TestFlagsFollowTheReadings(CMISTestCase):
+    """A module that reports a value outside its own limits and raises nothing
+    contradicts itself: the display colours the cell from the threshold while
+    the module insists it is fine. Whichever the reader believes, they learn
+    that the flags are not worth reading."""
+
+    def _fixture(self, name, **overrides):
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+        profile = copy.deepcopy(mock._DR8_800G)
+        profile.update(overrides)
+        profile['display'] = name
+        i2c_interface._BACKENDS[name] = type(
+            'Fx', (mock.MockBackend,), {'PROFILE': profile})
+        self.addCleanup(i2c_interface._BACKENDS.pop, name, None)
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lane_flags(self):
+        d = self.assertOk(self.client.get('/api/module/flags'))['data']
+        return {k for lane in d['lanes'] for k, v in lane.items() if v is True}
+
+    def test_every_shipped_profile_is_quiet_when_healthy(self):
+        """Three profiles had their Rx nominal sitting exactly on the generic
+        high warning, so a healthy module flickered a warning. The earlier
+        sweep only compared against alarms, which is how that survived."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        for name in sorted(n for n in i2c_interface._BACKENDS if n.startswith('mock')):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            self.assertEqual(self._lane_flags(), set(),
+                             '%s raises a flag with nothing wrong' % name)
+            status = self.assertOk(self.client.get('/api/module/status'))['data']
+            self.assertFalse(status['alarm_active'],
+                             '%s announces a module alarm while healthy' % name)
+            self.client.post('/api/disconnect')
+
+    def test_a_reading_under_its_low_alarm_raises_the_flag(self):
+        self._fixture('flags_dark_rx', rx_power_uw_nom=5)      # about -23 dBm
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertLess(m['lanes'][0]['rx_power_dbm'], t['rx_power_low_alarm_dbm'],
+                        'the fixture is not actually below its alarm')
+        flags = self._lane_flags()
+        self.assertIn('rx_power_low_alarm', flags)
+        self.assertIn('rx_los', flags, 'a receiver with no light is not in LOS')
+
+    def test_a_reading_over_its_high_alarm_raises_the_flag(self):
+        # Above the 120 mA alarm but inside what the register can hold:
+        # the two are only about 5 mA apart.
+        self._fixture('flags_hot_bias', tx_bias_ma_nom=122.0)
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertGreater(m['lanes'][0]['tx_bias_ma'], t['tx_bias_high_alarm_ma'])
+        self.assertIn('tx_bias_high_alarm', self._lane_flags())
+
+    def test_a_nominal_too_big_for_its_register_is_refused(self):
+        """The monitor registers are 16 bits. A nominal that does not fit used
+        to wrap and report a smaller, entirely plausible number - 200 mA of
+        bias came back as 68.9 - which is worse than not starting."""
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+        for key, value in (('tx_bias_ma_nom', 200.0),
+                           ('tx_power_uw_nom', 20000),
+                           ('rx_power_uw_nom', 20000)):
+            profile = copy.deepcopy(mock._DR8_800G)
+            profile[key] = value
+            cls = type('Overflow', (mock.MockBackend,), {'PROFILE': profile})
+            with self.assertRaises(ValueError, msg='%s = %g was accepted' % (key, value)):
+                cls().connect(0, 0x50)
+
+    def test_the_module_alarm_is_not_a_timer(self):
+        """The summary byte used to flip every thirty seconds regardless, so a
+        module at 55 C in a 0-80 C window announced a temperature alarm twice a
+        minute. It has to come from the reading."""
+        self._fixture('flags_hot_case', temperature_c_nom=95.0)
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertTrue(s['temp_high_alarm'], 'a module at 95 C reports no alarm')
+        self.assertTrue(s['alarm_active'])
+        self.client.post('/api/disconnect')
+
+        self.connect()                                  # healthy again
+        for _ in range(4):
+            s = self.assertOk(self.client.get('/api/module/status'))['data']
+            self.assertFalse(s['alarm_active'],
+                             'a healthy module announced an alarm at %.1f C'
+                             % s['temperature_c'])
+
+
 class TestVeryWideModules(CMISTestCase):
     """CMIS 5.4 allows 256 lanes and the widest shipped mock is 16, so the
     banked path past two banks had never been driven. These register throwaway

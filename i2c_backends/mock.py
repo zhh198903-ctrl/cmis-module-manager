@@ -148,7 +148,8 @@ _DR8_800G = {
     'max_power_0_25w':     0x38,             # 56 × 0.25 = 14.0 W
     'tunable':             False,
     'tx_power_uw_nom':     1260,             # +1 dBm
-    'rx_power_uw_nom':     794,              # -1 dBm
+    'rx_power_uw_nom':     500,              # -3.0 dBm: -1 dBm sat on the
+                                            # generic high warning
     'tx_bias_ma_nom':      70.0,             # EML driver
     'temperature_c_nom':   55.0,
     'base_ber':            5.0e-6,           # KP4 FEC operating
@@ -275,7 +276,7 @@ _XD16_1600G = {
     'max_power_0_25w':     0x70,             # 112 × 0.25 = 28.0 W
     'tunable':             False,
     'tx_power_uw_nom':     1259,             # +1.0 dBm per lane
-    'rx_power_uw_nom':     794,              # -1.0 dBm per lane
+    'rx_power_uw_nom':     500,              # -3.0 dBm per lane, clear of the warning
     'tx_bias_ma_nom':      72.0,
     'temperature_c_nom':   66.0,
     'base_ber':            8.0e-6,           # 100G/lane PAM4, KP4 territory
@@ -351,7 +352,8 @@ _FR4X2_800G = {
     'max_power_0_25w':     0x3C,             # 60 × 0.25 = 15.0 W
     'tunable':             False,
     'tx_power_uw_nom':     1260,             # +1 dBm
-    'rx_power_uw_nom':     794,              # -1 dBm
+    'rx_power_uw_nom':     500,              # -3.0 dBm: -1 dBm sat on the
+                                            # generic high warning
     'tx_bias_ma_nom':      70.0,
     'temperature_c_nom':   58.0,
     'base_ber':            5.0e-6,
@@ -501,6 +503,20 @@ class MockBackend(I2CInterface):
         if lanes % 8:
             raise ValueError('lane counts come in groups of eight; %d does not'
                              % lanes)
+
+        # The monitor registers are 16 bits. A nominal that does not fit used
+        # to wrap silently and report a smaller, entirely plausible number -
+        # 200 mA of bias came back as 68.9 - so a profile that cannot be
+        # represented is refused here rather than misreported forever. The
+        # margin covers the few percent the readings swing by.
+        for key, scale, unit in (('tx_power_uw_nom', 10, 'uW'),
+                                 ('rx_power_uw_nom', 10, 'uW'),
+                                 ('tx_bias_ma_nom', 1 / 0.002, 'mA')):
+            nominal = p.get(key, 0)
+            if nominal * scale * 1.05 > 0xFFFF:
+                raise ValueError(
+                    '%s = %g %s does not fit its 16-bit register (max about '
+                    '%g %s)' % (key, nominal, unit, 0xFFFF / scale / 1.05, unit))
         if lanes == 8:
             p01[0x8E] = 0x00
         elif lanes == 16:
@@ -862,8 +878,10 @@ class MockBackend(I2CInterface):
             self._registers[0x11][a] = (rx_val >> 8) & 0xFF
             self._registers[0x11][a + 1] = rx_val & 0xFF
 
-        # Module-level alarm flag toggling (demo)
-        self._registers[None][0x09] = 0x10 if (int(t / 30) % 2) else 0x00
+            self._set_lane_flags(lane, tx_uw if not tx_disabled else 0.0,
+                                 bias_ma, rx_uw)
+
+        self._set_module_flags(temp_c)
 
         # CDR-LOL simulation on lane 8
         self._registers[0x11][0x89] = 0x80 if (int(t / 60) % 2) else 0x00
@@ -1004,6 +1022,89 @@ class MockBackend(I2CInterface):
                 buf[0xA0 - register] &= ~1
                 data = bytes(buf)
         return data
+
+    # Per-lane flag registers and the Page 02h threshold pair each one watches.
+    # Order matters only in that a flag must be paired with the limit a module
+    # would actually compare against.
+    _FLAG_MAP = (
+        # (flag addr hi, flag addr lo, threshold addr hi, threshold addr lo, which)
+        (0x8B, 0x8C, 0xB0, 0xB2, 'tx_power'),      # alarms
+        (0x8D, 0x8E, 0xB4, 0xB6, 'tx_power'),      # warnings
+        (0x8F, 0x90, 0xB8, 0xBA, 'tx_bias'),
+        (0x91, 0x92, 0xBC, 0xBE, 'tx_bias'),
+        (0x95, 0x96, 0xC0, 0xC2, 'rx_power'),
+        (0x97, 0x98, 0xC4, 0xC6, 'rx_power'),
+    )
+
+    def _set_module_flags(self, temp_c):
+        """Raise the module-level temperature and Vcc flags the readings earn.
+
+        This byte used to flip every thirty seconds on a timer, so a module
+        sitting at 55 C in a 0-80 C window announced a temperature alarm twice
+        a minute and cleared it again. The first thing anyone looks at is the
+        alarm summary, and one that fires at random teaches that none of the
+        module's flags are worth reading.
+        """
+        p02 = self._registers.get(0x02, {})
+        lower = self._registers[None]
+
+        def s16(addr):
+            raw = (p02.get(addr, 0) << 8) | p02.get(addr + 1, 0)
+            return (raw - 0x10000 if raw & 0x8000 else raw) / 256.0
+
+        def u16(addr):
+            return ((p02.get(addr, 0) << 8) | p02.get(addr + 1, 0)) * 1e-4
+
+        vcc_v = (((lower.get(0x10, 0) << 8) | lower.get(0x11, 0)) * 1e-4)
+        bits = 0
+        for shift, hit in enumerate((
+                temp_c > s16(0x80), temp_c < s16(0x82),      # alarms
+                temp_c > s16(0x84), temp_c < s16(0x86),      # warnings
+                vcc_v > u16(0x88), vcc_v < u16(0x8A),
+                vcc_v > u16(0x8C), vcc_v < u16(0x8E))):
+            if hit:
+                bits |= 1 << shift
+        lower[0x09] = bits
+
+    def _set_lane_flags(self, lane, tx_uw, bias_ma, rx_uw):
+        """Raise the flags a module would raise for the values it is reporting.
+
+        These used to be a block of zeros written once, so a mock could report
+        a power far below its own low alarm and still say nothing was wrong -
+        the display coloured the cell red from the threshold while the module
+        insisted it was fine. A demo that cannot show a fault is no use for the
+        training the manual describes, and one that contradicts itself teaches
+        that the flags are not worth reading.
+        """
+        p02 = self._registers.get(0x02, {})
+        p11 = self._registers[0x11]
+
+        def thr(addr):
+            return (p02.get(addr, 0) << 8) | p02.get(addr + 1, 0)
+
+        measured = {
+            'tx_power': int(tx_uw * 10),
+            'tx_bias': int(bias_ma / 0.002),
+            'rx_power': int(rx_uw * 10),
+        }
+        bit = 1 << lane
+        for hi_flag, lo_flag, hi_thr, lo_thr, key in self._FLAG_MAP:
+            value = measured[key]
+            for addr, over in ((hi_flag, value > thr(hi_thr)),
+                               (lo_flag, value < thr(lo_thr))):
+                if over:
+                    p11[addr] = p11.get(addr, 0) | bit
+                else:
+                    p11[addr] = p11.get(addr, 0) & ~bit
+
+        # Losing the signal is what a receiver reports when there is nothing
+        # to lock to, so tie it to the same limit rather than inventing one.
+        if measured['rx_power'] < thr(0xC2):
+            p11[0x93] = p11.get(0x93, 0) | bit
+            p11[0x94] = p11.get(0x94, 0) | bit
+        else:
+            p11[0x93] = p11.get(0x93, 0) & ~bit
+            p11[0x94] = p11.get(0x94, 0) & ~bit
 
     def _clear_acq_counters(self, mask, base):
         """Zero the lanes named in a 60h reset mask, within the current bank.
