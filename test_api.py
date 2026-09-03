@@ -1424,6 +1424,142 @@ class TestTheDataPathPassesThroughItsStates(CMISTestCase):
         self.assertIn('ModuleReady', seen, 'the module never came back up')
 
 
+class TestLatchedFlagsSurviveBeingRead(CMISTestCase):
+    """CMIS 5.4: "a Flag bit remains set (latched) until cleared by a READ of
+    the Byte containing the Flag". Polling therefore consumes them. A fault
+    that came and went between two refreshes lands in exactly one reply, and
+    if nothing remembers it, it is gone - which is the opposite of what a tool
+    for chasing intermittent links is for."""
+
+    def _blip_backend(self):
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+
+        class Blip(mock.MockBackend):
+            PROFILE = copy.deepcopy(mock._DR8_800G)
+            dark = False
+
+            def _update_dynamic_values(self):
+                super()._update_dynamic_values()
+                if self.dark:
+                    self._registers[0x11][0xBA] = 0x00
+                    self._registers[0x11][0xBB] = 0x14      # 2 uW, far under
+                    self._set_lane_flags(0, self.PROFILE['tx_power_uw_nom'],
+                                         self.PROFILE['tx_bias_ma_nom'], 2.0)
+
+        i2c_interface._BACKENDS['blip'] = Blip
+        self.addCleanup(i2c_interface._BACKENDS.pop, 'blip', None)
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'blip', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _lane1(self):
+        d = self.assertOk(self.client.get('/api/module/flags'))['data']
+        return d['lanes'][0]
+
+    def _now(self, lane):
+        return {k for k, v in lane.items() if v is True}
+
+    def test_the_module_holds_a_fault_until_somebody_reads_it(self):
+        """The mock has to latch, or the tool's handling of latched flags can
+        never be exercised and the demo cannot show a transient at all."""
+        backend = self._blip_backend()
+        self.assertEqual(self._now(self._lane1()), set())
+
+        backend.dark = True
+        self.client.get('/api/module/monitoring')     # the fault happens
+        backend.dark = False
+        self.client.get('/api/module/monitoring')     # and it is over
+
+        held = self._now(self._lane1())
+        # Both kinds: loss of signal comes from its own branch, the power
+        # alarms from the threshold comparison, and either could stop latching
+        # on its own.
+        self.assertIn('rx_los', held,
+                      'the module forgot a fault nobody had read yet')
+        self.assertIn('rx_power_low_alarm', held,
+                      'the threshold flags stopped latching')
+
+    def test_a_read_clears_it_on_the_module_the_way_the_spec_says(self):
+        backend = self._blip_backend()
+        backend.dark = True
+        self.client.get('/api/module/monitoring')
+        backend.dark = False
+        self.client.get('/api/module/monitoring')
+
+        self.assertIn('rx_los', self._now(self._lane1()))
+        self.assertNotIn('rx_los', self._now(self._lane1()),
+                         'the flag survived the read that reported it')
+
+    def test_the_tool_remembers_what_the_read_destroyed(self):
+        backend = self._blip_backend()
+        backend.dark = True
+        self.client.get('/api/module/monitoring')
+        backend.dark = False
+        self.client.get('/api/module/monitoring')
+
+        first = self._lane1()
+        self.assertIn('rx_los', first['seen'])
+        for _ in range(3):
+            later = self._lane1()
+            self.assertEqual(self._now(later), set(), 'the fault is over')
+            self.assertIn('rx_los', later['seen'],
+                          'the only record of the fault was thrown away')
+
+    def test_the_operator_can_start_the_history_again(self):
+        backend = self._blip_backend()
+        backend.dark = True
+        self.client.get('/api/module/monitoring')
+        backend.dark = False
+        self.client.get('/api/module/monitoring')
+        self.assertIn('rx_los', self._lane1()['seen'])
+
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertEqual(self._lane1()['seen'], [],
+                         'clearing the history left something behind')
+
+    def test_the_next_module_starts_with_a_clean_sheet(self):
+        backend = self._blip_backend()
+        backend.dark = True
+        self.client.get('/api/module/monitoring')
+        backend.dark = False
+        self.assertIn('rx_los', self._lane1()['seen'])
+
+        self.client.post('/api/disconnect')
+        self.connect()
+        self.assertEqual(self._lane1()['seen'], [],
+                         "one module's history followed another")
+
+    def test_the_page_shows_fired_earlier_differently_from_set_now(self):
+        """Not set now and never happened look identical in the register. They
+        are not the same thing to anyone chasing an intermittent link."""
+        js = self._read('static', 'app.js')
+        idx = js.index('function renderFlags(')
+        body = js[idx:idx + 2000]
+        self.assertIn('lane.seen', body, 'the render ignores the history')
+        self.assertIn('flag-was', body,
+                      'a flag that fired earlier looks like one that never did')
+        # The marker existing is not the same as it being reachable: pin the
+        # condition that produces it, since nothing here executes the script.
+        self.assertRegex(body, r'seen\.has\(\s*name\s*\)',
+                         'the fired-earlier marker is never actually chosen')
+        css = self._read('static', 'style.css')
+        self.assertIn('.flag-was', css, 'the marker has no styling')
+        html = self._read('templates', 'index.html')
+        self.assertIn('btn-clear-flag-history', html,
+                      'there is no way to start the history again')
+        self.assertIn('latched', html,
+                      'nothing on the page explains why a flag vanishes')
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+
 class TestFlagsFollowTheReadings(CMISTestCase):
     """A module that reports a value outside its own limits and raises nothing
     contradicts itself: the display colours the cell from the threshold while

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.7.3<br>
+      <b>版本</b>　2.8.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.7.3 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.7.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.8.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1000,6 +1000,31 @@
     卡片为准。</span>
   </div>
   <p>顶部摘要栏同步显示温度和电压：超过 60°C → 橙色；超过 70°C → 红色。</p>
+
+  <h3>Lane Flags 为什么会"自己消失"——闩锁与读清</h3>
+  <p>这是 CMIS 排障时最容易踩的一条，与工具无关，是规范的设计：</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>CMIS 5.4 规定 Flag 是<b>闩锁</b>位，<b>读取包含它的那个字节就会把它清零</b>
+    （原文：<i>"a Flag bit remains set (latched) until cleared by a READ of the Byte
+    containing the Flag"</i>）。<br>
+    这意味着：一次瞬时故障（光纤没插紧、电源抖动、对端重启）会把 Flag 置位，
+    模块一直保持到有人来读——<b>而读到它的那一次刷新，也就把它擦掉了</b>。
+    界面每 2 秒刷新一次，所以这个事件<b>只会在某一帧里出现</b>，看漏了就再也查不到。
+    这不是模块或工具出错，是 Flag 的定义如此。</span>
+  </div>
+  <p><b>因此记住它是主机的责任</b>，本工具替你记：Lane Flags 表里，某个 Flag 曾经触发过、
+     但现在已经恢复的通道，会保留一个
+     <span class="flag-was">●<sup>!</sup></span> 标记，与"从未触发"（<span class="flag-ok">●</span>）
+     区分开。点<b>Clear flag history</b> 清空这份记录、从当下重新开始计。
+     换模块或重新连接也会自动清空。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>排查间歇性链路时的用法</b>：连上模块、点一次 Clear flag history，
+    然后让它跑着。回来时看哪些通道带
+    <span class="flag-was">●<sup>!</sup></span> ——那就是这段时间里出过问题的通道，
+    哪怕它现在一切正常。</span>
+  </div>
 
   <h3>状态列的颜色与图标图例</h3>
   <p>上面讲的是光功率染色。界面里还有几套颜色和符号，含义各不相同：</p>
@@ -1630,7 +1655,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.7.3<br>
+    CMIS Module Manager 操作手册 v2.8.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

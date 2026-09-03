@@ -1064,7 +1064,9 @@ class MockBackend(I2CInterface):
                 vcc_v > u16(0x8C), vcc_v < u16(0x8E))):
             if hit:
                 bits |= 1 << shift
-        lower[0x09] = bits
+        # Sticky, like every other Flag: a temperature excursion that has ended
+        # is still the thing the operator needs to know about.
+        lower[0x09] = lower.get(0x09, 0) | bits
 
     def _set_lane_flags(self, lane, tx_uw, bias_ma, rx_uw):
         """Raise the flags a module would raise for the values it is reporting.
@@ -1094,17 +1096,12 @@ class MockBackend(I2CInterface):
                                (lo_flag, value < thr(lo_thr))):
                 if over:
                     p11[addr] = p11.get(addr, 0) | bit
-                else:
-                    p11[addr] = p11.get(addr, 0) & ~bit
 
         # Losing the signal is what a receiver reports when there is nothing
         # to lock to, so tie it to the same limit rather than inventing one.
         if measured['rx_power'] < thr(0xC2):
             p11[0x93] = p11.get(0x93, 0) | bit
             p11[0x94] = p11.get(0x94, 0) | bit
-        else:
-            p11[0x93] = p11.get(0x93, 0) & ~bit
-            p11[0x94] = p11.get(0x94, 0) & ~bit
 
     def _clear_acq_counters(self, mask, base):
         """Zero the lanes named in a 60h reset mask, within the current bank.
@@ -1176,7 +1173,28 @@ class MockBackend(I2CInterface):
         result = bytearray(length)
         for i in range(length):
             result[i] = page_dict.get(register + i, 0x00)
+        self._clear_on_read(page_dict, register, length)
         return bytes(result)
+
+    # Flag bytes: 11h:135-152 per lane, and Lower 8-9 module-wide. CMIS 5.4
+    # calls these latched with clear-on-read access - "a Flag bit remains set
+    # until cleared by a READ of the Byte containing the Flag" - so a module
+    # holds a momentary fault until somebody looks, and forgets it once they
+    # have. A mock that instead tracked the live value could never show a
+    # transient at all, and let the host get away with not remembering.
+    _COR_BYTES = {
+        None: range(0x08, 0x0A),
+        0x11: range(0x87, 0x99),
+    }
+
+    def _clear_on_read(self, page_dict, register: int, length: int) -> None:
+        page = None if register < 0x80 else self._current_page
+        span = self._COR_BYTES.get(page)
+        if span is None:
+            return
+        for addr in range(register, register + length):
+            if addr in span:
+                page_dict[addr] = 0x00
 
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:

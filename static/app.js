@@ -1386,19 +1386,28 @@ function renderFlags(lanes) {
   if (!tbody || !lanes) return;
 
   tbody.innerHTML = lanes.map(lane => {
-    function flagCell(val, isAlarm) {
+    const seen = new Set(lane.seen || []);
+    // A CMIS Flag is cleared by the read that reports it, so "not set right
+    // now" and "never happened" look identical in the register. They are not
+    // the same thing to whoever is chasing an intermittent link, so a lane
+    // that has fired since the last clear keeps saying so.
+    function flagCell(val, isAlarm, name) {
       if (val) {
         return isAlarm
           ? '<span class="flag-active">&#9632; ALARM</span>'
           : '<span class="flag-warn">&#9650; WARN</span>';
       }
+      if (name && seen.has(name)) {
+        return '<span class="flag-was" title="Cleared now, but this flag has '
+             + 'fired since the history was last cleared">&#9679;<sup>!</sup></span>';
+      }
       return '<span class="flag-ok">&#9679;</span>';
     }
-    const txFault   = flagCell(lane.tx_fault, true);
-    const txLos     = flagCell(lane.tx_los, true);
-    const txCdrLol  = flagCell(lane.tx_cdr_lol, true);
-    const rxLos     = flagCell(lane.rx_los, true);
-    const rxCdrLol  = flagCell(lane.rx_cdr_lol, true);
+    const txFault   = flagCell(lane.tx_fault, true, 'tx_fault');
+    const txLos     = flagCell(lane.tx_los, true, 'tx_los');
+    const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol');
+    const rxLos     = flagCell(lane.rx_los, true, 'rx_los');
+    const rxCdrLol  = flagCell(lane.rx_cdr_lol, true, 'rx_cdr_lol');
 
     const anyAlarm = lane.tx_power_high_alarm || lane.tx_power_low_alarm ||
                      lane.tx_bias_high_alarm  || lane.tx_bias_low_alarm  ||
@@ -1406,10 +1415,15 @@ function renderFlags(lanes) {
     const anyWarn  = lane.tx_power_high_warn  || lane.tx_power_low_warn  ||
                      lane.tx_bias_high_warn   || lane.tx_bias_low_warn   ||
                      lane.rx_power_high_warn  || lane.rx_power_low_warn;
+    const wasAlarm = [...seen].some(n => n.endsWith('_alarm'));
+    const wasWarn  = [...seen].some(n => n.endsWith('_warn'));
     const summary = anyAlarm
       ? '<span class="flag-active">&#9632; Alarm</span>'
       : anyWarn
       ? '<span class="flag-warn">&#9650; Warn</span>'
+      : (wasAlarm || wasWarn)
+      ? '<span class="flag-was" title="Cleared now, but fired earlier">'
+        + '&#9679;<sup>!</sup></span>'
       : '<span class="flag-ok">&#9679;</span>';
 
     return `<tr>
@@ -1920,6 +1934,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   document.getElementById('btn-refresh-monitor')?.addEventListener('click', loadMonitoring);
+
+  document.getElementById('btn-clear-flag-history')?.addEventListener('click', async () => {
+    const r = await apiPost('/api/module/flags/clear', {});
+    toast(r.status === 'ok' ? 'Flag history cleared' : r.message,
+          r.status === 'ok' ? 'success' : 'error');
+    loadMonitoring();
+  });
 
   // DataPath apply
   document.getElementById('btn-refresh-ext54')?.addEventListener('click', loadExt54);

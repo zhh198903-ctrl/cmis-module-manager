@@ -843,6 +843,21 @@ input[type="checkbox"] {
   font-size: var(--fs-2xs);
 }
 
+/* Clear now, but it fired earlier. Deliberately quieter than an active alarm
+   and louder than a clean lane: the fault is over, and the fact that it
+   happened is the only trace left once the read cleared the Flag. */
+.flag-was {
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+  cursor: help;
+}
+
+.flag-was sup {
+  color: var(--warning);
+  font-weight: 700;
+  margin-left: 1px;
+}
+
 /* ---- Threshold table tint ---- */
 .threshold-table td.ha, td.ha { background: var(--danger-08); }
 .threshold-table td.hw, td.hw { background: var(--warning-08); }

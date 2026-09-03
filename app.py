@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.7.3'
+__version__ = '2.8.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -50,6 +50,13 @@ _state = {
     'lanes': 8,
     # The 5.4 advertisement block, read once at connect.
     'caps': {},
+    # CMIS Flags are latched with clear-on-read: reading the byte that
+    # holds one clears it. Polling therefore consumes them, and an event
+    # that came and went between two refreshes exists only in whichever
+    # reply happened to carry it. Remembering is the host's job, so this
+    # keeps what has fired since the operator last cleared it.
+    'flag_history': {},
+    'flag_history_since': None,
 }
 
 
@@ -399,6 +406,8 @@ def api_disconnect():
     # A stale lane count would size the next module's tables from this one.
     _state['lanes'] = 8
     _state['caps'] = {}
+    _state['flag_history'] = {}
+    _state['flag_history_since'] = None
     _invalidate_page()
     return _ok({'message': 'Disconnected'})
 
@@ -942,6 +951,7 @@ def api_module_flags():
         rxpwr_lw  = flags(0x98)
 
         lanes = []
+        history = _state['flag_history']
         for i in range(_state['lanes']):
             lanes.append({
                 'lane': i + 1,
@@ -963,9 +973,36 @@ def api_module_flags():
                 'rx_power_high_warn':  rxpwr_hw[i],
                 'rx_power_low_warn':   rxpwr_lw[i],
             })
-        return _ok({'lanes': lanes})
+            # Fold this read into what has been seen. The read just cleared
+            # these bits on the module, so if this is not kept the event is
+            # gone the moment the reply is rendered.
+            seen = history.setdefault(i + 1, set())
+            for name, value in list(lanes[-1].items()):
+                if name != 'lane' and value:
+                    seen.add(name)
+            lanes[-1]['seen'] = sorted(seen)
+        if _state['flag_history_since'] is None:
+            _state['flag_history_since'] = time.time()
+        return _ok({'lanes': lanes,
+                    'history_since': _state['flag_history_since']})
     except Exception as e:
         return _err(str(e), 500)
+
+
+@app.route('/api/module/flags/clear', methods=['POST'])
+def api_clear_flag_history():
+    """Forget what has fired so far, and start counting from now.
+
+    Nothing is written to the module: these are the tool's own notes on Flags
+    the module already handed over and cleared. The operator who has read them
+    is the only one who can say they are dealt with.
+    """
+    err = _require_connected()
+    if err:
+        return err
+    _state['flag_history'] = {}
+    _state['flag_history_since'] = time.time()
+    return _ok({'history_since': _state['flag_history_since']})
 
 
 @app.route('/api/module/thresholds', methods=['GET'])
