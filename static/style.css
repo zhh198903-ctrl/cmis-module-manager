@@ -1083,3 +1083,11 @@ input[type="checkbox"] {
   white-space: nowrap;
   cursor: help;
 }
+
+/* The channel box alone cannot say which numbers the module will take. */
+.range-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 1px;
+}

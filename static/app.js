@@ -1966,6 +1966,36 @@ async function loadCounters() {
 // ---------------------------------------------------------------------------
 let _laserData = null;
 
+const GRID_NAMES = {
+  0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz', 4: '50 GHz',
+  5: '100 GHz', 6: '33 GHz', 7: '75 GHz', 8: '150 GHz', 9: '300 GHz',
+};
+
+// Page 12h:231-238, latched and clear-on-read. The module answers a tuning
+// request here and nothing read it, so a refused channel looked applied.
+const TUNING_FLAG_LABELS = {
+  target_power_out_of_range: ['Power out of range', 'Target output power outside the advertised programmable range'],
+  fine_tuning_out_of_range:  ['Fine offset out of range', 'Fine-tuning offset outside the advertised range'],
+  tuning_not_accepted:       ['Not accepted', 'The module could not serve the request; the programmed grid or channel does not match the laser'],
+  invalid_channel_number:    ['Invalid channel', 'Channel number outside the advertised range for the selected grid'],
+  wavelength_unlocked:       ['Unlocked', 'Laser wavelength was unlocked'],
+};
+
+function tuningFlagCell(lane) {
+  const live = Object.keys(TUNING_FLAG_LABELS).filter(k => lane.tuning_flags && lane.tuning_flags[k]);
+  const seen = (lane.tuning_flags_seen || []).filter(k => !live.includes(k));
+  if (!live.length && !seen.length) {
+    return lane.tuning_flags && lane.tuning_flags.tuning_complete
+      ? '<span class="flag-ok">Tuned</span>' : '<span class="flag-ok">—</span>';
+  }
+  const chip = (k, cls) => {
+    const [label, tip] = TUNING_FLAG_LABELS[k];
+    return `<div class="${cls}" title="${esc(tip)}">${esc(label)}</div>`;
+  };
+  return live.map(k => chip(k, 'flag-active')).join('')
+       + seen.map(k => chip(k, 'flag-was')).join('');
+}
+
 async function loadLaser() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/laser');
@@ -1973,7 +2003,7 @@ async function loadLaser() {
   const capsEl = document.getElementById('laser-caps');
   if (!tbody) return;
   if (res.status !== 'ok') {
-    tbody.innerHTML = `<tr><td colspan="7" class="placeholder-text">Laser tuning not available: ${res.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="placeholder-text">Laser tuning not available: ${res.message}</td></tr>`;
     return;
   }
   _laserData = res.data;
@@ -1984,7 +2014,7 @@ async function loadLaser() {
     if (capsEl) {
       capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module (Media Interface Technology is not C-band/L-band); Page 04h tuning capabilities not advertised.</span>';
     }
-    tbody.innerHTML = '<tr><td colspan="7" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
     return;
   }
 
@@ -1996,12 +2026,22 @@ async function loadLaser() {
       ` | Power: <b>${d.power_range_dbm[0]}..${d.power_range_dbm[1]} dBm</b>`;
   }
 
-  const gridOpts = (cur) => [
-    [5, '100 GHz'], [4, '50 GHz'], [3, '25 GHz'], [7, '75 GHz'],
-    [6, '33 GHz'], [2, '12.5 GHz'], [1, '6.25 GHz'], [0, '3.125 GHz'], [8, '150 GHz'],
-  ].map(([code, name]) =>
-    `<option value="${code}" ${cur === code ? 'selected' : ''}>${name}</option>`
-  ).join('');
+  const ranges = d.grid_channel_ranges || {};
+  const advertised = Object.keys(ranges).map(Number).sort((a, b) => a - b);
+  const gridOpts = (cur) => {
+    const opts = advertised.map(code => {
+      const r = ranges[code];
+      return `<option value="${code}" ${cur === code ? 'selected' : ''}>`
+           + `${esc(GRID_NAMES[code] || code)} (ch ${r[0]}..${r[1]})</option>`;
+    });
+    // A lane can sit on a grid the module no longer advertises a plan for;
+    // keep it visible rather than silently snapping to another value.
+    if (!advertised.includes(cur)) {
+      opts.unshift(`<option value="${cur}" selected>`
+                   + `${esc(GRID_NAMES[cur] || cur)} — not advertised</option>`);
+    }
+    return opts.join('');
+  };
 
   tbody.innerHTML = d.lanes.map(l => {
     const lockIcon = l.wavelength_locked
@@ -2035,11 +2075,12 @@ async function loadLaser() {
     return `<tr>
       <td>${l.lane}</td>
       <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code)}</select></td>
-      <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}" style="width:70px" class="raw-data-input"></td>
+      <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_thz.toFixed(6)}</td>
       <td title="${tipPwr}"><input type="number" id="laser-pwr-${l.lane}" title="${tipPwr}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>
       <td title="${tipStat}">${lockIcon}</td>
+      <td>${tuningFlagCell(l)}</td>
     </tr>`;
   }).join('');
 }

@@ -183,7 +183,46 @@ REG_CURRENT_FREQ_TX  = (0x12, 0xA8, 32)  # 168-199: U32/lane (4B × 8) in 0.001 
 REG_TARGET_PWR_TX    = (0x12, 0xC8, 16)  # 200-215: S16/lane (0.01 dBm)
 REG_REL_THRESHOLDS   = (0x12, 0xD8, 2)   # 216-217: relative Tx power thresholds (5.4)
 REG_TUNING_STATUS_TX = (0x12, 0xDE, 8)   # 222-229: 1B/lane [1]=TuningInProgress [0]=Unlocked
+REG_TUNING_FLAG_SUM  = (0x12, 0xE6, 1)   # 230: one bit per lane, summary
 REG_TUNING_FLAGS_TX  = (0x12, 0xE7, 8)   # 231-238: 1B/lane latched flags
+
+# Table 8-109. All RO/COR: the module answers a tuning request here, and the
+# read that reports the answer is the read that clears it.
+TUNING_FLAG_BITS = (
+    (5, 'target_power_out_of_range', 'Target output power outside the advertised range'),
+    (4, 'fine_tuning_out_of_range',  'Fine-tuning offset outside the advertised range'),
+    (3, 'tuning_not_accepted',       'The module could not serve the tuning request; '
+                                     'the programmed grid or channel does not match the laser'),
+    (2, 'invalid_channel_number',    'Channel number outside the advertised range for '
+                                     'the selected grid spacing'),
+    (1, 'wavelength_unlocked',       'Laser wavelength unlocked'),
+    (0, 'tuning_complete',           'Laser tuning completed'),
+)
+
+
+def parse_tuning_flags(byte_val: int) -> dict:
+    """Decode one lane's Page 12h:231-238 tuning Flag byte."""
+    return {name: bool((byte_val >> bit) & 1)
+            for bit, name, _desc in TUNING_FLAG_BITS}
+
+
+def parse_grid_channel_ranges(data: bytes) -> dict:
+    """04h:130-165, an S16 low/high pair per grid code 0-8.
+
+    The module says here which channel numbers are legal on each grid it
+    supports, which is the only way for a host to know before it writes.
+    """
+    import struct as _struct
+    out = {}
+    for code in range(9):
+        off = code * 4
+        if off + 4 > len(data):
+            break
+        low = _struct.unpack('>h', data[off:off + 2])[0]
+        high = _struct.unpack('>h', data[off + 2:off + 4])[0]
+        if low or high:
+            out[code] = [low, high]
+    return out
 
 # ---------------------------------------------------------------------------
 # Page 13h — Diagnostic Controls (Tables 8-109..8-117)

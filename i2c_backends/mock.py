@@ -395,6 +395,7 @@ class MockBackend(I2CInterface):
         self._apply_time = 0.0
         self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
         self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
+        self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
@@ -592,6 +593,10 @@ class MockBackend(I2CInterface):
             # 100 GHz grid channel range ±40
             p04[0x96] = 0xFF; p04[0x97] = 0xD8    # -40
             p04[0x98] = 0x00; p04[0x99] = 0x28    # +40
+            # 75 GHz grid channel range ±53: the module advertises this grid,
+            # so it has to say which channels are legal on it as well.
+            p04[0x9E] = 0xFF; p04[0x9F] = 0xCB    # -53
+            p04[0xA0] = 0x00; p04[0xA1] = 0x35    # +53
             # Fine tuning: 1 MHz resolution, ±12.5 GHz
             p04[0xBE] = 0x00; p04[0xBF] = 0x01
             v = struct.pack(">h", -12500)
@@ -986,6 +991,8 @@ class MockBackend(I2CInterface):
                 ft_lo = p12.get(0x99 + lane * 2, 0)
                 ft_offset = struct.unpack(">h", bytes([ft_hi, ft_lo]))[0]
                 fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
+                if not self._tuning_accepted[lane]:
+                    continue        # refused: the laser has not moved
                 freq_thz = 193.1 + ch_n * step_thz + fine_ghz / 1000.0
                 freq_mhz = int(round(freq_thz * 1e6))
                 a = 0xA8 + lane * 4
@@ -1042,6 +1049,16 @@ class MockBackend(I2CInterface):
                                        for i in range(8)]
                 for a in range(0xCA, 0xCE):
                     self._registers[0x11][a] = 0xCC
+        elif self._current_page == 0x12:
+            span = range(register, register + len(data))
+            touched = {'channel': any(a in span for a in range(0x80, 0x98)),
+                       'fine':    any(a in span for a in range(0x98, 0xA8)),
+                       'power':   any(a in span for a in range(0xC8, 0xD8))}
+            if any(touched.values()):
+                # The write lands first; the module judges what it now holds.
+                for a, b in zip(span, data):
+                    self._registers[0x12][a] = b
+                self._judge_tuning(touched)
         elif self._current_page == 0x13:
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
@@ -1148,6 +1165,64 @@ class MockBackend(I2CInterface):
             p11[0x93] = p11.get(0x93, 0) | bit
             p11[0x94] = p11.get(0x94, 0) | bit
 
+    # Advertised on Page 04h:130-165, an S16 low/high pair per grid code.
+    _GRID_RANGE_BASE = 0x82
+
+    def _judge_tuning(self, touched=None):
+        """Answer a tuning request in the Page 12h Flags (Table 8-109).
+
+        A module does not silently tune wherever it is told. A channel outside
+        the advertised range for the selected grid, a target power outside the
+        programmable range, or a fine-tuning offset beyond what was advertised
+        each raise their own latched Flag, and the laser stays where it was.
+        """
+        p04 = self._registers.get(0x04, {})
+        p12 = self._registers[0x12]
+
+        def s16(page, addr):
+            return struct.unpack(">h", bytes([page.get(addr, 0),
+                                              page.get(addr + 1, 0)]))[0]
+
+        pwr_lo, pwr_hi = s16(p04, 0xC6), s16(p04, 0xC8)
+        fine_lo, fine_hi = s16(p04, 0xC0), s16(p04, 0xC2)
+
+        touched = touched or {'channel': True, 'fine': True, 'power': True}
+        summary = 0
+        for lane in range(8):
+            grid_byte = p12.get(0x80 + lane, 0x50)
+            grid_code = (grid_byte >> 4) & 0x0F
+            flags = 0
+
+            if touched['channel']:
+                base = self._GRID_RANGE_BASE + grid_code * 4
+                ch_lo, ch_hi = s16(p04, base), s16(p04, base + 2)
+                channel = s16(p12, 0x88 + lane * 2)
+                if ch_lo == 0 and ch_hi == 0:
+                    # A grid the module never advertised cannot be tuned to.
+                    if channel:
+                        flags |= 1 << 3      # TuningNotAcceptedFlagTx
+                elif not (ch_lo <= channel <= ch_hi):
+                    flags |= 1 << 2          # InvalidChannelNumberFlagTx
+
+            if touched['fine'] and (grid_byte & 0x01):
+                fine = s16(p12, 0x98 + lane * 2)
+                if not (fine_lo <= fine <= fine_hi):
+                    flags |= 1 << 4          # FineTuningOutOfRangeFlagTx
+
+            if touched['power']:
+                target = s16(p12, 0xC8 + lane * 2)
+                if not (pwr_lo <= target <= pwr_hi):
+                    flags |= 1 << 5          # TargetOutputPowerOORFlagTx
+
+            if flags == 0:
+                flags |= 1 << 0              # TuningCompleteFlagTx
+            self._tuning_accepted[lane] = (flags & ~1) == 0
+
+            p12[0xE7 + lane] = p12.get(0xE7 + lane, 0) | flags
+            if p12[0xE7 + lane]:
+                summary |= 1 << lane
+        p12[0xE6] = summary
+
     def _validate_staged_appsel(self):
         """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).
 
@@ -1249,6 +1324,7 @@ class MockBackend(I2CInterface):
         # checker that lost lock for a moment during a long run is exactly the
         # thing a long run is for, and it is gone one read later.
         0x14: range(0x8A, 0x8C),
+        0x12: range(0xE6, 0xEF),
     }
 
     def _clear_on_read(self, page_dict, register: int, length: int) -> None:

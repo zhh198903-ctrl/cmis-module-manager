@@ -1513,6 +1513,221 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestATuningRequestTheLaserCannotServe(CMISTestCase):
+    """CMIS 5.4 Table 8-109: the module answers a tuning request in the Page
+    12h Flags - InvalidChannelNumberFlagTx, TargetOutputPowerOORFlagTx and the
+    rest, all RO/COR. The register was in the map and nothing read it, so the
+    tool wrote whatever it was given and called it tuned."""
+
+    def _connect_tunable(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _tune(self, **fields):
+        fields.setdefault('lane', 1)
+        return self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [fields]}),
+            content_type='application/json')
+
+    def test_the_advertised_channel_range_is_read_at_all(self):
+        """04h:130-165 says which channel numbers are legal on each grid. The
+        register was defined and never read, so nothing could say."""
+        d = self._connect_tunable()
+        self.assertTrue(d['grid_channel_ranges'],
+                        'the module advertises channel ranges and the tool '
+                        'never reads them')
+
+    def test_every_grid_the_module_offers_has_a_range(self):
+        import cmis_registers as c
+        d = self._connect_tunable()
+        names = {c.GRID_CODES[int(code)]
+                 for code in d['grid_channel_ranges']}
+        self.assertEqual(set(d['grids_supported']), names,
+                         'a grid is offered with no channel plan behind it')
+
+    def test_a_channel_the_module_will_not_take_is_refused(self):
+        self._connect_tunable()
+        rv = self._tune(channel=9999)
+        self.assertEqual(rv.status_code, 400,
+                         'an impossible channel was written and reported as '
+                         'tuned')
+        msg = json.loads(rv.data)['message']
+        self.assertIn('9999', msg)
+        self.assertIn('04h:', msg, 'the message does not say which '
+                                   'advertisement it is quoting')
+
+    def test_an_out_of_range_offset_is_not_a_server_error(self):
+        """50 GHz of fine tuning does not fit the S16 register, and the raw
+        struct error came back as a 500."""
+        self._connect_tunable()
+        rv = self._tune(fine_tuning_enabled=True, fine_offset_ghz=50.0)
+        self.assertEqual(rv.status_code, 400)
+        self.assertNotIn('format requires', json.loads(rv.data)['message'],
+                         'the operator is shown a struct error')
+
+    def test_a_power_beyond_the_programmable_range_is_refused(self):
+        self._connect_tunable()
+        rv = self._tune(target_power_dbm=99.0)
+        self.assertEqual(rv.status_code, 400)
+        self.assertIn('99', json.loads(rv.data)['message'])
+
+    def test_a_request_inside_the_range_still_works(self):
+        d = self._connect_tunable()
+        low, high = d['grid_channel_ranges'][str(d['lanes'][0]['grid_code'])]
+        self.assertOk(self._tune(channel=min(10, high),
+                                 target_power_dbm=d['power_range_dbm'][0]))
+        time.sleep(0.3)
+        lane = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+        self.assertEqual(lane['channel'], min(10, high))
+        self.assertFalse([k for k, v in lane['tuning_flags'].items()
+                          if v and k != 'tuning_complete'],
+                         'a legal request raised a Flag')
+
+    def test_the_module_refuses_what_slips_past_the_host(self):
+        """The host checks what the module advertises; the Flags are the
+        module's own answer, and the backstop when the two disagree."""
+        self._connect_tunable()
+        # Grid 0 has no advertised channel plan, so there is no host-side range
+        # to check against - the module has to be the one to say no.
+        self.assertOk(self._tune(grid_code=0, channel=7))
+        time.sleep(0.3)
+        lane = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+        self.assertIn('tuning_not_accepted', lane['tuning_flags_seen'],
+                      'the module took a grid it has no channel plan for')
+
+    def test_the_laser_does_not_move_on_a_refused_request(self):
+        d = self._connect_tunable()
+        before = d['lanes'][0]['frequency_thz']
+        self.assertOk(self._tune(grid_code=0, channel=7))
+        time.sleep(0.3)
+        after = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+        self.assertEqual(after['frequency_thz'], before,
+                         'the module reported tuning to a channel it refused')
+
+    def test_a_tuning_flag_survives_the_read_that_reported_it(self):
+        self._connect_tunable()
+        self.assertOk(self._tune(grid_code=0, channel=7))
+        time.sleep(0.3)
+        for _ in range(3):
+            lane = self.assertOk(
+                self.client.get('/api/module/laser'))['data']['lanes'][0]
+            self.assertIn('tuning_not_accepted', lane['tuning_flags_seen'],
+                          'the only record of a refused tuning was lost')
+
+    def test_the_write_says_what_the_module_made_of_it(self):
+        self._connect_tunable()
+        body = self.assertOk(self._tune(grid_code=0, channel=7))['data']
+        self.assertIn('refused', body,
+                      'the write reports success without asking the module')
+        self.assertIn('tuning_not_accepted', body['refused'].get('1', []))
+
+
+class TestTheTuningFlagsAreReadOnTheirOwn(CMISTestCase):
+    """The write path reads the Flags too, which hides whether the read path
+    does. Raise one behind the tool's back and ask only the GET."""
+
+    def _connect_and_raise(self, byte_val=0x04):   # InvalidChannelNumberFlagTx
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        self.assertOk(self.client.get('/api/module/laser'))   # start clean
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        backend = _state['backend']
+        backend.write_bytes(0x7E, bytes([0, 0x12]))
+        backend._registers[0x12][0xE7] = byte_val
+        backend._registers[0x12][0xE6] = 0x01
+
+    def _lane1(self):
+        return self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+
+    def test_the_read_path_reports_a_live_flag(self):
+        self._connect_and_raise()
+        self.assertTrue(self._lane1()['tuning_flags']['invalid_channel_number'],
+                        'the laser read never looks at the Flag register')
+
+    def test_the_read_that_reports_it_clears_it(self):
+        """Table 8-109 makes these RO/COR, which is the whole reason the
+        history beside them has to exist."""
+        self._connect_and_raise()
+        self.assertTrue(self._lane1()['tuning_flags']['invalid_channel_number'])
+        self.assertFalse(self._lane1()['tuning_flags']['invalid_channel_number'],
+                         'the Flag survived the read that reported it')
+
+    def test_the_read_path_remembers_it(self):
+        self._connect_and_raise()
+        self._lane1()                       # this read clears it on the module
+        for _ in range(3):
+            self.assertIn('invalid_channel_number',
+                          self._lane1()['tuning_flags_seen'],
+                          'the only record of a refused channel was lost')
+
+    def test_clearing_the_history_clears_these_too(self):
+        self._connect_and_raise()
+        self._lane1()
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertEqual(self._lane1()['tuning_flags_seen'], [])
+
+
+class TestTheTuningPanelOffersWhatTheModuleHas(CMISTestCase):
+    """The grid dropdown listed all nine grid codes whatever the module said,
+    and the channel box had no bounds at all."""
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_only_advertised_grids_are_offered(self):
+        js = self._read('static', 'app.js')
+        body = js[js.index('  const gridOpts = ('):]
+        body = body[:body.index('\n  };')]
+        self.assertRegex(body, r'const opts = advertised\.map\(',
+                         'the dropdown is not built from what the module '
+                         'advertises')
+        self.assertNotIn("[5, '100 GHz'], [4, '50 GHz']", body,
+                         'the hard-coded list of all nine grids is back')
+
+    def test_the_channel_box_carries_the_advertised_bounds(self):
+        js = self._read('static', 'app.js')
+        idx = js.index('id="laser-ch-')
+        cell = js[idx:idx + 500]
+        self.assertIn('channel_range', cell,
+                      'the channel box accepts any number with no hint of '
+                      'what the module will take')
+        self.assertIn('min=', cell)
+
+    def test_the_laser_table_has_a_column_for_every_cell(self):
+        html = self._read('templates', 'index.html')
+        js = self._read('static', 'app.js')
+
+        idx = html.index('id="tbl-laser"')
+        head = html[html.rindex('<thead>', 0, idx):idx]
+        columns = head.count('<th>')
+
+        body = js[js.index('  tbody.innerHTML = d.lanes.map(l => {'):]
+        row = body[body.index('return `<tr>'):body.index('</tr>`')]
+        cells = row.count('<td>') + len(re.findall(r'<td\s', row))
+        self.assertEqual(cells, columns,
+                         'the laser table has %d headings and renders %d cells'
+                         % (columns, cells))
+
+        for placeholder in re.findall(r'colspan="(\d+)" class="placeholder-text"',
+                                      js[js.index('async function loadLaser('):
+                                         js.index('async function applyLaser(')]):
+            self.assertEqual(int(placeholder), columns,
+                             'an empty-state row spans the wrong width')
+
+
 class TestAConfigurationTheModuleRefused(CMISTestCase):
     """CMIS 8.13.3 runs an Apply as acceptance, validation, execution and
     result feedback. A module only accepts an AppSelCode it advertises, and on

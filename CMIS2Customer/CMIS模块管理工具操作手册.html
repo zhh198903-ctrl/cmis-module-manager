@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.8.4<br>
+      <b>版本</b>　2.9.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.4 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.8.4</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,59 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>激光器调谐：模块不会你写什么就调到哪</h3>
+  <p>调谐面板以前把你填的值直接写进 Page 12h 就报“已写入”。
+     实际上模块会<b>判断这个请求能不能服务</b>，并在
+     <code>12h:231–238</code>（Table 8-109）的门锁标志里给回答。那些标志同样是
+     RO/COR——读一次就清。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>位</th><th>标志</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>5</td><td>TargetOutputPowerOORFlagTx</td>
+            <td class="label">目标输出功率超出可编程范围</td></tr>
+        <tr><td>4</td><td>FineTuningOutOfRangeFlagTx</td>
+            <td class="label">微调偏移超出声明范围</td></tr>
+        <tr><td>3</td><td>TuningNotAcceptedFlagTx</td>
+            <td class="label">模块当前状态下无法服务这次调谐；
+                编程的网格或信道与激光器实际状况不符</td></tr>
+        <tr><td>2</td><td>InvalidChannelNumberFlagTx</td>
+            <td class="label">信道号不在所选网格间隔的声明范围内</td></tr>
+        <tr><td>1</td><td>WavelengthUnlockedFlagTx</td>
+            <td class="label">波长失锁（门锁版）</td></tr>
+        <tr><td>0</td><td>TuningCompleteFlagTx</td>
+            <td class="label">调谐完成</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>面板右侧新增 <b>Tuning Flags</b> 一列：当前置位的显示为红色，
+     曾经触发过但已被读清的保留
+     <span class="flag-was">●<sup>!</sup></span> 样式，与 Lane Flags 一致。</p>
+
+  <h3>信道范围现在会告诉你</h3>
+  <p>模块在 <code>04h:130–165</code> 里逐网格声明了合法的信道号范围，
+     但工具以前从不读它。结果是：<b>网格下拉框列出全部 9 种间隔</b>（包括模块根本不支持的），
+     信道输入框<b>没有任何上下限</b>，你只能猜。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前填一个谱外的信道号，工具会照写，然后面板上的
+    <b>Frequency</b> 会显示一个<b>物理上不存在的频率</b>（测试中出现过
+    1193 THz，C 波段在 193 THz 附近）——看起来就像激光器真的调过去了。
+    填一个超出寄存器宽度的微调值（如 50 GHz）则会弹出一条 Python
+    内部错误。</span>
+  </div>
+  <p>现在：网格下拉框<b>只列出模块声明的网格</b>，并在名字后面直接写出该网格的信道范围；
+     信道输入框带上下限并在下方标出范围；超范围的请求在<b>写入之前</b>就被拒绝，
+     提示会直接引用它依据的那个声明寄存器，例如：</p>
+  <pre>Lane 1: channel 9999 is outside the range the module
+advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>内置的相干演示模块也按规范判断了：被拒绝的请求<b>激光器不会移动</b>，
+    Frequency 保持原值，并置位对应的门锁标志。主机侧校验和模块侧标志是两道防线：
+    前者按声明拦住大部分，后者处理两者不一致的情况。</span>
   </div>
 
   <h3>模块拒绝了你的配置时，页面会说实话</h3>
@@ -1795,7 +1848,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.8.4<br>
+    CMIS Module Manager 操作手册 v2.9.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.8.4'
+__version__ = '2.9.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1386,6 +1386,9 @@ def api_laser_get():
             grids_supported.append('300 GHz')
         fine_tuning_supported = bool((grid_sup[1] >> 7) & 1)
 
+        grid_channel_ranges = cmis.parse_grid_channel_ranges(
+            _read_upper(*cmis.REG_GRID_CHANNELS))
+
         grid_300_range = None
         if grid_300_supported:
             g300 = _read_upper(*cmis.REG_GRID_300_CHANNELS)
@@ -1404,6 +1407,7 @@ def api_laser_get():
         current_freq = _read_banked(*cmis.REG_CURRENT_FREQ_TX[:2], 4)
         target_pwr   = _read_banked(*cmis.REG_TARGET_PWR_TX[:2], 2)
         tuning_status= _read_banked(*cmis.REG_TUNING_STATUS_TX[:2], 1)
+        tuning_flags = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
 
         grid_codes = cmis.GRID_CODES
 
@@ -1418,11 +1422,24 @@ def api_laser_get():
             freq_thz = freq_mhz / 1e6
             tgt_pwr = struct.unpack(">h", target_pwr[i*2:i*2+2])[0] * 0.01
             st = tuning_status[i]
+            flags = cmis.parse_tuning_flags(tuning_flags[i])
+            # Latched and clear-on-read like every other Flag, so the read that
+            # reports a refused tuning is the read that erases it.
+            seen = _state['flag_history'].setdefault('tuning_%d' % (i + 1), set())
+            for name, value in flags.items():
+                if value and name != 'tuning_complete':
+                    seen.add(name)
+            if _state['flag_history_since'] is None:
+                _state['flag_history_since'] = time.time()
+
             lanes.append({
                 'lane': i + 1,
                 'grid': grid_codes.get(gc, f'Unknown({gc})'),
                 'grid_code': gc,
                 'channel': ch,
+                'tuning_flags': flags,
+                'tuning_flags_seen': sorted(seen),
+                'channel_range': grid_channel_ranges.get(gc),
                 'fine_tuning_enabled': fine_en,
                 'fine_offset_ghz': ft * 0.001,
                 'frequency_thz': round(freq_thz, 6),
@@ -1450,6 +1467,7 @@ def api_laser_get():
                 struct.unpack(">h", pwr_min)[0] * 0.01,
                 struct.unpack(">h", pwr_max)[0] * 0.01,
             ],
+            'grid_channel_ranges': grid_channel_ranges,
             'lanes': lanes,
         })
     except Exception as e:
@@ -1471,6 +1489,17 @@ def api_laser_set():
         # wrong shape was told its tuning had been applied.
         if not isinstance(lanes, list) or not lanes:
             return _err('No lanes given; expected {"lanes": [{"lane": 1, ...}]}', 400)
+        # The ranges the module advertises are the only thing that says what a
+        # legal request looks like, so read them before writing one.
+        _set_page(0x04)
+        pwr_lo = struct.unpack('>h', _read_upper(*cmis.REG_PROG_PWR_MIN))[0] * 0.01
+        pwr_hi = struct.unpack('>h', _read_upper(*cmis.REG_PROG_PWR_MAX))[0] * 0.01
+        fine_lo = struct.unpack('>h', _read_upper(*cmis.REG_FINE_LOW_OFFSET))[0] * 0.001
+        fine_hi = struct.unpack('>h', _read_upper(*cmis.REG_FINE_HIGH_OFFSET))[0] * 0.001
+        ch_ranges = cmis.parse_grid_channel_ranges(
+            _read_upper(*cmis.REG_GRID_CHANNELS))
+        _set_page(0x12)
+
         written = 0
         for ldata in lanes:
             if not isinstance(ldata, dict):
@@ -1488,20 +1517,61 @@ def api_laser_set():
                                               bytes([(gc << 4) | fine_en]))
             if 'channel' in ldata:
                 ch = int(ldata['channel'])
+                gc_now = (ldata.get('grid_code') if 'grid_code' in ldata
+                          else (_read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)[lane] >> 4) & 0x0F)
+                allowed = ch_ranges.get(int(gc_now))
+                if allowed and not (allowed[0] <= ch <= allowed[1]):
+                    return _err(
+                        'Lane %d: channel %d is outside the range the module '
+                        'advertises for the %s grid (%d to %d, 04h:%d-%d)'
+                        % (lane + 1, ch, cmis.GRID_CODES.get(int(gc_now), gc_now),
+                           allowed[0], allowed[1],
+                           130 + int(gc_now) * 4, 133 + int(gc_now) * 4), 400)
                 ch_bytes = struct.pack(">h", ch)
                 _state['backend'].write_bytes(cmis.REG_CHANNEL_NUM_TX[1] + lane * 2, ch_bytes)
             if 'fine_offset_ghz' in ldata:
-                ft = int(round(float(ldata['fine_offset_ghz']) / 0.001))
+                off = float(ldata['fine_offset_ghz'])
+                if not (fine_lo <= off <= fine_hi):
+                    return _err(
+                        'Lane %d: fine-tuning offset %g GHz is outside the '
+                        'advertised range (%g to %g GHz, 04h:192-195)'
+                        % (lane + 1, off, fine_lo, fine_hi), 400)
+                ft = int(round(off / 0.001))
                 _state['backend'].write_bytes(cmis.REG_FINE_OFFSET_TX[1] + lane * 2,
                                               struct.pack(">h", ft))
             if 'target_power_dbm' in ldata:
-                pwr = int(round(float(ldata['target_power_dbm']) / 0.01))
+                tgt = float(ldata['target_power_dbm'])
+                if not (pwr_lo <= tgt <= pwr_hi):
+                    return _err(
+                        'Lane %d: target output power %g dBm is outside the '
+                        'programmable range (%g to %g dBm, 04h:198-201)'
+                        % (lane + 1, tgt, pwr_lo, pwr_hi), 400)
+                pwr = int(round(tgt / 0.01))
                 _state['backend'].write_bytes(cmis.REG_TARGET_PWR_TX[1] + lane * 2,
                                               struct.pack(">h", pwr))
             written += 1
         if not written:
             return _err('No lane in range 1-8 was given', 400)
-        return _ok({'message': 'Laser tuning parameters written', 'lanes': written})
+        # Writing is not tuning. The module answers in the Page 12h Flags, and
+        # reporting success on the strength of the write alone told the
+        # operator a refused channel had been applied.
+        time.sleep(0.05)
+        raw = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
+        refused = {}
+        for i in range(_state['lanes']):
+            answered = cmis.parse_tuning_flags(raw[i])
+            bad = sorted(n for n, v in answered.items()
+                         if v and n not in ('tuning_complete', 'wavelength_unlocked'))
+            # This read clears the Flags, so the history is what the next GET
+            # will still have to show.
+            seen = _state['flag_history'].setdefault('tuning_%d' % (i + 1), set())
+            seen.update(bad)
+            if bad:
+                refused[i + 1] = bad
+        if refused and _state['flag_history_since'] is None:
+            _state['flag_history_since'] = time.time()
+        return _ok({'message': 'Laser tuning parameters written', 'lanes': written,
+                    'refused': refused})
     except Exception as e:
         return _err(str(e), 500)
 
