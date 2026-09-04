@@ -393,6 +393,8 @@ class MockBackend(I2CInterface):
         self._reset_time = 0.0
         self._lp_request_time = 0.0
         self._apply_time = 0.0
+        self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
+        self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
@@ -806,14 +808,20 @@ class MockBackend(I2CInterface):
             dt = now - self._apply_time
             if dt < 0.2:
                 for i in range(8):
+                    if self._config_result[i] != 0x1:
+                        continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x2
             elif dt < 0.5:
                 for i in range(8):
+                    if self._config_result[i] != 0x1:
+                        continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x5
             else:
                 for i in range(8):
+                    if self._config_result[i] != 0x1:
+                        continue        # validation failed: nothing executed
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x4
                     else:
@@ -825,8 +833,16 @@ class MockBackend(I2CInterface):
                     # read: this is the module's record that the path bounced.
                     self._registers[0x11][0x86] =                         self._registers[0x11].get(0x86, 0) | (1 << i)
                 self._apply_time = 0
+                # The Active Control Set only picks up the lanes that passed
+                # validation; the rest keep running what they were running.
+                for i in range(8):
+                    if self._config_result[i] == 0x1:
+                        self._registers[0x11][0xCE + i] = self._config_staged[i]
                 for a in range(0xCA, 0xCE):
-                    self._registers[0x11][a] = 0x11
+                    lane = (a - 0xCA) * 2
+                    self._registers[0x11][a] = (
+                        self._config_result[lane]
+                        | (self._config_result[lane + 1] << 4))
 
         # Write DP states back to Page 11h:0x80-0x83
         for i in range(8):
@@ -1010,7 +1026,20 @@ class MockBackend(I2CInterface):
             if 0x82 in span:                                        # OutputDisableTx
                 self._tx_disable_mask = data[0x82 - register]
             if 0x8F in span and data[0x8F - register] == 0xFF:      # ApplyDPInit
+                # Let an Apply already under way reach its result step first.
+                self._update_state_machine()
+                # CMIS 8.13.3 step (1): a command arriving while any relevant
+                # lane still reads ConfigInProgress is aborted "silently
+                # (without feedback)" - the module does not restage anything.
+                if self._apply_time > 0:
+                    return data
                 self._apply_time = time.time()
+                self._config_result = self._validate_staged_appsel()
+                # Validation and execution both act on the Staged Control Set
+                # as it stood when the Apply arrived. Reading 10h again at the
+                # completion step would commit whatever was staged since.
+                self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
+                                       for i in range(8)]
                 for a in range(0xCA, 0xCE):
                     self._registers[0x11][a] = 0xCC
         elif self._current_page == 0x13:
@@ -1118,6 +1147,21 @@ class MockBackend(I2CInterface):
         if measured['rx_power'] < thr(0xC2):
             p11[0x93] = p11.get(0x93, 0) | bit
             p11[0x94] = p11.get(0x94, 0) | bit
+
+    def _validate_staged_appsel(self):
+        """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).
+
+        A module only accepts an AppSelCode it actually advertises; picking one
+        it never announced is ConfigRejectedInvalidAppSel (3h). AppSelCode 0
+        means "no application" - deprovisioning a lane is always legal.
+        """
+        advertised = len(self._profile['app_descriptors'])
+        result = []
+        for i in range(8):
+            raw = self._registers[0x10].get(0x91 + i, 0x10)
+            code = (raw >> 4) & 0x0F
+            result.append(0x1 if code <= advertised else 0x3)
+        return result
 
     def _clear_acq_counters(self, mask, base):
         """Zero the lanes named in a 60h reset mask, within the current bank.

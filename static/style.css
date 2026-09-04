@@ -1073,3 +1073,13 @@ input[type="checkbox"] {
   line-height: 1.4;
 }
 .health-chip:hover { border-color: currentColor; }
+
+/* Staged AppSel that the module did not accept: it is still running something
+   else, and the dropdown alone cannot say so. */
+.appsel-mismatch {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  margin-top: 2px;
+  white-space: nowrap;
+  cursor: help;
+}

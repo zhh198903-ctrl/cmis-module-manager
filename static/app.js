@@ -1193,6 +1193,19 @@ async function loadDatapath() {
       field: `DPConfigLane${lane.lane}`, page: 0x10, addr: 0x91 + i,
       note: `AppSelCode = ${lane.app_select} (bits 7-4); DataPathID bits 3-1, ExplicitControl bit 0`,
     });
+    // The dropdown shows the Staged Control Set - what was asked for. When the
+    // module refuses an Apply it keeps running the previous Application, and
+    // this page went on showing the request as though it had taken. The
+    // rejection toast is gone in eight seconds; the wrong reading is not.
+    const active = lane.active_app_select;
+    const stale = active && active !== lane.app_select
+      ? `<div class="appsel-mismatch" title="${esc(
+          'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for App ' + lane.app_select
+          + ', but the Active Control Set (Page 11h:' + hex8(0xCE + i)
+          + ') says the module is running App ' + active
+          + '. The module did not accept the staged configuration.')}">`
+        + `running App ${active}</div>`
+      : '';
     const tipTx = regTip({
       field: `OutputDisableTx${lane.lane}`, page: 0x10, addr: 0x82,
       value: d.tx_disable_mask, bit: i,
@@ -1217,7 +1230,7 @@ async function loadDatapath() {
 
     return `<tr class="datapath-lane-row">
       <td>Lane ${lane.lane}</td>
-      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select></td>
+      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${stale}</td>
       <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
       <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
       <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>
@@ -1265,10 +1278,26 @@ async function applyDatapath() {
   await loadSquelch();
 
   // The write itself succeeding says nothing about whether the module accepted
-  // the configuration - it reports that per lane in ConfigStatus.
-  const mon = await apiGet('/api/module/monitoring');
+  // the configuration - it reports that per lane in ConfigStatus. Reading it
+  // once was reading it too early: ConfigInProgress is not a rejection, so an
+  // Apply still being processed was announced as a success.
+  let mon = await apiGet('/api/module/monitoring');
+  const deadline = Date.now() + 5000;
+  while (mon.status === 'ok'
+         && mon.data.lanes.some(l => l.config_status === 'ConfigInProgress')
+         && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 200));
+    mon = await apiGet('/api/module/monitoring');
+  }
+  const stillBusy = mon.status === 'ok'
+    && mon.data.lanes.some(l => l.config_status === 'ConfigInProgress');
+  if (stillBusy) {
+    toast('The module is still processing the configuration — '
+          + 'check the Config Status column', 'warning', 8000);
+    return;
+  }
   const rejected = mon.status === 'ok'
-    ? mon.data.lanes.filter(l => (l.config_status || '').startsWith('ConfigRejected'))
+    ? mon.data.lanes.filter(l => l.config_rejected)
     : [];
   if (rejected.length) {
     const detail = rejected.map(l => `L${l.lane}: ${l.config_status}`).join(', ');

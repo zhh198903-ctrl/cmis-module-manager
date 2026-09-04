@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.8.3'
+__version__ = '2.8.4'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -733,11 +733,12 @@ def api_module_monitoring():
     try:
         # DataPath state and Config Status pack 4 bits per lane, so they are
         # parsed per bank; the monitors are 2 bytes per lane and concatenate.
-        dp_states, cfg_statuses = [], []
+        dp_states, cfg_statuses, cfg_codes = [], [], []
         for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
             dp_states += cmis.parse_dp_states(raw)
         for _bank, raw in _read_banks(*cmis.REG_CONFIG_STATUS):
             cfg_statuses += cmis.parse_config_status(raw)
+            cfg_codes += cmis.parse_config_status_codes(raw)
         tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
         tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
         rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
@@ -756,6 +757,9 @@ def api_module_monitoring():
                 'tx_bias_ma': round(bias_ma, 3),
                 'datapath_state': dp_states[i],
                 'config_status': cfg_statuses[i],
+                # Whether the module accepted the configuration is a
+                # property of the code, not of how its name is spelled.
+                'config_rejected': cfg_codes[i] in cmis.CONFIG_STATUS_REJECTED,
             })
 
         return _ok({'lanes': lanes})
@@ -788,6 +792,13 @@ def api_datapath_get():
         for _bank, raw in _read_banks(*cmis.REG_APP_SELECT):
             app_select += cmis.unpack_appselect(raw)
 
+        # Page 10h is what was asked for; 11h is what the module is running.
+        # A rejected Apply leaves the two disagreeing, and showing only the
+        # staged value made a refused configuration look like the live one.
+        active_app_select = []
+        for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
+            active_app_select += cmis.unpack_appselect(raw)
+
         # Bank 0's values are what the summary fields have always reported.
         tx_disable_mask = tx_disable_masks[0]
         dp_deinit_mask = dp_deinit_masks[0]
@@ -804,6 +815,8 @@ def api_datapath_get():
                 'tx_enable': not bool((tx_disable_masks[b] >> bit) & 1),
                 'dp_deinit': bool((dp_deinit_masks[b] >> bit) & 1),
                 'app_select': app_select[i] if i < len(app_select) else 0,
+                'active_app_select': (active_app_select[i]
+                                      if i < len(active_app_select) else 0),
                 'tx_polarity_flip': bool((tx_pol_masks[b] >> bit) & 1),
                 'rx_polarity_flip': bool((rx_pol_masks[b] >> bit) & 1),
             })
@@ -814,6 +827,7 @@ def api_datapath_get():
             'tx_polarity_flip_mask': tx_pol_mask,
             'rx_polarity_flip_mask': rx_pol_mask,
             'app_select': app_select,
+            'active_app_select': active_app_select,
             'lanes': lanes,
         })
     except Exception as e:

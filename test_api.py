@@ -1513,6 +1513,236 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestAConfigurationTheModuleRefused(CMISTestCase):
+    """CMIS 8.13.3 runs an Apply as acceptance, validation, execution and
+    result feedback. A module only accepts an AppSelCode it advertises, and on
+    a validation failure it "skips the following command execution step" - so
+    the lane keeps running what it was running. No shipped mock ever refused
+    anything, which left the whole rejection path unexercised."""
+
+    def _apply(self, sel, backend='mock_dr8', connect=True):
+        # Reconnecting rebuilds the module, so a test that cares what was
+        # running before this Apply has to keep the session it set up.
+        if connect:
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': sel, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.0)
+        return (self.assertOk(self.client.get('/api/module/monitoring'))['data'],
+                self.assertOk(self.client.get('/api/module/datapath'))['data'])
+
+    def test_an_application_the_module_never_advertised_is_refused(self):
+        self.connect()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertLess(len(apps), 14, 'pick a code beyond what this mock has')
+        mon, _ = self._apply([14] * 8)
+        for lane in mon['lanes']:
+            self.assertEqual(lane['config_status'], 'ConfigRejectedInvalidAppSel',
+                             'lane %d accepted an Application that does not '
+                             'exist on this module' % lane['lane'])
+
+    def test_deprovisioning_a_lane_is_always_allowed(self):
+        """AppSelCode 0 means "no application", not "App 0"."""
+        mon, _ = self._apply([0] * 8)
+        for lane in mon['lanes']:
+            self.assertFalse(lane['config_rejected'],
+                             'lane %d refused to be deprovisioned'
+                             % lane['lane'])
+
+    def test_a_refused_lane_keeps_running_what_it_had(self):
+        self.connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.0)
+        mon, dp = self._apply([1, 1, 1, 1, 14, 14, 14, 14], connect=False)
+
+        for lane in dp['lanes'][:4]:
+            self.assertEqual(lane['active_app_select'], 1)
+        for lane in dp['lanes'][4:]:
+            self.assertEqual(lane['app_select'], 14,
+                             'the staged set should still hold the request')
+            self.assertEqual(lane['active_app_select'], 2,
+                             'a rejected lane was reconfigured anyway')
+
+    def test_a_refused_lane_does_not_restart_its_data_path(self):
+        """Execution is skipped, so the path never goes through DPInit - and
+        DPStateChangedFlag is the evidence either way."""
+        self.connect()
+        self.client.get('/api/module/flags')          # start from a clean slate
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self._apply([1, 1, 1, 1, 14, 14, 14, 14], connect=False)
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        bounced = [l['lane'] for l in lanes
+                   if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
+        self.assertEqual(bounced, [1, 2, 3, 4],
+                         'the lanes the module refused restarted anyway')
+
+    def test_an_accepted_apply_leaves_staged_and_active_agreeing(self):
+        _mon, dp = self._apply([2] * 8)
+        for lane in dp['lanes']:
+            self.assertEqual(lane['app_select'], lane['active_app_select'],
+                             'lane %d: the module accepted the configuration '
+                             'but is not running it' % lane['lane'])
+
+    def test_every_profile_refuses_the_same_way(self):
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_sr8',
+                        'mock_fr4x2', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                mon, _ = self._apply([15] * 8, backend)
+                self.assertTrue(all(l['config_rejected'] for l in mon['lanes']),
+                                '%s accepted App 15' % backend)
+
+
+class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
+    """CMIS 8.13.3: acceptance, parameter validation, execution, result
+    feedback. Both validation and execution act on the Staged Control Set as
+    it stood when the Apply arrived, and the module runs that sequence on its
+    own clock - not when the host happens to read."""
+
+    def _stage_and_apply(self, sel):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': sel, 'apply': True}),
+            content_type='application/json'))
+
+    def _active(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['active_app_select']
+
+    def test_a_second_apply_does_not_erase_the_first(self):
+        """The state machine used to advance only inside read_bytes, so two
+        Applies with no read between them lost the first one outright."""
+        self.connect()
+        self._stage_and_apply([2] * 8)
+        time.sleep(1.0)                       # deliberately no read here
+        self._stage_and_apply([1, 1, 1, 1, 14, 14, 14, 14])
+        time.sleep(1.0)
+        self.assertEqual(self._active(), [1, 1, 1, 1, 2, 2, 2, 2],
+                         'the first Apply never reached its result step')
+
+    def test_an_intervening_read_changes_nothing(self):
+        self.connect()
+        self._stage_and_apply([2] * 8)
+        time.sleep(1.0)
+        self.client.get('/api/module/datapath')
+        self._stage_and_apply([1, 1, 1, 1, 14, 14, 14, 14])
+        time.sleep(1.0)
+        self.assertEqual(self._active(), [1, 1, 1, 1, 2, 2, 2, 2],
+                         'the outcome depends on whether anyone was looking')
+
+    def test_an_apply_during_one_already_running_is_ignored(self):
+        """Step (1): if any relevant lane still reads ConfigInProgress the
+        module "aborts all further command handling steps for the relevant
+        Data Path silently (without feedback)"."""
+        self.connect()
+        self._stage_and_apply([2] * 8)
+        self._stage_and_apply([1] * 8)        # arrives while still in progress
+        time.sleep(1.2)
+        self.assertEqual(self._active(), [2] * 8,
+                         'a command sent during ConfigInProgress took effect')
+
+    def test_the_apply_uses_what_was_staged_when_it_arrived(self):
+        """Committing whatever 10h holds at the completion step let a late
+        Apply install a configuration nobody had validated."""
+        self.connect()
+        self._stage_and_apply([2] * 8)
+        time.sleep(1.0)
+        # Stage something invalid but do not apply it.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [14] * 8, 'apply': False}),
+            content_type='application/json'))
+        time.sleep(0.6)
+        self.assertEqual(self._active(), [2] * 8,
+                         'staging alone changed what the module is running')
+
+    def test_the_ui_waits_for_the_result_before_calling_it_a_success(self):
+        """ConfigInProgress is not a rejection, so reading ConfigStatus once
+        and immediately reported an unfinished Apply as applied."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('async function applyDatapath('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('ConfigInProgress', body,
+                      'the apply path never looks at whether the module has '
+                      'finished')
+        # `while (` on its own is satisfied by `while (false)`. Pin what the
+        # loop actually tests: still in progress, and not yet out of time.
+        loop = body[body.index('while ('):]
+        loop = loop[:loop.index('{')]
+        self.assertIn('ConfigInProgress', loop,
+                      'it checks once instead of waiting for the result')
+        self.assertIn('deadline', loop,
+                      'a module stuck in ConfigInProgress hangs the wait')
+
+
+class TestTheWholeNegativeRangeCountsAsRejection(CMISTestCase):
+    """Table 8-101 labels 2h-Bh and Dh-Fh "Negative Result Status" as one
+    block. Deciding by whether the decoded name begins with "ConfigRejected"
+    missed 8h - which the tool did not even name - and every reserved and
+    custom code, so a refused configuration got a success toast."""
+
+    def test_the_spec_codes_are_all_named(self):
+        import cmis_registers as c
+        for code, name in ((0x1, 'ConfigSuccess'),
+                           (0x3, 'ConfigRejectedInvalidAppSel'),
+                           (0x6, 'ConfigRejectedLanesInUse'),
+                           (0x8, 'ConfigRejectedNoEmulation'),
+                           (0xC, 'ConfigInProgress')):
+            self.assertEqual(c.CONFIG_STATUS_NAMES.get(code), name,
+                             'code 0x%X' % code)
+
+    def test_every_negative_code_is_treated_as_a_rejection(self):
+        import cmis_registers as c
+        for code in list(range(0x2, 0xC)) + list(range(0xD, 0x10)):
+            self.assertIn(code, c.CONFIG_STATUS_REJECTED,
+                          '0x%X is in the negative range of Table 8-101' % code)
+
+    def test_success_and_progress_are_not_rejections(self):
+        import cmis_registers as c
+        for code in (0x0, 0x1, 0xC):
+            self.assertNotIn(code, c.CONFIG_STATUS_REJECTED,
+                             '0x%X is not a negative result status' % code)
+
+    def test_the_ui_asks_the_api_not_the_spelling(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('async function applyDatapath('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('config_rejected', body,
+                      'the apply path decides by name prefix again')
+        self.assertNotIn("startsWith('ConfigRejected')", body,
+                         'a code the tool cannot name reads as accepted')
+
+    def test_the_lane_row_says_what_the_module_is_actually_running(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('async function loadDatapath('):]
+        self.assertIn('active_app_select', body,
+                      'the page shows the request and never the reality')
+        self.assertIn('appsel-mismatch', body,
+                      'a refused Application looks exactly like a live one')
+        # The marker existing is not the same as it being reachable: pin the
+        # comparison that decides whether a lane gets one.
+        self.assertRegex(
+            body, r'const stale = active && active !== lane\.app_select',
+            'the mismatch marker is never actually chosen')
+
+
 class TestTheWatchTellsTheTruthWhenItCannotRead(CMISTestCase):
     """The header chips are the only signal on every tab but Monitoring, and
     the poll that feeds them had no failure path at all: a dead server left

@@ -123,7 +123,11 @@ REG_RX_OUTPUT_DIS    = (0x10, 0x8A, 1)   # 138  OutputDisableRx
 REG_RX_SQUELCH_DIS   = (0x10, 0x8B, 1)   # 139  AutoSquelchDisableRx
 REG_APPLY_DATAPATH   = (0x10, 0x8F, 1)   # 143  ApplyDPInit, write 0xFF to apply
 REG_APPLY_IMM        = (0x10, 0x90, 1)   # 144  ApplyImmediate
-REG_APP_SELECT       = (0x10, 0x91, 8)   # 145-152 DPConfigLane1-8
+REG_APP_SELECT       = (0x10, 0x91, 8)   # 145-152 DPConfigLane1-8 (staged)
+# Page 10h holds the Staged Control Set: what the host asked for. What the
+# module is actually running is the Active Control Set on 11h (Table 8-92,
+# 206-234). They differ whenever a configuration was rejected.
+REG_ACTIVE_APP_SELECT = (0x11, 0xCE, 8)  # 206-213 Active DPConfigLane1-8
 
 # ---------------------------------------------------------------------------
 # Page 11h — DataPath Status & Monitoring (Table 8-82)
@@ -259,8 +263,28 @@ CONFIG_STATUS_NAMES = {
     0x5: "ConfigRejectedInvalidSI",
     0x6: "ConfigRejectedLanesInUse",
     0x7: "ConfigRejectedPartialDataPath",
+    0x8: "ConfigRejectedNoEmulation",
     0xC: "ConfigInProgress",
 }
+
+# Table 8-101 labels 2h-Bh and Dh-Fh "Negative Result Status" as one block, so
+# every code in those ranges is a rejection - including the ones it leaves
+# reserved and the custom ones it does not name. Deciding by the name prefix
+# read those as anything but a rejection, and a module answering, say, 9h got a
+# "configuration applied" toast.
+CONFIG_STATUS_REJECTED = frozenset(list(range(0x2, 0xC)) + list(range(0xD, 0x10)))
+
+
+def parse_config_status_codes(data: bytes) -> list:
+    """The raw ConfigStatus nibbles at Page 11h:202-205, one per lane."""
+    codes = []
+    for lane in range(8):
+        byte_idx = lane // 2
+        if byte_idx >= len(data):
+            codes.append(None)
+            continue
+        codes.append((data[byte_idx] >> ((lane % 2) * 4)) & 0x0F)
+    return codes
 
 # SFF-8024 Table 4-3 — Connector Type
 CONNECTOR_TYPES = {
