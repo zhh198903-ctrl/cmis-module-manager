@@ -386,6 +386,7 @@ class MockBackend(I2CInterface):
         self._connected = False
         self._current_page = 0x00
         self._current_bank = 0x00
+        self._last_module_state = None
         self._start_time = time.time()
         # State machine tracking
         self._module_state = 0b011      # ModuleReady
@@ -791,6 +792,13 @@ class MockBackend(I2CInterface):
             if self._module_state not in (0b011,):
                 self._module_state = 0b011
 
+        # 6.3.2: the module sets ModuleStateChangedFlag on entering a new state.
+        # It is a Flag, so it latches until read - a module that reset and came
+        # back between two polls is otherwise indistinguishable from one that
+        # never moved.
+        if self._module_state != self._last_module_state:
+            self._registers[None][0x08] =                 self._registers[None].get(0x08, 0) | 0x01
+            self._last_module_state = self._module_state
         self._registers[None][0x03] = (self._module_state << 1) | 0x01
 
         # DataPath state machine (ApplyDataPath)
@@ -1193,6 +1201,10 @@ class MockBackend(I2CInterface):
     _COR_BYTES = {
         None: range(0x08, 0x0A),
         0x11: range(0x86, 0x99),
+        # Table 8-138: the Page 14h diagnostic flags are RO/COR too. A pattern
+        # checker that lost lock for a moment during a long run is exactly the
+        # thing a long run is for, and it is gone one read later.
+        0x14: range(0x8A, 0x8C),
     }
 
     def _clear_on_read(self, page_dict, register: int, length: int) -> None:

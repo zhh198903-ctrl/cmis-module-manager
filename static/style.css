@@ -1051,3 +1051,25 @@ input[type="checkbox"] {
   vertical-align: middle;
   white-space: nowrap;
 }
+
+/* Header alert slot: always on screen, unlike the Monitoring summary bar.
+   It sits at the far right so the badges never push the Display button onto a
+   second row - that button is how someone with an unreadable UI fixes it. */
+.header-alert {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  display: inline-flex;
+  gap: 14px;
+  align-items: center;
+  white-space: nowrap;
+}
+.health-chip {
+  font: inherit;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 7px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.health-chip:hover { border-color: currentColor; }

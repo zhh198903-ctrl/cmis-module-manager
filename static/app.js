@@ -13,6 +13,7 @@ const AppState = {
   connected: false,
   currentTab: 'info',
   monitoringInterval: null,
+  healthInterval: null,
   monitoringIntervalMs: 2000,
   monitoringManual: false,
   backendsCache: [],   // cached result of /api/backends
@@ -296,6 +297,7 @@ async function connectModule() {
   // Auto-load info tab
   switchTab('info');
   loadInfo();
+  startHealthWatch();
 }
 
 async function disconnectModule() {
@@ -307,6 +309,8 @@ async function disconnectModule() {
   _moduleThresholds = null;
   _advertisedApps = [];
   stopMonitoring();
+  stopHealthWatch();
+  renderHealthIndicator({}, null);
   updateConnectionUI(false, '');
   clearBackendInfoArea();
   toast('Disconnected', 'info');
@@ -430,7 +434,9 @@ function switchTab(name) {
   // Stop monitoring if leaving that tab
   if (AppState.currentTab === 'monitoring' && name !== 'monitoring') {
     stopMonitoring();
+    startHealthWatch();
   }
+  if (name === 'monitoring') stopHealthWatch();   // its own loop takes over
 
   AppState.currentTab = name;
 
@@ -524,6 +530,7 @@ async function loadInfo() {
     ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
     ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
     ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
+    ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
   ];
 
   tbody.innerHTML = rows.map(([k, v, pg, addr, def, since]) => {
@@ -577,6 +584,16 @@ function rebuildLaneColumns() {
         td.id = prefix.startsWith('lb-') ? `${prefix}-${i}` : `${prefix}-td-${i}`;
       }
     });
+}
+
+// ModuleStateChangedFlag is latched and clear-on-read, so the poll that
+// notices a restart is also the one that erases it. What is worth showing is
+// the history, not the single frame it was true in.
+function moduleRestartCell(s) {
+  const seen = (s.seen || []).includes('module_state_changed');
+  if (s.module_state_changed) return '<span class="text-warning">Changing state now</span>';
+  if (seen) return '<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">Restarted since last clear</span>';
+  return '<span class="text-success">None</span>';
 }
 
 function polaritySummary(list) {
@@ -688,6 +705,62 @@ async function applyMls(commit) {
 // ---------------------------------------------------------------------------
 // Monitoring tab
 // ---------------------------------------------------------------------------
+// The Monitoring tab used to be the only thing polling the module, so
+// switching to any other tab stopped every read. Flags are latched and
+// clear-on-read, but the tool has to actually read them for the history to
+// record anything - sit on DataPath Config for an hour and the module could
+// alarm, restart and recover with nothing left to show for it. This keeps a
+// slow poll alive on every other tab: latching is what makes a slow rate
+// enough.
+const HEALTH_WATCH_MS = 5000;
+
+function startHealthWatch() {
+  stopHealthWatch();
+  if (!AppState.connected) return;
+  pollHealth();
+  AppState.healthInterval = setInterval(pollHealth, HEALTH_WATCH_MS);
+}
+
+function stopHealthWatch() {
+  if (AppState.healthInterval) {
+    clearInterval(AppState.healthInterval);
+    AppState.healthInterval = null;
+  }
+}
+
+async function pollHealth() {
+  if (!AppState.connected) return stopHealthWatch();
+  const [status, flags] = await Promise.all([
+    apiGet('/api/module/status'),
+    apiGet('/api/module/flags'),      // read so the server keeps the history
+  ]);
+  if (status.status === 'ok') renderHealthIndicator(status.data, flags.data);
+}
+
+// Chips, not sentences: a 1440x900 laptop at 150% scaling is a 683px viewport,
+// and spelled-out labels wrapped the header onto a second row for as long as
+// the condition lasted - which is the whole time you are chasing it.
+function renderHealthIndicator(s, flags) {
+  const el = document.getElementById('header-alert');
+  if (!el) return;
+  const bounced = (flags && flags.lanes || []).filter(
+    l => (l.seen || []).includes('dp_state_changed')).length;
+  const chips = [];
+  if (s.alarm_active)
+    chips.push(['danger', '⚠', '', 'A monitored value is outside its alarm threshold right now']);
+  if ((s.seen || []).includes('module_state_changed'))
+    chips.push(['warning', '↺', '', 'The module entered a new Module State since the last Clear flag history - a reset or a power event']);
+  if (bounced)
+    chips.push(['warning', '↯', String(bounced),
+                `${bounced} data path${bounced > 1 ? 's' : ''} went down and came back since the last Clear flag history`]);
+
+  el.innerHTML = chips.map(([tone, icon, count, tip]) =>
+    `<button class="health-chip text-${tone}" title="${esc(tip)}. Click for the detail.">`
+    + `${icon}${count ? '&thinsp;' + count : ''}</button>`).join('');
+  el.querySelectorAll('.health-chip').forEach(
+    b => b.addEventListener('click', () => switchTab('monitoring')));
+}
+
 function startMonitoring() {
   stopMonitoring();
   loadThresholds();
@@ -972,6 +1045,8 @@ async function _loadMonitoringOnce() {
       `&ensp;|&ensp;<span>Voltage: ${s.voltage_v?.toFixed(4)} V</span>` +
       (s.alarm_active ? `&ensp;|&ensp;<span class="text-danger">⚠ Alarm Active</span>` : '');
   }
+
+  renderHealthIndicator(s, flagsRes.status === 'ok' ? flagsRes.data : null);
 
   const tbody = document.getElementById('tbl-monitoring');
   if (!tbody) return;
@@ -1613,7 +1688,7 @@ async function applyLoopback() {
 // ---------------------------------------------------------------------------
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _renderPrbsTable(tbodyId, block, lolMask, base, side) {
+function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const isChecker = (lolMask !== undefined);
@@ -1647,7 +1722,16 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side) {
     let lolCell = '';
     if (isChecker) {
       const lol = !!((lolMask >> bit) & 1);
-      lolCell = `<td>${lol ? '<span class="flag-active">LOL</span>' : '<span class="flag-ok">●</span>'}</td>`;
+      // Losing lock for a moment part-way through a long pattern run is the
+      // thing a long run is for. The flag is cleared by the read that saw it,
+      // so a checker that slipped and recovered reads as locked.
+      const slipped = !!(lolSeen && lolSeen[i]);
+      lolCell = `<td>${lol
+        ? '<span class="flag-active">LOL</span>'
+        : slipped
+        ? '<span class="flag-was" title="Locked now, but lock was lost since the '
+          + 'flag history was cleared">&#9679;<sup>!</sup></span>'
+        : '<span class="flag-ok">●</span>'}</td>`;
     }
     // Lane i's 4-bit pattern selector sits in the low or high nibble of
     // pattern byte base+4+(i>>1).
@@ -1710,8 +1794,10 @@ async function loadPrbs() {
   const d = res.data;
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  undefined, 0x90, 'Host');
   _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, undefined, 0x98, 'Media');
-  _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0, 'Host');
-  _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8, 'Media');
+  _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
+                   'Host', d.host_chk_lol_seen);
+  _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
+                   'Media', d.media_chk_lol_seen);
 }
 
 async function applyPrbs() {
@@ -1946,6 +2032,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const r = await apiPost('/api/module/flags/clear', {});
     toast(r.status === 'ok' ? 'Flag history cleared' : r.message,
           r.status === 'ok' ? 'success' : 'error');
+    // A poll already in flight renders what it fetched before the clear, so
+    // the badges can sit there for another interval and the button looks
+    // broken. Blank them now and let the next poll fill them back in.
+    if (r.status === 'ok') renderHealthIndicator({}, null);
     loadMonitoring();
   });
 

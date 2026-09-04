@@ -39,6 +39,10 @@
     <div class="status-dot disconnected" id="status-dot"></div>
     <span id="status-text">Disconnected</span>
   </div>
+  <!-- Alarms and restarts are only rendered on the Monitoring tab, which
+       is the one tab where you would have seen them anyway. This slot is
+       always on screen and is fed by the background health watch. -->
+  <span id="header-alert" class="header-alert"></span>
   <!-- Deliberately not a tab: every tab button is disabled until a module is
        connected, and someone whose UI is too small to read has to be able to
        fix that first. -->

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.8.1'
+__version__ = '2.8.2'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -529,7 +529,22 @@ def api_module_status():
             'vcc_high_warn':   bool((f_byte9 >> 6) & 1),
             'vcc_low_warn':    bool((f_byte9 >> 7) & 1),
         }
-        any_alarm = any(temp_alarms.values()) or bool(mod_flags_raw[0] & 0x01)
+        state_changed = bool(mod_flags_raw[0] & 0x01)
+        # A state change is an event, not a fault. Folding it in here lit the
+        # alarm indicator every time somebody reset the module on purpose, and
+        # an indicator that cries wolf is one people stop reading.
+        any_alarm = any(temp_alarms.values())
+
+        # Module-level Flags are latched and clear-on-read like the lane ones,
+        # so the read that reports them is the read that destroys them.
+        module_seen = _state['flag_history'].setdefault('module', set())
+        if state_changed:
+            module_seen.add('module_state_changed')
+        for name, value in temp_alarms.items():
+            if value:
+                module_seen.add(name)
+        if _state['flag_history_since'] is None:
+            _state['flag_history_since'] = time.time()
 
         return _ok({
             'module_state': cmis.parse_module_state(state_raw[0]),
@@ -539,8 +554,9 @@ def api_module_status():
             'aux1_raw': struct.unpack(">h", aux1_raw[:2])[0] if len(aux1_raw) >= 2 else 0,
             'aux2_raw': struct.unpack(">h", aux2_raw[:2])[0] if len(aux2_raw) >= 2 else 0,
             'aux3_raw': struct.unpack(">h", aux3_raw[:2])[0] if len(aux3_raw) >= 2 else 0,
-            'module_state_changed': bool(mod_flags_raw[0] & 0x01),
+            'module_state_changed': state_changed,
             'alarm_active': any_alarm,
+            'seen': sorted(module_seen),
             **temp_alarms,
         })
     except Exception as e:
@@ -1209,6 +1225,21 @@ def api_prbs_get():
         except Exception:
             host_lol = 0
             media_lol = 0
+        # Latched and cleared by the read that just happened, so a checker that
+        # slipped for a moment mid-run leaves nothing behind unless this does.
+        history = _state['flag_history']
+        for mask, name in ((host_lol, 'host_prbs_lol'),
+                           (media_lol, 'media_prbs_lol')):
+            for bit in range(8):
+                if (mask >> bit) & 1:
+                    history.setdefault(bit + 1, set()).add(name)
+        if _state['flag_history_since'] is None:
+            _state['flag_history_since'] = time.time()
+
+        def lol_seen(name):
+            return [bool(name in history.get(lane + 1, ()))
+                    for lane in range(_state['lanes'])]
+
         return _ok({
             'host_gen':  _read_prbs_block(0x90),
             'media_gen': _read_prbs_block(0x98),
@@ -1216,6 +1247,8 @@ def api_prbs_get():
             'media_chk': _read_prbs_block(0xA8),
             'host_chk_lol_mask':  host_lol,
             'media_chk_lol_mask': media_lol,
+            'host_chk_lol_seen':  lol_seen('host_prbs_lol'),
+            'media_chk_lol_seen': lol_seen('media_prbs_lol'),
         })
     except Exception as e:
         return _err(str(e), 500)

@@ -1424,6 +1424,212 @@ class TestTheDataPathPassesThroughItsStates(CMISTestCase):
         self.assertIn('ModuleReady', seen, 'the module never came back up')
 
 
+class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
+    """The per-lane flags got a history; the module-level ones are latched in
+    exactly the same way and did not have one. A module that reset and came
+    back between two polls was indistinguishable from one that never moved."""
+
+    def test_the_mock_flags_a_state_change_at_all(self):
+        """6.3.2 has the module set ModuleStateChangedFlag on entering a new
+        state. It never did, so neither the tool's handling nor the demo could
+        show one."""
+        self.connect()
+        self.client.get('/api/module/status')          # clear what connecting set
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        deadline = time.time() + 4.0
+        saw = False
+        while time.time() < deadline and not saw:
+            saw = self.assertOk(
+                self.client.get('/api/module/status'))['data']['module_state_changed']
+            time.sleep(0.05)
+        self.assertTrue(saw, 'a reset walked the module through three states '
+                             'without flagging any of them')
+
+    def test_a_state_change_survives_the_read_that_reported_it(self):
+        self.connect()
+        self.client.get('/api/module/status')
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        time.sleep(2.0)
+        for _ in range(3):
+            d = self.assertOk(self.client.get('/api/module/status'))['data']
+            self.assertIn('module_state_changed', d['seen'],
+                          'the only record that the module restarted was lost')
+
+    def test_a_deliberate_reset_is_not_called_an_alarm(self):
+        """The indicator people glance at first should mean something is out
+        of spec. Lighting it because somebody pressed reset teaches them to
+        stop reading it."""
+        self.connect()
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            d = self.assertOk(self.client.get('/api/module/status'))['data']
+            if d['module_state_changed']:
+                self.assertFalse(d['alarm_active'],
+                                 'a state change on its own raised the alarm '
+                                 'indicator at %.1f C' % d['temperature_c'])
+            time.sleep(0.05)
+
+    def test_the_restart_reaches_the_screen(self):
+        """The history was recorded and then not shown anywhere. A record the
+        operator cannot see is the same as no record."""
+        js = self._read('static', 'app.js')
+        self.assertRegex(js, r"includes\('module_state_changed'\)",
+                         'the restart history never reaches the render')
+        idx = js.index('function moduleRestartCell(')
+        body = js[idx:idx + 700]
+        self.assertIn('flag-was', body,
+                      'a module that restarted looks like one that did not')
+        header = js[js.index('function renderHealthIndicator('):]
+        header = header[:header.index('\n}')]
+        self.assertIn('module_state_changed', header,
+                      'the always-visible header stays silent about a restart')
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_module_history_clears_with_the_rest(self):
+        self.connect()
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        time.sleep(2.0)
+        self.assertIn('module_state_changed',
+                      self.assertOk(self.client.get('/api/module/status'))['data']['seen'])
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertEqual(
+            self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
+
+
+class TestAConnectedModuleIsNeverLeftUnwatched(CMISTestCase):
+    """The flag history answers "what happened while I was away". Switching
+    tabs is a way of being away, and it used to stop every poll: on any tab
+    but Monitoring the tool read nothing, so the history recorded nothing."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_leaving_the_monitoring_tab_hands_the_poll_over(self):
+        js = self._js()
+        body = js[js.index('function switchTab('):]
+        body = body[:body.index("if (name === 'info')")]
+        stop = body.index('stopMonitoring()')
+        self.assertIn('startHealthWatch()', body[stop:stop + 200],
+                      'leaving Monitoring stops polling and starts nothing')
+
+    def test_the_watch_reads_the_flags_not_just_the_status(self):
+        """Reading /status alone leaves the lane history frozen: the server
+        accumulates it from the flags read."""
+        body = self._js()
+        body = body[body.index('async function pollHealth('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('/api/module/flags', body,
+                      'the background watch never reads the lane flags, so a '
+                      'bounce off-tab is lost')
+
+    def test_a_disconnect_stops_it(self):
+        js = self._js()
+        body = js[js.index('async function disconnectModule('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('stopHealthWatch()', body,
+                      'the watch keeps polling a module that is gone')
+
+    def test_the_two_loops_do_not_both_run(self):
+        """Double-polling doubles the I2C traffic on real hardware."""
+        js = self._js()
+        body = js[js.index('function switchTab('):]
+        body = body[:body.index("if (name === 'info')")]
+        self.assertIn('stopHealthWatch()', body,
+                      'entering Monitoring leaves the background watch running '
+                      'alongside it')
+
+    def test_the_chips_lead_to_the_detail(self):
+        """An indicator that says something happened without saying where is
+        worse than none: it starts a hunt across four tabs."""
+        js = self._js()
+        body = js[js.index('function renderHealthIndicator('):]
+        body = body[:body.index("\n}")]
+        self.assertIn("switchTab('monitoring')", body,
+                      'the header alert is a dead end')
+
+    def test_clearing_the_history_blanks_the_chips_at_once(self):
+        """The poll is 5 s. Leaving the chips lit that long after the button
+        is pressed reads as the button not working."""
+        js = self._js()
+        body = js[js.index("btn-clear-flag-history"):]
+        body = body[:body.index('loadMonitoring();')]
+        self.assertIn('renderHealthIndicator(', body,
+                      'Clear flag history leaves the header lit until the '
+                      'next poll comes round')
+
+    def test_the_header_slot_exists_to_render_into(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        head = html[html.index('<header>'):html.index('</header>')]
+        self.assertIn('id="header-alert"', head,
+                      'the only always-visible alert slot is not in the header')
+
+
+class TestAPatternCheckerThatSlipped(CMISTestCase):
+    """Table 8-138 makes the Page 14h diagnostic flags RO/COR. A checker that
+    lost lock part-way through a long run is the whole reason for running one,
+    and it reads as locked again one refresh later."""
+
+    def _slip(self, lanes_mask):
+        backend = _state['backend']
+        backend.write_bytes(0x7E, bytes([0, 0x14]))
+        backend._registers[0x14][0x8A] = lanes_mask
+
+    def test_lock_loss_is_latched_and_then_remembered(self):
+        self.connect()
+        self.client.get('/api/module/prbs')            # start from clean
+        self._slip(0b00000101)                         # lanes 1 and 3
+
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_chk_lol_mask'], 0b00000101)
+        self.assertEqual(d['host_chk_lol_seen'][:4], [True, False, True, False])
+
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_chk_lol_mask'], 0,
+                         'the flag survived the read that reported it')
+        self.assertEqual(d['host_chk_lol_seen'][:4], [True, False, True, False],
+                         'a checker that slipped now reads as if it never had')
+
+    def test_the_checker_row_marks_a_lane_that_slipped(self):
+        js = self._read('static', 'app.js')
+        idx = js.index('function _renderPrbsTable(')
+        body = js[idx:idx + 2200]
+        self.assertIn('lolSeen', body, 'the render ignores the slip history')
+        self.assertIn('flag-was', body,
+                      'a checker that slipped looks like one that never did')
+        # Nothing here runs the script, so pin the expression that decides it:
+        # the marker existing is not the same as it being reachable.
+        self.assertRegex(body, r'slipped\s*=\s*!!\(\s*lolSeen\s*&&\s*lolSeen\[',
+                         'the slip marker is never actually chosen')
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+
 class TestABouncedDataPathIsNotSilent(CMISTestCase):
     """CMIS 6.3.3: the module sets DPStateChangedFlag when a data path reaches
     a lasting steady state through a real transition. It is the module's own

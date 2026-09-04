@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.8.1<br>
+      <b>版本</b>　2.8.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.8.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.8.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,74 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>标题栏的两个小图标——切到别的页也不会漏</h3>
+  <p>以前只有 <b>Monitoring</b> 页在轮询模块：切到其它任何一页，
+     工具就<b>完全停了读</b>。你在 DataPath Config 里改一下午配置，
+     期间模块告警、重启、链路弹过——回到 Monitoring 时什么都不剩，
+     因为没人去读那些门锁位，历史自然也无从记起。</p>
+  <p>现在只要连着模块，<b>后台每 5 秒会轻量轮询一次</b>（只读状态和标志，
+     不拉整张监控表），不管你停在哪一页。门锁位的意义就在于此：
+     5 秒一次足够接住一个瞬时事件。发现情况时，<b>标题栏</b>会出现小图标：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>图标</th><th>含义</th><th>来源</th></tr></thead>
+      <tbody>
+        <tr><td><b style="color:#f38ba8">⚠</b></td>
+            <td>当前有监控值超出告警阀值</td>
+            <td class="label">Lower 0x09（实时状态，不是历史）</td></tr>
+        <tr><td><b style="color:#f9e2af">↺</b></td>
+            <td>模块重启过（自上次 Clear 起）</td>
+            <td class="label">Lower 0x08[0] ModuleStateChangedFlag</td></tr>
+        <tr><td><b style="color:#f9e2af">↯&thinsp;N</b></td>
+            <td>有 N 条数据通道弹过（自上次 Clear 起）</td>
+            <td class="label">11h:134 DPStateChangedFlag</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><b>图标可以点</b>，点一下直接跳到 Monitoring 看具体哪几条通道。
+     点 <b>Clear flag history</b> 后图标立即消失，从当下重新开始计。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>为什么是图标而不是文字</b>：1440×900 的本本在 Windows 150%
+    缩放下只有 683 CSS 像素宽，写成一整句会把标题栏挤成三行——
+    而你正在查间歇性故障时，它会一直亮着。鼠标悬停在图标上有完整说明。</span>
+  </div>
+
+  <h3>Module Restarts —— 模块自己重启过的记录</h3>
+  <p>上面讲的是单条通道。模块整体也有一个对应的标志：
+     <b>ModuleStateChangedFlag</b>（<code>Lower 0x08[0]</code>，CMIS 6.3.2）。
+     模块每次进入新的 Module State 都会置位——复位、掉电又上电、
+     固件切换都算。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>它同样是闩锁、读清的。一个模块在两次刷新之间重启完成，
+    前后两帧看到的都是 <b>ModuleReady</b>，温度电压也正常——
+    <b>没有任何一栏会告诉你它刚刚重启过</b>。
+    现在 Module Info 里的 <b>Module Restarts</b> 一行会保留
+    <span class="flag-was">●<sup>!</sup></span> <i>Restarted since last clear</i>，
+    顶部摘要栏同时出现 <b>↺ Restarted</b>。
+    与 Lane Flags 的历史共用同一个 <b>Clear flag history</b> 按钮。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>你自己点 <b>Software Reset</b> 也会点亮它，这是正常的。
+    它<b>不算告警</b>——顶栏的 <span class="text-danger">⚠ Alarm Active</span>
+    只代表有读数超出阀值，不会因为重启而亮。</span>
+  </div>
+
+  <h3>PRBS 检测器中途失锁</h3>
+  <p>Diagnostics 里的 PRBS 表格同样适用这条规则。检测器的
+     <b>LOL（Loss of Lock）</b>位在 <code>14h:0x8A–0x8B</code>（Table 8-138），
+     同样是 RO/COR——门限、读清。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>跑一个长时间的 BER 测试，<b>中途失锁正是你要找的东西</b>，
+    而下一次刷新它已经重新锁上，表里看起来一切正常。<br>
+    现在失过锁的通道会在 Lock 列保留
+    <span class="flag-was">●<sup>!</sup></span> 标记。<b>看到它就说明这条通道的
+    BER 结果不可信</b>——计数器在失锁期间是无意义的，应该清一次重跑。</span>
   </div>
 
   <div class="callout callout-note">
@@ -1669,7 +1737,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.8.1<br>
+    CMIS Module Manager 操作手册 v2.8.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
