@@ -1091,3 +1091,11 @@ input[type="checkbox"] {
   font-family: var(--font-mono);
   margin-top: 1px;
 }
+
+/* What the module says it cannot do, above the controls that would try. */
+.caps-note {
+  font-size: var(--fs-xs);
+  color: var(--warning);
+  margin-bottom: var(--sp-2);
+}
+.caps-note:empty { display: none; }

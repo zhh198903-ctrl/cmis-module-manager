@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.9.0'
+__version__ = '2.9.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1172,6 +1172,7 @@ def api_loopback_get():
             'media_side_input':  cols[1][0],
             'host_side_output':  cols[2][0],
             'host_side_input':   cols[3][0],
+            'capabilities': _diag_caps()['loopback'],
             'media_side_output_banks': cols[0],
             'media_side_input_banks':  cols[1],
             'host_side_output_banks':  cols[2],
@@ -1193,6 +1194,37 @@ def api_loopback_set():
         media_in  = _masks_per_bank(body.get('media_side_input',  0), banks)
         host_out  = _masks_per_bank(body.get('host_side_output',  0), banks)
         host_in   = _masks_per_bank(body.get('host_side_input',   0), banks)
+
+        caps = _diag_caps()['loopback']
+        requested = (('media_side_output', media_out), ('media_side_input', media_in),
+                     ('host_side_output', host_out), ('host_side_input', host_in))
+        for name, masks in requested:
+            if any(masks) and not caps[name]:
+                return _err('This module does not support %s loopback '
+                            '(13h:128 bit %d is clear)'
+                            % (name.replace('_', ' '),
+                               ('media_side_output', 'media_side_input',
+                                'host_side_output', 'host_side_input').index(name)),
+                            400)
+        # A module without per-lane loopback engages all its lanes or none.
+        all_lanes = (1 << min(_state['lanes'], 8)) - 1
+        for side, names in (('media', ('media_side_output', 'media_side_input')),
+                            ('host', ('host_side_output', 'host_side_input'))):
+            if caps['per_lane_%s' % side]:
+                continue
+            for name, masks in requested:
+                if name in names and any(masks) and any(
+                        m not in (0, all_lanes) for m in masks):
+                    return _err('This module has no per-lane %s side loopback '
+                                '(13h:128 bit %d is clear): it takes all lanes '
+                                'or none' % (side, 5 if side == 'media' else 4),
+                                400)
+        if not caps['simultaneous_host_and_media'] and \
+                any(any(m) for n, m in requested if n.startswith('media')) and \
+                any(any(m) for n, m in requested if n.startswith('host')):
+            return _err('This module cannot hold a host side and a media side '
+                        'loopback at the same time (13h:128 bit 6 is clear)', 400)
+
         for b in range(banks):
             _set_page(0x13, b)
             _state['backend'].write_bytes(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
@@ -1200,6 +1232,17 @@ def api_loopback_set():
         return _ok({'message': 'Loopback configuration written'})
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _diag_caps() -> dict:
+    """13h:128-142. What the module says it can do, which is the only thing
+    that makes an option worth offering."""
+    raw = _read_upper(*cmis.REG_DIAG_CAPS)
+    return {
+        'loopback': cmis.parse_loopback_caps(raw[0]),
+        'measurement': cmis.parse_diag_meas_caps(raw[1]),
+        'patterns': cmis.parse_pattern_caps(raw[4:12]),
+    }
 
 
 def _read_prbs_block(base_addr: int) -> dict:
@@ -1255,6 +1298,7 @@ def api_prbs_get():
                     for lane in range(_state['lanes'])]
 
         return _ok({
+            'pattern_capabilities': _diag_caps()['patterns'],
             'host_gen':  _read_prbs_block(0x90),
             'media_gen': _read_prbs_block(0x98),
             'host_chk':  _read_prbs_block(0xA0),
@@ -1276,6 +1320,7 @@ def api_prbs_set():
     try:
         body = request.get_json(silent=True) or {}
         banks = (_state['lanes'] + 7) // 8
+        pattern_caps = _diag_caps()['patterns']
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),
@@ -1285,6 +1330,22 @@ def api_prbs_set():
             section = body.get(key, {})
             if not section:
                 continue
+            supported = pattern_caps[key]
+            for lane, pat in enumerate(section.get('patterns', []) or []):
+                if int(pat) not in supported and any(
+                        _masks_per_bank(section.get('enable_mask', 0), banks)):
+                    return _err(
+                        'Lane %d: this module\'s %s does not support pattern '
+                        '%d (%s). It advertises %s in 13h:%d-%d'
+                        % (lane + 1, key.replace('_', ' '), int(pat),
+                           cmis.PATTERN_NAMES.get(int(pat), 'unknown'),
+                           ', '.join(cmis.PATTERN_NAMES.get(i, str(i))
+                                     for i in supported) or 'none',
+                           132 + 2 * ('host_gen', 'media_gen', 'host_chk',
+                                      'media_chk').index(key),
+                           133 + 2 * ('host_gen', 'media_gen', 'host_chk',
+                                      'media_chk').index(key)),
+                        400)
             en  = _masks_per_bank(section.get('enable_mask', 0), banks)
             inv = _masks_per_bank(section.get('invert_mask', 0), banks)
             sw  = _masks_per_bank(section.get('byte_swap_mask', 0), banks)

@@ -304,6 +304,9 @@ _XD16_1600G = {
 
 _SR8_800G = {
     'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
+    # All four loopback types, but no per-lane granularity and not host and
+    # media at the same time (13h:128 bits 6-4 clear).
+    'loopback_caps':   0x0F,
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     'vendor_sn':       b"DEMO000000003   ",
@@ -666,6 +669,26 @@ class MockBackend(I2CInterface):
 
         # ==== Page 13h — Diagnostic Controls ====
         p13 = {}
+        # 128-142: what this module can actually do. A module that accepts
+        # every pattern and every loopback while advertising none of them is
+        # not a module anyone can test a host against.
+        # A host has to cope with less capable modules too, so one profile
+        # advertises the four loopback types without per-lane granularity and
+        # without holding a host and a media loopback at once - which is a
+        # perfectly ordinary thing for a short-reach module to say.
+        p13[0x80] = p.get('loopback_caps', 0x7F)
+        p13[0x81] = 0x7C        # gating <=2 ms, results, periodic updates,
+                                # per-lane timers, auto-restart
+        p13[0x82] = 0x00        # reporting capabilities
+        p13[0x83] = 0x00        # generation/checking locations
+        # Patterns 0,1 (PRBS31Q/31), 6,7 (PRBS13Q/13), 8,9 (PRBS9Q/9),
+        # 10,11 (PRBS7Q/7) and 12 (SSPRQ). The 23- and 15-bit patterns are
+        # not offered, which is typical and gives the host something to hide.
+        for a in (0x84, 0x86, 0x88, 0x8A):      # 132/134/136/138: IDs 0-7
+            p13[a] = 0xC3
+        for a in (0x85, 0x87, 0x89, 0x8B):      # 133/135/137/139: IDs 8-15
+            p13[a] = 0x1F
+        for a in range(0x8C, 0x8F): p13[a] = 0x00
         for base in [0x90, 0x98, 0xA0, 0xA8]:
             for off in range(8): p13[base + off] = 0x00
         p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0

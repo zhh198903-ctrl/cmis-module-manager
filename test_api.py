@@ -1037,14 +1037,15 @@ class TestMultiBankLanes(CMISTestCase):
         self.assertEqual(got['media_side_output_banks'], [0x03, 0x0C])
 
         # Distinct patterns per bank: identical ones cannot tell "split across
-        # banks" from "bank 0 written twice".
+        # banks" from "bank 0 written twice". Both have to be patterns this
+        # module advertises in 13h:132-133, or the write is refused outright.
         post('/api/module/prbs', {'host_gen': {'enable_mask': [0xFF, 0x0F],
-                                               'patterns': [3] * 8 + [5] * 8}})
+                                               'patterns': [1] * 8 + [7] * 8}})
         got = self.assertOk(self.client.get('/api/module/prbs'))['data']['host_gen']
         self.assertEqual(got['enable_mask_banks'], [0xFF, 0x0F])
         self.assertEqual(len(got['patterns']), 16)
-        self.assertEqual(got['patterns'][0], 3)
-        self.assertEqual(got['patterns'][15], 5,
+        self.assertEqual(got['patterns'][0], 1)
+        self.assertEqual(got['patterns'][15], 7,
                          "bank 1 was given bank 0's patterns")
 
     def test_the_masked_controls_still_take_a_plain_byte(self):
@@ -1511,6 +1512,175 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
         self.assertOk(self.client.post('/api/module/flags/clear'))
         self.assertEqual(
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
+
+
+class TestTheModuleSaysWhatDiagnosticsItHas(CMISTestCase):
+    """13h:128-142 is the diagnostic advertisement: which loopbacks exist, how
+    a measurement can be gated, and which patterns each generator and checker
+    supports. No mock advertised any of it while accepting everything, and the
+    tool read none of it while offering everything."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _loopback(self):
+        return self.assertOk(self.client.get('/api/module/loopback'))['data']
+
+    def test_a_module_that_accepts_everything_advertises_something(self):
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_sr8',
+                        'mock_fr4x2', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                caps = self._loopback()['capabilities']
+                self.assertTrue(any(caps.values()),
+                                '%s advertises no diagnostics at all while '
+                                'accepting every loopback set on it' % backend)
+
+    def test_the_supported_patterns_are_a_real_subset(self):
+        """All sixteen would make the advertisement pointless to read."""
+        self._connect()
+        caps = self._prbs()['pattern_capabilities']
+        for role in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            self.assertTrue(caps[role], '%s supports no pattern at all' % role)
+            self.assertNotIn(2, caps[role],
+                             '%s claims every pattern, so nothing is gated'
+                             % role)
+
+    def test_a_pattern_the_generator_does_not_have_is_refused(self):
+        self._connect()
+        rv = self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({'host_gen': {'enable_mask': 0xFF,
+                                          'patterns': [2] * 8}}),
+            content_type='application/json')
+        self.assertEqual(rv.status_code, 400,
+                         'the module was told to generate a pattern it does '
+                         'not have')
+        msg = json.loads(rv.data)['message']
+        self.assertIn('PRBS23Q', msg)
+        self.assertIn('13h:132', msg, 'the refusal does not say what it is '
+                                      'going by')
+
+    def test_a_pattern_it_does_have_still_works(self):
+        self._connect()
+        caps = self._prbs()['pattern_capabilities']['host_gen']
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({'host_gen': {'enable_mask': 0xFF,
+                                          'patterns': [caps[0]] * 8}}),
+            content_type='application/json'))
+
+    def test_a_loopback_type_the_module_lacks_is_refused(self):
+        """No shipped profile drops a type, so drive the advertisement
+        directly - a real module that lacks one is common enough."""
+        self._connect()
+        backend = _state['backend']
+        backend.write_bytes(0x7E, bytes([0, 0x13]))
+        backend._registers[0x13][0x80] = 0x0E      # media side output cleared
+        rv = self.client.post(
+            '/api/module/loopback',
+            data=json.dumps({'media_side_output': 0xFF}),
+            content_type='application/json')
+        self.assertEqual(rv.status_code, 400)
+        self.assertIn('13h:128', json.loads(rv.data)['message'])
+
+    def test_a_module_without_per_lane_loopback_takes_all_or_none(self):
+        self._connect('mock_sr8')
+        caps = self._loopback()['capabilities']
+        self.assertFalse(caps['per_lane_host'],
+                         'this profile is meant to be the less capable one')
+        rv = self.client.post(
+            '/api/module/loopback',
+            data=json.dumps({'host_side_input': 0x0F}),
+            content_type='application/json')
+        self.assertEqual(rv.status_code, 400,
+                         'four of eight lanes were accepted by a module that '
+                         'moves them together')
+        self.assertOk(self.client.post(
+            '/api/module/loopback',
+            data=json.dumps({'host_side_input': 0xFF}),
+            content_type='application/json'))
+
+    def test_host_and_media_together_are_refused_when_unsupported(self):
+        self._connect('mock_sr8')
+        rv = self.client.post(
+            '/api/module/loopback',
+            data=json.dumps({'host_side_input': 0xFF,
+                             'media_side_output': 0xFF}),
+            content_type='application/json')
+        self.assertEqual(rv.status_code, 400)
+        self.assertIn('same time', json.loads(rv.data)['message'])
+
+    def test_the_measurement_capabilities_decode(self):
+        """13h:129 carries the gating support the diagnostics rely on."""
+        import cmis_registers as c
+        caps = c.parse_diag_meas_caps(0x7C)
+        self.assertEqual(caps['gating_support'], 1)
+        self.assertTrue(caps['per_lane_gating_timers'])
+        self.assertFalse(c.parse_diag_meas_caps(0x00)['gating_results'])
+
+
+class TestTheDiagnosticsPanelOffersWhatTheModuleHas(CMISTestCase):
+    """The pattern dropdown listed all thirteen names whatever the module
+    said, and every loopback box was tickable on every module."""
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_pattern_list_comes_from_the_module(self):
+        js = self._read('static', 'app.js')
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('\nfunction ', 1)]
+        self.assertRegex(body, r'const ids = supported && supported\.length',
+                         'the dropdown is not built from what the module '
+                         'advertises')
+
+    def test_an_unadvertised_pattern_in_use_stays_visible(self):
+        """Snapping the box to another value would quietly change what the
+        module is being asked to do."""
+        js = self._read('static', 'app.js')
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('\nfunction ', 1)]
+        self.assertIn('not advertised', body,
+                      'a lane sitting on a pattern the module no longer '
+                      'advertises is silently retargeted')
+
+    def test_an_unsupported_loopback_box_cannot_be_ticked(self):
+        js = self._read('static', 'app.js')
+        body = js[js.index('function _populateLoopbackRow('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('cb.disabled = true', body,
+                      'a loopback the module does not have is still offered')
+
+    def test_without_per_lane_the_boxes_move_together(self):
+        js = self._read('static', 'app.js')
+        body = js[js.index('function _populateLoopbackRow('):]
+        body = body[:body.index('\n}')]
+        # The name appearing is not the branch existing: pin the condition
+        # and the loop that actually moves the other boxes.
+        self.assertRegex(body, r'else if \(!perLane\)',
+                         'per-lane boxes are shown for a module that engages '
+                         'a whole side at once')
+        branch = body[body.index('else if (!perLane)'):]
+        branch = branch[:branch.index('});')]
+        self.assertIn('other.checked = cb.checked', branch,
+                      'ticking one box leaves the rest behind on a module '
+                      'that moves a whole side together')
+
+    def test_the_panel_says_what_the_module_will_not_do(self):
+        html = self._read('templates', 'index.html')
+        js = self._read('static', 'app.js')
+        self.assertIn('id="loopback-caps"', html)
+        self.assertIn("getElementById('loopback-caps')", js,
+                      'the note element is never filled in')
 
 
 class TestATuningRequestTheLaserCannotServe(CMISTestCase):
@@ -2176,7 +2346,7 @@ class TestAPatternCheckerThatSlipped(CMISTestCase):
     def test_the_checker_row_marks_a_lane_that_slipped(self):
         js = self._read('static', 'app.js')
         idx = js.index('function _renderPrbsTable(')
-        body = js[idx:idx + 2200]
+        body = js[idx:js.index('\nfunction ', idx + 1)]
         self.assertIn('lolSeen', body, 'the render ignores the slip history')
         self.assertIn('flag-was', body,
                       'a checker that slipped looks like one that never did')

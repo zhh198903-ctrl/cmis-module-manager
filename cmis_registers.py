@@ -233,6 +233,10 @@ REG_HOST_PRBS_GEN    = (0x13, 0x90, 8)   # 144-151
 REG_MEDIA_PRBS_GEN   = (0x13, 0x98, 8)   # 152-159
 REG_HOST_PRBS_CHK    = (0x13, 0xA0, 8)   # 160-167
 REG_MEDIA_PRBS_CHK   = (0x13, 0xA8, 8)   # 168-175
+# 128-142 are the diagnostic capability advertisements: which loopbacks the
+# module has, how it can gate a measurement, and which patterns each generator
+# and checker actually supports. Offering the rest is offering nothing.
+REG_DIAG_CAPS        = (0x13, 0x80, 15)  # 128-142
 REG_MEDIA_OUT_LB     = (0x13, 0xB4, 1)
 REG_MEDIA_IN_LB      = (0x13, 0xB5, 1)
 REG_HOST_OUT_LB      = (0x13, 0xB6, 1)
@@ -703,6 +707,59 @@ NEW_IN_5_4 = frozenset({
 })
 
 # Grid spacing code 1001b was added in CMIS 5.4; 5.3 stopped at 150 GHz.
+# Table 8-115. IDs 13 (reserved), 14 (Custom) and 15 (User Pattern) exist too,
+# but only the named patterns are worth offering by name.
+PATTERN_NAMES = {
+    0: 'PRBS31Q', 1: 'PRBS31', 2: 'PRBS23Q', 3: 'PRBS23', 4: 'PRBS15Q',
+    5: 'PRBS15', 6: 'PRBS13Q', 7: 'PRBS13', 8: 'PRBS9Q', 9: 'PRBS9',
+    10: 'PRBS7Q', 11: 'PRBS7', 12: 'SSPRQ', 14: 'Custom', 15: 'User Pattern',
+}
+
+
+def parse_loopback_caps(byte_val: int) -> dict:
+    """13h:128 (Table 8-111)."""
+    return {
+        'media_side_output': bool(byte_val & 0x01),
+        'media_side_input':  bool(byte_val & 0x02),
+        'host_side_output':  bool(byte_val & 0x04),
+        'host_side_input':   bool(byte_val & 0x08),
+        'per_lane_host':     bool(byte_val & 0x10),
+        'per_lane_media':    bool(byte_val & 0x20),
+        'simultaneous_host_and_media': bool(byte_val & 0x40),
+    }
+
+
+def parse_diag_meas_caps(byte_val: int) -> dict:
+    """13h:129 (Table 8-112)."""
+    return {
+        'gating_support': (byte_val >> 6) & 0x03,
+        'gating_results': bool(byte_val & 0x20),
+        'periodic_updates': bool(byte_val & 0x10),
+        'per_lane_gating_timers': bool(byte_val & 0x08),
+        'auto_restart_gating': bool(byte_val & 0x04),
+    }
+
+
+def parse_pattern_caps(data: bytes) -> dict:
+    """13h:132-139 (Tables 8-116, 8-117), little endian, two bytes per role.
+
+    Returns the supported pattern IDs for each generator and checker.
+    """
+    roles = (('host_gen', 0), ('media_gen', 2), ('host_chk', 4), ('media_chk', 6))
+    out = {}
+    for name, off in roles:
+        ids = []
+        if off + 2 <= len(data):
+            low, high = data[off], data[off + 1]
+            for bit in range(8):
+                if (low >> bit) & 1:
+                    ids.append(bit)
+                if (high >> bit) & 1:
+                    ids.append(bit + 8)
+        out[name] = sorted(ids)
+    return out
+
+
 GRID_CODES = {0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz',
               4: '50 GHz', 5: '100 GHz', 6: '33 GHz', 7: '75 GHz',
               8: '150 GHz', 9: '300 GHz', 15: 'Not available'}

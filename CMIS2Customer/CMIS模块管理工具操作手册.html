@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.9.0<br>
+      <b>版本</b>　2.9.1<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.9.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.1 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,51 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>PRBS 图案与环回：只列出模块真有的</h3>
+  <p>模块在 <code>13h:128–142</code> 里声明了自己的诊断能力：
+     有哪几种环回、能不能按通道分别控制、
+     以及每个发生器/检测器到底支持哪些图案。工具此前从不读它，
+     所以图案下拉框列出全部 13 种，四种环回全部可勾选。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>寄存器</th><th>内容</th><th>表</th></tr></thead>
+      <tbody>
+        <tr><td><code>13h:128</code></td>
+            <td>四种环回类型；是否支持逐通道（主机侧 / 媒体侧）；
+                是否允许主机侧与媒体侧同时生效</td>
+            <td class="label">Table 8-111</td></tr>
+        <tr><td><code>13h:129</code></td>
+            <td>测量能力：门控精度、门控统计、周期更新、
+                逐通道计时器、自动重启门控</td>
+            <td class="label">Table 8-112</td></tr>
+        <tr><td><code>13h:132–139</code></td>
+            <td>主机/媒体侧 <b>发生器</b>、主机/媒体侧 <b>检测器</b>
+                各自支持的图案 ID（每角色 2 字节，小端）</td>
+            <td class="label">Table 8-116 / 8-117</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>现在：<b>图案下拉框只列出该发生器或检测器声明的图案</b>。
+     内置演示模块声明的是 PRBS31Q/31、PRBS13Q/13、PRBS9Q/9、PRBS7Q/7 和 SSPRQ，
+     所以 PRBS23/23Q/15/15Q 不会出现在列表里——这就是真实模块的常见情况。
+     若某通道当前就停在一个未声明的图案上，列表会保留它并标注
+     <i>not advertised</i>，而不是默默改成别的值。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>环回有两个很容易踩的限制</b>，都写在 <code>13h:128</code> 里：<br>
+    一是<b>不支持逐通道</b>的模块，一侧要么全开要么全关——
+    以前界面给你一排可以单独勾的框，而实际不是那么回事；<br>
+    二是<b>不允许主机侧与媒体侧同时生效</b>的模块。<br>
+    现在不支持的类型<b>直接置灰不可勾</b>；不支持逐通道时，
+    勾任意一个框会<b>整排一起勾上</b>，并在卡片顶部给出说明。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>内置的 <b>mock_sr8</b> 故意声明为能力较弱的模块（四种环回都有，
+    但不支持逐通道、也不允许两侧同时），方便你在没有硬件时
+    验证主机软件对这类模块的处理。其它演示模块声明为全能力。</span>
   </div>
 
   <h3>激光器调谐：模块不会你写什么就调到哪</h3>
@@ -1848,7 +1893,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.9.0<br>
+    CMIS Module Manager 操作手册 v2.9.1<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

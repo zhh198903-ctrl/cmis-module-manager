@@ -1718,22 +1718,39 @@ async function applySquelch() {
 // ---------------------------------------------------------------------------
 // Loopback (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _populateLoopbackRow(prefix, mask, meta) {
+function _populateLoopbackRow(prefix, mask, meta, caps, capName) {
   const masks = Array.isArray(mask) ? mask : [mask];
+  const supported = !caps || caps[capName] !== false;
+  const side = capName && capName.startsWith('media') ? 'media' : 'host';
+  const perLane = !caps || caps['per_lane_' + side] !== false;
   for (let i = 0; i < AppState.lanes; i++) {
     const td = document.getElementById(`lb-${prefix}-${i}`);
     if (!td) continue;
     td.innerHTML = _mkCheckbox(`lb-cb-${prefix}-${i}`);
     const cb = document.getElementById(`lb-cb-${prefix}-${i}`);
+    if (!supported) {
+      cb.disabled = true;
+      cb.title = 'This module does not advertise this loopback type (13h:128)';
+    } else if (!perLane) {
+      // The module engages the whole side or none of it, so a row of boxes
+      // that can be ticked one at a time is a lie about what will happen.
+      cb.addEventListener('change', () => {
+        for (let j = 0; j < AppState.lanes; j++) {
+          const other = document.getElementById(`lb-cb-${prefix}-${j}`);
+          if (other) other.checked = cb.checked;
+        }
+      });
+    }
     const bankMask = masks[Math.floor(i / 8)] || 0;
     const bit = i % 8;
     cb.checked = !!((bankMask >> bit) & 1);
-    if (meta) {
+    if (meta && supported) {
       const tip = regTip({
         field: `${meta.field}Lane${i + 1}`,
         page: 0x13, addr: meta.addr, value: bankMask, bit,
         note: ((bankMask >> bit) & 1) ? 'Loopback engaged on this lane' : 'Normal non-loopback operation',
-      });
+      }) + (perLane ? '' : '\nThis module has no per-lane loopback on the '
+                          + side + ' side: all lanes move together');
       cb.title = tip;
       td.title = tip;
     }
@@ -1756,14 +1773,30 @@ async function loadLoopback() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/loopback');
   if (res.status !== 'ok') { toast(`Loopback error: ${res.message}`, 'error'); return; }
+  const caps = res.data.capabilities || {};
   _populateLoopbackRow('mso', res.data.media_side_output_banks || res.data.media_side_output,
-    { field: 'MediaSideOutputLoopbackEnable', addr: 0xB4 });
+    { field: 'MediaSideOutputLoopbackEnable', addr: 0xB4 }, caps, 'media_side_output');
   _populateLoopbackRow('msi', res.data.media_side_input_banks || res.data.media_side_input,
-    { field: 'MediaSideInputLoopbackEnable', addr: 0xB5 });
+    { field: 'MediaSideInputLoopbackEnable', addr: 0xB5 }, caps, 'media_side_input');
   _populateLoopbackRow('hso', res.data.host_side_output_banks || res.data.host_side_output,
-    { field: 'HostSideOutputLoopbackEnable', addr: 0xB6 });
+    { field: 'HostSideOutputLoopbackEnable', addr: 0xB6 }, caps, 'host_side_output');
   _populateLoopbackRow('hsi', res.data.host_side_input_banks || res.data.host_side_input,
-    { field: 'HostSideInputLoopbackEnable', addr: 0xB7 });
+    { field: 'HostSideInputLoopbackEnable', addr: 0xB7 }, caps, 'host_side_input');
+  const note = document.getElementById('loopback-caps');
+  if (note) {
+    const missing = ['media_side_output', 'media_side_input',
+                     'host_side_output', 'host_side_input'].filter(k => caps[k] === false);
+    const bits = [];
+    if (missing.length) bits.push('Not supported by this module: '
+      + missing.map(k => k.replace(/_/g, ' ')).join(', '));
+    if (caps.per_lane_host === false || caps.per_lane_media === false)
+      bits.push('No per-lane loopback — a side takes all lanes or none');
+    if (caps.simultaneous_host_and_media === false)
+      bits.push('Host side and media side loopbacks cannot be held at the same time');
+    note.innerHTML = bits.length
+      ? '⚠ ' + bits.map(esc).join(' · ') + ' <span class="reg-meta">13h:128</span>'
+      : '';
+  }
 }
 
 async function applyLoopback() {
@@ -1778,7 +1811,7 @@ async function applyLoopback() {
 // ---------------------------------------------------------------------------
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen) {
+function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const isChecker = (lolMask !== undefined);
@@ -1806,9 +1839,18 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen) {
     const sw  = !!((swM(b)  >> bit) & 1);
     const fec = !!((fecM(b) >> bit) & 1);
     const pattern = block.patterns[i] || 0;
-    const patOpts = PRBS_PATTERNS.map((name, idx) =>
-      `<option value="${idx}" ${pattern === idx ? 'selected' : ''}>${name}</option>`
-    ).join('');
+    // 13h:132-139 says which patterns this generator or checker has. Listing
+    // all of them let the operator start a run the module cannot produce, and
+    // the module simply would not do it.
+    const ids = supported && supported.length
+      ? supported.filter(id => PRBS_PATTERNS[id] !== undefined)
+      : PRBS_PATTERNS.map((_n, idx) => idx);
+    const patOpts = ids.map(idx =>
+      `<option value="${idx}" ${pattern === idx ? 'selected' : ''}>${PRBS_PATTERNS[idx]}</option>`
+    ).join('')
+    + (ids.includes(pattern) ? ''
+       : `<option value="${pattern}" selected>${PRBS_PATTERNS[pattern] || pattern}`
+         + ` — not advertised</option>`);
     let lolCell = '';
     if (isChecker) {
       const lol = !!((lolMask >> bit) & 1);
@@ -1882,12 +1924,12 @@ async function loadPrbs() {
   const res = await apiGet('/api/module/prbs');
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
-  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  undefined, 0x90, 'Host');
-  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, undefined, 0x98, 'Media');
+  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  undefined, 0x90, 'Host', undefined, (d.pattern_capabilities || {}).host_gen);
+  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, undefined, 0x98, 'Media', undefined, (d.pattern_capabilities || {}).media_gen);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
-                   'Host', d.host_chk_lol_seen);
+                   'Host', d.host_chk_lol_seen, (d.pattern_capabilities || {}).host_chk);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
-                   'Media', d.media_chk_lol_seen);
+                   'Media', d.media_chk_lol_seen, (d.pattern_capabilities || {}).media_chk);
 }
 
 async function applyPrbs() {
