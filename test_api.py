@@ -1514,6 +1514,144 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestTxBiasIsScaledTheWayTheModuleSaid(CMISTestCase):
+    """01h:160.4-3 (Table 8-53) multiplies the 2 uA bias increment by 1, 2 or
+    4. The decoder hard-coded 2 uA, so a module using x2 or x4 had every bias
+    reading and every bias threshold understated by that factor."""
+
+    X1_CEILING_MA = 0xFFFF * 0.002        # 131.07 mA
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_the_scaling_factor_is_read(self):
+        self._connect('mock_coherent_zr')
+        mon = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['monitors']
+        self.assertEqual(mon['tx_bias_scale'], 2,
+                         'the scaling factor is not read from 01h:160')
+
+    def test_a_bias_above_the_x1_ceiling_is_reported(self):
+        """65535 increments of 2 uA stop at 131 mA. A module reading above
+        that is proof the factor is being applied."""
+        self._connect('mock_coherent_zr')
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertGreater(lane['tx_bias_ma'], self.X1_CEILING_MA,
+                           'the bias reads below what x1 scaling can express, '
+                           'so the factor is being ignored')
+
+    def test_the_thresholds_are_scaled_with_it(self):
+        """A scaled monitor against unscaled thresholds alarms on a healthy
+        laser, or stays silent on a dying one."""
+        self._connect('mock_coherent_zr')
+        thr = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertGreater(thr['tx_bias_high_alarm_ma'], self.X1_CEILING_MA)
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertLess(lane['tx_bias_ma'], thr['tx_bias_high_alarm_ma'])
+        self.assertGreater(lane['tx_bias_ma'], thr['tx_bias_low_alarm_ma'])
+
+    def test_an_unscaled_module_is_unchanged(self):
+        self._connect('mock_dr8')
+        mon = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['monitors']
+        self.assertEqual(mon['tx_bias_scale'], 1)
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertLess(lane['tx_bias_ma'], self.X1_CEILING_MA)
+
+    def test_the_reserved_code_does_not_quadruple_anything(self):
+        """11b is reserved. Treating it as a multiplier would be inventing one."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_supported_monitors(bytes([0, 0x18]))
+                         ['tx_bias_scale'], 1)
+        self.assertEqual(c.parse_supported_monitors(bytes([0, 0x10]))
+                         ['tx_bias_scale'], 4)
+        self.assertEqual(c.parse_supported_monitors(bytes([0, 0x08]))
+                         ['tx_bias_scale'], 2)
+
+
+class TestAFlagTheModuleDoesNotImplement(CMISTestCase):
+    """01h:157-158 (Table 8-52) says which Flags the module has. One it does
+    not implement reads 0 - exactly what a healthy lane reads - so the table
+    coloured it green and said "no fault" about a lane nobody was watching."""
+
+    def _connect(self, backend='mock_sr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_the_advertisement_is_read(self):
+        self._connect('mock_dr8')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIn('flags_supported', caps,
+                      'nothing reads which Flags the module implements')
+
+    def test_the_flags_endpoint_says_which_are_real(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/flags'))['data']
+        self.assertIn('supported', d)
+        self.assertFalse(d['supported']['rx_cdr_lol'],
+                         'this profile is meant to lack the Rx CDR LOL Flag')
+        self.assertTrue(d['supported']['rx_los'])
+
+    def test_a_module_that_reports_flags_advertises_them(self):
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_fr4x2',
+                        'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                sup = self.assertOk(
+                    self.client.get('/api/module/flags'))['data']['supported']
+                for name in ('tx_fault', 'tx_los', 'rx_los'):
+                    self.assertTrue(sup[name],
+                                    '%s reports %s while advertising that it '
+                                    'has no such Flag' % (backend, name))
+
+    def test_the_table_does_not_call_it_healthy(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function renderFlags('):]
+        body = body[:body.index('\nfunction ', 1)]
+        self.assertRegex(body, r'implemented === false',
+                         'an unimplemented Flag renders as a healthy one')
+        for name in ('tx_fault', 'tx_los', 'tx_cdr_lol', 'rx_los', 'rx_cdr_lol'):
+            self.assertIn("has('%s')" % name, body,
+                          '%s is coloured without asking whether the module '
+                          'has it' % name)
+
+
+class TestTheMockAdvertisesThePagesItServes(CMISTestCase):
+    """142.5 DiagnosticPagesSupported says Pages 13h-14h are there. Every
+    profile builds and serves both while advertising that it has neither."""
+
+    def test_every_profile_admits_to_its_diagnostic_pages(self):
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_sr8',
+                        'mock_fr4x2', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                self.assertOk(self.client.post(
+                    '/api/connect',
+                    data=json.dumps({'backend': backend, 'bus': 0,
+                                     'address': 80}),
+                    content_type='application/json'))
+                caps = self.assertOk(
+                    self.client.get('/api/module/capabilities'))['data']
+                self.assertTrue(caps['diagnostic_pages_supported'],
+                                '%s serves PRBS and BER from Pages 13h-14h '
+                                'while advertising that it has neither'
+                                % backend)
+                # And the pages really do answer.
+                self.assertOk(self.client.get('/api/module/prbs'))
+                self.assertOk(self.client.get('/api/module/ber'))
+
+
 class TestTheControlsTheModuleSaysItHas(CMISTestCase):
     """01h:155-156 (Table 8-51) is the Supported Controls Advertisement: which
     of the lane controls the panels offer the module actually implements. No

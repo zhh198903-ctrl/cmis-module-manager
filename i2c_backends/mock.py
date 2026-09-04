@@ -24,6 +24,12 @@ from i2c_interface import I2CInterface, register_backend
 import cmis_registers as cmis
 
 
+def _bias_scale(profile):
+    """01h:160.4-3 as a multiplier. 65535 increments of 2 uA stop at 131 mA,
+    so a laser biased above that has to advertise x2 or x4."""
+    return {0: 1, 1: 2, 2: 4}.get((profile.get('monitors_160', 0x07) >> 3) & 0x03, 1)
+
+
 def _dbm_to_raw(dbm):
     """dBm -> the 16-bit optical power register encoding (units of 0.1 uW)."""
     raw = int(round(10 ** (dbm / 10.0) * 10000))
@@ -106,6 +112,9 @@ _COHERENT_800G = {
 # nothing to demonstrate.
 _ZR_800G = {
     'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
+    # Biased past the 131 mA that x1 scaling can express, so 160.4-3 says x2.
+    'monitors_160':    0x0F,
+    'bias_thresholds_ma': (260.0, 90.0, 240.0, 100.0),
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-DP800G-QDD ",
     'vendor_sn':       b"DEMO000000007   ",
@@ -121,7 +130,7 @@ _ZR_800G = {
     'tunable':             True,
     'tx_power_uw_nom':     1000,             # 0 dBm
     'rx_power_uw_nom':     158,              # -8 dBm
-    'tx_bias_ma_nom':      60.0,
+    'tx_bias_ma_nom':      180.0,
     'temperature_c_nom':   62.0,
     'base_ber':            1.0e-9,
     'snr_db_nom':          18.0,
@@ -304,6 +313,11 @@ _XD16_1600G = {
 
 _SR8_800G = {
     'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
+    # No Tx adaptive input EQ fail Flag and no Rx CDR LOL Flag: a VCSEL module
+    # with a simpler retimer, and something for the table to mark as not
+    # implemented rather than colour green.
+    'flags_157':       0x07,
+    'flags_158':       0x02,
     # All four loopback types, but no per-lane granularity and not host and
     # media at the same time (13h:128 bits 6-4 clear).
     'loopback_caps':   0x0F,
@@ -522,7 +536,7 @@ class MockBackend(I2CInterface):
         # margin covers the few percent the readings swing by.
         for key, scale, unit in (('tx_power_uw_nom', 10, 'uW'),
                                  ('rx_power_uw_nom', 10, 'uW'),
-                                 ('tx_bias_ma_nom', 1 / 0.002, 'mA')):
+                                 ('tx_bias_ma_nom', 1 / (0.002 * _bias_scale(p)), 'mA')):
             nominal = p.get(key, 0)
             if nominal * scale * 1.05 > 0xFFFF:
                 raise ValueError(
@@ -541,6 +555,9 @@ class MockBackend(I2CInterface):
             # the count exactly, which is what it is for.
             p01[0x8E] = 0x03
             p01[0xAE] = (lanes // 8 - 1) & 0x1F
+        # 142.5 DiagnosticPagesSupported: every profile builds and serves
+        # Pages 13h and 14h, so every profile has to say so.
+        p01[0x8E] |= 0x20
         # MediaLaneAssignmentOptions (01h:176-183, Table 8-60) is stored apart
         # from the first four descriptor bytes and is required on a paged
         # module. An Application that uses m of the eight media lanes can start
@@ -565,6 +582,17 @@ class MockBackend(I2CInterface):
         p01[0x9C] = p.get('controls_156', 0x07)      # auto squelch disable Rx,
                                                      # output disable Rx,
                                                      # Rx polarity flip
+        # 157-158 Supported Flags, 159-160 Supported Monitors (Tables 8-52,
+        # 8-53). Leaving these zero says the module implements no Flags and no
+        # monitors at all, while it goes on reporting both.
+        p01[0x9D] = p.get('flags_157', 0x0F)         # Tx adaptive EQ fail,
+                                                     # CDR LOL, LOS, fault
+        p01[0x9E] = p.get('flags_158', 0x06)         # Rx CDR LOL, Rx LOS
+        p01[0x9F] = p.get('monitors_159', 0x03)      # Vcc and temperature
+        # 160.4-3 is the Tx bias scaling factor: 65535 increments of 2 uA stop
+        # at 131 mA, so a module biased above that has to scale.
+        p01[0xA0] = p.get('monitors_160', 0x07)      # Rx and Tx optical power,
+                                                     # Tx bias, x1 scaling
 
         if p.get('cmis_rev', 0x53) >= 0x54:
             p01[0xAB] = p.get('default_polarity_tx', 0x00)   # 171 (5.4)
@@ -583,8 +611,10 @@ class MockBackend(I2CInterface):
         # at a fraction of an EML's current, so one generic quad cannot serve
         # both. A profile whose nominal sits outside them alarms on connect.
         bias = p.get('bias_thresholds_ma')
-        bias_thr = ([int(round(v / 0.002)) for v in bias] if bias
-                    else [0xEA60, 0x1388, 0xC350, 0x2710])
+        bias_step = 0.002 * _bias_scale(p)
+        bias_thr = ([int(round(v / bias_step)) for v in bias] if bias
+                    else [int(round(v * 0.002 / bias_step))
+                          for v in (0xEA60, 0x1388, 0xC350, 0x2710)])
         tx_thr = [_dbm_to_raw(v) for v in thr['tx']] if 'tx' in thr else             [0x7B84, 0x062C, 0x6220, 0x09CE]
         rx_thr = [_dbm_to_raw(v) for v in thr['rx']] if 'rx' in thr else             [0x2710, 0x0064, 0x1F04, 0x00A0]
         p02 = {}
@@ -649,7 +679,7 @@ class MockBackend(I2CInterface):
             p11[a] = (tx_raw >> 8) & 0xFF
             p11[a + 1] = tx_raw & 0xFF
         # Per-lane Tx Bias
-        bias_raw = int(p['tx_bias_ma_nom'] / 0.002) & 0xFFFF
+        bias_raw = int(p['tx_bias_ma_nom'] / (0.002 * _bias_scale(p))) & 0xFFFF
         for i in range(8):
             a = 0xAA + i * 2
             p11[a] = (bias_raw >> 8) & 0xFF
@@ -944,7 +974,7 @@ class MockBackend(I2CInterface):
                 bias_ma = p['tx_bias_ma_nom'] * (1.0 + 0.033 * math.sin(2 * math.pi * t / 120.0 + phase))
             else:
                 bias_ma = 0.0
-            bias_val = int(bias_ma / 0.002) & 0xFFFF
+            bias_val = int(bias_ma / (0.002 * _bias_scale(p))) & 0xFFFF
             a = 0xAA + lane * 2
             self._registers[0x11][a] = (bias_val >> 8) & 0xFF
             self._registers[0x11][a + 1] = bias_val & 0xFF
@@ -1189,7 +1219,7 @@ class MockBackend(I2CInterface):
 
         measured = {
             'tx_power': int(tx_uw * 10),
-            'tx_bias': int(bias_ma / 0.002),
+            'tx_bias': int(bias_ma / (0.002 * _bias_scale(self._profile))),
             'rx_power': int(rx_uw * 10),
         }
         bit = 1 << lane

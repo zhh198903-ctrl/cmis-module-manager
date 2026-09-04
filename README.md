@@ -58,7 +58,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-406 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+416 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

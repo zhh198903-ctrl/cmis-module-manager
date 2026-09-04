@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.9.2'
+__version__ = '2.9.3'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -277,6 +277,10 @@ def _discover_capabilities() -> dict:
         caps.update(cmis.parse_misc_caps(_read_upper(*cmis.REG_MISC_CAPS)[0]))
         caps['controls'] = cmis.parse_supported_controls(
             _read_upper(*cmis.REG_SUPPORTED_CONTROLS))
+        caps['flags_supported'] = cmis.parse_supported_flags(
+            _read_upper(*cmis.REG_SUPPORTED_FLAGS))
+        caps['monitors'] = cmis.parse_supported_monitors(
+            _read_upper(*cmis.REG_SUPPORTED_MONITORS))
         caps['default_polarity'] = cmis.parse_default_polarity(
             _read_upper(*cmis.REG_DEFAULT_POLARITY))
         sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
@@ -741,6 +745,10 @@ def api_module_monitoring():
         for _bank, raw in _read_banks(*cmis.REG_CONFIG_STATUS):
             cfg_statuses += cmis.parse_config_status(raw)
             cfg_codes += cmis.parse_config_status_codes(raw)
+        # 01h:160.4-3 multiplies the 2 uA bias increment, so a module using
+        # x2 or x4 reads half or a quarter of its real bias without it.
+        bias_scale = ((_state.get('caps') or {}).get('monitors')
+                      or {}).get('tx_bias_scale', 1)
         tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
         tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
         rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
@@ -749,7 +757,7 @@ def api_module_monitoring():
         for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
             rx_uw = cmis.parse_power_uw(rx_power_raw[i*2:(i+1)*2])
-            bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2])
+            bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2], bias_scale)
             lanes.append({
                 'lane': i + 1,
                 'tx_power_uw': round(tx_uw, 2),
@@ -997,6 +1005,11 @@ def api_module_flags():
         rxpwr_hw  = flags(0x97)
         rxpwr_lw  = flags(0x98)
 
+        # A Flag the module does not implement reads 0, the same as a healthy
+        # lane. Say which ones mean anything rather than colouring them green.
+        supported_flags = ((_state.get('caps') or {}).get('flags_supported')
+                           or {})
+
         lanes = []
         history = _state['flag_history']
         for i in range(_state['lanes']):
@@ -1032,6 +1045,7 @@ def api_module_flags():
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
         return _ok({'lanes': lanes,
+                    'supported': supported_flags,
                     'history_since': _state['flag_history_since']})
     except Exception as e:
         return _err(str(e), 500)
@@ -1075,10 +1089,13 @@ def api_module_thresholds():
         txpwr_hw_uw = cmis.parse_power_uw(rd(0xB4))
         txpwr_lw_uw = cmis.parse_power_uw(rd(0xB6))
 
-        txbias_ha = cmis.parse_tx_bias_ma(rd(0xB8))
-        txbias_la = cmis.parse_tx_bias_ma(rd(0xBA))
-        txbias_hw = cmis.parse_tx_bias_ma(rd(0xBC))
-        txbias_lw = cmis.parse_tx_bias_ma(rd(0xBE))
+        # The thresholds count the same scaled increments as the monitor.
+        bias_scale = ((_state.get('caps') or {}).get('monitors')
+                      or {}).get('tx_bias_scale', 1)
+        txbias_ha = cmis.parse_tx_bias_ma(rd(0xB8), bias_scale)
+        txbias_la = cmis.parse_tx_bias_ma(rd(0xBA), bias_scale)
+        txbias_hw = cmis.parse_tx_bias_ma(rd(0xBC), bias_scale)
+        txbias_lw = cmis.parse_tx_bias_ma(rd(0xBE), bias_scale)
 
         rxpwr_ha_uw = cmis.parse_power_uw(rd(0xC0))
         rxpwr_la_uw = cmis.parse_power_uw(rd(0xC2))

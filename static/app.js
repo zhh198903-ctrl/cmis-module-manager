@@ -1082,7 +1082,7 @@ async function _loadMonitoringOnce() {
     return;
   }
   if (flagsRes.status === 'ok') {
-    renderFlags(flagsRes.data.lanes);
+    renderFlags(flagsRes.data.lanes, flagsRes.data.supported);
     clearMonitoringStale();
     // A module that was pulled and put back must not leave the page frozen
     // with a clear banner, which reads as live.
@@ -1568,7 +1568,10 @@ function formatBer(ber) {
 // ---------------------------------------------------------------------------
 // Flags (Monitoring tab)
 // ---------------------------------------------------------------------------
-function renderFlags(lanes) {
+function renderFlags(lanes, supported) {
+  // 01h:157-158 (Table 8-52) says which of these the module implements. One it
+  // does not reads 0, the same as a healthy lane.
+  const has = (name) => !supported || supported[name] !== false;
   const tbody = document.getElementById('tbl-flags');
   if (!tbody || !lanes) return;
 
@@ -1578,7 +1581,12 @@ function renderFlags(lanes) {
     // now" and "never happened" look identical in the register. They are not
     // the same thing to whoever is chasing an intermittent link, so a lane
     // that has fired since the last clear keeps saying so.
-    function flagCell(val, isAlarm, name) {
+    function flagCell(val, isAlarm, name, implemented) {
+      if (implemented === false) {
+        return '<span class="flag-none" title="This module does not implement '
+             + 'this Flag (01h:157-158), so the register reads 0 whatever the '
+             + 'lane is doing">n/a</span>';
+      }
       if (val) {
         return isAlarm
           ? '<span class="flag-active">&#9632; ALARM</span>'
@@ -1596,11 +1604,11 @@ function renderFlags(lanes) {
       ? '<span class="flag-warn" title="This data path reached a steady state '
         + 'through a real transition since the last read">&#9650; CHANGED</span>'
       : flagCell(false, false, 'dp_state_changed');
-    const txFault   = flagCell(lane.tx_fault, true, 'tx_fault');
-    const txLos     = flagCell(lane.tx_los, true, 'tx_los');
-    const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol');
-    const rxLos     = flagCell(lane.rx_los, true, 'rx_los');
-    const rxCdrLol  = flagCell(lane.rx_cdr_lol, true, 'rx_cdr_lol');
+    const txFault   = flagCell(lane.tx_fault, true, 'tx_fault', has('tx_fault'));
+    const txLos     = flagCell(lane.tx_los, true, 'tx_los', has('tx_los'));
+    const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol', has('tx_cdr_lol'));
+    const rxLos     = flagCell(lane.rx_los, true, 'rx_los', has('rx_los'));
+    const rxCdrLol  = flagCell(lane.rx_cdr_lol, true, 'rx_cdr_lol', has('rx_cdr_lol'));
 
     const anyAlarm = lane.tx_power_high_alarm || lane.tx_power_low_alarm ||
                      lane.tx_bias_high_alarm  || lane.tx_bias_low_alarm  ||

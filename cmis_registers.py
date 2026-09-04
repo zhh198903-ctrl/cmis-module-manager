@@ -120,6 +120,8 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 # actually implements. Offering one it does not is offering a control that
 # writes a register the module ignores.
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
+REG_SUPPORTED_FLAGS    = (0x01, 0x9D, 2)  # 157-158 (Table 8-52)
+REG_SUPPORTED_MONITORS = (0x01, 0x9F, 2)  # 159-160 (Table 8-53)
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
 REG_TX_FORCE_SQUELCH = (0x10, 0x84, 1)   # 132  OutputSquelchForceTx
 REG_RX_POL_FLIP      = (0x10, 0x89, 1)   # 137  OutputPolarityFlipRx
@@ -424,8 +426,13 @@ def uw_to_dbm(uw: float) -> float:
     return 10.0 * math.log10(uw / 1000.0)
 
 
-def parse_tx_bias_ma(raw: bytes) -> float:
-    return struct.unpack(">H", raw[:2])[0] * 0.002
+def parse_tx_bias_ma(raw: bytes, scale: int = 1) -> float:
+    """Tx bias in mA. The register counts 2 uA increments, but 01h:160.4-3
+    multiplies that by 1, 2 or 4 (Table 8-53): 65535 increments of 2 uA stop
+    at 131 mA, so anything above that has to scale. Ignoring the factor
+    understates every bias reading and threshold by 2x or 4x.
+    """
+    return struct.unpack(">H", raw[:2])[0] * 0.002 * scale
 
 
 def parse_ascii(raw: bytes) -> str:
@@ -752,6 +759,46 @@ def parse_supported_controls(data: bytes) -> dict:
         'auto_squelch_disable_rx':   bool(b156 & 0x04),
         'output_disable_rx':         bool(b156 & 0x02),
         'output_polarity_flip_rx':   bool(b156 & 0x01),
+    }
+
+
+def parse_supported_flags(data: bytes) -> dict:
+    """01h:157-158 (Table 8-52).
+
+    A Flag the module does not implement reads 0, which is exactly what a
+    healthy lane reads. Without this the two are indistinguishable.
+    """
+    b157 = data[0] if len(data) > 0 else 0
+    b158 = data[1] if len(data) > 1 else 0
+    return {
+        'tx_adaptive_eq_fail': bool(b157 & 0x08),
+        'tx_cdr_lol':          bool(b157 & 0x04),
+        'tx_los':              bool(b157 & 0x02),
+        'tx_fault':            bool(b157 & 0x01),
+        'rx_cdr_lol':          bool(b158 & 0x04),
+        'rx_los':              bool(b158 & 0x02),
+    }
+
+
+def parse_supported_monitors(data: bytes) -> dict:
+    """01h:159-160 (Table 8-53), including the Tx bias scaling factor."""
+    b159 = data[0] if len(data) > 0 else 0
+    b160 = data[1] if len(data) > 1 else 0
+    scale_code = (b160 >> 3) & 0x03
+    return {
+        'custom':          bool(b159 & 0x20),
+        'aux3':            bool(b159 & 0x10),
+        'aux2':            bool(b159 & 0x08),
+        'aux1':            bool(b159 & 0x04),
+        'vcc':             bool(b159 & 0x02),
+        'temperature':     bool(b159 & 0x01),
+        'rx_optical_power': bool(b160 & 0x04),
+        'tx_optical_power': bool(b160 & 0x02),
+        'tx_bias':         bool(b160 & 0x01),
+        # 11b is reserved; treating it as x1 keeps a malformed advertisement
+        # from silently quadrupling every reading.
+        'tx_bias_scale':   {0: 1, 1: 2, 2: 4}.get(scale_code, 1),
+        'tx_bias_scale_code': scale_code,
     }
 
 

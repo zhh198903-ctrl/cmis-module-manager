@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.9.2<br>
+      <b>版本</b>　2.9.3<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.2 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.9.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.3 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1030,6 +1030,45 @@
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
   </div>
+
+  <h3>Tx 偏置电流的刻度倍数</h3>
+  <p>Tx 偏置寄存器数的是 <b>2 µA 的个数</b>，但
+     <code>01h:160.4-3</code>（Table 8-53）还给它一个
+     <b>×1 / ×2 / ×4 的倍数</b>。工具此前把刻度写死成 2 µA，
+     从不读这两位。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>后果不是“少显示一个字段”，而是
+    <b>数值错了 2 倍或 4 倍</b>——监控读数和阀值都错。<br>
+    而且这不是假想情况：16 位寄存器 × 2 µA 的上限只有
+    <b>131.07 mA</b>，所以偏置高于这个值的模块（相干模块很常见）
+    <b>必须</b>声明 ×2 或 ×4。现在监控与阀值都按声明的倍数换算。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>内置的 <b>mock_coherent_zr</b> 现在工作在 <b>180 mA</b>、声明 ×2——
+    正好超过 ×1 能表达的上限，方便你验证主机软件有没有处理这个倍数。
+    规范里 <code>11b</code> 是保留值，工具按 ×1 处理，不会自作主张地把读数放大四倍。</span>
+  </div>
+
+  <h3>模块没实现的标志，不再显示为“正常”</h3>
+  <p><code>01h:157–158</code>（Table 8-52）声明了模块到底实现了哪些 Flag：
+     Tx Fault、Tx LOS、Tx CDR LOL、Tx 自适应均衡失败、Rx LOS、Rx CDR LOL。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>一个<b>没实现</b>的 Flag 读出来是 0，
+    而一个<b>健康通道</b>的 Flag 读出来也是 0——两者完全一样。
+    以前界面把它们都渲染成绿点，于是
+    <b>“没人在监视这一项”看起来就像“这一项正常”</b>。<br>
+    现在未实现的 Flag 显示为灰色 <i>n/a</i>，悬停说明原因。
+    内置的 <b>mock_sr8</b> 故意不实现 Rx CDR LOL 和 Tx 自适应均衡失败两项。</span>
+  </div>
+
+  <h3>演示模块不再自相矛盾</h3>
+  <p><code>01h:142.5</code>（DiagnosticPagesSupported）声明 Page 13h–14h 存在。
+     所有内置演示模块都<b>实现并提供</b>这两页（PRBS、环回、BER、SNR、计数器都在里面），
+     却一直声明“我没有这两页”。同样，它们报告温度、电压、光功率、偏置和各种 Flag，
+     却在 <code>157–160</code> 里声明“一个都没实现”。现已全部改为如实声明。</p>
 
   <h3>模块没有的控制，界面不再给你勾</h3>
   <p>CMIS 在 <code>01h:155–156</code>（Table 8-51，Supported Controls Advertisement）
@@ -1942,7 +1981,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.9.2<br>
+    CMIS Module Manager 操作手册 v2.9.3<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

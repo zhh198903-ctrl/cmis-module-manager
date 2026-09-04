@@ -1105,3 +1105,11 @@ input[type="checkbox"] {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* A flag the module does not implement: not a fault, and not "no fault". */
+.flag-none {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  cursor: help;
+}
