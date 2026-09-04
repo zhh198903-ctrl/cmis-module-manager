@@ -340,6 +340,10 @@ _SR8_800G = {
 }
 
 _FR4X2_800G = {
+    # No forced Tx squelch and no Rx polarity flip: a simpler module than the
+    # others, and something for the panels to grey out.
+    'controls_155':    0x17,
+    'controls_156':    0x06,
     'display':         '2× 400GBASE-FR4 (SMF 2km, CWDM4 EML)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-FR4X2-800G ",
@@ -547,6 +551,20 @@ class MockBackend(I2CInterface):
             if media_lanes:
                 p01[0xB0 + i] = sum(1 << (k * media_lanes)
                                     for k in range(8 // media_lanes))
+
+        # 155-156 Supported Controls Advertisement (Table 8-51). Tunability is
+        # taken from the profile so the two cannot disagree: 155.6 says Pages
+        # 04h and 12h are there, which is exactly what 'tunable' means here.
+        controls_155 = p.get('controls_155', 0x1F)   # squelch reduces OMA,
+                                                     # forced + auto squelch,
+                                                     # output disable, Tx
+                                                     # polarity flip
+        if p['tunable']:
+            controls_155 |= 0x40
+        p01[0x9B] = controls_155
+        p01[0x9C] = p.get('controls_156', 0x07)      # auto squelch disable Rx,
+                                                     # output disable Rx,
+                                                     # Rx polarity flip
 
         if p.get('cmis_rev', 0x53) >= 0x54:
             p01[0xAB] = p.get('default_polarity_tx', 0x00)   # 171 (5.4)

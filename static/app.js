@@ -1237,6 +1237,25 @@ async function loadDatapath() {
       <td title="${esc(tipDeinit)}">${lane.dp_deinit ? '<span class="text-warning">Deinit</span>' : '<span class="text-success">Active</span>'}</td>
     </tr>`;
   }).join('');
+
+  const ctl = (AppState.caps && AppState.caps.controls) || {};
+  const say = (what, bit) =>
+    `This module advertises that ${what} (01h:${bit} is clear)`;
+  for (const lane of d.lanes) {
+    _gateControl(`tx-en-${lane.lane}`, ctl.output_disable_tx !== false,
+      say('Tx outputs cannot be disabled', '155.1'));
+    _gateControl(`tx-pol-${lane.lane}`, ctl.input_polarity_flip_tx !== false,
+      say('Tx input polarity cannot be flipped', '155.0'));
+    _gateControl(`rx-pol-${lane.lane}`, ctl.output_polarity_flip_rx !== false,
+      say('Rx output polarity cannot be flipped', '156.0'));
+  }
+  // A Tx enable box that cannot be unticked still has to show the truth.
+  if (ctl.output_disable_tx === false) {
+    for (const lane of d.lanes) {
+      const el = document.getElementById(`tx-en-${lane.lane}`);
+      if (el) el.checked = lane.tx_enable;
+    }
+  }
 }
 
 async function applyDatapath() {
@@ -1252,6 +1271,9 @@ async function applyDatapath() {
     const appSel = document.getElementById(`app-sel-${i}`);
     const txEn   = document.getElementById(`tx-en-${i}`);
     if (!appSel || !txEn) continue;
+    // A disabled box reads as unchecked, which for Tx enable means "disable
+    // this output" - the opposite of what the module is doing.
+    if (txEn.disabled) { app_select.push(parseInt(appSel.value, 10)); continue; }
     app_select.push(parseInt(appSel.value, 10));
     const b = Math.floor((i - 1) / 8), bit = (i - 1) % 8;
     if (!txEn.checked) tx_disable_mask[b] |= (1 << bit);
@@ -1686,6 +1708,28 @@ function _readBitmaskRow(prefix) {
   return banks === 1 ? masks[0] : masks;
 }
 
+// 01h:155-156 (Table 8-51) says which lane controls the module implements.
+// A box that writes a register the module ignores is worse than no box: the
+// operator ticks it, Apply reports success, and nothing changes.
+function _gateControl(id, supported, why) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.disabled = !supported;
+  if (!supported) {
+    el.checked = false;
+    el.title = why;
+    if (el.parentElement) el.parentElement.classList.add('control-unavailable');
+  } else if (el.parentElement) {
+    el.parentElement.classList.remove('control-unavailable');
+  }
+}
+
+function _gateBitmaskRow(prefix, supported, why) {
+  for (let i = 0; i < AppState.lanes; i++) {
+    _gateControl(`${prefix}-cb-${i}`, supported, why);
+  }
+}
+
 async function loadSquelch() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/squelch');
@@ -1704,6 +1748,29 @@ async function loadSquelch() {
     field: 'AutoSquelchDisableRx', page: 0x10, addr: 0x8B,
     onNote: 'Auto-squelch controller disabled for this lane',
     offNote: 'Auto-squelch controller enabled for this lane' });
+
+  const ctl = (AppState.caps && AppState.caps.controls) || {};
+  const say = (what, bit) =>
+    `This module advertises that ${what} (01h:${bit} is clear)`;
+  _gateBitmaskRow('sq', ctl.auto_squelch_disable_tx !== false,
+    say('automatic Tx squelching cannot be disabled', '155.2'));
+  _gateBitmaskRow('sf', ctl.forced_squelch_tx !== false,
+    say('Tx outputs cannot be force-squelched', '155.3'));
+  _gateBitmaskRow('od', ctl.output_disable_rx !== false,
+    say('Rx outputs cannot be disabled', '156.1'));
+  _gateBitmaskRow('rd', ctl.auto_squelch_disable_rx !== false,
+    say('automatic Rx squelching cannot be disabled', '156.2'));
+
+  const note = document.getElementById('squelch-caps');
+  if (note) {
+    const bits = [];
+    if (ctl.tx_squelch_supported === false)
+      bits.push('This module has no Tx output squelching at all (01h:155.5-4 = 00b)');
+    else if (ctl.squelch_method_tx_name)
+      bits.push('Tx squelching: ' + ctl.squelch_method_tx_name);
+    note.innerHTML = bits.length
+      ? esc(bits.join(' \u00b7 ')) + ' <span class="reg-meta">01h:155</span>' : '';
+  }
 }
 
 async function applySquelch() {

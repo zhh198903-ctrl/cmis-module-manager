@@ -1099,3 +1099,9 @@ input[type="checkbox"] {
   margin-bottom: var(--sp-2);
 }
 .caps-note:empty { display: none; }
+
+/* A cell whose control the module says it does not implement. */
+.control-unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

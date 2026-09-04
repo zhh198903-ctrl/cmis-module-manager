@@ -116,6 +116,10 @@ REG_RXPWR_LOW_WARN      = (0x02, 0xC6, 2)
 REG_DP_DEINIT        = (0x10, 0x80, 1)   # 128  DataPathDeinit
 REG_TX_POL_FLIP      = (0x10, 0x81, 1)   # 129  InputPolarityFlipTx
 REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
+# 01h:155-156 (Table 8-51) says which of these lane controls the module
+# actually implements. Offering one it does not is offering a control that
+# writes a register the module ignores.
+REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
 REG_TX_FORCE_SQUELCH = (0x10, 0x84, 1)   # 132  OutputSquelchForceTx
 REG_RX_POL_FLIP      = (0x10, 0x89, 1)   # 137  OutputPolarityFlipRx
@@ -714,6 +718,41 @@ PATTERN_NAMES = {
     5: 'PRBS15', 6: 'PRBS13Q', 7: 'PRBS13', 8: 'PRBS9Q', 9: 'PRBS9',
     10: 'PRBS7Q', 11: 'PRBS7', 12: 'SSPRQ', 14: 'Custom', 15: 'User Pattern',
 }
+
+
+SQUELCH_METHOD_TX = {
+    0: 'Not supported',
+    1: 'Reduces OMA',
+    2: 'Reduces Pav',
+    3: 'Host selects OMA or Pav',
+}
+
+
+def parse_supported_controls(data: bytes) -> dict:
+    """01h:155-156 (Table 8-51).
+
+    Every one of these gates a control the UI puts on screen. A module that
+    says 00b for SquelchMethodTx has no Tx output squelching at all, which
+    also means no automatic Tx squelching to disable.
+    """
+    b155 = data[0] if len(data) > 0 else 0
+    b156 = data[1] if len(data) > 1 else 0
+    method = (b155 >> 4) & 0x03
+    return {
+        'wavelength_controllable':   bool(b155 & 0x80),
+        'transmitter_tunable':       bool(b155 & 0x40),
+        'squelch_method_tx':         method,
+        'squelch_method_tx_name':    SQUELCH_METHOD_TX[method],
+        'tx_squelch_supported':      method != 0,
+        'forced_squelch_tx':         bool(b155 & 0x08),
+        'auto_squelch_disable_tx':   bool(b155 & 0x04),
+        'output_disable_tx':         bool(b155 & 0x02),
+        'input_polarity_flip_tx':    bool(b155 & 0x01),
+        'bank_broadcast':            bool(b156 & 0x80),
+        'auto_squelch_disable_rx':   bool(b156 & 0x04),
+        'output_disable_rx':         bool(b156 & 0x02),
+        'output_polarity_flip_rx':   bool(b156 & 0x01),
+    }
 
 
 def parse_loopback_caps(byte_val: int) -> dict:

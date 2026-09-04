@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.9.1<br>
+      <b>版本</b>　2.9.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.9.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,55 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>模块没有的控制，界面不再给你勾</h3>
+  <p>CMIS 在 <code>01h:155–156</code>（Table 8-51，Supported Controls Advertisement）
+     里逐位声明了<b>模块到底实现了哪些通道控制</b>。
+     工具此前从不读它，所以下面这七个控制在任何模块上都可勾：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>位</th><th>控制</th><th>界面位置</th></tr></thead>
+      <tbody>
+        <tr><td><code>155.5-4</code></td><td>SquelchMethodTx（0b’b 为完全不支持）</td>
+            <td class="label">Output Controls 卡片标注</td></tr>
+        <tr><td><code>155.3</code></td><td>ForcedSquelchTxSupported</td>
+            <td class="label">Output Controls → Force Squelch Tx</td></tr>
+        <tr><td><code>155.2</code></td><td>AutoSquelchDisableTxSupported</td>
+            <td class="label">Output Controls → Auto Squelch Disable Tx</td></tr>
+        <tr><td><code>155.1</code></td><td>OutputDisableTxSupported</td>
+            <td class="label">DataPath Config → Tx Enable</td></tr>
+        <tr><td><code>155.0</code></td><td>InputPolarityFlipTxSupported</td>
+            <td class="label">DataPath Config → Tx Pol</td></tr>
+        <tr><td><code>156.2</code></td><td>AutoSquelchDisableRxSupported</td>
+            <td class="label">Output Controls → Auto Squelch Disable Rx</td></tr>
+        <tr><td><code>156.1</code></td><td>OutputDisableRxSupported</td>
+            <td class="label">Output Controls → Rx Output Disable</td></tr>
+        <tr><td><code>156.0</code></td><td>OutputPolarityFlipRxSupported</td>
+            <td class="label">DataPath Config → Rx Pol</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>一个写进去模块会忽略的寄存器的勾选框，<b>比没有这个框更糟</b>：
+    你勾上、点 Apply、提示“成功”，而什么都没发生。<br>
+    现在模块未声明的控制会<b>置灰不可勾</b>，鼠标悬停写出是哪一位没置位；
+    即使绕过界面直接调 API，服务端也会拒绝并引用对应位。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Tx 静默的方式也值得看</b>：<code>155.5-4</code> 区分静默时是
+    <b>降低 OMA</b> 还是 <b>降低 Pav</b>——这直接影响你怎么读静默期间的
+    Tx 光功率读数。Output Controls 卡片顶部会直接写出来。<br>
+    另：<code>155.6</code>（TransmitterIsTunable）声明的是 Page 04h/12h 存在，
+    演示模块的这一位直接由 profile 推导，不会与实际页面矛盾。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>内置的 <b>mock_fr4x2</b> 故意声明为较简单的模块：
+    <b>不支持强制 Tx 静默</b>（155.3）、<b>不支持 Rx 极性翻转</b>（156.0），
+    方便你在没有硬件时看到置灰效果。</span>
   </div>
 
   <h3>PRBS 图案与环回：只列出模块真有的</h3>
@@ -1893,7 +1942,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.9.1<br>
+    CMIS Module Manager 操作手册 v2.9.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

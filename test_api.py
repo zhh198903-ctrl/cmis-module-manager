@@ -1514,6 +1514,154 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestTheControlsTheModuleSaysItHas(CMISTestCase):
+    """01h:155-156 (Table 8-51) is the Supported Controls Advertisement: which
+    of the lane controls the panels offer the module actually implements. No
+    mock set it and nothing read it, so every module read as implementing
+    none of them while accepting every write."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['controls']
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps(body),
+                                content_type='application/json')
+
+    def test_a_module_that_takes_these_writes_advertises_them(self):
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_sr8',
+                        'mock_fr4x2', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                ctl = self._connect(backend)
+                self.assertTrue(ctl['output_disable_tx'],
+                                '%s accepts OutputDisableTx while advertising '
+                                'that it cannot' % backend)
+                self.assertTrue(ctl['tx_squelch_supported'],
+                                '%s squelches while saying it has no Tx '
+                                'squelching at all' % backend)
+
+    def test_tunability_matches_the_advertisement(self):
+        """155.6 says Pages 04h and 12h are there. A module cannot be tunable
+        in one place and not the other."""
+        for backend, tunable in (('mock_coherent_zr', True),
+                                 ('mock_coherent', False),
+                                 ('mock_dr8', False)):
+            with self.subTest(backend=backend):
+                ctl = self._connect(backend)
+                self.assertEqual(ctl['transmitter_tunable'], tunable,
+                                 '%s disagrees with itself about tunability'
+                                 % backend)
+
+    def test_the_squelch_method_is_named(self):
+        """00b means no Tx output squelching at all, and the three other
+        values say whether squelching cuts OMA or Pav - which changes how the
+        Tx power reading should be read."""
+        ctl = self._connect()
+        self.assertEqual(ctl['squelch_method_tx_name'], 'Reduces OMA')
+        import cmis_registers as c
+        self.assertEqual(c.parse_supported_controls(bytes([0x00, 0x00]))
+                         ['squelch_method_tx_name'], 'Not supported')
+        self.assertEqual(c.parse_supported_controls(bytes([0x30, 0x00]))
+                         ['squelch_method_tx_name'], 'Host selects OMA or Pav')
+
+    def test_a_control_the_module_lacks_is_refused(self):
+        ctl = self._connect('mock_fr4x2')
+        self.assertFalse(ctl['forced_squelch_tx'],
+                         'this profile is meant to lack forced Tx squelch')
+        rv = self._post('/api/module/squelch', {'tx_squelch_force': 0xFF})
+        self.assertEqual(rv.status_code, 400,
+                         'a control the module says it does not have was '
+                         'written anyway')
+        self.assertIn('01h:155.3', json.loads(rv.data)['message'])
+
+    def test_the_datapath_controls_are_gated_too(self):
+        ctl = self._connect('mock_fr4x2')
+        self.assertFalse(ctl['output_polarity_flip_rx'])
+        rv = self._post('/api/module/datapath', {'rx_polarity_flip_mask': 0xFF})
+        self.assertEqual(rv.status_code, 400)
+        self.assertIn('01h:156.0', json.loads(rv.data)['message'])
+
+    def test_a_control_the_module_has_still_works(self):
+        self._connect('mock_fr4x2')
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_disable': 0xFF}))
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_polarity_flip_mask': 0xFF}))
+
+    def test_clearing_a_control_is_never_refused(self):
+        """Writing zero asks for nothing, so it cannot be unsupported - and
+        refusing it would leave a lane stuck in whatever it was."""
+        self._connect('mock_fr4x2')
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_force': 0}))
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'rx_polarity_flip_mask': 0}))
+
+
+class TestThePanelsHideControlsTheModuleLacks(CMISTestCase):
+    """A box that writes a register the module ignores is worse than no box:
+    it is ticked, Apply reports success, and nothing happens."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_squelch_boxes_are_gated(self):
+        js = self._js()
+        body = js[js.index('async function loadSquelch('):]
+        body = body[:body.index('\nasync function applySquelch(')]
+        # The call existing is not the gate: pin each row to the capability
+        # that decides it, or `true` passes just as well.
+        for prefix, control in (("'sq'", 'auto_squelch_disable_tx'),
+                                ("'sf'", 'forced_squelch_tx'),
+                                ("'od'", 'output_disable_rx'),
+                                ("'rd'", 'auto_squelch_disable_rx')):
+            self.assertRegex(
+                body,
+                r'_gateBitmaskRow\(%s,\s*ctl\.%s !== false' % (prefix, control),
+                'the %s row is offered whatever the module says' % prefix)
+
+    def test_the_datapath_boxes_are_gated(self):
+        js = self._js()
+        body = js[js.index('async function loadDatapath('):]
+        body = body[:body.index('\nasync function applyDatapath(')]
+        for control in ('output_disable_tx', 'input_polarity_flip_tx',
+                        'output_polarity_flip_rx'):
+            self.assertIn(control, body,
+                          '%s is offered whatever the module says' % control)
+
+    def test_a_gated_box_is_actually_disabled(self):
+        js = self._js()
+        body = js[js.index('function _gateControl('):]
+        body = body[:body.index('\n}')]
+        self.assertRegex(body, r'el\.disabled = !supported',
+                         'the gate does not disable anything')
+
+    def test_a_disabled_tx_enable_box_is_not_read_as_disable(self):
+        """An unticked Tx enable box means "disable this output". A box the
+        module will not let you change must not be read that way."""
+        js = self._js()
+        body = js[js.index('async function applyDatapath('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('txEn.disabled', body,
+                      'a greyed-out Tx enable box sends a disable request')
+
+    def test_the_panel_says_what_the_squelching_does(self):
+        js = self._js()
+        self.assertIn('squelch_method_tx_name', js,
+                      'the panel never says whether squelching cuts OMA or Pav')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            self.assertIn('id="squelch-caps"', f.read())
+
+
 class TestTheModuleSaysWhatDiagnosticsItHas(CMISTestCase):
     """13h:128-142 is the diagnostic advertisement: which loopbacks exist, how
     a measurement can be gated, and which patterns each generator and checker

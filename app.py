@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.9.1'
+__version__ = '2.9.2'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -275,6 +275,8 @@ def _discover_capabilities() -> dict:
         ext = _read_upper(*cmis.REG_PAGES_EXT)
         caps.update(cmis.parse_supported_pages(b142, ext))
         caps.update(cmis.parse_misc_caps(_read_upper(*cmis.REG_MISC_CAPS)[0]))
+        caps['controls'] = cmis.parse_supported_controls(
+            _read_upper(*cmis.REG_SUPPORTED_CONTROLS))
         caps['default_polarity'] = cmis.parse_default_polarity(
             _read_upper(*cmis.REG_DEFAULT_POLARITY))
         sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
@@ -920,6 +922,14 @@ def api_datapath_set():
         app_select = body.get('app_select', [1] * _state['lanes'])
         apply = bool(body.get('apply', False))
 
+        refused = _refuse_unsupported((
+            ('output_disable_tx', tx_disable),
+            ('input_polarity_flip_tx', tx_pol),
+            ('output_polarity_flip_rx', rx_pol),
+        ))
+        if refused:
+            return refused
+
         for bank in range(banks):
             _set_page(0x10, bank)
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
@@ -1145,6 +1155,16 @@ def api_squelch_set():
         tx_sf = _masks_per_bank(body.get('tx_squelch_force',   0), banks)
         rx_od = _masks_per_bank(body.get('rx_output_disable',  0), banks)
         rx_sq = _masks_per_bank(body.get('rx_squelch_disable', 0), banks)
+
+        refused = _refuse_unsupported((
+            ('auto_squelch_disable_tx', tx_sq),
+            ('forced_squelch_tx', tx_sf),
+            ('output_disable_rx', rx_od),
+            ('auto_squelch_disable_rx', rx_sq),
+        ))
+        if refused:
+            return refused
+
         for b in range(banks):
             _set_page(0x10, b)
             _state['backend'].write_bytes(cmis.REG_TX_SQUELCH_DIS[1],
@@ -1232,6 +1252,34 @@ def api_loopback_set():
         return _ok({'message': 'Loopback configuration written'})
     except Exception as e:
         return _err(str(e), 500)
+
+
+# 01h:155-156 (Table 8-51). Read once at connect; a control the module says
+# it does not implement writes a register it ignores, and the panel that
+# offered it has told the operator something that is not true.
+_CONTROL_NAMES = {
+    'auto_squelch_disable_tx': ('automatic Tx squelching cannot be disabled', '155.2'),
+    'forced_squelch_tx':       ('Tx outputs cannot be force-squelched', '155.3'),
+    'output_disable_tx':       ('Tx outputs cannot be disabled', '155.1'),
+    'input_polarity_flip_tx':  ('Tx input polarity cannot be flipped', '155.0'),
+    'auto_squelch_disable_rx': ('automatic Rx squelching cannot be disabled', '156.2'),
+    'output_disable_rx':       ('Rx outputs cannot be disabled', '156.1'),
+    'output_polarity_flip_rx': ('Rx output polarity cannot be flipped', '156.0'),
+}
+
+
+def _refuse_unsupported(requested):
+    """`requested` is (control name, per-bank masks). Returns an error response
+    for the first control the module does not advertise, else None."""
+    controls = (_state.get('caps') or {}).get('controls') or {}
+    if not controls:
+        return None            # a module that answered nothing gets no gate
+    for name, masks in requested:
+        if any(masks) and controls.get(name) is False:
+            why, bit = _CONTROL_NAMES[name]
+            return _err('This module advertises that %s (01h:%s is clear)'
+                        % (why, bit), 400)
+    return None
 
 
 def _diag_caps() -> dict:
