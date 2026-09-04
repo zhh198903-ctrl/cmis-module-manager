@@ -1513,6 +1513,112 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestTheWatchTellsTheTruthWhenItCannotRead(CMISTestCase):
+    """The header chips are the only signal on every tab but Monitoring, and
+    the poll that feeds them had no failure path at all: a dead server left
+    the last chips sitting there, and an empty slot reads as "all clear"."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _poll_body(self):
+        js = self._js()
+        body = js[js.index('async function pollHealth('):]
+        return body[:body.index('\n}')]
+
+    def test_a_failed_read_repaints_the_header(self):
+        body = self._poll_body()
+        fail = body[body.index("status.status !== 'ok'"):]
+        self.assertIn('_paintChips(', fail,
+                      'a module nobody can reach keeps the chips it had when '
+                      'contact was lost')
+
+    def test_it_says_so_once_and_not_every_five_seconds(self):
+        """loadMonitoring stops its own auto-refresh to avoid exactly this."""
+        body = self._poll_body()
+        self.assertIn('_healthLost', body,
+                      'the watch has no way to tell a new failure from the '
+                      'same one continuing, so it toasts on every poll')
+        fail = body[body.index("status.status !== 'ok'"):]
+        toast_at = fail.index('toast(')
+        self.assertIn('if (!_healthLost)', fail[:toast_at],
+                      'the lost-contact toast is not guarded by the transition')
+
+    def test_a_slow_module_does_not_stack_polls(self):
+        """The monitoring loop already needed this: a wide module over a slow
+        adapter reads for longer than the interval."""
+        body = self._poll_body()
+        # The assignment alone is not the guard: pin the early return.
+        self.assertRegex(body, r'if \(_healthInFlight\)\s*return',
+                         'polls pile up on a module slower than the interval')
+        self.assertIn('_healthInFlight = false', body,
+                      'one slow read wedges the watch for good')
+
+    def test_a_fresh_connection_does_not_inherit_the_last_failure(self):
+        js = self._js()
+        body = js[js.index('function startHealthWatch('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('_healthLost = false', body,
+                      'connecting a working module still reports lost contact')
+
+
+class TestAServerThatForgotTheModule(CMISTestCase):
+    """The built-in updater restarts the server on purpose, and the page stays
+    open across it. The new process has no connection, so every endpoint
+    answers 503 while the indicator still reads Connected and each button
+    fails on its own."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_server_really_answers_503(self):
+        """_sessionGone keys off the status code, so pin the contract it
+        depends on rather than trusting the wording of a message."""
+        rv = self.client.get('/api/module/status')
+        self.assertEqual(rv.status_code, 503)
+
+    def test_the_client_can_see_the_status_code(self):
+        js = self._js()
+        body = js[js.index('async function apiFetch('):]
+        body = body[:body.index('\n}')]
+        self.assertIn('resp.status', body,
+                      'the only thing distinguishing a lost session from a '
+                      'read error is discarded before anyone can look at it')
+
+    def test_both_loops_end_the_session(self):
+        js = self._js()
+        for start, what in ((js.index('async function pollHealth('),
+                             'the background watch'),
+                            (js.index('async function _loadMonitoringOnce('),
+                             'the monitoring loop')):
+            body = js[start:]
+            body = body[:body.index('\n}')]
+            self.assertIn('_sessionGone(', body,
+                          '%s keeps reporting on a module the server has '
+                          'forgotten' % what)
+            self.assertIn('_endSession(', body,
+                          '%s leaves the UI claiming Connected' % what)
+
+    def test_ending_the_session_does_not_ask_the_server(self):
+        """The server has already forgotten us; a round trip to confirm it can
+        only fail, and would leave the UI wrong if it did."""
+        js = self._js()
+        body = js[js.index('function _endSession('):]
+        body = body[:body.index('\n}')]
+        self.assertNotIn('apiGet(', body,
+                         'the teardown calls the server it just decided is gone')
+        for expected in ('updateConnectionUI(false', 'stopHealthWatch()',
+                         'stopMonitoring()'):
+            self.assertIn(expected, body,
+                          'the teardown leaves %s undone' % expected)
+
+
 class TestAConnectedModuleIsNeverLeftUnwatched(CMISTestCase):
     """The flag history answers "what happened while I was away". Switching
     tabs is a way of being away, and it used to stop every poll: on any tab
@@ -1546,7 +1652,14 @@ class TestAConnectedModuleIsNeverLeftUnwatched(CMISTestCase):
         js = self._js()
         body = js[js.index('async function disconnectModule('):]
         body = body[:body.index('\n}')]
-        self.assertIn('stopHealthWatch()', body,
+        # The teardown is shared with the lost-session path; either route
+        # has to stop the watch, and TestAServerThatForgotTheModule pins
+        # that _endSession itself does.
+        self.assertIn('_endSession(', body,
+                      'the watch keeps polling a module that is gone')
+        teardown = js[js.index('function _endSession('):]
+        teardown = teardown[:teardown.index("\n}")]
+        self.assertIn('stopHealthWatch()', teardown,
                       'the watch keeps polling a module that is gone')
 
     def test_the_two_loops_do_not_both_run(self):
@@ -1564,7 +1677,10 @@ class TestAConnectedModuleIsNeverLeftUnwatched(CMISTestCase):
         js = self._js()
         body = js[js.index('function renderHealthIndicator('):]
         body = body[:body.index("\n}")]
-        self.assertIn("switchTab('monitoring')", body,
+        self.assertIn('_paintChips(', body, 'the chips are never painted')
+        painter = js[js.index('function _paintChips('):]
+        painter = painter[:painter.index("\n}")]
+        self.assertIn("switchTab('monitoring')", painter,
                       'the header alert is a dead end')
 
     def test_clearing_the_history_blanks_the_chips_at_once(self):

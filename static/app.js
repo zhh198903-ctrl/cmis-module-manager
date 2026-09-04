@@ -112,7 +112,9 @@ async function apiFetch(method, path, body) {
   if (body !== undefined) opts.body = JSON.stringify(body);
   try {
     const resp = await fetch(path, opts);
-    return await resp.json();
+    const body = await resp.json();
+    if (body && typeof body === 'object') body.http = resp.status;
+    return body;
   } catch (e) {
     return { status: 'error', message: e.message };
   }
@@ -302,6 +304,18 @@ async function connectModule() {
 
 async function disconnectModule() {
   await apiGet('/api/disconnect');
+  _endSession('Disconnected', 'info');
+}
+
+// The server restarting - which the built-in updater does on purpose - leaves
+// the open page claiming "Connected" against a server that has never heard of
+// this module. Every button then fails one at a time while the indicator says
+// everything is fine.
+function _sessionGone(res) {
+  return res && res.http === 503;
+}
+
+function _endSession(message, tone) {
   AppState.connected = false;
   AppState.lanes = 8;
   AppState.caps = {};
@@ -313,7 +327,7 @@ async function disconnectModule() {
   renderHealthIndicator({}, null);
   updateConnectionUI(false, '');
   clearBackendInfoArea();
-  toast('Disconnected', 'info');
+  toast(message, tone);
   clearTabContent();
   // Switch back to the info tab so the active tab matches the enabled state
   switchTab('info');
@@ -716,6 +730,7 @@ const HEALTH_WATCH_MS = 5000;
 
 function startHealthWatch() {
   stopHealthWatch();
+  _healthLost = false;
   if (!AppState.connected) return;
   pollHealth();
   AppState.healthInterval = setInterval(pollHealth, HEALTH_WATCH_MS);
@@ -728,13 +743,48 @@ function stopHealthWatch() {
   }
 }
 
+let _healthInFlight = false;
+let _healthLost = false;
+
 async function pollHealth() {
   if (!AppState.connected) return stopHealthWatch();
-  const [status, flags] = await Promise.all([
-    apiGet('/api/module/status'),
-    apiGet('/api/module/flags'),      // read so the server keeps the history
-  ]);
-  if (status.status === 'ok') renderHealthIndicator(status.data, flags.data);
+  // A 256-lane module over a slow adapter can read for longer than the
+  // interval; without this the polls pile up on top of each other.
+  if (_healthInFlight) return;
+  _healthInFlight = true;
+  try {
+    const [status, flags] = await Promise.all([
+      apiGet('/api/module/status'),
+      apiGet('/api/module/flags'),      // read so the server keeps the history
+    ]);
+    if (_sessionGone(status)) {
+      _endSession('The server no longer has a module connected \u2014 '
+                  + 'reconnect to continue', 'error');
+      return;
+    }
+    if (status.status !== 'ok') {
+      // Leaving the chips as they were shows a module nobody can reach as
+      // though it were still being watched, and an empty slot reads as "all
+      // clear" - which is the worse of the two on a module that is alarming.
+      if (!_healthLost) {
+        _healthLost = true;
+        toast(`Lost contact with the module: ${status.message}`, 'error');
+      }
+      _paintChips([['danger', '\u26d4', '',
+                    `The tool cannot reach the module: ${status.message}. `
+                    + 'Nothing on screen is live']]);
+      return;
+    }
+    // Only ever speaks on a transition, so a module that stays away does not
+    // turn into a toast every few seconds.
+    if (_healthLost) {
+      _healthLost = false;
+      toast('Module responding again', 'success');
+    }
+    renderHealthIndicator(status.data, flags.data);
+  } finally {
+    _healthInFlight = false;
+  }
 }
 
 // Chips, not sentences: a 1440x900 laptop at 150% scaling is a 683px viewport,
@@ -754,6 +804,12 @@ function renderHealthIndicator(s, flags) {
     chips.push(['warning', '↯', String(bounced),
                 `${bounced} data path${bounced > 1 ? 's' : ''} went down and came back since the last Clear flag history`]);
 
+  _paintChips(chips);
+}
+
+function _paintChips(chips) {
+  const el = document.getElementById('header-alert');
+  if (!el) return;
   el.innerHTML = chips.map(([tone, icon, count, tip]) =>
     `<button class="health-chip text-${tone}" title="${esc(tip)}. Click for the detail.">`
     + `${icon}${count ? '&thinsp;' + count : ''}</button>`).join('');
@@ -1007,6 +1063,11 @@ async function _loadMonitoringOnce() {
   // Any failure here would otherwise leave the previous reading on screen while
   // the page still looks live - the operator would read minutes-old power
   // levels, or worse, all-green lane flags, as the current state.
+  if (_sessionGone(monRes) || _sessionGone(statusRes)) {
+    _endSession('The server no longer has a module connected \u2014 '
+                + 'reconnect to continue', 'error');
+    return;
+  }
   if (monRes.status !== 'ok') {
     toast(`Monitoring error: ${monRes.message}`, 'error');
     markMonitoringStale(monRes.message);
