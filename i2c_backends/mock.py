@@ -781,6 +781,8 @@ class MockBackend(I2CInterface):
                 self._module_state = 0b011
                 self._reset_time = 0
                 self._dp_lane_states = [0x4] * 8
+                # Every lane came back through DPInit after the reset.
+                self._registers[0x11][0x86] = 0xFF
                 self._apply_time = 0
         elif self._lp_request_time > 0:
             self._module_state = 0b001
@@ -808,6 +810,12 @@ class MockBackend(I2CInterface):
                         self._dp_lane_states[i] = 0x4
                     else:
                         self._dp_lane_states[i] = 0x1
+                    # 6.3.3: the Flag is set on entry to a lasting steady state
+                    # reached through a significant transient - which is what
+                    # has just happened, since the path went through DPInit and
+                    # DPTxTurnOn to get here. It is a Flag, so it latches until
+                    # read: this is the module's record that the path bounced.
+                    self._registers[0x11][0x86] =                         self._registers[0x11].get(0x86, 0) | (1 << i)
                 self._apply_time = 0
                 for a in range(0xCA, 0xCE):
                     self._registers[0x11][a] = 0x11
@@ -1184,7 +1192,7 @@ class MockBackend(I2CInterface):
     # transient at all, and let the host get away with not remembering.
     _COR_BYTES = {
         None: range(0x08, 0x0A),
-        0x11: range(0x87, 0x99),
+        0x11: range(0x86, 0x99),
     }
 
     def _clear_on_read(self, page_dict, register: int, length: int) -> None:

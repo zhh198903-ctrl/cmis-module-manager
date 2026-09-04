@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.8.0'
+__version__ = '2.8.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -921,16 +921,23 @@ def api_module_flags():
     if err:
         return err
     try:
-        # 11h:135-152 are contiguous lane flag bytes; one burst read beats 18
-        # page-select + 5 ms settle cycles on real hardware.
-        blocks = [raw for _bank, raw in _read_banks(*cmis.REG_TX_FAULT_FLAGS[:2], 18)]
+        # 11h:134-152 are contiguous lane flag bytes; one burst read beats 19
+        # page-select + 5 ms settle cycles on real hardware. It starts one byte
+        # earlier than the alarm block so DPStateChangedFlag comes along for
+        # nothing: it is the module's own record that a data path went down and
+        # came back, which is the transient this tool exists to catch.
+        first = cmis.REG_DP_STATE_CHANGED[1]
+        blocks = [raw for _bank, raw in
+                  _read_banks(cmis.REG_DP_STATE_CHANGED[0], first, 19)]
 
         def flags(addr):
             # One bit per lane, so each bank contributes its own eight.
             out = []
             for blk in blocks:
-                out += cmis.parse_lane_flags(blk[addr - 0x87])
+                out += cmis.parse_lane_flags(blk[addr - first])
             return out[:_state['lanes']]
+
+        dp_changed = flags(cmis.REG_DP_STATE_CHANGED[1])
 
         tx_fault  = flags(0x87)
         tx_los    = flags(0x88)
@@ -955,6 +962,7 @@ def api_module_flags():
         for i in range(_state['lanes']):
             lanes.append({
                 'lane': i + 1,
+                'dp_state_changed':   dp_changed[i],
                 'tx_fault':           tx_fault[i],
                 'tx_los':             tx_los[i],
                 'tx_cdr_lol':         tx_cdrlol[i],

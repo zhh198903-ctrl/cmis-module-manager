@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.8.0<br>
+      <b>版本</b>　2.8.1<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.8.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.8.1 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.8.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1018,12 +1018,26 @@
      <span class="flag-was">●<sup>!</sup></span> 标记，与"从未触发"（<span class="flag-ok">●</span>）
      区分开。点<b>Clear flag history</b> 清空这份记录、从当下重新开始计。
      换模块或重新连接也会自动清空。</p>
+  <h3>DP Changed —— 数据通道弹过的唯一证据</h3>
+  <p>Lane Flags 表第一列是 <b>DP Changed</b>（<code>11h:134</code>）。按 CMIS 6.3.3，
+     模块在数据通道<b>经过真实过渡后进入稳定态</b>时置位这一位——换句话说，
+     <b>它是模块自己记下的"这条通道掉下去又回来了"</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>链路弹一次之后，<b>状态在前后两次刷新里都是 Activated</b>，
+    光看状态列什么也看不出来。DP Changed 是唯一的线索。<br>
+    它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
+    <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
+    因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>排查间歇性链路时的用法</b>：连上模块、点一次 Clear flag history，
     然后让它跑着。回来时看哪些通道带
     <span class="flag-was">●<sup>!</sup></span> ——那就是这段时间里出过问题的通道，
-    哪怕它现在一切正常。</span>
+    哪怕它现在一切正常。<b>DP Changed 那一列尤其要看</b>：光功率抖动可能只是脏接头，
+    而数据通道真的重建过，说明链路断过。</span>
   </div>
 
   <h3>状态列的颜色与图标图例</h3>
@@ -1655,7 +1669,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.8.0<br>
+    CMIS Module Manager 操作手册 v2.8.1<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

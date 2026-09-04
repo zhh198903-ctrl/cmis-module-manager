@@ -1403,6 +1403,12 @@ function renderFlags(lanes) {
       }
       return '<span class="flag-ok">&#9679;</span>';
     }
+    // A bounce is not a fault, so it is marked rather than alarmed - but it is
+    // the first thing worth seeing on a link that misbehaves intermittently.
+    const dpChanged = lane.dp_state_changed
+      ? '<span class="flag-warn" title="This data path reached a steady state '
+        + 'through a real transition since the last read">&#9650; CHANGED</span>'
+      : flagCell(false, false, 'dp_state_changed');
     const txFault   = flagCell(lane.tx_fault, true, 'tx_fault');
     const txLos     = flagCell(lane.tx_los, true, 'tx_los');
     const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol');
@@ -1428,6 +1434,7 @@ function renderFlags(lanes) {
 
     return `<tr>
       <td>${lane.lane}</td>
+      <td>${dpChanged}</td>
       <td>${txFault}</td>
       <td>${txLos}</td>
       <td>${txCdrLol}</td>

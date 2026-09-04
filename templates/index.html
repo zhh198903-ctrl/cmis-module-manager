@@ -213,6 +213,7 @@
           <thead>
             <tr>
               <th>Lane</th>
+              <th>DP Changed<span class="reg-meta">11h / 0x86</span></th>
               <th>Tx Fault<span class="reg-meta">11h / 0x87</span></th>
               <th>Tx LOS<span class="reg-meta">11h / 0x88</span></th>
               <th>Tx CDR-LOL<span class="reg-meta">11h / 0x89</span></th>
@@ -222,7 +223,7 @@
             </tr>
           </thead>
           <tbody id="tbl-flags">
-            <tr><td colspan="7" class="placeholder-text">Waiting for data…</td></tr>
+            <tr><td colspan="8" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
 </div>
@@ -367,6 +368,9 @@
           that came and went appears in exactly one refresh. Lanes that have fired
           since the history was cleared keep a <span class="flag-was">&#9679;<sup>!</sup></span>
           marker after the flag itself has gone.
+          <b>DP Changed</b> is the module's own record that a data path reached a steady
+          state through a real transition: a link that dropped and came back reads
+          Activated at both ends, and this is the only sign it happened.
         </p>
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           The polarity in effect now. It may legitimately differ from Default Polarity (01h:171–172) in Module Info, which advertises only the power-up polarity of a module whose polarity is programmable.

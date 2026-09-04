@@ -1424,6 +1424,97 @@ class TestTheDataPathPassesThroughItsStates(CMISTestCase):
         self.assertIn('ModuleReady', seen, 'the module never came back up')
 
 
+class TestABouncedDataPathIsNotSilent(CMISTestCase):
+    """CMIS 6.3.3: the module sets DPStateChangedFlag when a data path reaches
+    a lasting steady state through a real transition. It is the module's own
+    record that a link went down and came back - and since both ends read
+    Activated, it is the only sign anything happened. The tool defined the
+    register at 11h:134 and never read it."""
+
+    def _lane_flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+
+    def test_the_flag_is_read_at_all(self):
+        self.connect()
+        lane = self._lane_flags()[0]
+        self.assertIn('dp_state_changed', lane,
+                      'the register the module records a bounce in is not read')
+
+    def test_a_bounce_is_reported_and_then_remembered(self):
+        self.connect()
+        self.assertFalse(any(l['dp_state_changed'] for l in self._lane_flags()),
+                         'a settled module claims its paths just changed')
+
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            content_type='application/json'))
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            lanes = self._lane_flags()
+            if any(l['dp_state_changed'] for l in lanes):
+                break
+            time.sleep(0.05)
+        self.assertTrue(any(l['dp_state_changed'] for l in lanes),
+                        'the path went through DPInit and came back, unremarked')
+
+        # It is a Flag: the read that reported it cleared it on the module, and
+        # the state now reads Activated at both ends. The history is all that
+        # is left of the event.
+        after = self._lane_flags()
+        self.assertFalse(any(l['dp_state_changed'] for l in after),
+                         'the flag survived the read that reported it')
+        self.assertIn('dp_state_changed', after[0]['seen'],
+                      'the only record that the path bounced was discarded')
+
+    def test_a_reset_marks_every_lane(self):
+        """Every path came back through DPInit, so every lane has changed."""
+        self.connect()
+        self.client.get('/api/module/flags')          # clear what connecting set
+        self.assertOk(self.client.post(
+            '/api/module/control',
+            data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        deadline = time.time() + 4.0
+        marked = []
+        while time.time() < deadline:
+            lanes = self._lane_flags()
+            marked = [l['lane'] for l in lanes if l['dp_state_changed']]
+            if len(marked) == len(lanes):
+                break
+            time.sleep(0.05)
+        self.assertEqual(len(marked), 8,
+                         'a reset restarted every path but marked %s' % marked)
+
+    def test_the_table_has_a_column_for_every_cell_it_renders(self):
+        """The renderer emits one cell per column by hand. Adding a cell
+        without a heading shifts every reading one column left, which is
+        exactly as wrong as a bad value and much harder to notice."""
+        html = self._read('templates', 'index.html')
+        js = self._read('static', 'app.js')
+
+        idx = html.index('id="tbl-flags"')
+        head = html[html.rindex('<thead>', 0, idx):idx]
+        columns = head.count('<th>')
+
+        body = js[js.index('function renderFlags('):]
+        row = body[body.index('return `<tr>'):body.index('</tr>`')]
+        cells = row.count('<td>') + len(re.findall(r'<td\$\{', row))
+        self.assertEqual(cells, columns,
+                         'the flags table has %d headings and renders %d cells'
+                         % (columns, cells))
+
+        placeholder = re.search(r'colspan="(\d+)" class="placeholder-text"',
+                                html[idx:idx + 300])
+        self.assertEqual(int(placeholder.group(1)), columns,
+                         'the empty-state row spans the wrong number of columns')
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+
 class TestLatchedFlagsSurviveBeingRead(CMISTestCase):
     """CMIS 5.4: "a Flag bit remains set (latched) until cleared by a READ of
     the Byte containing the Flag". Polling therefore consumes them. A fault
