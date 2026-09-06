@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.9.4<br>
+      <b>版本</b>　2.9.5<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.4 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.9.4</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.5 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.5</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,39 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>Rx 光功率读数是 OMA 还是平均功率</h3>
+  <p><code>01h:151.4</code>（Table 8-50）决定 Rx 光功率监控报的是
+     <b>OMA</b>（光调制幅度）还是<b>平均功率</b>。
+     这是<b>两个不同的物理量</b>，在调制信号上相差好几个 dB，
+     而接收灵敏度限值在规范里是按其中<b>一个</b>写的。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前 Rx Power 列只给一个 dBm 数，<b>没说它是哪一个</b>——
+    拿它去对规范限值，对错了自己也不知道。
+    现在列头直接标出 <b>· OMA</b> 或 <b>· Average power</b>，
+    鼠标悬停给出寄存器位。</span>
+  </div>
+  <p>同一个字节里还有几位值得知道：<code>151.7</code> 探测器是
+     <b>PIN 还是 APD</b>；<code>151.3</code> <b>Rx LOS 响应的是 OMA 还是 Pav</b>（与上面那位独立）；
+     <code>151.2</code> / <code>151.1</code> 是 Rx LOS 和 Tx 关断的快速模式时序。</p>
+
+  <h3>❗ 有些模块的 Tx Enable 不是逐通道的</h3>
+  <p><code>01h:151.0</code>（TxDisableIsModuleWide）置位时，
+     <b>任何一路的 OutputDisableTx 会关掉全部 Tx 输出</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>而 DataPath Config 页给的是 <b>8 个看上去相互独立的复选框</b>——
+    它们说的正好相反。在跑着的链路上，取消勾选第 3 路的代价是
+    <b>另外七路一起断</b>。<br>
+    现在这类模块上，勾任意一个框会<b>八个一起动</b>（和模块实际行为一致），
+    表格上方也会先写明这件事。逐通道的模块不受影响。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>内置的 <b>mock_fr4x2</b> 故意声明为模块级 Tx 关断，
+    方便你在没有硬件时看到这个行为。</span>
   </div>
 
   <h3>Aux1–3：同一个寄存器，意义由一个位决定</h3>
@@ -2020,7 +2053,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.9.4<br>
+    CMIS Module Manager 操作手册 v2.9.5<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

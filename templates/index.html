@@ -165,7 +165,7 @@
               <th>Lane</th>
               <th>Tx Power<span class="reg-meta">11h / 0x9A+(n−1)×2, uint16×0.1µW</span></th>
               <th>Tx Bias<span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
-              <th>Rx Power<span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
+              <th>Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
               <th>DataPath State<span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
               <th>Config Status<span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
             </tr>
@@ -289,6 +289,8 @@
             <button class="btn-primary btn-sm"   id="btn-apply-datapath">Apply</button>
           </span>
         </h3>
+        <!-- 01h:151.0: the per-lane Tx boxes are not per lane on every module. -->
+        <div id="datapath-txdisable-note" class="caps-note"></div>
 
         <div class="table-scroll">
 <table>

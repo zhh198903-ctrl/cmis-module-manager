@@ -1113,3 +1113,11 @@ input[type="checkbox"] {
   font-style: italic;
   cursor: help;
 }
+
+/* A column heading qualifier that changes what the number means. */
+.reg-meta-strong {
+  font: 600 10px/1.5 var(--font-mono);
+  color: var(--accent);
+  letter-spacing: .04em;
+  margin-left: 4px;
+}

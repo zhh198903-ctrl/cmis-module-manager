@@ -1570,6 +1570,124 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestWhatTheRxPowerNumberActuallyIs(CMISTestCase):
+    """01h:151.4 decides whether the Rx power monitor reports OMA or average
+    power. They are different quantities, several dB apart on a modulated
+    signal, and a receiver limit is written for one or the other. The register
+    was never read, so the column showed a dBm figure that could not be
+    compared against anything with confidence."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['rx_tx']
+
+    def test_the_characteristics_byte_is_read(self):
+        rx = self._connect()
+        self.assertIn('rx_power_type', rx,
+                      'nothing says whether the Rx power reading is OMA or '
+                      'average power')
+
+    def test_every_bit_decodes_independently(self):
+        import cmis_registers as c
+        off = c.parse_rx_tx_characteristics(0x00)
+        self.assertEqual(off['detector_type'], 'PIN')
+        self.assertEqual(off['rx_power_type'], 'OMA')
+        self.assertEqual(off['rx_los_type'], 'OMA')
+        self.assertFalse(off['tx_disable_module_wide'])
+        on = c.parse_rx_tx_characteristics(0xFF)
+        self.assertEqual(on['detector_type'], 'APD')
+        self.assertEqual(on['rx_power_type'], 'Average power')
+        self.assertEqual(on['rx_los_type'], 'Pav')
+        self.assertTrue(on['tx_disable_module_wide'])
+        self.assertTrue(on['rx_los_is_fast'])
+        self.assertTrue(on['tx_disable_is_fast'])
+
+    def test_the_output_eq_type_is_named(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_rx_tx_characteristics(0x20)['rx_output_eq_type'], 1)
+        self.assertEqual(c.parse_rx_tx_characteristics(0x60)['rx_output_eq_name'],
+                         'Reserved')
+
+    def test_the_mock_does_not_claim_oma(self):
+        """Left at zero the byte says the module reports OMA and its Rx LOS
+        responds to OMA, which is not what any shipped profile models."""
+        for backend in ('mock_dr8', 'mock_sr8', 'mock_coherent',
+                        'mock_fr4x2', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                rx = self._connect(backend)
+                self.assertEqual(rx['rx_power_type'], 'Average power',
+                                 '%s reports a power reading it does not '
+                                 'describe' % backend)
+
+    def test_the_column_says_which_one_it_is(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('th-rx-power-type', js,
+                      'the Rx power column never says what it is measuring')
+        # The identifier appearing is not the label being written: pin the
+        # assignment that actually puts the quantity in the heading.
+        self.assertRegex(
+            js, r'rxHead\.textContent = t\.rx_power_type \?',
+            'the column heading no longer carries the measurement type')
+
+
+class TestAModuleWideTxDisable(CMISTestCase):
+    """01h:151.0: any OutputDisableTx takes every Tx lane down. The panel
+    offers eight independent checkboxes, which says the opposite - and on a
+    live link the difference is seven other lanes."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['rx_tx']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_a_profile_advertises_it(self):
+        """Otherwise the branch is unreachable and untestable."""
+        self.assertTrue(self._connect('mock_fr4x2')['tx_disable_module_wide'],
+                        'no shipped profile has a module-wide Tx disable, so '
+                        'the handling is never exercised')
+
+    def test_per_lane_modules_are_unaffected(self):
+        for backend in ('mock_dr8', 'mock_sr8', 'mock_coherent_zr'):
+            with self.subTest(backend=backend):
+                self.assertFalse(
+                    self._connect(backend)['tx_disable_module_wide'])
+
+    def test_the_boxes_move_together_when_it_is_module_wide(self):
+        js = self._js()
+        body = js[js.index('const moduleWide = rxtx.tx_disable_module_wide'):]
+        body = body[:body.index('\n  }).join')] if '\n  }).join' in body else body[:4000]
+        self.assertRegex(body, r'if \(moduleWide\)',
+                         'the module-wide advertisement changes nothing')
+        self.assertIn('o.checked = el.checked', body,
+                      'clearing one lane leaves the other seven looking '
+                      'enabled on a module that just disabled them all')
+
+    def test_the_panel_warns_before_the_click(self):
+        js = self._js()
+        self.assertIn('datapath-txdisable-note', js,
+                      'nothing warns that the per-lane boxes are not per lane')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            self.assertIn('id="datapath-txdisable-note"', f.read())
+
+
 class TestTheAuxMonitorsMeanSomething(CMISTestCase):
     """Lower Memory 18-23 are three plain S16 registers whose meaning is chosen
     by 01h:145 (Table 8-50): Aux2 is degrees Celsius or a percentage of the

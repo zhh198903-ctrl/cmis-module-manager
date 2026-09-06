@@ -369,7 +369,9 @@ _SR8_800G = {
 
 _FR4X2_800G = {
     # No forced Tx squelch and no Rx polarity flip: a simpler module than the
-    # others, and something for the panels to grey out.
+    # others, and something for the panels to grey out. Its Tx disable is also
+    # module-wide (151.0), so the per-lane boxes are not per lane at all.
+    'rx_tx_151':       0x11,
     'controls_155':    0x17,
     'controls_156':    0x06,
     'display':         '2× 400GBASE-FR4 (SMF 2km, CWDM4 EML)',
@@ -614,6 +616,10 @@ class MockBackend(I2CInterface):
         # without this says nothing about what they mean: Aux2 is degrees
         # Celsius or a percentage of TEC current depending on one bit.
         p01[0x91] = p.get('aux_observable_145', 0x00)
+        # 151 Rx/Tx characteristics (Table 8-50). Left at zero this says the
+        # Rx power monitor reports OMA and Rx LOS responds to OMA, which is
+        # not what any of these profiles actually model.
+        p01[0x97] = p.get('rx_tx_151', 0x10)   # PIN, average power, OMA LOS
         p01[0x9D] = p.get('flags_157', 0x0F)         # Tx adaptive EQ fail,
                                                      # CDR LOL, LOS, fault
         p01[0x9E] = p.get('flags_158', 0x06)         # Rx CDR LOL, Rx LOS

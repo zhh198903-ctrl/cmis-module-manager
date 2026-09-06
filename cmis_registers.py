@@ -121,6 +121,7 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 # writes a register the module ignores.
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
 REG_AUX_OBSERVABLE     = (0x01, 0x91, 1)  # 145 (Table 8-50)
+REG_RX_TX_CHARACTER    = (0x01, 0x97, 1)  # 151 (Table 8-50)
 REG_SUPPORTED_FLAGS    = (0x01, 0x9D, 2)  # 157-158 (Table 8-52)
 REG_SUPPORTED_MONITORS = (0x01, 0x9F, 2)  # 159-160 (Table 8-53)
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
@@ -769,6 +770,40 @@ AUX_OBSERVABLE_NAMES = {
     'laser_temperature': ('Laser Temperature', '\u6fc0\u5149\u5668\u6e29\u5ea6'),
     'vcc2':              ('Additional Supply Voltage', '\u9644\u52a0\u7535\u6e90\u7535\u538b'),
 }
+
+
+RX_OUTPUT_EQ_TYPES = {
+    0: 'Peak-to-peak amplitude constant, or not implemented',
+    1: 'Steady-state amplitude constant',
+    2: 'Average of peak-to-peak and steady-state amplitude constant',
+    3: 'Reserved',
+}
+
+
+def parse_rx_tx_characteristics(byte_val: int) -> dict:
+    """01h:151 (Table 8-50).
+
+    Two of these change what the interface means rather than just adding a
+    label. 151.4 decides whether the Rx power monitor reports OMA or average
+    power - different quantities, several dB apart on a modulated signal, and
+    a receiver limit is stated for one or the other. 151.0 says the Tx output
+    disable is module-wide, so a per-lane row of checkboxes is not per lane at
+    all: clearing one takes every Tx lane down with it.
+    """
+    eq = (byte_val >> 5) & 0x03
+    return {
+        'apd_detector':          bool(byte_val & 0x80),
+        'detector_type':         'APD' if byte_val & 0x80 else 'PIN',
+        'rx_output_eq_type':     eq,
+        'rx_output_eq_name':     RX_OUTPUT_EQ_TYPES[eq],
+        'rx_power_is_average':   bool(byte_val & 0x10),
+        'rx_power_type':         'Average power' if byte_val & 0x10 else 'OMA',
+        'rx_los_on_average':     bool(byte_val & 0x08),
+        'rx_los_type':           'Pav' if byte_val & 0x08 else 'OMA',
+        'rx_los_is_fast':        bool(byte_val & 0x04),
+        'tx_disable_is_fast':    bool(byte_val & 0x02),
+        'tx_disable_module_wide': bool(byte_val & 0x01),
+    }
 
 
 def parse_aux_observables(byte_val: int) -> dict:

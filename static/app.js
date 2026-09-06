@@ -1125,6 +1125,20 @@ async function _loadMonitoringOnce() {
 
   renderHealthIndicator(s, flagsRes.status === 'ok' ? flagsRes.data : null);
 
+  // 01h:151.4 decides whether the Rx power monitor reports OMA or average
+  // power. They are different quantities several dB apart on a modulated
+  // signal, and a receiver limit is written for one or the other - so the
+  // column has to say which one it is showing.
+  const rxHead = document.getElementById('th-rx-power-type');
+  if (rxHead) {
+    const t = (AppState.caps && AppState.caps.rx_tx) || {};
+    rxHead.textContent = t.rx_power_type ? ' \u00b7 ' + t.rx_power_type : '';
+    rxHead.title = t.rx_power_type
+      ? 'RxPowerMeasurementType (01h:151.4): the module reports '
+        + t.rx_power_type + '. OMA and average power are not interchangeable.'
+      : '';
+  }
+
   const tbody = document.getElementById('tbl-monitoring');
   if (!tbody) return;
 
@@ -1255,11 +1269,39 @@ async function loadDatapath() {
   }).join('');
 
   const ctl = (AppState.caps && AppState.caps.controls) || {};
+  const rxtx = (AppState.caps && AppState.caps.rx_tx) || {};
   const say = (what, bit) =>
     `This module advertises that ${what} (01h:${bit} is clear)`;
+
+  // 01h:151.0: any OutputDisableTx takes every Tx lane down. A row of boxes
+  // that can be cleared one at a time says the opposite, and on a live link
+  // the difference is seven other lanes.
+  const moduleWide = rxtx.tx_disable_module_wide === true;
+  const wideNote = document.getElementById('datapath-txdisable-note');
+  if (wideNote) {
+    wideNote.innerHTML = moduleWide
+      ? '\u26a0 ' + esc('Tx output disable is module-wide on this module: '
+        + 'clearing any lane disables every Tx lane')
+        + ' <span class="reg-meta">01h:151.0</span>'
+      : '';
+  }
   for (const lane of d.lanes) {
     _gateControl(`tx-en-${lane.lane}`, ctl.output_disable_tx !== false,
       say('Tx outputs cannot be disabled', '155.1'));
+    if (moduleWide) {
+      const el = document.getElementById(`tx-en-${lane.lane}`);
+      if (el && !el.disabled) {
+        el.title = (el.title ? el.title + '\n' : '')
+          + 'Tx output disable is module-wide (01h:151.0): every lane follows '
+          + 'this box';
+        el.addEventListener('change', () => {
+          for (const other of d.lanes) {
+            const o = document.getElementById(`tx-en-${other.lane}`);
+            if (o) o.checked = el.checked;
+          }
+        });
+      }
+    }
     _gateControl(`tx-pol-${lane.lane}`, ctl.input_polarity_flip_tx !== false,
       say('Tx input polarity cannot be flipped', '155.0'));
     _gateControl(`rx-pol-${lane.lane}`, ctl.output_polarity_flip_rx !== false,
