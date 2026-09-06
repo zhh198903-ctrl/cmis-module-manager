@@ -1,7 +1,8 @@
 """Import all backends; gracefully ignore optional-dependency failures."""
 
-# Importing the mock module triggers registration of all 4 mock variants
-# (mock_coherent, mock_dr8, mock_sr8, mock_fr4x2) via @register_backend decorators.
+# Importing the mock module registers every mock variant via @register_backend.
+# The count is deliberately not repeated here: it has been wrong twice already,
+# and i2c_interface.list_backends() is the only answer that cannot go stale.
 from i2c_backends import mock  # noqa: F401 — always available
 
 try:
