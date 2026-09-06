@@ -68,11 +68,10 @@ REG_FW_INACT_MAJOR   = (0x01, 0x80, 1)   # 128: Inactive FW Major
 REG_FW_INACT_MINOR   = (0x01, 0x81, 1)   # 129: Inactive FW Minor
 REG_HW_REV_MAJOR     = (0x01, 0x82, 1)   # 130: HW Revision Major
 REG_HW_REV_MINOR     = (0x01, 0x83, 1)   # 131: HW Revision Minor
-REG_LENGTH_SMF       = (0x01, 0x84, 1)   # 132: SMF link length [7:6]=mult [5:0]=base
-REG_LENGTH_OM5       = (0x01, 0x85, 1)   # 133
-REG_LENGTH_OM4       = (0x01, 0x86, 1)   # 134
-REG_LENGTH_OM3       = (0x01, 0x87, 1)   # 135
-REG_LENGTH_OM2       = (0x01, 0x88, 1)   # 136
+# 132-137 (Table 8-45, RO/Required): how far the module reaches on each fibre
+# type. Read as one burst - the SMF multiplier can escape to 137, so the last
+# byte is not optional.
+REG_LINK_LENGTHS     = (0x01, 0x84, 6)   # 132-137
 REG_BANKS_SUPPORTED  = (0x01, 0x8E, 1)   # 142  bits[1:0]
 # --- CMIS 5.4 additions on Page 01h ---
 REG_DEFAULT_POLARITY = (0x01, 0xAB, 2)   # 171-172 Default Input/Output polarity (Table 8-57)
@@ -749,6 +748,39 @@ SQUELCH_METHOD_TX = {
     2: 'Reduces Pav',
     3: 'Host selects OMA or Pav',
 }
+
+
+# Table 8-45. The SMF field is in km with a two-bit multiplier that can escape
+# to a second multiplier in 01h:137; the multimode fields are plain byte counts
+# of 2 m, except OM2 which counts single metres.
+_SMF_MULT = (0.1, 1.0, 10.0)
+_SMF_MULT2 = (50.0, 100.0, 200.0, 500.0)
+
+
+def parse_link_lengths(data: bytes) -> list:
+    """01h:132-137 -> the fibre types this module reaches, longest first.
+
+    "Unsupported media types shall be populated with zeroes", and an active
+    optical cable zeroes the whole table and reports its real length in
+    00h:202 instead - so an empty list is a statement, not a failure.
+    """
+    out = []
+    smf = data[0] if len(data) > 0 else 0
+    base = smf & 0x3F
+    if base:
+        code = (smf >> 6) & 0x03
+        if code == 0x03:
+            b137 = data[5] if len(data) > 5 else 0
+            mult = _SMF_MULT2[(b137 >> 6) & 0x03]
+        else:
+            mult = _SMF_MULT[code]
+        out.append({'media': 'SMF', 'km': round(base * mult, 1)})
+    for i, (name, step) in enumerate((('OM5', 2), ('OM4', 2),
+                                      ('OM3', 2), ('OM2', 1)), start=1):
+        raw = data[i] if len(data) > i else 0
+        if raw:
+            out.append({'media': name, 'm': raw * step})
+    return out
 
 
 def parse_supported_controls(data: bytes) -> dict:

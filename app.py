@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.12.0'
+__version__ = '2.13.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -473,14 +473,20 @@ def api_module_info():
             fw_rev = f"{fw_active_raw[0]}.{fw_active_raw[1]}"
         except Exception:
             fw_rev = "N/A"
+        # 01h:128-137 are ten contiguous required bytes: the inactive firmware
+        # revision (Table 8-44), the hardware revision, and the supported link
+        # length per fibre type (Table 8-45). One burst rather than three
+        # reads, because on real hardware each one costs a page select.
         try:
-            # Major and minor are adjacent single-byte registers, so this
-            # spans both rather than matching either constant's length.
-            hw_rev_raw = _read_upper(cmis.REG_HW_REV_MAJOR[0],
-                                     cmis.REG_HW_REV_MAJOR[1], 2)
-            hw_rev = f"{hw_rev_raw[0]}.{hw_rev_raw[1]}"
+            blk = _read_upper(cmis.REG_FW_INACT_MAJOR[0],
+                              cmis.REG_FW_INACT_MAJOR[1], 10)
+            fw_inactive = f"{blk[0]}.{blk[1]}"
+            hw_rev = f"{blk[2]}.{blk[3]}"
+            link_lengths = cmis.parse_link_lengths(blk[4:10])
         except Exception:
+            fw_inactive = "N/A"
             hw_rev = "N/A"
+            link_lengths = []
 
         pwr_class = cmis.parse_power_class(pwr_class_raw[0])
 
@@ -511,7 +517,9 @@ def api_module_info():
             'media_lanes_app1': media_lanes_app1,
             'lanes_detail':     lanes_detail,
             'fw_revision': fw_rev,
+            'fw_inactive_revision': fw_inactive,
             'hw_revision': hw_rev,
+            'link_lengths': link_lengths,
         })
     except Exception as e:
         return _err(str(e), 500)

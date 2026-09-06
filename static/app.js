@@ -529,7 +529,8 @@ async function loadInfo() {
     ['CLEI Code',       d.clei_code || '(none)',                                                  '00h',   '0xBE–0xC7',   'CLEI Code, 10-byte ASCII'],
     ['Power Class',     `Class ${d.power_class}`,                                                 '00h',   '0xC8[7:5]',   'Module Power Class (1–8)'],
     ['Max Power',       `${d.max_power_w} W`,                                                     '00h',   '0xC9',        'Maximum Power Consumption (×0.25 W)'],
-    ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
+    ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver, see Link Length)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
+    ['Link Length',     linkLengthSummary(d.link_lengths),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
@@ -540,6 +541,7 @@ async function loadInfo() {
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
     ['FW Revision',     d.fw_revision,                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
+    ['Inactive FW',     d.fw_inactive_revision || '—',                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
     ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
     ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
@@ -624,6 +626,17 @@ function moduleRestartCell(s) {
   if (s.module_state_changed) return '<span class="text-warning">Changing state now</span>';
   if (seen) return '<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">Restarted since last clear</span>';
   return '<span class="text-success">None</span>';
+}
+
+// Table 8-45. An active optical cable zeroes this whole table and reports its
+// real length in 00h:202 instead, so nothing here is not a read failure - it
+// means the length worth knowing is the cable one, and the other way round for
+// a transceiver. Saying "not advertised" keeps those two apart.
+function linkLengthSummary(list) {
+  if (!list || !list.length) return '— (not advertised)';
+  return list.map(x => x.km !== undefined
+    ? `${x.media} ${x.km} km`
+    : `${x.media} ${x.m} m`).join('  ·  ');
 }
 
 function polaritySummary(list) {

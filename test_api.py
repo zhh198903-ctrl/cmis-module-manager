@@ -7016,6 +7016,109 @@ class TestWhetherAnOutputIsActuallyOn(CMISTestCase):
                          'the flags table does not branch on 11h:153')
 
 
+class TestHowFarTheModuleReaches(CMISTestCase):
+    """01h:128-137 are ten contiguous RO/Required bytes and the tool read two
+    of them. Table 8-45 says how far the module reaches on each fibre type;
+    Table 8-44 says which firmware is sitting in the standby bank. The only
+    length on screen was 00h:202, which by specification an ordinary
+    transceiver populates with zeroes - so the field said "- (transceiver)"
+    for precisely the modules whose reach the module was publishing."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _info(self):
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def test_a_single_mode_module_reports_its_reach(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._info()['link_lengths'],
+                         [{'media': 'SMF', 'km': 0.5}])
+
+    def test_the_multimode_module_reports_the_fibre_it_runs_on(self):
+        """An SR module's reach is on OM4, not on SMF - reading only the SMF
+        byte would report nothing at all for it."""
+        self._connect('mock_sr8')
+        self.assertEqual(self._info()['link_lengths'],
+                         [{'media': 'OM4', 'm': 100}])
+
+    def test_the_multiplier_is_applied(self):
+        """01h:132 is base x multiplier, and mock_coherent uses the 1 km
+        multiplier while mock_dr8 uses 0.1 - reading the base alone would make
+        a 10 km module and a 500 m one both read 5."""
+        self._connect('mock_coherent')
+        self.assertEqual(self._info()['link_lengths'],
+                         [{'media': 'SMF', 'km': 10.0}])
+
+    def test_a_module_that_advertises_nothing_says_so(self):
+        self._connect('mock_coherent_zr')
+        self.assertEqual(self._info()['link_lengths'], [])
+
+    def test_the_escape_multiplier_is_read_from_137(self):
+        """01h:132[7:6] = 11b means the multiplier lives in 01h:137, which is
+        why the burst has to run to the end of the table."""
+        self._connect('mock_dr8')
+        poke(0x01, 0x84, 0xC0 | 40)
+        poke(0x01, 0x89, 0xC0)              # 11b -> x500 km
+        self.assertEqual(self._info()['link_lengths'],
+                         [{'media': 'SMF', 'km': 20000.0}])
+
+    def test_every_advertised_fibre_type_is_listed(self):
+        self._connect('mock_sr8')
+        poke(0x01, 0x85, 30)                # OM5 60 m
+        poke(0x01, 0x87, 35)                # OM3 70 m
+        poke(0x01, 0x88, 20)                # OM2 20 m, single-metre units
+        self.assertEqual(self._info()['link_lengths'],
+                         [{'media': 'OM5', 'm': 60}, {'media': 'OM4', 'm': 100},
+                          {'media': 'OM3', 'm': 70}, {'media': 'OM2', 'm': 20}])
+
+    def test_the_inactive_firmware_revision_is_reported(self):
+        """Table 8-44: modules carry two firmware images, and the standby one
+        is what says whether an update landed in the bank you meant."""
+        self._connect('mock_dr8')
+        d = self._info()
+        self.assertEqual(d['fw_inactive_revision'], '1.0')
+        self.assertNotEqual(d['fw_inactive_revision'], d['fw_revision'])
+
+    def test_the_hardware_revision_still_comes_from_its_own_bytes(self):
+        """The three fields now share one burst; an off-by-one in the slicing
+        would hand one field's bytes to another."""
+        self._connect('mock_dr8')
+        poke(0x01, 0x82, 9)
+        poke(0x01, 0x83, 7)
+        d = self._info()
+        self.assertEqual(d['hw_revision'], '9.7')
+        self.assertEqual(d['fw_inactive_revision'], '1.0')
+
+    def test_the_panel_shows_both(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('linkLengthSummary(d.link_lengths)', js,
+                      'the reach is read and then never shown')
+        self.assertIn('d.fw_inactive_revision', js)
+        body = js[js.index('function linkLengthSummary('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r'x\.km !== undefined',
+                         'kilometres and metres cannot be told apart')
+        self.assertRegex(body, r'!list \|\| !list\.length',
+                         'an unadvertised reach renders as an empty string')
+
+    def test_the_cable_length_row_points_at_the_other_one(self):
+        """A transceiver reads 0 there by specification, and the row used to
+        stop at that."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        row = re.search(r"\['Cable Length',[^\n]*", js).group(0)
+        self.assertIn('see Link Length', row)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

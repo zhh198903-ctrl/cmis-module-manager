@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.12.0<br>
+      <b>版本</b>　2.13.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.12.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.12.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.13.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.13.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -903,16 +903,27 @@
       <tbody>
         <tr><td>Power Class</td><td class="label">模块功耗等级 Class 1–8（bits[7:5]）</td><td><code>00h / 0xC8</code></td></tr>
         <tr><td>Max Power</td><td class="label">最大功耗（W），原始值 × 0.25</td><td><code>00h / 0xC9</code></td></tr>
-        <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效，光模块显示 "—"</td><td><code>00h / 0xCA</code></td></tr>
+        <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效；普通光模块按规范这里写 0，显示为 "—（transceiver，见 Link Length）"</td><td><code>00h / 0xCA</code></td></tr>
+        <tr><td>Link Length</td><td class="label">模块在每种光纤上的<b>最大支持距离</b>（Table 8-45）。SMF 以 km 计，带两位倍率；OM5/OM4/OM3 以 2 m 为单位，OM2 以 1 m 为单位。不支持的光纤类型写 0，所以只会列出真正支持的那几种</td><td><code>01h / 0x84–0x89</code></td></tr>
         <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
         <tr><td>Host / Media Interface ID</td><td class="label">应用码里的主机电接口与媒体接口编号，本工具按 <b>SFF-8024 Rev 4.14</b> 解出名称一并显示（如 <code>0x83</code> = 1.6TAUI-8 C2M、<code>0x7F</code> = 1.6TBASE-DR8）。<b>CMIS 本身不定义这些编码</b>，只存编号并指向 SFF-8024。同一编号在多模与单模光纤上含义不同，按模块的 Media Type 选表。遇到比编码表更新的编号会显示 <code>Unknown (0x..)</code> 而不是留空——留空会让人以为模块什么都没报</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
         <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
+        <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行</td><td><code>01h / 0x80–0x81</code></td></tr>
         <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本</td><td><code>01h / 0x82–0x83</code></td></tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Cable Length 和 Link Length 不会同时有值</b>。规范规定有源光缆（AOC）
+    把 Table 8-45 整张表写 0，改用 <code>00h:202</code> 报自己的实际长度；
+    普通可插拔光模块反过来。所以看到一行是 "—" 并不代表模块没报距离，
+    而是该看另一行。两行都是 "—" 才是真的没广播（比如可调相干模块，
+    实际距离取决于线路系统，不是光纤类型的固定属性）。</span>
   </div>
 
   <h3>7.3 运行状态</h3>
@@ -2189,7 +2200,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.12.0<br>
+    CMIS Module Manager 操作手册 v2.13.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
