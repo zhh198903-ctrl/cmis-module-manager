@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.10.1'
+__version__ = '2.10.2'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -947,6 +947,21 @@ def api_module_control_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
+        # The read side of this register names the same bits differently, so a
+        # caller round-tripping what it just read changed nothing and was told
+        # it worked. Both spellings are accepted; neither is guessed at.
+        _ALIASES = {
+            'low_pwr_request_sw':      'low_pwr',
+            'low_pwr_allow_request_hw': 'allow_lp_hw',
+            'squelch_method_select':   'squelch_method',
+            'bank_broadcast_enable':   'bank_broadcast',
+        }
+        body = {_ALIASES.get(k, k): v for k, v in body.items()}
+        bad = _reject_unknown(body, ('action', 'low_pwr', 'software_reset',
+                                     'allow_lp_hw', 'squelch_method',
+                                     'bank_broadcast'))
+        if bad:
+            return bad
         action = body.get('action', '')
 
         # Byte 0x1A packs unrelated controls together, so read it first and
@@ -1032,10 +1047,24 @@ def api_datapath_set():
     try:
         body = request.get_json(silent=True) or {}
         banks = (_state['lanes'] + 7) // 8
-        tx_disable = _masks_per_bank(body.get('tx_disable_mask', 0), banks)
-        tx_pol = _masks_per_bank(body.get('tx_polarity_flip_mask', 0), banks)
-        rx_pol = _masks_per_bank(body.get('rx_polarity_flip_mask', 0), banks)
-        app_select = body.get('app_select', [1] * _state['lanes'])
+        bad = _reject_unknown(body, ('tx_disable_mask', 'tx_polarity_flip_mask',
+                                     'rx_polarity_flip_mask', 'app_select',
+                                     'apply'))
+        if bad:
+            return bad
+
+        def _mask_now(reg):
+            page, addr, _ = reg
+            return [raw[0] for _b, raw in _read_banks(page, addr, 1)]
+
+        # A caller changing the Application must not silently un-flip every
+        # polarity it did not mention.
+        tx_disable = _keep(body, 'tx_disable_mask',
+                           _mask_now(cmis.REG_TX_OUTPUT_DIS), banks)
+        tx_pol = _keep(body, 'tx_polarity_flip_mask',
+                       _mask_now(cmis.REG_TX_POL_FLIP), banks)
+        rx_pol = _keep(body, 'rx_polarity_flip_mask',
+                       _mask_now(cmis.REG_RX_POL_FLIP), banks)
         apply = bool(body.get('apply', False))
 
         # What is staged right now, and how wide each Application is - both
@@ -1043,6 +1072,12 @@ def api_datapath_set():
         prev_app_select = []
         for _b, raw in _read_banks(*cmis.REG_APP_SELECT):
             prev_app_select += cmis.unpack_appselect(raw)
+
+        # Defaulting this to AppSel 1 meant a request that only flipped a
+        # polarity silently reconfigured the Application on every lane.
+        app_select = body.get('app_select',
+                              prev_app_select[:_state['lanes']]
+                              or [1] * _state['lanes'])
         host_lanes_by_app = {}
         try:
             _apps = cmis.parse_application_descriptors(
@@ -1315,10 +1350,20 @@ def api_squelch_set():
         # writing only the first eight, and the page's per-bank list arrived
         # here as a list where an int was expected.
         banks = (_state['lanes'] + 7) // 8
-        tx_sq = _masks_per_bank(body.get('tx_squelch_disable', 0), banks)
-        tx_sf = _masks_per_bank(body.get('tx_squelch_force',   0), banks)
-        rx_od = _masks_per_bank(body.get('rx_output_disable',  0), banks)
-        rx_sq = _masks_per_bank(body.get('rx_squelch_disable', 0), banks)
+        bad = _reject_unknown(body, ('tx_squelch_disable', 'tx_squelch_force',
+                                     'rx_output_disable', 'rx_squelch_disable'))
+        if bad:
+            return bad
+        # Read first: a caller setting one control must not clear the others.
+        cur_sq, cur_sf, cur_od, cur_rq = [], [], [], []
+        for _b, raw in _read_banks(0x10, cmis.REG_TX_SQUELCH_DIS[1], 2):
+            cur_sq.append(raw[0]); cur_sf.append(raw[1])
+        for _b, raw in _read_banks(0x10, cmis.REG_RX_OUTPUT_DIS[1], 2):
+            cur_od.append(raw[0]); cur_rq.append(raw[1])
+        tx_sq = _keep(body, 'tx_squelch_disable', cur_sq, banks)
+        tx_sf = _keep(body, 'tx_squelch_force',   cur_sf, banks)
+        rx_od = _keep(body, 'rx_output_disable',  cur_od, banks)
+        rx_sq = _keep(body, 'rx_squelch_disable', cur_rq, banks)
 
         refused = _refuse_unsupported((
             ('auto_squelch_disable_tx', tx_sq),
@@ -1374,10 +1419,17 @@ def api_loopback_set():
     try:
         body = request.get_json(silent=True) or {}
         banks = (_state['lanes'] + 7) // 8
-        media_out = _masks_per_bank(body.get('media_side_output', 0), banks)
-        media_in  = _masks_per_bank(body.get('media_side_input',  0), banks)
-        host_out  = _masks_per_bank(body.get('host_side_output',  0), banks)
-        host_in   = _masks_per_bank(body.get('host_side_input',   0), banks)
+        bad = _reject_unknown(body, ('media_side_output', 'media_side_input',
+                                     'host_side_output', 'host_side_input'))
+        if bad:
+            return bad
+        _blocks = [raw for _b, raw in _read_banks(
+            cmis.REG_MEDIA_OUT_LB[0], cmis.REG_MEDIA_OUT_LB[1], 4)]
+        cur = [[blk[i] for blk in _blocks] for i in range(4)]
+        media_out = _keep(body, 'media_side_output', cur[0], banks)
+        media_in  = _keep(body, 'media_side_input',  cur[1], banks)
+        host_out  = _keep(body, 'host_side_output',  cur[2], banks)
+        host_in   = _keep(body, 'host_side_input',   cur[3], banks)
 
         caps = _diag_caps()['loopback']
         requested = (('media_side_output', media_out), ('media_side_input', media_in),
@@ -1444,6 +1496,34 @@ def _refuse_unsupported(requested):
             return _err('This module advertises that %s (01h:%s is clear)'
                         % (why, bit), 400)
     return None
+
+
+def _reject_unknown(body: dict, allowed) -> object:
+    """Refuse a request body carrying a field this handler does not know.
+
+    Silently ignoring an unrecognised name is how a typo in a script reports
+    success and changes nothing - or worse, on the mask endpoints, clears
+    every control the caller did not happen to spell correctly.
+    """
+    unknown = sorted(k for k in body if k not in allowed)
+    if unknown:
+        return _err('Unknown field%s %s; this endpoint accepts %s'
+                    % ('' if len(unknown) == 1 else 's',
+                       ', '.join(repr(u) for u in unknown),
+                       ', '.join(sorted(allowed))), 400)
+    return None
+
+
+def _keep(body: dict, key: str, current, banks: int):
+    """A mask the caller did not mention keeps the value it already has.
+
+    Byte 0x1A learned this the hard way - rebuilding it from scratch cleared
+    the controls nobody had touched - and the lesson never reached the mask
+    endpoints, where omitting a field silently zeroed it.
+    """
+    if key in body:
+        return _masks_per_bank(body[key], banks)
+    return list(current)
 
 
 def _diag_caps() -> dict:

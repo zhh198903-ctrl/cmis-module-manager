@@ -1583,6 +1583,139 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestAWriteOnlyChangesWhatItNames(CMISTestCase):
+    """Omitting a field made it default to zero, so a request that set one
+    control silently cleared the others and reported success. Byte 0x1A
+    already learned this - its handler reads before writing, and the comment
+    says why - and the lesson never reached the endpoints that write masks."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps(body),
+                                content_type='application/json')
+
+    def test_setting_one_squelch_control_leaves_the_others(self):
+        self._connect()
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_disable': 0xFF,
+                                  'rx_output_disable': 0x0F}))
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_force': 0x03}))
+        got = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(got['tx_squelch_disable'], 0xFF,
+                         'a request that never mentioned this control '
+                         'cleared it')
+        self.assertEqual(got['rx_output_disable'], 0x0F)
+        self.assertEqual(got['tx_squelch_force'], 0x03)
+
+    def test_setting_a_polarity_does_not_reconfigure_every_lane(self):
+        """app_select defaulted to AppSel 1, so a polarity change quietly
+        re-provisioned the whole module."""
+        self._connect()
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'app_select': [2] * 8, 'apply': False}))
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_polarity_flip_mask': 0x0F,
+                                  'apply': False}))
+        got = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(got['app_select'], [2] * 8,
+                         'a polarity change reconfigured the Application on '
+                         'every lane')
+        self.assertEqual(got['tx_polarity_flip_mask'], 0x0F)
+
+    def test_setting_an_application_does_not_unflip_polarity(self):
+        self._connect()
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_polarity_flip_mask': 0xFF,
+                                  'apply': False}))
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'app_select': [1] * 8, 'apply': False}))
+        got = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(got['tx_polarity_flip_mask'], 0xFF)
+
+    def test_setting_one_loopback_leaves_the_others(self):
+        self._connect()
+        self.assertOk(self._post('/api/module/loopback',
+                                 {'media_side_output': 0xFF}))
+        self.assertOk(self._post('/api/module/loopback',
+                                 {'host_side_input': 0x0F}))
+        got = self.assertOk(self.client.get('/api/module/loopback'))['data']
+        self.assertEqual(got['media_side_output'], 0xFF,
+                         'setting one loopback type cleared another')
+        self.assertEqual(got['host_side_input'], 0x0F)
+
+
+class TestAMisspelledFieldIsNotSuccess(CMISTestCase):
+    """A name the handler does not know used to be ignored and the request
+    reported ok - having changed nothing, or on the mask endpoints having
+    cleared every control the caller did not spell correctly."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps(body),
+                                content_type='application/json')
+
+    def test_a_typo_is_refused_and_changes_nothing(self):
+        self._connect()
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_disable': 0xFF}))
+        rv = self._post('/api/module/squelch', {'tx_squelch_disabled': 0xFF})
+        self.assertEqual(rv.status_code, 400,
+                         'a misspelled field was accepted')
+        msg = json.loads(rv.data)['message']
+        self.assertIn('tx_squelch_disabled', msg,
+                      'the refusal does not say which field it did not know')
+        # Not the field they mistyped: 'tx_squelch_disabled' contains
+        # 'tx_squelch_disable', so naming that one proves nothing.
+        self.assertIn('rx_output_disable', msg,
+                      'the refusal does not say what is accepted')
+        got = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(got['tx_squelch_disable'], 0xFF,
+                         'the refused request cleared the control anyway')
+
+    def test_every_write_endpoint_refuses_a_stray_field(self):
+        self._connect()
+        for path in ('/api/module/squelch', '/api/module/loopback',
+                     '/api/module/datapath', '/api/module/control'):
+            with self.subTest(path=path):
+                rv = self._post(path, {'definitely_not_a_field': 1})
+                self.assertEqual(rv.status_code, 400,
+                                 '%s accepted a field it does not know' % path)
+
+    def test_the_control_register_accepts_the_names_it_reports(self):
+        """The read side named the same bits differently, so a caller feeding
+        back what it had just read changed nothing and was told it worked."""
+        self._connect()
+        before = self.assertOk(
+            self.client.get('/api/module/control'))['data']
+        self.assertIn('low_pwr_request_sw', before)
+        self.assertOk(self._post('/api/module/control',
+                                 {'low_pwr_request_sw': True}))
+        after = self.assertOk(self.client.get('/api/module/control'))['data']
+        self.assertTrue(after['low_pwr_request_sw'],
+                        'the register reports a name its own writer rejects')
+
+    def test_the_module_actually_enters_low_power(self):
+        """And the request has to reach the module, not just the byte."""
+        self._connect()
+        self.assertOk(self._post('/api/module/control',
+                                 {'low_pwr_request_sw': True}))
+        time.sleep(0.5)
+        state = self.assertOk(
+            self.client.get('/api/module/status'))['data']['module_state']
+        self.assertEqual(state, 'ModuleLowPwr')
+
+
 class TestApplyOnlyTouchesTheDataPathsThatChanged(CMISTestCase):
     """CMIS 6.2.3.3.1: Apply must be triggered on all lanes of a Data Path at
     once - a Data Path, not the module. The tool wrote 0xFF every time, so

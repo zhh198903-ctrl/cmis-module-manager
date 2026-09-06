@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.10.1<br>
+      <b>版本</b>　2.10.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.10.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.10.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.10.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.10.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,29 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>接口写入：只改你写了的，写错名字会报错</h3>
+  <p>这一节只关系到<b>直接调 REST 接口</b>的人（写脚本、或让
+     Claude Code 驱动工具）。界面操作不受影响，因为它每次都把全部字段一起发。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前的行为：<b>没提到的字段默认为 0</b>。于是只设一个控制，
+    会把其余的<b>静默地清掉</b>，而且返回“成功”。<br>
+    最危险的一处在数据通道接口：<code>app_select</code> 不提及就默认
+    全部为 1——<b>只发一个极性改动，会把每一路的 Application 重配成 1</b>。</span>
+  </div>
+  <p>现在四个写入接口（数据通道 / 输出控制 / 环回 / 模块控制）统一为：</p>
+  <ul>
+    <li><b>没提到的字段保持原值</b>（先读后写）</li>
+    <li><b>无法识别的字段返回 400</b>，并列出该接口接受哪些字段</li>
+  </ul>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>模块控制寄存器还有一个读写不一致的问题</b>：
+    读回来叫 <code>low_pwr_request_sw</code>，写进去只认 <code>low_pwr</code>——
+    五个控制里四个如此。把读到的状态原样写回去，四个控制都静默无效。
+    现在<b>两种写法都接受</b>。</span>
   </div>
 
   <h3>❗ Apply 只重启你改过的那条数据通道</h3>
@@ -2115,7 +2138,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.10.1<br>
+    CMIS Module Manager 操作手册 v2.10.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
