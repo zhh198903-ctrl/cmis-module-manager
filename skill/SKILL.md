@@ -9,6 +9,11 @@ description: 排查和驱动 CMIS Module Manager —— 浏览器里的光模块
 `http://127.0.0.1:5000`，通过 CH341 / CH347 / FTDI 的 USB-I2C 适配器读写模块。
 MIT 开源、免费、可商用。
 
+## 装到哪
+
+复制成 `%USERPROFILE%\.claude\skills\cmis-module-manager\SKILL.md`，
+新开一个 Claude Code 会话即可生效。装不装都不影响工具本身运行。
+
 **先问模块，别猜。** 光模块的行为几乎全部写在寄存器里，而 CMIS 的字段含义
 高度依赖版本和该模块自己的能力声明——凭印象答「这个位应该是…」十次错好几次。
 工具开着的时候有一整套 REST API，直接读回来看。

@@ -1514,6 +1514,62 @@ class TestModuleLevelEventsAreRememberedToo(CMISTestCase):
             self.assertOk(self.client.get('/api/module/status'))['data']['seen'], [])
 
 
+class TestTheDistributionPayloadStaysFlat(CMISTestCase):
+    """v2.1.0 and v2.2.0 shipped the containing folder instead of its contents.
+    The swap helper looks for the exe in the staging root with a non-recursive
+    listing, found none, retried for 75 s and gave up - silently, for every
+    user, twice. Existing installs carry that logic frozen inside their own
+    exe, so a nested payload cannot be rescued by fixing the updater later."""
+
+    def _script(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'packaging', 'make_dist_zip.py')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_updater_refuses_a_nested_payload(self):
+        import updater
+        with self.assertRaises(ValueError):
+            updater._payload_members(['CMIS_Module_Manager.exe',
+                                      'skill/SKILL.md'])
+
+    def test_a_flat_payload_with_the_skill_is_accepted(self):
+        import updater
+        staged = [rel for _o, rel in updater._payload_members(
+            ['CMIS_Module_Manager.exe', 'manual.html', 'SKILL.md'])]
+        self.assertEqual(staged,
+                         ['CMIS_Module_Manager.exe', 'manual.html', 'SKILL.md'])
+
+    def test_the_packaging_script_ships_the_skill_flat(self):
+        """The skill has to reach users who never open the download page."""
+        src = self._script()
+        self.assertIn("'SKILL.md'", src,
+                      'the distribution package no longer carries the skill')
+        self.assertNotIn("'skill/SKILL.md'", src,
+                         'a nested skill path would make every existing '
+                         'install refuse the update')
+
+    def test_the_packaging_script_checks_before_it_ships(self):
+        src = self._script()
+        self.assertIn('assert_updater_accepts', src,
+                      'nothing verifies the payload against the updater that '
+                      'has to unpack it')
+        self.assertIn('_payload_members', src,
+                      'the check does not use the real updater logic')
+
+    def test_the_version_comes_from_one_place(self):
+        """A hand-typed file name and a built exe drift apart quietly."""
+        src = self._script()
+        self.assertIn('__version__', src,
+                      'the archive name is not derived from app.py')
+
+    def test_the_script_keeps_no_machine_specific_path(self):
+        """packaging/ is in the public repo."""
+        src = self._script()
+        self.assertNotIn('D:\\\\claude', src)
+        self.assertNotIn('D:/claude', src)
+
+
 class TestTxBiasIsScaledTheWayTheModuleSaid(CMISTestCase):
     """01h:160.4-3 (Table 8-53) multiplies the 2 uA bias increment by 1, 2 or
     4. The decoder hard-coded 2 uA, so a module using x2 or x4 had every bias
