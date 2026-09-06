@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.9.3'
+__version__ = '2.9.4'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -277,6 +277,8 @@ def _discover_capabilities() -> dict:
         caps.update(cmis.parse_misc_caps(_read_upper(*cmis.REG_MISC_CAPS)[0]))
         caps['controls'] = cmis.parse_supported_controls(
             _read_upper(*cmis.REG_SUPPORTED_CONTROLS))
+        caps['aux'] = cmis.parse_aux_observables(
+            _read_upper(*cmis.REG_AUX_OBSERVABLE)[0])
         caps['flags_supported'] = cmis.parse_supported_flags(
             _read_upper(*cmis.REG_SUPPORTED_FLAGS))
         caps['monitors'] = cmis.parse_supported_monitors(
@@ -523,6 +525,26 @@ def api_module_status():
         aux2_raw  = _read_lower(0x14, 2)
         aux3_raw  = _read_lower(0x16, 2)
 
+        # An S16 with no unit is not a reading. 01h:145 says what each Aux
+        # monitor measures and 01h:159 whether it exists at all; without both
+        # the three registers are just numbers, which is why nothing showed
+        # them.
+        _caps = _state.get('caps') or {}
+        _obs = _caps.get('aux') or {}
+        _mons = _caps.get('monitors') or {}
+        aux_monitors = []
+        for idx, raw in ((1, aux1_raw), (2, aux2_raw), (3, aux3_raw)):
+            key = 'aux%d' % idx
+            if _obs and not _mons.get(key, False):
+                continue                  # the module says it has no such monitor
+            observable = _obs.get(key, 'custom')
+            value, unit = cmis.parse_aux_value(raw, observable)
+            name_en, name_zh = cmis.AUX_OBSERVABLE_NAMES[observable]
+            aux_monitors.append({
+                'index': idx, 'observable': observable, 'name': name_en,
+                'name_zh': name_zh, 'value': value, 'unit': unit,
+            })
+
         # Module flags byte 0x09 = Vcc/Temp Low/High Warning/Alarm bits
         f_byte9 = mod_flags_raw[1]
         temp_alarms = {
@@ -560,6 +582,7 @@ def api_module_status():
             'aux1_raw': struct.unpack(">h", aux1_raw[:2])[0] if len(aux1_raw) >= 2 else 0,
             'aux2_raw': struct.unpack(">h", aux2_raw[:2])[0] if len(aux2_raw) >= 2 else 0,
             'aux3_raw': struct.unpack(">h", aux3_raw[:2])[0] if len(aux3_raw) >= 2 else 0,
+            'aux': aux_monitors,
             'module_state_changed': state_changed,
             'alarm_active': any_alarm,
             'seen': sorted(module_seen),

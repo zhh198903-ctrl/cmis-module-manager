@@ -547,6 +547,22 @@ async function loadInfo() {
     ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
   ];
 
+  // Aux1-3 are plain S16 registers whose meaning is chosen by 01h:145: Aux2 is
+  // degrees Celsius or a percentage of the maximum TEC current depending on one
+  // bit. The API resolves that; a module advertising no Aux monitor sends none,
+  // and no row appears rather than a zero that looks like a reading.
+  for (const a of s.aux || []) {
+    const addr = ['0x12–0x13', '0x14–0x15', '0x16–0x17'][a.index - 1];
+    const shown = a.unit === 'degC' ? `${a.value} °C`
+                : a.unit ? `${a.value} ${a.unit}` : `${a.value}`;
+    rows.push([`Aux${a.index} — ${a.name}`, esc(shown), 'Lower', addr,
+               `Aux${a.index}MonValue; observable advertised in 01h:145.${a.index - 1}`
+               + (a.observable === 'tec_current'
+                  ? ' — signed percentage of the maximum TEC current: '
+                    + 'positive heats, negative cools'
+                  : '')]);
+  }
+
   tbody.innerHTML = rows.map(([k, v, pg, addr, def, since]) => {
     const plain = String(v).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     const tip = esc([

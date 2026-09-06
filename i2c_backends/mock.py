@@ -65,6 +65,13 @@ def _raw_to_dbm_centi(raw):
 # coherent lite from a ZR module. The tunable C-band profile this one used to
 # be still exists below as _ZR_800G.
 _COHERENT_800G = {
+    # Cooled transmitter: Aux1 = TEC current, Aux2 = laser temperature,
+    # Aux3 = Vcc2 (01h:145 = cooled | aux1 TEC | aux3 Vcc2).
+    'aux_observable_145': 0x85,
+    'monitors_159':       0x1F,
+    # Aux3 is S16 at 100 uV/LSB, so it tops out at 3.2767 V - a 3.3 V rail
+    # does not fit. 1.8 V is the secondary rail a coherent module reports.
+    'aux_values':         (-38.0, 45.0, 1.8),
     'display':         '800GBASE-LR1 coherent lite (DP-16QAM, SMF 10km, 802.3dj)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-LR1-800GQDD",
@@ -111,6 +118,13 @@ _COHERENT_800G = {
 # profile with a tunable laser, so Pages 04h and 12h would otherwise have
 # nothing to demonstrate.
 _ZR_800G = {
+    # Cooled transmitter: Aux1 = TEC current, Aux2 = laser temperature,
+    # Aux3 = Vcc2 (01h:145 = cooled | aux1 TEC | aux3 Vcc2).
+    'aux_observable_145': 0x85,
+    'monitors_159':       0x1F,
+    # Aux3 is S16 at 100 uV/LSB, so it tops out at 3.2767 V - a 3.3 V rail
+    # does not fit. 1.8 V is the secondary rail a coherent module reports.
+    'aux_values':         (-38.0, 45.0, 1.8),
     'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
     # Biased past the 131 mA that x1 scaling can express, so 160.4-3 says x2.
     'monitors_160':    0x0F,
@@ -451,9 +465,20 @@ class MockBackend(I2CInterface):
         # Voltage 3.3 V
         lower[0x10] = 0x80; lower[0x11] = 0xE8
         # Aux monitors (generic)
-        lower[0x12] = 0x0C; lower[0x13] = 0xCD   # Aux1
-        lower[0x14] = 0x37; lower[0x15] = 0x00   # Aux2
-        lower[0x16] = 0x80; lower[0x17] = 0xE8   # Aux3
+        # Aux1-3 (Lower 18-23, Table 8-10). An uncooled module advertises no
+        # Aux monitor at all (01h:159.4-2 clear) and these read zero; a cooled
+        # one has to encode each in the unit 01h:145 says it is.
+        aux = p.get('aux_values')       # (TEC %, laser degC, Vcc2 V) or None
+        if aux:
+            tec = struct.pack('>h', int(round(aux[0] * 32767 / 100.0)))
+            las = struct.pack('>h', int(round(aux[1] * 256)))
+            vcc2 = struct.pack('>h', int(round(aux[2] / 0.0001)))
+            lower[0x12], lower[0x13] = tec[0], tec[1]     # Aux1 TEC current
+            lower[0x14], lower[0x15] = las[0], las[1]     # Aux2 laser temp
+            lower[0x16], lower[0x17] = vcc2[0], vcc2[1]   # Aux3 Vcc2
+        else:
+            for a in range(0x12, 0x18):
+                lower[a] = 0x00
         lower[0x1A] = 0x40                  # ModuleControl: AllowLPHW=1
         lower[0x27] = 2; lower[0x28] = 5    # Active FW 2.5
         lower[0x55] = p['media_type']       # Media Type
@@ -585,6 +610,10 @@ class MockBackend(I2CInterface):
         # 157-158 Supported Flags, 159-160 Supported Monitors (Tables 8-52,
         # 8-53). Leaving these zero says the module implements no Flags and no
         # monitors at all, while it goes on reporting both.
+        # 145 Aux observables (Table 8-50). A module that reports Aux values
+        # without this says nothing about what they mean: Aux2 is degrees
+        # Celsius or a percentage of TEC current depending on one bit.
+        p01[0x91] = p.get('aux_observable_145', 0x00)
         p01[0x9D] = p.get('flags_157', 0x0F)         # Tx adaptive EQ fail,
                                                      # CDR LOL, LOS, fault
         p01[0x9E] = p.get('flags_158', 0x06)         # Rx CDR LOL, Rx LOS

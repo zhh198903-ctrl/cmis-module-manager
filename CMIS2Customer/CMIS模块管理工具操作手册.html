@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.9.3<br>
+      <b>版本</b>　2.9.4<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.3 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.9.3</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.9.4 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.9.4</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,45 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>Aux1–3：同一个寄存器，意义由一个位决定</h3>
+  <p>下部内存 <code>18–23</code> 是三个普通的 S16 寄存器，
+     但它们<b>到底测的是什么，由 <code>01h:145</code>（Table 8-50）里的三个位决定</b>：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>寄存器</th><th>位 = 0</th><th>位 = 1</th></tr></thead>
+      <tbody>
+        <tr><td>Aux1<span class="label"> Lower 18–19</span></td>
+            <td class="label">自定义（厂商定义，无通用单位）</td>
+            <td class="label"><b>TEC 电流</b></td></tr>
+        <tr><td>Aux2<span class="label"> Lower 20–21</span></td>
+            <td class="label"><b>激光器温度</b>（1/256 °C）</td>
+            <td class="label">TEC 电流</td></tr>
+        <tr><td>Aux3<span class="label"> Lower 22–23</span></td>
+            <td class="label">激光器温度（1/256 °C）</td>
+            <td class="label"><b>附加电源电压</b>（100 µV）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>不读 <code>01h:145</code> 就拿这三个数，<b>它们既没有单位也没有含义</b>——
+    Aux2 的同一个数可能是摄氏度，也可能是 TEC 电流百分比。
+    工具此前把它们原样返回、界面一个都不显示，
+    于是制冷模块的<b>激光器温度和 TEC 电流就白白扔了</b>。</span>
+  </div>
+  <p>现在 Module Info 里按声明的含义逐行列出，带各自的单位。
+     <b>TEC 电流是有符号百分比</b>（占模块最大 TEC 电流幅度的比例）：
+     <b>正值是加热，负值是制冷</b>。规范里没有任何寄存器给出那个最大值，
+     所以<b>无法诚实地换算成安培</b>，工具也不会自己编一个。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><code>01h:159.4-2</code> 声明这三个监控到底存不存在。
+    <b>不存在就一行也不显示</b>，而不是显示三个 0——
+    0 °C 和“TEC 没在工作”都是看上去很合理的读数。
+    非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
+    两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
   <h3>Tx 偏置电流的刻度倍数</h3>
@@ -1981,7 +2020,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.9.3<br>
+    CMIS Module Manager 操作手册 v2.9.4<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

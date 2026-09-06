@@ -63,6 +63,26 @@ def assert_updater_accepts(names: list) -> None:
         raise SystemExit('staging root must hold exactly one exe, got %s' % exes)
 
 
+def write_skill_zip(out_dir: str, ver: str) -> str:
+    """The companion skill, published on its own as well as bundled.
+
+    Same version as the program by construction: the download site merges it
+    into the product card by name and warns when the two drift, because a
+    skill describing a build the user does not have sends them looking for
+    behaviour that is not there.
+    """
+    dest = os.path.join(out_dir,
+                        'CMIS-Skill_dist_v%s.zip' % ver.replace('.', '_'))
+    root, sub = 'CMIS-Skill_dist', 'cmis-module-manager'
+    with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.write(SKILL, '%s/%s/SKILL.md' % (root, sub))
+        z.write(os.path.join(ROOT, 'skill', 'INSTALL.md'),
+                '%s/%s/INSTALL.md' % (root, sub))
+        z.write(os.path.join(ROOT, 'LICENSE'), '%s/LICENSE' % root)
+    return dest
+
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit(__doc__.strip().split('\n\n')[1])
@@ -84,6 +104,13 @@ def main() -> int:
     print('%s  (v%s)' % (dest, ver))
     for n in packed:
         print('  %10d  %s' % (os.path.getsize(dict((b, a) for a, b in entries)[n]), n))
+
+    skill_zip = write_skill_zip(out_dir, ver)
+    print(skill_zip)
+    with zipfile.ZipFile(skill_zip) as z:
+        for n in z.namelist():
+            print('  %10d  %s' % (z.getinfo(n).file_size, n))
+
     return 0
 
 

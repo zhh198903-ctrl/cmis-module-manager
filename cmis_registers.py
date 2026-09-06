@@ -120,6 +120,7 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 # actually implements. Offering one it does not is offering a control that
 # writes a register the module ignores.
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
+REG_AUX_OBSERVABLE     = (0x01, 0x91, 1)  # 145 (Table 8-50)
 REG_SUPPORTED_FLAGS    = (0x01, 0x9D, 2)  # 157-158 (Table 8-52)
 REG_SUPPORTED_MONITORS = (0x01, 0x9F, 2)  # 159-160 (Table 8-53)
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
@@ -760,6 +761,47 @@ def parse_supported_controls(data: bytes) -> dict:
         'output_disable_rx':         bool(b156 & 0x02),
         'output_polarity_flip_rx':   bool(b156 & 0x01),
     }
+
+
+AUX_OBSERVABLE_NAMES = {
+    'custom':            ('Custom', '\u81ea\u5b9a\u4e49'),
+    'tec_current':       ('TEC Current', 'TEC \u7535\u6d41'),
+    'laser_temperature': ('Laser Temperature', '\u6fc0\u5149\u5668\u6e29\u5ea6'),
+    'vcc2':              ('Additional Supply Voltage', '\u9644\u52a0\u7535\u6e90\u7535\u538b'),
+}
+
+
+def parse_aux_observables(byte_val: int) -> dict:
+    """01h:145 (Table 8-50): what each Aux monitor actually measures.
+
+    The value registers are plain S16. Without this advertisement the number
+    has no unit and no meaning - Aux2 is degrees Celsius or a percentage of
+    the maximum TEC current depending on one bit.
+    """
+    return {
+        'cooled_transmitter': bool(byte_val & 0x80),
+        'aux1': 'tec_current'       if byte_val & 0x01 else 'custom',
+        'aux2': 'tec_current'       if byte_val & 0x02 else 'laser_temperature',
+        'aux3': 'vcc2'              if byte_val & 0x04 else 'laser_temperature',
+    }
+
+
+def parse_aux_value(raw: bytes, observable: str):
+    """One Aux monitor as (value, unit), decoded for what it actually is.
+
+    TEC current is a signed percentage of the module's maximum TEC current
+    magnitude, not an absolute current: +100 % is full heating, -100 % full
+    cooling. There is no register giving that maximum, so no ampere figure can
+    honestly be derived from it (Table 8-10, Lower Memory 18-23).
+    """
+    v = struct.unpack('>h', raw[:2])[0]
+    if observable == 'laser_temperature':
+        return round(v / 256.0, 4), 'degC'
+    if observable == 'tec_current':
+        return round(v * 100.0 / 32767.0, 3), '%'
+    if observable == 'vcc2':
+        return round(v * 0.0001, 4), 'V'
+    return v, ''            # custom: the vendor defines it, so claim no unit
 
 
 def parse_supported_flags(data: bytes) -> dict:

@@ -1570,6 +1570,111 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestTheAuxMonitorsMeanSomething(CMISTestCase):
+    """Lower Memory 18-23 are three plain S16 registers whose meaning is chosen
+    by 01h:145 (Table 8-50): Aux2 is degrees Celsius or a percentage of the
+    maximum TEC current depending on one bit. The tool read all three and
+    handed them out as aux1_raw..aux3_raw with no unit, and nothing displayed
+    them - a cooled module's laser temperature and TEC current were simply
+    thrown away."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _aux(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']['aux']
+
+    def test_the_observable_advertisement_is_read(self):
+        self._connect('mock_coherent_zr')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIn('aux', caps, 'nothing reads what the Aux monitors measure')
+        self.assertTrue(caps['aux']['cooled_transmitter'])
+
+    def test_each_monitor_is_named_and_carries_its_unit(self):
+        self._connect('mock_coherent_zr')
+        got = {a['index']: (a['observable'], a['unit']) for a in self._aux()}
+        self.assertEqual(got[1], ('tec_current', '%'))
+        self.assertEqual(got[2], ('laser_temperature', 'degC'))
+        self.assertEqual(got[3], ('vcc2', 'V'))
+
+    def test_the_values_round_trip_in_their_own_units(self):
+        self._connect('mock_coherent_zr')
+        by = {a['index']: a['value'] for a in self._aux()}
+        self.assertAlmostEqual(by[1], -38.0, delta=0.01)   # cooling
+        self.assertAlmostEqual(by[2], 45.0, delta=0.01)    # degC
+        self.assertAlmostEqual(by[3], 1.8, delta=0.001)    # V
+
+    def test_a_cooling_tec_reads_negative(self):
+        """+100 % is full heating and -100 % full cooling; dropping the sign
+        would turn a module working hard to cool into one that is heating."""
+        self._connect('mock_coherent_zr')
+        tec = [a for a in self._aux() if a['observable'] == 'tec_current'][0]
+        self.assertLess(tec['value'], 0)
+
+    def test_an_uncooled_module_reports_no_aux_monitor(self):
+        """01h:159.4-2 clear means there is no such monitor. Showing a zero
+        would read as 0 degC or a TEC doing nothing."""
+        for backend in ('mock_dr8', 'mock_sr8', 'mock_fr4x2'):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                self.assertEqual(self._aux(), [],
+                                 '%s offers an Aux reading it never '
+                                 'advertised' % backend)
+
+    def test_the_mock_encodes_what_it_advertises(self):
+        """A module saying Aux2 is a laser temperature and then encoding a TEC
+        percentage there is the same contradiction, one level down."""
+        import cmis_registers as c
+        self._connect('mock_coherent_zr')
+        obs = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['aux']
+        raw = self.assertOk(self.client.get('/api/module/status'))['data']
+        for idx in (1, 2, 3):
+            observable = obs['aux%d' % idx]
+            value, _unit = c.parse_aux_value(
+                struct.pack('>h', raw['aux%d_raw' % idx]), observable)
+            live = [a for a in raw['aux'] if a['index'] == idx][0]
+            self.assertAlmostEqual(live['value'], value, places=4)
+
+    def test_each_bit_selects_its_own_observable(self):
+        """The shipped profiles happen to exercise one branch per monitor, so
+        pin all three bits directly - otherwise hard-coding an observable
+        looks correct against whatever the mocks chose."""
+        import cmis_registers as c
+        for bits, expect in (
+                (0x00, ('custom', 'laser_temperature', 'laser_temperature')),
+                (0x01, ('tec_current', 'laser_temperature', 'laser_temperature')),
+                (0x02, ('custom', 'tec_current', 'laser_temperature')),
+                (0x04, ('custom', 'laser_temperature', 'vcc2')),
+                (0x07, ('tec_current', 'tec_current', 'vcc2'))):
+            got = c.parse_aux_observables(bits)
+            self.assertEqual((got['aux1'], got['aux2'], got['aux3']), expect,
+                             '01h:145 = 0x%02X' % bits)
+        self.assertFalse(c.parse_aux_observables(0x00)['cooled_transmitter'])
+        self.assertTrue(c.parse_aux_observables(0x80)['cooled_transmitter'])
+
+    def test_a_reserved_or_custom_aux_claims_no_unit(self):
+        """Aux1 with 145.0 clear is vendor defined; inventing a unit for it
+        would be worse than showing the raw number."""
+        import cmis_registers as c
+        value, unit = c.parse_aux_value(struct.pack('>h', 1234), 'custom')
+        self.assertEqual((value, unit), (1234, ''))
+
+    def test_the_panel_shows_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertRegex(js, r'for \(const a of s\.aux \|\| \[\]\)',
+                         'the Aux monitors are read and never displayed')
+        self.assertIn('01h:145', js,
+                      'the row does not say where its meaning comes from')
+
+
 class TestTxBiasIsScaledTheWayTheModuleSaid(CMISTestCase):
     """01h:160.4-3 (Table 8-53) multiplies the 2 uA bias increment by 1, 2 or
     4. The decoder hard-coded 2 uA, so a module using x2 or x4 had every bias
