@@ -1268,6 +1268,8 @@ async function loadDatapath() {
     </tr>`;
   }).join('');
 
+  renderSignalIntegrity(d);
+
   const ctl = (AppState.caps && AppState.caps.controls) || {};
   const rxtx = (AppState.caps && AppState.caps.rx_tx) || {};
   const say = (what, bit) =>
@@ -1313,6 +1315,78 @@ async function loadDatapath() {
       const el = document.getElementById(`tx-en-${lane.lane}`);
       if (el) el.checked = lane.tx_enable;
     }
+  }
+}
+
+// The Staged Control Set that Apply commits has a signal integrity half the
+// tool never read: adaptive Tx equalization, host-controlled targets, the Rx
+// CDR bypass, the output equalizer cursors and the output amplitude. Nothing
+// showed them, so ConfigRejectedInvalidSI named a fault with nowhere in the
+// interface to look it up.
+const SI_COLUMNS = [
+  ['tx_adaptive_eq',      'Tx Adaptive EQ',  '10h / 0x99',        'AdaptiveInputEqEnableTx (01h:161.3)'],
+  ['tx_input_eq_target',  'Tx Input EQ',     '10h / 0x9C\u20130x9F', 'HostControlledInputEqTargetTx (01h:161.2)'],
+  ['rx_cdr_enable',       'Rx CDR',          '10h / 0xA1',        'CDREnableRx \u2014 clear means bypassed (01h:162.1)'],
+  ['rx_eq_pre_cursor',    'Rx EQ Pre',       '10h / 0xA2\u20130xA5', 'OutputEqPreCursorTargetRx (01h:162.4-3)'],
+  ['rx_eq_post_cursor',   'Rx EQ Post',      '10h / 0xA6\u20130xA9', 'OutputEqPostCursorTargetRx (01h:162.4-3)'],
+  ['rx_output_amplitude', 'Rx Amplitude',    '10h / 0xAA\u20130xAD', 'OutputAmplitudeTargetRx (01h:162.2)'],
+];
+
+function renderSignalIntegrity(d) {
+  const head = document.getElementById('tbl-si-head');
+  const body = document.getElementById('tbl-si-body');
+  const note = document.getElementById('si-note');
+  const hint = document.getElementById('si-hint');
+  if (!head || !body) return;
+
+  const si = d.signal_integrity || {};
+  const adv = d.si_advertised || {};
+  const cols = SI_COLUMNS.filter(([key]) => Array.isArray(si[key]));
+
+  if (!cols.length) {
+    head.innerHTML = '';
+    body.innerHTML = '<tr><td class="placeholder-text">This module advertises no '
+      + 'host-controlled signal integrity settings (01h:161\u2013162).</td></tr>';
+    if (note) note.innerHTML = '';
+    if (hint) hint.textContent = '';
+    return;
+  }
+
+  head.innerHTML = '<tr><th>Lane</th>' + cols.map(([, label, reg, tip]) =>
+    `<th title="${esc(tip)}">${esc(label)}<span class="reg-meta">${esc(reg)}</span></th>`
+  ).join('') + '</tr>';
+
+  const cell = (key, v) => {
+    if (typeof v === 'boolean') {
+      return v ? '<span class="flag-ok">On</span>'
+               : `<span class="flag-warn">${key === 'rx_cdr_enable' ? 'Bypassed' : 'Off'}</span>`;
+    }
+    return `<span style="font-family:var(--font-mono)">${esc(String(v))}</span>`;
+  };
+  const lanes = (si[cols[0][0]] || []).length;
+  body.innerHTML = Array.from({length: lanes}, (_, i) =>
+    `<tr><td>${i + 1}</td>` + cols.map(([key]) => `<td>${cell(key, si[key][i])}</td>`).join('')
+    + '</tr>').join('');
+
+  if (note) {
+    // Only pre-cursor advertised means the post-cursor bytes hold the
+    // pre-cursor target instead (Table 8-84), so the address alone lies.
+    note.innerHTML = adv.rx_output_eq_control === 1
+      ? '\u26a0 ' + esc('This module advertises pre-cursor control only: the '
+        + 'post-cursor bytes carry the pre-cursor target')
+        + ' <span class="reg-meta">01h:162.4-3</span>'
+      : '';
+  }
+  if (hint) {
+    const max = [];
+    if (adv.tx_input_eq_max !== undefined) max.push('Tx input EQ max ' + adv.tx_input_eq_max);
+    if (adv.rx_output_eq_pre_cursor_max !== undefined)
+      max.push('Rx EQ pre max ' + adv.rx_output_eq_pre_cursor_max
+               + ' / post max ' + adv.rx_output_eq_post_cursor_max);
+    if (Array.isArray(adv.rx_output_levels) && adv.rx_output_levels.length)
+      max.push('amplitude codes ' + adv.rx_output_levels.join(', '));
+    hint.textContent = 'Read-only. Apply on the DataPath table commits this '
+      + 'set as well.' + (max.length ? '  Module limits: ' + max.join(' \u00b7 ') + '.' : '');
   }
 }
 
@@ -2352,6 +2426,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-commit-mls')?.addEventListener('click', () => applyMls(true));
   document.getElementById('btn-apply-datapath')?.addEventListener('click', applyDatapath);
   document.getElementById('btn-refresh-datapath')?.addEventListener('click', loadDatapath);
+  document.getElementById('btn-refresh-si')?.addEventListener('click', loadDatapath);
 
   // Thresholds
   document.getElementById('btn-refresh-thresholds')?.addEventListener('click', loadThresholds);

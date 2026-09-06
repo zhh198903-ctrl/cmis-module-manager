@@ -1570,6 +1570,131 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestTheStagedSetHasASignalIntegrityHalf(CMISTestCase):
+    """Apply commits the whole Staged Control Set, and the tool only ever read
+    the AppSel and mask part of it. The signal integrity half - adaptive Tx
+    equalization, host-controlled targets, the Rx CDR bypass, the output
+    equalizer cursors, the output amplitude - was never read or shown, so the
+    tool applied settings it could not name and ConfigRejectedInvalidSI (5h)
+    named a fault with nowhere in the interface to look it up."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def test_the_advertisement_is_read(self):
+        self._connect()
+        si = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']['si']
+        self.assertIn('rx_output_eq_control_name', si)
+        self.assertIn('tx_input_eq_max', si)
+
+    def test_the_staged_si_controls_are_read(self):
+        self._connect()
+        si = self._dp()['signal_integrity']
+        for key in ('tx_adaptive_eq', 'tx_input_eq_target', 'rx_cdr_enable',
+                    'rx_eq_pre_cursor', 'rx_eq_post_cursor',
+                    'rx_output_amplitude'):
+            self.assertIn(key, si, '%s is committed by Apply and never read'
+                                   % key)
+            self.assertEqual(len(si[key]), 8)
+
+    def test_only_advertised_controls_come_back(self):
+        """A module without host-controlled Tx EQ has no such target to show,
+        and a zero there would read as a real setting."""
+        self._connect('mock_sr8')
+        si = self._dp()['signal_integrity']
+        self.assertIn('tx_adaptive_eq', si)
+        self.assertNotIn('tx_input_eq_target', si)
+        self.assertNotIn('rx_output_amplitude', si)
+        self.assertNotIn('rx_eq_post_cursor', si,
+                         'this module advertises pre-cursor control only')
+
+    def test_a_retimed_module_does_not_ship_with_its_cdrs_bypassed(self):
+        """CDREnableRx clear means bypassed. Left unset in the mock the whole
+        byte reads zero, which says every Rx CDR is off on a module that
+        advertises having one."""
+        for backend in ('mock_dr8', 'mock_sr8', 'mock_coherent'):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                self.assertTrue(all(self._dp()['signal_integrity']['rx_cdr_enable']),
+                                '%s ships with every Rx CDR bypassed' % backend)
+
+    def test_the_nibbles_are_unpacked_lane_one_first(self):
+        """Lane 1 is the low nibble of the first byte. Reading it the other
+        way round swaps every pair of lanes and looks entirely plausible."""
+        import cmis_registers as c
+        self.assertEqual(c.unpack_nibbles(bytes([0x21, 0x43, 0x65, 0x87])),
+                         [1, 2, 3, 4, 5, 6, 7, 8])
+
+    def test_the_maxima_decode(self):
+        import cmis_registers as c
+        m = c.parse_si_maxima(bytes([0xF7, 0x35]))
+        self.assertEqual(m['rx_output_levels'], [0, 1, 2, 3])
+        self.assertEqual(m['tx_input_eq_max'], 7)
+        self.assertEqual(m['rx_output_eq_post_cursor_max'], 3)
+        self.assertEqual(m['rx_output_eq_pre_cursor_max'], 5)
+        self.assertEqual(c.parse_si_maxima(bytes([0x00, 0x00]))
+                         ['rx_output_levels'], [])
+
+    def test_the_eq_control_modes_are_named(self):
+        import cmis_registers as c
+        names = [c.parse_si_controls_adv(bytes([0, m << 3]))
+                 ['rx_output_eq_control_name'] for m in range(4)]
+        self.assertEqual(names, ['Not supported', 'Pre-cursor only',
+                                 'Post-cursor only', 'Pre- and post-cursor'])
+
+
+class TestTheSignalIntegrityTableFollowsTheAdvertisement(CMISTestCase):
+    """Its columns depend on what the module says it has, so the header and
+    the cells are built together - a fixed header would go out of step the
+    moment a module advertises a different set."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_columns_come_from_the_data(self):
+        js = self._js()
+        body = js[js.index('function renderSignalIntegrity('):]
+        body = body[:body.index('\nasync function applyDatapath(')]
+        self.assertRegex(body, r'SI_COLUMNS\.filter\(',
+                         'every column is shown whatever the module has')
+        self.assertIn('head.innerHTML', body,
+                      'the header is not built alongside the cells')
+
+    def test_a_bypassed_cdr_does_not_read_as_off(self):
+        """CDREnableRx clear means the CDR is bypassed, which is a different
+        statement from a control being switched off."""
+        js = self._js()
+        self.assertIn('Bypassed', js,
+                      'a bypassed Rx CDR is labelled like any other disabled '
+                      'control')
+
+    def test_the_pre_cursor_only_case_is_called_out(self):
+        """With only pre-cursor advertised the post-cursor bytes carry the
+        pre-cursor target, so the address alone is misleading."""
+        js = self._js()
+        self.assertIn('rx_output_eq_control === 1', js,
+                      'nothing warns that the post-cursor bytes hold the '
+                      'pre-cursor target on such a module')
+
+    def test_the_table_exists_and_is_empty_by_default(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="tbl-si-head"', html)
+        self.assertIn('id="tbl-si-body"', html)
+
+
 class TestWhatTheRxPowerNumberActuallyIs(CMISTestCase):
     """01h:151.4 decides whether the Rx power monitor reports OMA or average
     power. They are different quantities, several dB apart on a modulated

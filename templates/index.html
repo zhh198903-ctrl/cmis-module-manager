@@ -316,6 +316,23 @@
         </p>
       </div>
 
+      <!-- Signal Integrity card. Its columns depend on what the module
+           advertises, so the whole table is built in app.js - a fixed thead
+           here would go out of step with the cells the moment a module
+           advertises a different set. -->
+      <div class="card">
+        <h3>Signal Integrity
+          <span style="display:flex;gap:8px">
+            <button class="btn-secondary btn-sm" id="btn-refresh-si">↻ Refresh</button>
+          </span>
+        </h3>
+        <div id="si-note" class="caps-note"></div>
+        <div class="table-scroll">
+          <table id="tbl-si"><thead id="tbl-si-head"></thead><tbody id="tbl-si-body"></tbody></table>
+        </div>
+        <p class="hint" id="si-hint"></p>
+      </div>
+
       <!-- Output Controls card -->
       <div class="card">
         <h3>Output Controls

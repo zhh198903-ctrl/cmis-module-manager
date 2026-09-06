@@ -327,6 +327,11 @@ _XD16_1600G = {
 
 _SR8_800G = {
     'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
+    # A simpler retimer throughout: no host-controlled Tx input EQ target and
+    # only pre-cursor Rx equalization, so the signal integrity table has to
+    # drop columns rather than show controls this module does not have.
+    'si_161':          0x0B,
+    'si_162':          0x0A,
     # No Tx adaptive input EQ fail Flag and no Rx CDR LOL Flag: a VCSEL module
     # with a simpler retimer, and something for the table to mark as not
     # implemented rather than colour green.
@@ -620,6 +625,17 @@ class MockBackend(I2CInterface):
         # Rx power monitor reports OMA and Rx LOS responds to OMA, which is
         # not what any of these profiles actually model.
         p01[0x97] = p.get('rx_tx_151', 0x10)   # PIN, average power, OMA LOS
+        # 153-154 signal integrity maxima, 161-162 which SI controls exist
+        # (Tables 8-53, 8-54). Left at zero a module says it has no CDR, no
+        # equalizer control and no output amplitude control at all, which is
+        # not what a retimed module is.
+        p01[0x99] = p.get('si_153', 0xF7)       # all four Rx output levels,
+                                                # Tx input eq max 7
+        p01[0x9A] = p.get('si_154', 0x77)       # pre/post cursor max 7
+        p01[0xA1] = p.get('si_161', 0x0F)       # adaptive + host-controlled
+                                                # Tx input eq, Tx CDR + bypass
+        p01[0xA2] = p.get('si_162', 0x1F)       # both cursors, amplitude,
+                                                # Rx CDR bypass, staged set 1
         p01[0x9D] = p.get('flags_157', 0x0F)         # Tx adaptive EQ fail,
                                                      # CDR LOL, LOS, fault
         p01[0x9E] = p.get('flags_158', 0x06)         # Rx CDR LOL, Rx LOS
@@ -701,6 +717,16 @@ class MockBackend(I2CInterface):
         p10[0x80] = 0x00                            # 128 DataPathDeinit all clear
         for a in range(0x81, 0x91): p10[a] = 0x00   # 129-144 lane controls + Apply*
         for i in range(8): p10[0x91 + i] = 0x10     # 145-152 DPConfigLane: AppSel=1
+        # 153-173 Staged Control Set 0 signal integrity (Tables 8-83, 8-84).
+        # Absent, these read as zero - which says every Rx CDR is bypassed on
+        # a module that advertises having one, and that is not a default any
+        # retimed module ships with.
+        p10[0x99] = p.get('scs_adaptive_eq_tx', 0xFF)   # 153 adaptive Tx eq on
+        for a in range(0x9A, 0xA1): p10[a] = 0x00       # 154-160 recall, targets
+        p10[0xA1] = p.get('scs_cdr_enable_rx', 0xFF)    # 161 Rx CDRs enabled
+        for a in range(0xA2, 0xAA): p10[a] = 0x00       # 162-169 eq targets
+        for a in range(0xAA, 0xAE):                     # 170-173 amplitude
+            p10[a] = p.get('scs_rx_amplitude', 0x22)    # code 2 on every lane
         regs[0x10] = p10
 
         # ==== Page 11h — DataPath Status & Monitoring ====

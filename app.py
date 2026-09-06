@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.9.5'
+__version__ = '2.10.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -277,6 +277,10 @@ def _discover_capabilities() -> dict:
         caps.update(cmis.parse_misc_caps(_read_upper(*cmis.REG_MISC_CAPS)[0]))
         caps['controls'] = cmis.parse_supported_controls(
             _read_upper(*cmis.REG_SUPPORTED_CONTROLS))
+        caps['si'] = cmis.parse_si_controls_adv(
+            _read_upper(*cmis.REG_SI_CONTROLS_ADV))
+        caps['si'].update(cmis.parse_si_maxima(
+            _read_upper(*cmis.REG_SI_MAXIMA)))
         caps['rx_tx'] = cmis.parse_rx_tx_characteristics(
             _read_upper(*cmis.REG_RX_TX_CHARACTER)[0])
         caps['aux'] = cmis.parse_aux_observables(
@@ -856,7 +860,44 @@ def api_datapath_get():
                 'rx_polarity_flip': bool((rx_pol_masks[b] >> bit) & 1),
             })
 
+        # Apply commits the whole Staged Control Set, and the signal integrity
+        # half of it was never read or shown - so the tool has been applying
+        # settings it could not name, and ConfigRejectedInvalidSI pointed at
+        # values with nowhere in the UI to look them up.
+        si_adv = ((_state.get('caps') or {}).get('si')) or {}
+        si = {}
+        try:
+            n = _state['lanes']
+            if si_adv.get('tx_adaptive_input_eq'):
+                si['tx_adaptive_eq'] = cmis.parse_lane_flags(
+                    _read_banked(*cmis.REG_SCS_TX_ADAPT_EQ[:2], 1)[0])[:n]
+            if si_adv.get('tx_input_eq_host_control'):
+                si['tx_input_eq_target'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_SCS_TX_EQ_TARGET))[:n]
+            if si_adv.get('rx_cdr_bypass_control'):
+                si['rx_cdr_enable'] = cmis.parse_lane_flags(
+                    _read_banked(*cmis.REG_SCS_RX_CDR[:2], 1)[0])[:n]
+            eq = si_adv.get('rx_output_eq_control', 0)
+            if eq in (1, 3):
+                si['rx_eq_pre_cursor'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_SCS_RX_EQ_PRE))[:n]
+            if eq in (2, 3):
+                # With only pre-cursor advertised the post-cursor bytes carry
+                # the pre-cursor target instead (Table 8-84), so the label has
+                # to follow the advertisement rather than the address.
+                si['rx_eq_post_cursor'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_SCS_RX_EQ_POST))[:n]
+            if si_adv.get('rx_output_amplitude_control'):
+                si['rx_output_amplitude'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_SCS_RX_AMPLITUDE))[:n]
+        except Exception:
+            # An optional control area a module does not implement is not a
+            # reason to fail the whole page.
+            si = {}
+
         return _ok({
+            'signal_integrity': si,
+            'si_advertised': si_adv,
             'tx_disable_mask': tx_disable_mask,
             'dp_deinit_mask':  dp_deinit_mask,
             'tx_polarity_flip_mask': tx_pol_mask,

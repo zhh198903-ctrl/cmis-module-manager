@@ -122,6 +122,18 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
 REG_AUX_OBSERVABLE     = (0x01, 0x91, 1)  # 145 (Table 8-50)
 REG_RX_TX_CHARACTER    = (0x01, 0x97, 1)  # 151 (Table 8-50)
+REG_SI_MAXIMA          = (0x01, 0x99, 2)  # 153-154 (Table 8-53 continuation)
+REG_SI_CONTROLS_ADV    = (0x01, 0xA1, 2)  # 161-162 (Table 8-54)
+
+# Staged Control Set 0 on Page 10h (Tables 8-83, 8-84). The tool applies this
+# set every time somebody presses Apply, so what is in here is committed
+# whether or not anyone looked at it.
+REG_SCS_TX_ADAPT_EQ    = (0x10, 0x99, 1)  # 153 AdaptiveInputEqEnableTx, 1b/lane
+REG_SCS_TX_EQ_TARGET   = (0x10, 0x9C, 4)  # 156-159 HostControlledInputEqTargetTx
+REG_SCS_RX_CDR         = (0x10, 0xA1, 1)  # 161 CDREnableRx, 1b/lane
+REG_SCS_RX_EQ_PRE      = (0x10, 0xA2, 4)  # 162-165 OutputEqPreCursorTargetRx
+REG_SCS_RX_EQ_POST     = (0x10, 0xA6, 4)  # 166-169 OutputEqPostCursorTargetRx
+REG_SCS_RX_AMPLITUDE   = (0x10, 0xAA, 4)  # 170-173 OutputAmplitudeTargetRx
 REG_SUPPORTED_FLAGS    = (0x01, 0x9D, 2)  # 157-158 (Table 8-52)
 REG_SUPPORTED_MONITORS = (0x01, 0x9F, 2)  # 159-160 (Table 8-53)
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
@@ -778,6 +790,60 @@ RX_OUTPUT_EQ_TYPES = {
     2: 'Average of peak-to-peak and steady-state amplitude constant',
     3: 'Reserved',
 }
+
+
+RX_OUTPUT_EQ_CONTROL = {
+    0: 'Not supported', 1: 'Pre-cursor only',
+    2: 'Post-cursor only', 3: 'Pre- and post-cursor',
+}
+
+
+def unpack_nibbles(data: bytes, lanes: int = 8) -> list:
+    """One 4-bit value per lane, lane 1 in the low nibble of the first byte.
+
+    The same packing as DPConfigLane, and the same trap: reading it high
+    nibble first silently swaps every pair of lanes.
+    """
+    out = []
+    for i in range(lanes):
+        byte = data[i // 2] if i // 2 < len(data) else 0
+        out.append((byte >> 4) & 0x0F if i % 2 else byte & 0x0F)
+    return out
+
+
+def parse_si_controls_adv(data: bytes) -> dict:
+    """01h:161-162 (Table 8-54): which signal integrity controls exist."""
+    b161 = data[0] if len(data) > 0 else 0
+    b162 = data[1] if len(data) > 1 else 0
+    rx_eq = (b162 >> 3) & 0x03
+    return {
+        'tx_input_eq_recall_buffers': (b161 >> 5) & 0x03,
+        'tx_input_eq_freeze':      bool(b161 & 0x10),
+        'tx_adaptive_input_eq':    bool(b161 & 0x08),
+        'tx_input_eq_host_control': bool(b161 & 0x04),
+        'tx_cdr_bypass_control':   bool(b161 & 0x02),
+        'tx_cdr':                  bool(b161 & 0x01),
+        'versatile_control_set':   bool(b162 & 0x80),
+        'unidir_reconfig':         bool(b162 & 0x40),
+        'staged_set_1':            bool(b162 & 0x20),
+        'rx_output_eq_control':    rx_eq,
+        'rx_output_eq_control_name': RX_OUTPUT_EQ_CONTROL[rx_eq],
+        'rx_output_amplitude_control': bool(b162 & 0x04),
+        'rx_cdr_bypass_control':   bool(b162 & 0x02),
+    }
+
+
+def parse_si_maxima(data: bytes) -> dict:
+    """01h:153-154: the largest value each signal integrity target accepts,
+    plus which Rx output amplitude codes exist."""
+    b153 = data[0] if len(data) > 0 else 0
+    b154 = data[1] if len(data) > 1 else 0
+    return {
+        'rx_output_levels': [i for i in range(4) if (b153 >> (4 + i)) & 1],
+        'tx_input_eq_max':  b153 & 0x0F,
+        'rx_output_eq_post_cursor_max': (b154 >> 4) & 0x0F,
+        'rx_output_eq_pre_cursor_max':  b154 & 0x0F,
+    }
 
 
 def parse_rx_tx_characteristics(byte_val: int) -> dict:
