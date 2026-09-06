@@ -1170,9 +1170,28 @@ async function _loadMonitoringOnce() {
       <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
       <td class="${stateClass}">${lane.datapath_state}</td>
+      <td>${outputCell(lane)}</td>
       <td class="${cfgClass}">${cfgStatus}</td>
     </tr>`;
   }).join('');
+}
+
+// 11h:132-133 are the module's own answer to "is this output actually on".
+// Tx disable, force squelch, Rx output disable and auto-squelch all mute an
+// output without touching the DataPath State, so a lane can read Activated
+// while sending nothing - and the operator who just ticked one of those boxes
+// has no other way to see that it took effect.
+function outputCell(lane) {
+  const dot = (valid, label, why) => valid
+    ? `<span class="flag-ok" title="${label} output signal valid">&#9679;</span> ${label}`
+    : `<span class="flag-warn" title="${why}">&#9675;</span> ${label}`;
+  const running = lane.datapath_state === 'Activated';
+  const muted = running
+    ? ' output is muted although the data path is Activated - check Tx disable,'
+      + ' force squelch or Rx output disable'
+    : ` output is not valid because the data path is ${lane.datapath_state}`;
+  return dot(lane.output_valid_tx, 'Tx', 'Tx' + muted)
+       + '<br>' + dot(lane.output_valid_rx, 'Rx', 'Rx' + muted);
 }
 
 function setRefreshInterval(ms) {
@@ -1773,6 +1792,12 @@ function renderFlags(lanes, supported) {
     const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol', has('tx_cdr_lol'));
     const rxLos     = flagCell(lane.rx_los, true, 'rx_los', has('rx_los'));
     const rxCdrLol  = flagCell(lane.rx_cdr_lol, true, 'rx_cdr_lol', has('rx_cdr_lol'));
+    // A squelch that came and went between two polls leaves nothing in
+    // 11h:132 - this latched Flag is the only record that it happened.
+    const rxOutCh   = lane.rx_output_changed
+      ? '<span class="flag-warn" title="The validity of this Rx output changed '
+        + 'since the last read">&#9650; CHANGED</span>'
+      : flagCell(false, false, 'rx_output_changed');
 
     const anyAlarm = lane.tx_power_high_alarm || lane.tx_power_low_alarm ||
                      lane.tx_bias_high_alarm  || lane.tx_bias_low_alarm  ||
@@ -1799,6 +1824,7 @@ function renderFlags(lanes, supported) {
       <td>${txCdrLol}</td>
       <td>${rxLos}</td>
       <td>${rxCdrLol}</td>
+      <td>${rxOutCh}</td>
       <td>${summary}</td>
     </tr>`;
   }).join('');

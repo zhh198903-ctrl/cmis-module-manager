@@ -167,11 +167,12 @@
               <th>Tx Bias<span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
               <th>Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
               <th>DataPath State<span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
+              <th>Output<span class="reg-meta">11h / 0x84 Rx, 0x85 Tx, 1bit/lane</span></th>
               <th>Config Status<span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
             </tr>
           </thead>
           <tbody id="tbl-monitoring">
-            <tr><td colspan="6" class="placeholder-text">Waiting for data…</td></tr>
+            <tr><td colspan="7" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
 </div>
@@ -223,11 +224,12 @@
               <th>Tx CDR-LOL<span class="reg-meta">11h / 0x89</span></th>
               <th>Rx LOS<span class="reg-meta">11h / 0x93</span></th>
               <th>Rx CDR-LOL<span class="reg-meta">11h / 0x94</span></th>
+              <th>Rx Output<span class="reg-meta">11h / 0x99</span></th>
               <th>Alarms/Warns</th>
             </tr>
           </thead>
           <tbody id="tbl-flags">
-            <tr><td colspan="8" class="placeholder-text">Waiting for data…</td></tr>
+            <tr><td colspan="9" class="placeholder-text">Waiting for data…</td></tr>
           </tbody>
         </table>
 </div>

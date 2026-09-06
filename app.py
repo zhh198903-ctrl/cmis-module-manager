@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.11.0'
+__version__ = '2.12.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -778,6 +778,16 @@ def api_module_monitoring():
         # x2 or x4 reads half or a quarter of its real bias without it.
         bias_scale = ((_state.get('caps') or {}).get('monitors')
                       or {}).get('tx_bias_scale', 1)
+        # 11h:132-133 (Table 8-95, RO/Required) report whether an output is
+        # really carrying a valid signal, "independent of the state of the
+        # DPSM instances associated with those output lanes" (8.14.2). Four
+        # controls in this tool mute an output and none of them change the
+        # DataPath State, so without this a muted lane looks fully Activated.
+        out_rx, out_tx = [], []
+        for _bank, raw in _read_banks(cmis.REG_OUTPUT_STATUS_RX[0],
+                                      cmis.REG_OUTPUT_STATUS_RX[1], 2):
+            out_rx += cmis.parse_lane_flags(raw[0])
+            out_tx += cmis.parse_lane_flags(raw[1])
         tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
         tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
         rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
@@ -795,6 +805,8 @@ def api_module_monitoring():
                 'rx_power_dbm': round(cmis.uw_to_dbm(rx_uw), 2),
                 'tx_bias_ma': round(bias_ma, 3),
                 'datapath_state': dp_states[i],
+                'output_valid_tx': out_tx[i],
+                'output_valid_rx': out_rx[i],
                 'config_status': cfg_statuses[i],
                 # Whether the module accepted the configuration is a
                 # property of the code, not of how its name is spelled.
@@ -1181,14 +1193,16 @@ def api_module_flags():
     if err:
         return err
     try:
-        # 11h:134-152 are contiguous lane flag bytes; one burst read beats 19
+        # 11h:134-153 are contiguous lane flag bytes; one burst read beats 20
         # page-select + 5 ms settle cycles on real hardware. It starts one byte
         # earlier than the alarm block so DPStateChangedFlag comes along for
         # nothing: it is the module's own record that a data path went down and
-        # came back, which is the transient this tool exists to catch.
+        # came back, which is the transient this tool exists to catch. It ends
+        # one byte later for OutputStatusChangedFlagRx, which is the only
+        # record that an Rx output was momentarily muted.
         first = cmis.REG_DP_STATE_CHANGED[1]
         blocks = [raw for _bank, raw in
-                  _read_banks(cmis.REG_DP_STATE_CHANGED[0], first, 19)]
+                  _read_banks(cmis.REG_DP_STATE_CHANGED[0], first, 20)]
 
         def flags(addr):
             # One bit per lane, so each bank contributes its own eight.
@@ -1216,6 +1230,7 @@ def api_module_flags():
         rxpwr_la  = flags(0x96)
         rxpwr_hw  = flags(0x97)
         rxpwr_lw  = flags(0x98)
+        rx_out_ch = flags(cmis.REG_RX_OUTPUT_CHANGED[1])
 
         # A Flag the module does not implement reads 0, the same as a healthy
         # lane. Say which ones mean anything rather than colouring them green.
@@ -1245,6 +1260,7 @@ def api_module_flags():
                 'rx_power_low_alarm':  rxpwr_la[i],
                 'rx_power_high_warn':  rxpwr_hw[i],
                 'rx_power_low_warn':   rxpwr_lw[i],
+                'rx_output_changed':   rx_out_ch[i],
             })
             # Fold this read into what has been seen. The read just cleared
             # these bits on the module, so if this is not kept the event is

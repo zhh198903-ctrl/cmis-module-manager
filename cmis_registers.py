@@ -153,8 +153,8 @@ REG_ACTIVE_APP_SELECT = (0x11, 0xCE, 8)  # 206-213 Active DPConfigLane1-8
 # Page 11h — DataPath Status & Monitoring (Table 8-82)
 # ---------------------------------------------------------------------------
 REG_DP_STATE        = (0x11, 0x80, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
-REG_OUTPUT_STATUS_RX= (0x11, 0x84, 1)   # 132  §8.10.2: "OutputStatusRx register (11h:132)"
-REG_OUTPUT_STATUS_TX= (0x11, 0x85, 1)   # 133  §8.10.2: "OutputStatusTx register (11h:133)"
+REG_OUTPUT_STATUS_RX= (0x11, 0x84, 1)   # 132  Table 8-95, RO/Rqd, 1b/lane
+REG_OUTPUT_STATUS_TX= (0x11, 0x85, 1)   # 133  Table 8-95, RO/Rqd, 1b/lane
 REG_DP_STATE_CHANGED= (0x11, 0x86, 1)
 REG_TX_FAULT_FLAGS  = (0x11, 0x87, 1)
 REG_TX_LOS_FLAGS    = (0x11, 0x88, 1)
@@ -174,11 +174,13 @@ REG_RXPWR_HIGH_ALARM_FLAGS  = (0x11, 0x95, 1)
 REG_RXPWR_LOW_ALARM_FLAGS   = (0x11, 0x96, 1)
 REG_RXPWR_HIGH_WARN_FLAGS   = (0x11, 0x97, 1)
 REG_RXPWR_LOW_WARN_FLAGS    = (0x11, 0x98, 1)
+# 8.14.2: "there is no Tx output status change reporting Flag defined". Only
+# the Rx side has one, because only the Rx side can make a host act on it.
+REG_RX_OUTPUT_CHANGED = (0x11, 0x99, 1) # 153  OutputStatusChangedFlagRx, RO/COR
 REG_TX_POWER        = (0x11, 0x9A, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_TX_BIAS         = (0x11, 0xAA, 16)  # 8 lanes × 2B, ×2 µA
 REG_RX_POWER        = (0x11, 0xBA, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_CONFIG_STATUS   = (0x11, 0xCA, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
-REG_DP_CONFIG_LANE  = (0x11, 0xCE, 8)   # 1 byte/lane DPConfigLane Active Set
 
 # ---------------------------------------------------------------------------
 # Page 04h — Laser Capabilities (Table 8-66, RO)

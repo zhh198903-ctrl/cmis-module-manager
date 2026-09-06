@@ -6852,6 +6852,170 @@ class TestRequestGuardScope(CMISTestCase):
 # Run
 # ============================================================
 
+class TestWhetherAnOutputIsActuallyOn(CMISTestCase):
+    """11h:132-133 (Table 8-95) are RO and Required, and 8.14.2 says they
+    report output validity "independent of the state of the DPSM instances
+    associated with those output lanes". Four controls in this tool mute an
+    output without touching the DataPath State, so a lane sending nothing read
+    Activated and green, and the operator who had just ticked one of those
+    boxes had no way to see it take effect."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _tx(self):
+        return [l['output_valid_tx'] for l in self._lanes()]
+
+    def _rx(self):
+        return [l['output_valid_rx'] for l in self._lanes()]
+
+    def _squelch(self, body):
+        self.assertOk(self.client.post('/api/module/squelch',
+                                       data=json.dumps(body),
+                                       content_type='application/json'))
+
+    def _datapath(self, body):
+        self.assertOk(self.client.post('/api/module/datapath',
+                                       data=json.dumps(body),
+                                       content_type='application/json'))
+
+    def _flags(self):
+        return self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes']
+
+    def test_a_running_lane_reports_a_valid_output(self):
+        self._connect()
+        self.assertEqual(self._tx(), [True] * 8)
+        self.assertEqual(self._rx(), [True] * 8)
+
+    def test_disabling_tx_mutes_the_tx_output_only(self):
+        self._connect()
+        self._datapath({'tx_disable_mask': 0x0F})
+        self.assertEqual(self._tx(), [False] * 4 + [True] * 4,
+                         'OutputDisableTx did not show up in 11h:133')
+        self.assertEqual(self._rx(), [True] * 8,
+                         'disabling the Tx output muted the Rx output too')
+
+    def test_force_squelching_tx_mutes_the_tx_output(self):
+        """10h:132 is a lane-specific control that needs no Apply, so the only
+        confirmation it ever gets is the output status."""
+        # 01h:155.3 gates this control and mock_fr4x2 clears it on purpose,
+        # so the force-squelch path has to be exercised on a module that
+        # actually advertises it.
+        self._connect('mock_dr8')
+        self._squelch({'tx_squelch_force': 0x03})
+        self.assertEqual(self._tx(), [False, False] + [True] * 6)
+        self.assertEqual(self._rx(), [True] * 8)
+
+    def test_disabling_the_rx_output_mutes_the_rx_output_only(self):
+        self._connect()
+        self._squelch({'rx_output_disable': 0xF0})
+        self.assertEqual(self._rx(), [True] * 4 + [False] * 4,
+                         'OutputDisableRx did not show up in 11h:132')
+        self.assertEqual(self._tx(), [True] * 8,
+                         'disabling the Rx output muted the Tx output too')
+
+    def test_a_muted_lane_still_reads_activated(self):
+        """The point of the register: the DataPath State cannot say this."""
+        self._connect()
+        self._datapath({'tx_disable_mask': 0xFF})
+        lanes = self._lanes()
+        self.assertEqual({l['datapath_state'] for l in lanes}, {'Activated'})
+        self.assertEqual([l['output_valid_tx'] for l in lanes], [False] * 8)
+
+    def test_a_deinitialised_path_reports_no_output(self):
+        self._connect()
+        self._datapath({'dp_deinit_mask': 0xF0})
+        time.sleep(0.6)
+        self.assertEqual(self._tx(), [True] * 4 + [False] * 4)
+        self.assertEqual(self._rx(), [True] * 4 + [False] * 4)
+
+    def test_a_squelch_that_came_and_went_is_still_recorded(self):
+        """8.14.2 gives the Rx side a latched Flag at 11h:153 precisely so a
+        momentary mute survives to the next poll. There is deliberately no Tx
+        equivalent."""
+        self._connect()
+        self._flags()                       # start from a cleared page
+        self._squelch({'rx_output_disable': 0x01})
+        self._squelch({'rx_output_disable': 0x00})
+        self.assertEqual(self._rx()[0], True, 'the mute did not lift')
+        lanes = self._flags()
+        self.assertEqual([l['lane'] for l in lanes if l['rx_output_changed']],
+                         [1])
+
+    def test_the_flag_clears_on_read_but_the_history_does_not(self):
+        self._connect()
+        self._flags()
+        self._squelch({'rx_output_disable': 0x02})
+        self.assertTrue(self._flags()[1]['rx_output_changed'])
+        again = self._flags()[1]
+        self.assertFalse(again['rx_output_changed'],
+                         '11h:153 is RO/COR and must not survive its own read')
+        self.assertIn('rx_output_changed', again['seen'])
+
+    def test_the_flag_does_not_fire_on_a_module_left_alone(self):
+        """A Flag that sets itself on every poll is worse than none."""
+        self._connect()
+        self._flags()
+        for _ in range(3):
+            self.assertEqual([l['rx_output_changed'] for l in self._flags()],
+                             [False] * 8)
+
+    def test_the_monitoring_table_shows_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        row = js[js.index('const stateClass = lane.datapath_state'):]
+        row = row[:row.index('}).join')]
+        self.assertIn('outputCell(lane)', row,
+                      'the monitoring table never renders the output status')
+        body = js[js.index('function outputCell('):]
+        body = body[:body.index('\n}')]
+        for field in ('output_valid_tx', 'output_valid_rx'):
+            self.assertIn(field, body,
+                          'the cell cannot be showing ' + field)
+
+    def test_a_banked_module_reports_all_of_its_lanes(self):
+        """Page 11h repeats per bank, so lanes 9-16 read bank 1's copy. A
+        status written only into bank 0 leaves the second half of a 16-lane
+        module permanently muted on screen."""
+        self._connect('mock_1600g_16lane')
+        self.assertEqual(self._tx(), [True] * 16)
+        self.assertEqual(self._rx(), [True] * 16)
+
+    def test_the_cell_reads_differently_when_the_output_is_muted(self):
+        """A cell that renders the same thing either way is the same defect as
+        having no column at all, and much harder to notice."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function outputCell('):]
+        body = body[:body.index(chr(10) + '}')]
+        picked = re.search(r'const dot = \([^)]*\) =>\s*(\S+)', body)
+        self.assertEqual(picked.group(1), 'valid',
+                         'the chip is not chosen by the output validity')
+        for cls in ('flag-ok', 'flag-warn'):
+            self.assertIn(cls, body,
+                          'both outcomes must be distinguishable: ' + cls)
+
+    def test_the_flags_table_shows_the_latched_one(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertRegex(js, r'lane\.rx_output_changed\s*\n?\s*\?',
+                         'the flags table does not branch on 11h:153')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

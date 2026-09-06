@@ -26,7 +26,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 
 - **Register access 寄存器读写** — raw read/write on any Page/Address, with CMIS field decoding
 - **Module info 模块信息** — vendor identity, capabilities, power class, applications advertising
-- **Real-time monitoring 实时监控** — temperature, VCC, per-lane Tx/Rx power and bias with alarm thresholds
+- **Real-time monitoring 实时监控** — temperature, VCC, per-lane Tx/Rx power and bias with alarm thresholds, plus the module's own output validity (11h:132-133), which a muted lane reports while still reading Activated
 - **DataPath control 数据通道配置** — AppSel provisioning, DataPath state machine, output/squelch controls
 - **Diagnostics 诊断** — loopback, PRBS generator/checker, BER, SNR, error counters
 - **Laser tuning 激光器调谐** — grid/channel selection and fine tuning for tunable (coherent) modules
@@ -58,7 +58,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-478 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+491 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

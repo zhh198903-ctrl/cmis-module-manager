@@ -441,6 +441,7 @@ class MockBackend(I2CInterface):
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
+        self._rx_output_valid = 0xFF     # 11h:132, to spot changes
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
         self._error_counts = [0] * 8
@@ -1014,6 +1015,11 @@ class MockBackend(I2CInterface):
                 self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00
 
     # ------------------------------------------------------------------
+    def _page_dicts(self, page: int):
+        """Every bank's copy of one page, so banked lanes do not go stale."""
+        return [d for key, d in self._registers.items()
+                if key == page or (isinstance(key, tuple) and key[0] == page)]
+
     def _update_dynamic_values(self):
         self._update_state_machine()
         p = self._profile
@@ -1026,10 +1032,26 @@ class MockBackend(I2CInterface):
         self._registers[None][0x0F] = raw & 0xFF
 
         # Per-lane monitors
+        # 10h:132 OutputSquelchForceTx and 10h:138 OutputDisableRx are stored
+        # by the plain write path, so they are read back here rather than
+        # intercepted - they steer nothing but the output status.
+        p10 = self._registers.get(0x10, {})
+        force_squelch_tx = p10.get(0x84, 0)
+        output_disable_rx = p10.get(0x8A, 0)
+        out_tx, out_rx = 0, 0
+
         for lane in range(8):
             phase = lane * math.pi / 4
             tx_disabled = bool((self._tx_disable_mask >> lane) & 1)
             dp_active = self._dp_lane_states[lane] == 0x4
+            # Table 8-95: valid means the module is really sending a signal.
+            # An Activated lane whose output is disabled or force-squelched is
+            # not, and no other register in the map says so.
+            if (dp_active and not tx_disabled
+                    and not ((force_squelch_tx >> lane) & 1)):
+                out_tx |= 1 << lane
+            if dp_active and not ((output_disable_rx >> lane) & 1):
+                out_rx |= 1 << lane
 
             # Tx Power: 0 if disabled or not Activated, else nominal ± 3%
             if tx_disabled or not dp_active:
@@ -1066,6 +1088,16 @@ class MockBackend(I2CInterface):
 
             self._set_lane_flags(lane, tx_uw if not tx_disabled else 0.0,
                                  bias_ma, rx_uw)
+
+        # 8.14.2: the Rx side latches a Flag on every change of 11h:132, so a
+        # squelch that came and went between two polls still leaves a trace.
+        changed = out_rx ^ self._rx_output_valid
+        self._rx_output_valid = out_rx
+        for page_dict in self._page_dicts(0x11):
+            page_dict[0x84] = out_rx
+            page_dict[0x85] = out_tx
+            if changed:
+                page_dict[0x99] = page_dict.get(0x99, 0) | changed
 
         self._set_module_flags(temp_c)
 
@@ -1504,7 +1536,7 @@ class MockBackend(I2CInterface):
     # transient at all, and let the host get away with not remembering.
     _COR_BYTES = {
         None: range(0x08, 0x0A),
-        0x11: range(0x86, 0x99),
+        0x11: range(0x86, 0x9A),   # 134-153, DPStateChanged..RxOutputChanged
         # Table 8-138: the Page 14h diagnostic flags are RO/COR too. A pattern
         # checker that lost lock for a moment during a long run is exactly the
         # thing a long run is for, and it is gone one read later.

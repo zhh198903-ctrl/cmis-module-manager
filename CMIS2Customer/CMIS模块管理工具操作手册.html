@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.11.0<br>
+      <b>版本</b>　2.12.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.11.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.11.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.12.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.12.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -957,6 +957,7 @@
         <tr><td>Tx Bias</td><td class="label">发送偏置电流（mA）</td><td><code>11h / 0xAA+(n−1)×2</code></td></tr>
         <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+(n−1)×2</code></td></tr>
         <tr><td>DataPath State</td><td class="label">数据通道状态，4 bits/lane（见下表枚举）</td><td><code>11h / 0x80–0x83</code></td></tr>
+        <tr><td>Output</td><td class="label">该 lane 的 Tx / Rx 输出是否真的在送有效信号（1 bit/lane）</td><td><code>11h / 0x84 Rx、0x85 Tx</code></td></tr>
         <tr><td>Config Status</td><td class="label">上次 Apply 配置的结果（ConfigSuccess / ConfigRejected / ConfigInProgress 等）</td><td><code>11h / 0xCA–0xCD</code></td></tr>
       </tbody>
     </table>
@@ -1029,6 +1030,34 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>Output —— 输出到底通没通</h3>
+  <p>Monitoring 表新增一列 <b>Output</b>，分两行显示 Tx 和 Rx，
+     读的是 <code>11h:132</code>（OutputStatusRx）和 <code>11h:133</code>（OutputStatusTx）。
+     CMIS 5.4 Table 8-95 把这两个字节定为<b>只读、必需</b>：
+     1 表示该路输出信号<b>有效</b>，0 表示<b>被静音或无效</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>它与数据通道状态无关</b>。规范 8.14.2 写明输出状态
+    “independent of the state of the DPSM instances”——本工具里<b>四个控制</b>都能把输出静音，
+    而都<b>不会</b>改变 DataPath State：<br>
+    ① DataPath 页的 <b>Tx Enable</b>（<code>10h:130</code> OutputDisableTx）<br>
+    ② Squelch 页的 <b>Force Squelch Tx</b>（<code>10h:132</code>）<br>
+    ③ Squelch 页的 <b>Rx Output Disable</b>（<code>10h:138</code>）<br>
+    ④ 模块自己的<b>自动静音</b>（丢失输入时）<br>
+    以前勾上这些框之后，界面上唯一的变化就是那个框被勾上了；
+    状态列依旧是绿色的 <b>Activated</b>。现在 Output 列会变成
+    <span class="flag-warn">○</span>，鼠标悬停会说明该去查哪个开关。</span>
+  </div>
+  <p>Lane Flags 表同时新增一列 <b>Rx Output</b>（<code>11h:153</code>）。
+     按 8.14.2，<b>只有 Rx 侧</b>有这个变化标志（闩锁、读清），
+     因为只有 Rx 输出的通断会让主机采取动作；Tx 侧规范明确说不定义。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>两次刷新之间静音一下又恢复的情况，<code>11h:132</code> 本身看不出来；
+    这个 Flag 是唯一的记录，和其它标志一样会保留
+    <span class="flag-was">●<sup>!</sup></span> 历史标记。</span>
   </div>
 
   <h3>停用一条数据通道（DP Deinit）</h3>
@@ -2160,7 +2189,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.11.0<br>
+    CMIS Module Manager 操作手册 v2.12.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
