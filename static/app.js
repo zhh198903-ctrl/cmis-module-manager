@@ -1264,9 +1264,26 @@ async function loadDatapath() {
       <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
       <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
       <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>
-      <td title="${esc(tipDeinit)}">${lane.dp_deinit ? '<span class="text-warning">Deinit</span>' : '<span class="text-success">Active</span>'}</td>
+      <td title="${esc(tipDeinit)}"><input type="checkbox" id="dp-deinit-${lane.lane}" title="${esc(tipDeinit)}" ${lane.dp_deinit ? 'checked' : ''}></td>
     </tr>`;
   }).join('');
+
+  // Table 8-78: "All lanes of a Data Path must have the same value". Ticking
+  // one box on its own would ask for a half-torn-down path the module will
+  // not give, so the group moves together and the operator sees what will
+  // actually happen before pressing Apply.
+  for (const lane of d.lanes) {
+    const el = document.getElementById(`dp-deinit-${lane.lane}`);
+    if (!el) continue;
+    el.addEventListener('change', () => {
+      const width = _appHostLanes(lane.app_select) || 1;
+      const first = Math.floor((lane.lane - 1) / width) * width;
+      for (let j = first; j < first + width && j < d.lanes.length; j++) {
+        const other = document.getElementById(`dp-deinit-${j + 1}`);
+        if (other) other.checked = el.checked;
+      }
+    });
+  }
 
   renderSignalIntegrity(d);
 
@@ -1390,6 +1407,13 @@ function renderSignalIntegrity(d) {
   }
 }
 
+// How many host lanes the Application on this lane occupies, from the
+// descriptors the module advertised.
+function _appHostLanes(appSel) {
+  const a = (_advertisedApps || []).find(x => x.app_sel === appSel);
+  return a ? a.host_lanes : 1;
+}
+
 async function applyDatapath() {
   const app_select = [];
   // One mask byte per bank of eight lanes: a 16-lane module needs two, and
@@ -1413,8 +1437,16 @@ async function applyDatapath() {
     if (document.getElementById(`rx-pol-${i}`)?.checked) rx_pol_mask[b] |= (1 << bit);
   }
 
+  const dp_deinit_mask = new Array(banks).fill(0);
+  for (let i = 1; i <= AppState.lanes; i++) {
+    if (document.getElementById(`dp-deinit-${i}`)?.checked) {
+      dp_deinit_mask[Math.floor((i - 1) / 8)] |= (1 << ((i - 1) % 8));
+    }
+  }
+
   const res = await apiPost('/api/module/datapath', {
     tx_disable_mask,
+    dp_deinit_mask,
     app_select,
     tx_polarity_flip_mask: tx_pol_mask,
     rx_polarity_flip_mask: rx_pol_mask,

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.10.2'
+__version__ = '2.11.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1019,6 +1019,24 @@ def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
     return groups
 
 
+def _whole_datapaths(masks: list, app_select: list,
+                     host_lanes_by_app: dict, banks: int) -> list:
+    """Round a per-lane mask up so no Data Path is only partly selected."""
+    lanes = set()
+    for bank in range(banks):
+        for bit in range(8):
+            if (masks[bank] >> bit) & 1:
+                lanes.add(bank * 8 + bit)
+    if not lanes:
+        return list(masks)
+    out = set()
+    for group in _datapath_groups(app_select, host_lanes_by_app):
+        if lanes & set(group):
+            out |= set(group)
+    return [sum(1 << (l - bank * 8) for l in out
+                if bank * 8 <= l < bank * 8 + 8) for bank in range(banks)]
+
+
 def _lanes_needing_apply(old_sel: list, new_sel: list,
                          host_lanes_by_app: dict) -> set:
     """Lanes whose Data Path has a changed staged configuration.
@@ -1049,7 +1067,7 @@ def api_datapath_set():
         banks = (_state['lanes'] + 7) // 8
         bad = _reject_unknown(body, ('tx_disable_mask', 'tx_polarity_flip_mask',
                                      'rx_polarity_flip_mask', 'app_select',
-                                     'apply'))
+                                     'dp_deinit_mask', 'apply'))
         if bad:
             return bad
 
@@ -1065,6 +1083,8 @@ def api_datapath_set():
                        _mask_now(cmis.REG_TX_POL_FLIP), banks)
         rx_pol = _keep(body, 'rx_polarity_flip_mask',
                        _mask_now(cmis.REG_RX_POL_FLIP), banks)
+        dp_deinit = _keep(body, 'dp_deinit_mask',
+                          _mask_now(cmis.REG_DP_DEINIT), banks)
         apply = bool(body.get('apply', False))
 
         # What is staged right now, and how wide each Application is - both
@@ -1095,8 +1115,18 @@ def api_datapath_set():
         if refused:
             return refused
 
+        # "All lanes of a Data Path must have the same value" (Table 8-78), so
+        # a request that deinitialises one lane takes its whole Data Path down
+        # - the alternative is a half-torn-down path the module never asked
+        # for. The same grouping the Apply mask uses.
+        if 'dp_deinit_mask' in body:
+            dp_deinit = _whole_datapaths(dp_deinit, app_select,
+                                         host_lanes_by_app, banks)
+
         for bank in range(banks):
             _set_page(0x10, bank)
+            _state['backend'].write_bytes(cmis.REG_DP_DEINIT[1],
+                                          bytes([dp_deinit[bank]]))
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
             _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],
                                           bytes([tx_pol[bank], tx_disable[bank]]))

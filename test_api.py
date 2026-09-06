@@ -1583,6 +1583,128 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestADataPathCanBeTakenOutOfService(CMISTestCase):
+    """10h:128 is RW and Required (Table 8-78): 1b deinitialises the Data Path
+    of that lane. It is the only way to stop one deliberately. The tool read
+    the byte and showed it, the mock stored it at build and never looked at
+    it again, and nothing could write it - so the column said Active or
+    Deinit about a control neither side could operate."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+
+    def _states(self):
+        return [l['datapath_state'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _mask(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['dp_deinit_mask']
+
+    def _running(self):
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual(set(self._states()), {'Activated'})
+
+    def test_deinitialising_a_lane_takes_its_whole_data_path(self):
+        """Table 8-78: all lanes of a Data Path must carry the same value, so
+        asking for one lane asks for its path."""
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0x10})          # lane 5 alone
+        time.sleep(0.6)
+        self.assertEqual(self._mask(), 0xF0,
+                         'one lane was deinitialised on its own')
+
+    def test_the_other_data_path_keeps_running(self):
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0x10})
+        time.sleep(0.6)
+        self.assertEqual(self._states(),
+                         ['Activated'] * 4 + ['Deactivated'] * 4,
+                         'taking one Data Path down disturbed the other')
+
+    def test_releasing_it_brings_the_path_back(self):
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0xF0})
+        time.sleep(0.6)
+        self._post({'dp_deinit_mask': 0x00})
+        time.sleep(1.2)
+        self.assertEqual(set(self._states()), {'Activated'},
+                         'a released Data Path never came back')
+
+    def test_a_released_path_walks_back_up_rather_than_snapping(self):
+        """It goes through DPInit, so DPStateChangedFlag records it - the same
+        evidence any other re-initialisation leaves."""
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0xF0})
+        time.sleep(0.6)
+        self.client.get('/api/module/flags')
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self._post({'dp_deinit_mask': 0x00})
+        time.sleep(1.2)
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        bounced = [l['lane'] for l in lanes
+                   if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
+        self.assertEqual(bounced, [5, 6, 7, 8])
+
+    def test_a_held_lane_is_not_lifted_by_an_apply(self):
+        """Deinit outranks Apply: a path held down must stay down."""
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0xF0})
+        time.sleep(0.6)
+        self._post({'app_select': [1, 1, 1, 1, 2, 2, 2, 2], 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual(self._states()[4:], ['Deactivated'] * 4,
+                         'an Apply re-initialised a Data Path being held '
+                         'deinitialised')
+
+    def test_the_mask_is_left_alone_when_not_mentioned(self):
+        self._connect()
+        self._running()
+        self._post({'dp_deinit_mask': 0xF0})
+        time.sleep(0.6)
+        self._post({'tx_polarity_flip_mask': 0x0F})
+        self.assertEqual(self._mask(), 0xF0,
+                         'a polarity change released a Data Path')
+
+    def test_the_column_is_a_control_now(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('id="dp-deinit-', js,
+                      'the column still only reports a control nobody can use')
+        body = js[js.index('async function applyDatapath('):]
+        body = body[:body.index('\n}')]
+        # The name also appears where the mask is built, so pin the
+        # posted object rather than the identifier.
+        posted = body[body.index("apiPost('/api/module/datapath'"):]
+        self.assertRegex(posted, r'(?m)^\s*dp_deinit_mask,\s*$',
+                         'Apply never sends what the boxes say')
+
+    def test_the_boxes_move_as_a_data_path(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('_appHostLanes(lane.app_select)', js,
+                      'the boxes can be ticked one at a time, asking for a '
+                      'half-torn-down Data Path')
+
+
 class TestAWriteOnlyChangesWhatItNames(CMISTestCase):
     """Omitting a field made it default to zero, so a request that set one
     control silently cleared the others and reported success. Byte 0x1A

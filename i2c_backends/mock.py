@@ -438,6 +438,7 @@ class MockBackend(I2CInterface):
         self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
         self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
         self._apply_mask = 0xFF           # lanes the last ApplyDPInit selected
+        self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._tx_disable_mask = 0x00
@@ -948,6 +949,8 @@ class MockBackend(I2CInterface):
                 for i in range(8):
                     if not ((self._apply_mask >> i) & 1):
                         continue
+                    if (self._dp_deinit_mask >> i) & 1:
+                        continue
                     if self._config_result[i] != 0x1:
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
@@ -955,6 +958,8 @@ class MockBackend(I2CInterface):
             elif dt < 0.5:
                 for i in range(8):
                     if not ((self._apply_mask >> i) & 1):
+                        continue
+                    if (self._dp_deinit_mask >> i) & 1:
                         continue
                     if self._config_result[i] != 0x1:
                         continue
@@ -964,6 +969,8 @@ class MockBackend(I2CInterface):
                 for i in range(8):
                     if not ((self._apply_mask >> i) & 1):
                         continue        # this lane was not selected
+                    if (self._dp_deinit_mask >> i) & 1:
+                        continue        # held deinitialised by 10h:128
                     if self._config_result[i] != 0x1:
                         continue        # validation failed: nothing executed
                     if not ((self._tx_disable_mask >> i) & 1):
@@ -1172,6 +1179,8 @@ class MockBackend(I2CInterface):
         elif self._current_page == 0x10:
             # Writes may span several control bytes, so match on the range
             span = range(register, register + len(data))
+            if 0x80 in span:                                        # DPDeinit
+                self._set_dp_deinit(data[0x80 - register])
             if 0x82 in span:                                        # OutputDisableTx
                 self._tx_disable_mask = data[0x82 - register]
             if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
@@ -1371,6 +1380,33 @@ class MockBackend(I2CInterface):
             if p12[0xE7 + lane]:
                 summary |= 1 << lane
         p12[0xE6] = summary
+
+    def _set_dp_deinit(self, mask: int) -> None:
+        """10h:128 (Table 8-78): 1b deinitialises the Data Path of that lane.
+
+        The module evaluates this byte only in ModuleReady, so a host can set
+        every bit while in ModuleLowPwr to stop the Data Paths auto-starting.
+        A lane released from deinit walks back up through DPInit, which is why
+        it borrows the Apply machinery rather than snapping to Activated.
+        """
+        if self._module_state != 0b011:          # not ModuleReady
+            self._dp_deinit_mask = mask
+            return
+        was, self._dp_deinit_mask = self._dp_deinit_mask, mask
+        released = was & ~mask                   # 1 -> 0: bring these back up
+        for lane in range(8):
+            if (mask >> lane) & 1:
+                if self._dp_lane_states[lane] != 0x1:
+                    self._dp_lane_states[lane] = 0x1      # DPDeactivated
+                    self._registers[0x11][0x86] = \
+                        self._registers[0x11].get(0x86, 0) | (1 << lane)
+        if released:
+            self._update_state_machine()         # let any Apply finish first
+            self._apply_time = time.time()
+            self._apply_mask = released
+            self._config_result = self._validate_staged_appsel()
+            self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
+                                   for i in range(8)]
 
     def _validate_staged_appsel(self):
         """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).
