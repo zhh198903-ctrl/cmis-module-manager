@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.10.0<br>
+      <b>版本</b>　2.10.1<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.10.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.10.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.10.1 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.10.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1029,6 +1029,34 @@
     它同样是 Flag——闩锁、读清——所以和其它标志一样，恢复后会保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>模块复位后所有通道都会置位</b>，
     因为每条通道都重新走了一遍 DPInit，这是正常的。</span>
+  </div>
+
+  <h3>❗ Apply 只重启你改过的那条数据通道</h3>
+  <p>按 CMIS 6.2.3.3.1，Apply 必须对<b>该 Data Path 的所有通道</b>同时触发——
+     是那一条通道，<b>不是整个模块</b>。工具以前每次都写 <code>0xFF</code>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>后果：一个模块上跑着<b>两个 400G 口</b>时（比如 2× 400GBASE-FR4），
+    你只改了后四路的配置，<b>前四路也会一起断</b>——
+    那个口你根本没碰过。<br>
+    现在只对<b>暂存配置真正发生变化的那几条 Data Path</b> 触发。</span>
+  </div>
+  <p>分组依据是 <b>Application 声明的主机通道宽度</b>：
+     一个占 4 条通道的 Application，1–4 路和 5–8 路就是两条独立的 Data Path。
+     接口返回里多了一个 <code>applied_lanes</code>，写明这次到底重启了哪几路。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>什么情况下仍然全部重启</b>：你什么都没改就点 Apply。
+    那是一个明确的“重新调试一遍”请求，静默地什么都不做等于拿掉这个能力。
+    <b>只有能定位改动时才收窄。</b></span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>有些改动压根不需要 Apply</b>：Page 10h 的
+    <code>129–142</code> 按规范是“独立于数据通道状态机<b>或控制集</b>”的直接控制：
+    <b>极性翻转、Tx 关断、静默写下去就生效</b>。
+    以前只翻一下极性再点 Apply，会为一个本来不需要 Apply 的改动
+    重启全部数据通道。</span>
   </div>
 
   <h3>Signal Integrity：Apply 一并提交的另一半</h3>
@@ -2087,7 +2115,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.10.0<br>
+    CMIS Module Manager 操作手册 v2.10.1<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

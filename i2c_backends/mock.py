@@ -437,6 +437,7 @@ class MockBackend(I2CInterface):
         self._apply_time = 0.0
         self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
         self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
+        self._apply_mask = 0xFF           # lanes the last ApplyDPInit selected
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._tx_disable_mask = 0x00
@@ -945,18 +946,24 @@ class MockBackend(I2CInterface):
             dt = now - self._apply_time
             if dt < 0.2:
                 for i in range(8):
+                    if not ((self._apply_mask >> i) & 1):
+                        continue
                     if self._config_result[i] != 0x1:
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x2
             elif dt < 0.5:
                 for i in range(8):
+                    if not ((self._apply_mask >> i) & 1):
+                        continue
                     if self._config_result[i] != 0x1:
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x5
             else:
                 for i in range(8):
+                    if not ((self._apply_mask >> i) & 1):
+                        continue        # this lane was not selected
                     if self._config_result[i] != 0x1:
                         continue        # validation failed: nothing executed
                     if not ((self._tx_disable_mask >> i) & 1):
@@ -973,13 +980,16 @@ class MockBackend(I2CInterface):
                 # The Active Control Set only picks up the lanes that passed
                 # validation; the rest keep running what they were running.
                 for i in range(8):
-                    if self._config_result[i] == 0x1:
+                    if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
                         self._registers[0x11][0xCE + i] = self._config_staged[i]
-                for a in range(0xCA, 0xCE):
-                    lane = (a - 0xCA) * 2
+                for lane in range(8):
+                    if not ((self._apply_mask >> lane) & 1):
+                        continue        # unselected lanes keep their status
+                    a = 0xCA + lane // 2
+                    shift = 4 if lane % 2 else 0
                     self._registers[0x11][a] = (
-                        self._config_result[lane]
-                        | (self._config_result[lane + 1] << 4))
+                        (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
+                        | (self._config_result[lane] << shift))
 
         # Write DP states back to Page 11h:0x80-0x83
         for i in range(8):
@@ -1164,7 +1174,7 @@ class MockBackend(I2CInterface):
             span = range(register, register + len(data))
             if 0x82 in span:                                        # OutputDisableTx
                 self._tx_disable_mask = data[0x82 - register]
-            if 0x8F in span and data[0x8F - register] == 0xFF:      # ApplyDPInit
+            if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
                 # Let an Apply already under way reach its result step first.
                 self._update_state_machine()
                 # CMIS 8.13.3 step (1): a command arriving while any relevant
@@ -1173,14 +1183,21 @@ class MockBackend(I2CInterface):
                 if self._apply_time > 0:
                     return data
                 self._apply_time = time.time()
+                self._apply_mask = data[0x8F - register]
                 self._config_result = self._validate_staged_appsel()
                 # Validation and execution both act on the Staged Control Set
                 # as it stood when the Apply arrived. Reading 10h again at the
                 # completion step would commit whatever was staged since.
                 self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
                                        for i in range(8)]
-                for a in range(0xCA, 0xCE):
-                    self._registers[0x11][a] = 0xCC
+                for lane in range(8):
+                    if not ((self._apply_mask >> lane) & 1):
+                        continue
+                    a = 0xCA + lane // 2
+                    shift = 4 if lane % 2 else 0
+                    self._registers[0x11][a] = (
+                        (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
+                        | (0x0C << shift))          # ConfigInProgress
         elif self._current_page == 0x12:
             span = range(register, register + len(data))
             touched = {'channel': any(a in span for a in range(0x80, 0x98)),

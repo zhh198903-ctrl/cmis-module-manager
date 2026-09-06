@@ -37,6 +37,19 @@ def reset_state():
     _state['address'] = None
 
 
+def poke(page, addr, value):
+    """Write a register behind the API's back without desynchronising it.
+
+    Writing 0x7E directly leaves app._set_page believing the module is still
+    on whatever page it last selected, so the next read silently lands on the
+    wrong page and returns plausible nonsense - the exact hazard the project
+    documents for real hardware, reproduced inside the test suite.
+    """
+    app_module._set_page(page)
+    _state['backend'].write_bytes(addr, bytes([value]))
+    app_module._invalidate_page()
+
+
 def connect_mock(client):
     """Helper: connect to mock backend."""
     rv = client.post('/api/connect',
@@ -1570,6 +1583,197 @@ class TestTheDistributionPayloadStaysFlat(CMISTestCase):
         self.assertNotIn('D:/claude', src)
 
 
+class TestApplyOnlyTouchesTheDataPathsThatChanged(CMISTestCase):
+    """CMIS 6.2.3.3.1: Apply must be triggered on all lanes of a Data Path at
+    once - a Data Path, not the module. The tool wrote 0xFF every time, so
+    reconfiguring one 400G port on a module carrying two took the other one
+    down with it."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self, **body):
+        body.setdefault('apply', True)
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    def _bounced(self):
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        return [l['lane'] for l in lanes
+                if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
+
+    def _settle(self):
+        time.sleep(1.2)
+        self.client.get('/api/module/flags')
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+
+    def test_two_data_paths_are_independent(self):
+        self._connect()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertEqual(apps[0]['host_lanes'], 4,
+                         'this profile is meant to carry two 4-lane paths')
+        self._apply(app_select=[1] * 8)
+        self._settle()
+        self._apply(app_select=[1, 1, 1, 1, 2, 2, 2, 2])
+        time.sleep(1.2)
+        self.assertEqual(self._bounced(), [5, 6, 7, 8],
+                         'changing one Data Path re-initialised the other')
+
+    def test_the_response_says_what_it_applied(self):
+        self._connect()
+        self._apply(app_select=[1] * 8)
+        self._settle()
+        body = self._apply(app_select=[1, 1, 1, 1, 2, 2, 2, 2])
+        self.assertEqual(body['applied_lanes'], [5, 6, 7, 8])
+
+    def test_an_unchanged_table_still_re_commissions(self):
+        """Pressing Apply with nothing edited is a request to re-commission,
+        and quietly doing nothing would take that away."""
+        self._connect()
+        self._apply(app_select=[1] * 8)
+        self._settle()
+        body = self._apply(app_select=[1] * 8)
+        self.assertEqual(body['applied_lanes'], [1, 2, 3, 4, 5, 6, 7, 8])
+
+    def test_the_grouping_follows_the_application_width(self):
+        """The tool writes DataPathID 0 for every lane, so the grouping has to
+        come from the Application descriptor."""
+        eight = {1: 8}
+        self.assertEqual(app_module._datapath_groups([1] * 8, eight),
+                         [[0, 1, 2, 3, 4, 5, 6, 7]])
+        four = {1: 4, 2: 4}
+        self.assertEqual(app_module._datapath_groups([1, 1, 1, 1, 2, 2, 2, 2], four),
+                         [[0, 1, 2, 3], [4, 5, 6, 7]])
+
+    def test_a_lane_leaving_a_path_disturbs_both(self):
+        """It has to be applied on the path it left as well as the one it
+        joined, or the abandoned path keeps a lane it no longer owns."""
+        four = {1: 4, 2: 4}
+        need = app_module._lanes_needing_apply([1, 1, 1, 1, 1, 1, 1, 1],
+                                        [1, 1, 1, 1, 2, 2, 2, 2], four)
+        self.assertEqual(sorted(need), [4, 5, 6, 7])
+
+    def test_a_run_stops_where_the_application_changes(self):
+        """A width of four does not make four lanes one Data Path: the run
+        only holds while the Application does. Uniform test data hides this,
+        because every run happens to be whole."""
+        four = {1: 4, 2: 4}
+        self.assertEqual(
+            app_module._datapath_groups([1, 1, 2, 2, 1, 1, 1, 1], four),
+            [[0, 1], [2, 3], [4, 5, 6, 7]])
+
+    def test_nothing_changed_means_no_narrowing(self):
+        four = {1: 4, 2: 4}
+        self.assertEqual(app_module._lanes_needing_apply([1] * 8, [1] * 8, four), set())
+
+
+class TestTheMockHonoursTheApplyMask(CMISTestCase):
+    """ApplyDPInit is a per-lane bit mask, not a switch. The mock accepted
+    only 0xFF - the one value the tool happened to write - so the tool's habit
+    of re-initialising every Data Path could not show up here."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_a_partial_mask_moves_only_those_lanes(self):
+        self._connect()
+        backend = _state['backend']
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.2)
+        self.client.get('/api/module/flags')
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+
+        poke(0x10, 0x8F, 0x0F)                        # lanes 1-4 only
+        time.sleep(1.2)
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        moved = [l['lane'] for l in lanes
+                 if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
+        self.assertEqual(moved, [1, 2, 3, 4],
+                         'the mock treats ApplyDPInit as all-or-nothing')
+
+    def test_an_unselected_lane_keeps_the_configuration_it_had(self):
+        """The lanes an Apply does not select must not be commissioned by it.
+        Staging a different Application on them and then applying elsewhere is
+        the only way to tell - with the same value staged everywhere,
+        committing them anyway looks identical."""
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.2)
+        # Stage a different Application on lanes 5-8 without applying it.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1, 1, 1, 1, 2, 2, 2, 2],
+                             'apply': False}),
+            content_type='application/json'))
+        poke(0x10, 0x8F, 0x0F)                        # apply lanes 1-4 only
+        time.sleep(1.2)
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['active_app_select'], [1] * 8,
+                         'an Apply that did not select lanes 5-8 commissioned '
+                         'them anyway')
+
+    def test_an_unselected_lane_keeps_its_config_status(self):
+        """Same again for the status: a rejected lane must not be quietly
+        marked successful by an Apply aimed at other lanes."""
+        self._connect()
+        # Every lane refused first, so the status to preserve differs from
+        # what a fresh validation would produce. With the same staged set
+        # everywhere, re-validating the unselected lanes lands on the value
+        # they already had and overwriting them looks identical.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [14] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.2)
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertTrue(all(l['config_rejected'] for l in mon['lanes']),
+                        'every lane should be sitting on a refused Application')
+
+        # Stage something legal everywhere, then apply it to lanes 1-4 only.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': False}),
+            content_type='application/json'))
+        poke(0x10, 0x8F, 0x0F)
+        time.sleep(1.2)
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertFalse(any(l['config_rejected'] for l in mon['lanes'][:4]),
+                         'lanes 1-4 were applied and should have cleared')
+        self.assertTrue(all(l['config_rejected'] for l in mon['lanes'][4:]),
+                        'an Apply aimed at lanes 1-4 cleared the refusal on '
+                        'lanes it never selected')
+
+    def test_unselected_lanes_keep_their_config_status(self):
+        self._connect()
+        backend = _state['backend']
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.2)
+        poke(0x10, 0x8F, 0x0F)
+        time.sleep(1.2)
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        for lane in mon['lanes']:
+            self.assertEqual(lane['config_status'], 'ConfigSuccess',
+                             'lane %d lost its status to an Apply that did '
+                             'not select it' % lane['lane'])
+
+
 class TestTheStagedSetHasASignalIntegrityHalf(CMISTestCase):
     """Apply commits the whole Staged Control Set, and the tool only ever read
     the AppSel and mask part of it. The signal integrity half - adaptive Tx
@@ -2270,8 +2474,9 @@ class TestTheModuleSaysWhatDiagnosticsItHas(CMISTestCase):
         """No shipped profile drops a type, so drive the advertisement
         directly - a real module that lacks one is common enough."""
         self._connect()
+        # Writing the register dict needs no page select, and doing one here
+        # would leave the API's page cache pointing somewhere else.
         backend = _state['backend']
-        backend.write_bytes(0x7E, bytes([0, 0x13]))
         backend._registers[0x13][0x80] = 0x0E      # media side output cleared
         rv = self.client.post(
             '/api/module/loopback',
@@ -2502,7 +2707,6 @@ class TestTheTuningFlagsAreReadOnTheirOwn(CMISTestCase):
         self.assertOk(self.client.get('/api/module/laser'))   # start clean
         self.assertOk(self.client.post('/api/module/flags/clear'))
         backend = _state['backend']
-        backend.write_bytes(0x7E, bytes([0, 0x12]))
         backend._registers[0x12][0xE7] = byte_val
         backend._registers[0x12][0xE6] = 0x01
 
@@ -3015,7 +3219,6 @@ class TestAPatternCheckerThatSlipped(CMISTestCase):
 
     def _slip(self, lanes_mask):
         backend = _state['backend']
-        backend.write_bytes(0x7E, bytes([0, 0x14]))
         backend._registers[0x14][0x8A] = lanes_mask
 
     def test_lock_loss_is_latched_and_then_remembered(self):

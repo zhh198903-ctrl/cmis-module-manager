@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.10.0'
+__version__ = '2.10.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -982,6 +982,48 @@ def api_module_control_set():
         return _err(str(e), 500)
 
 
+def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
+    """Split lanes into Data Paths using each Application's host lane width.
+
+    CMIS requires Apply to be triggered on all lanes of a Data Path at once -
+    a Data Path, not the module. The tool writes DataPathID 0 for every lane,
+    so the grouping has to come from the Application descriptor instead: an
+    Application using H host lanes occupies aligned runs of H lanes. On a
+    module carrying two 400G Data Paths that is lanes 1-4 and 5-8, and
+    applying to all eight takes down the one nobody touched.
+    """
+    groups, i = [], 0
+    while i < len(app_select):
+        sel = app_select[i]
+        width = host_lanes_by_app.get(sel, 1) or 1
+        run = list(range(i, min(i + width, len(app_select))))
+        # A run only holds together while the Application stays the same.
+        run = [j for j in run if app_select[j] == sel]
+        groups.append(run or [i])
+        i += len(run) or 1
+    return groups
+
+
+def _lanes_needing_apply(old_sel: list, new_sel: list,
+                         host_lanes_by_app: dict) -> set:
+    """Lanes whose Data Path has a changed staged configuration.
+
+    Both groupings matter: a lane leaving one Data Path disturbs the one it
+    left as well as the one it joined.
+    """
+    changed = {i for i in range(len(new_sel))
+               if i < len(old_sel) and old_sel[i] != new_sel[i]}
+    if not changed:
+        return set()
+    out = set()
+    for groups in (_datapath_groups(old_sel, host_lanes_by_app),
+                   _datapath_groups(new_sel, host_lanes_by_app)):
+        for g in groups:
+            if changed & set(g):
+                out |= set(g)
+    return out
+
+
 @app.route('/api/module/datapath', methods=['POST'])
 def api_datapath_set():
     err = _require_connected()
@@ -995,6 +1037,20 @@ def api_datapath_set():
         rx_pol = _masks_per_bank(body.get('rx_polarity_flip_mask', 0), banks)
         app_select = body.get('app_select', [1] * _state['lanes'])
         apply = bool(body.get('apply', False))
+
+        # What is staged right now, and how wide each Application is - both
+        # are needed to work out which Data Paths this write actually touches.
+        prev_app_select = []
+        for _b, raw in _read_banks(*cmis.REG_APP_SELECT):
+            prev_app_select += cmis.unpack_appselect(raw)
+        host_lanes_by_app = {}
+        try:
+            _apps = cmis.parse_application_descriptors(
+                _read_lower(0x56, 32), _read_lower(0x55, 1)[0])
+            for a in _apps:
+                host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
+        except Exception:
+            pass
 
         refused = _refuse_unsupported((
             ('output_disable_tx', tx_disable),
@@ -1015,16 +1071,41 @@ def api_datapath_set():
                 cmis.REG_APP_SELECT[1],
                 cmis.pack_appselect(app_select[bank * 8:bank * 8 + 8]))
 
-        # ApplyDPInit latches the Staged Control Set into the active
-        # configuration. Every bank gets it: a module is not half configured.
+        # ApplyDPInit deinitialises and re-initialises the Data Paths whose
+        # lanes are selected, so the mask decides what drops. Writing 0xFF
+        # dropped every Data Path on the module, including ones the operator
+        # had not touched - on a module carrying two 400G ports, reconfiguring
+        # one took the other down with it.
+        #
+        # Page 10h:129-142 are lane controls "independent of the Data Path
+        # State machine or control sets" (Table 8-77): polarity, output
+        # disable and squelch take effect on the write. Only a changed staged
+        # configuration needs an Apply at all.
+        applied = []
         if apply:
-            for bank in range(banks):
-                _set_page(0x10, bank)
-                _state['backend'].write_bytes(cmis.REG_APPLY_DATAPATH[1],
-                                              bytes([0xFF]))
-            time.sleep(0.1)
+            # Narrowing only when the change can be located. Pressing Apply on
+            # an unchanged table is a request to re-commission, and quietly
+            # doing nothing would take that away.
+            need = _lanes_needing_apply(prev_app_select, app_select,
+                                        host_lanes_by_app)
+            if not need:
+                need = set(range(_state['lanes']))
+            if need:
+                for bank in range(banks):
+                    mask = 0
+                    for lane in need:
+                        if bank * 8 <= lane < bank * 8 + 8:
+                            mask |= 1 << (lane - bank * 8)
+                    if not mask:
+                        continue
+                    _set_page(0x10, bank)
+                    _state['backend'].write_bytes(cmis.REG_APPLY_DATAPATH[1],
+                                                  bytes([mask]))
+                applied = sorted(l + 1 for l in need)
+                time.sleep(0.1)
 
-        return _ok({'message': 'DataPath configuration written'})
+        return _ok({'message': 'DataPath configuration written',
+                    'applied_lanes': applied})
     except Exception as e:
         return _err(str(e), 500)
 
