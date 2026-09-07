@@ -1037,17 +1037,39 @@ async function _waitForNewVersion(expected) {
  * card and the module's Lane Flags give three different answers about the same
  * lane.
  */
-function _powerLimits() {
+// Page 02h holds one set of thresholds for the whole module. Page 62h, when
+// the module publishes it, holds a set per media lane - and that is the one
+// that applies to a lane (8.32). Colouring every lane by the module-wide
+// numbers is a judgement the module did not make: a lane can sit outside its
+// own alarm threshold and still be painted as healthy.
+function _powerLimits(lane) {
   const t = _moduleThresholds;
-  if (!t) return ALARM_FALLBACK;
   const num = (v, fb) => (typeof v === 'number' && Number.isFinite(v)) ? v : fb;
-  return {
+  const base = t ? {
     TX_LOW:  num(t.tx_power_low_alarm_dbm,  ALARM_FALLBACK.TX_LOW),
     TX_HIGH: num(t.tx_power_high_alarm_dbm, ALARM_FALLBACK.TX_HIGH),
     RX_LOW:  num(t.rx_power_low_alarm_dbm,  ALARM_FALLBACK.RX_LOW),
     RX_HIGH: num(t.rx_power_high_alarm_dbm, ALARM_FALLBACK.RX_HIGH),
-  };
+  } : { ...ALARM_FALLBACK };
+  // Rx has no per-lane page, so only the Tx pair can be replaced.
+  if (lane && lane.tx_threshold_source === '62h') {
+    base.TX_LOW  = num(lane.tx_power_low_alarm_dbm,  base.TX_LOW);
+    base.TX_HIGH = num(lane.tx_power_high_alarm_dbm, base.TX_HIGH);
+    base.TX_SRC  = '62h';
+  } else {
+    base.TX_SRC = t ? '02h' : 'fallback';
+  }
+  return base;
 }
+
+const _TX_SRC_NOTE = {
+  '62h': 'Alarm colouring uses this lane’s own Tx thresholds '
+       + '(Page 62h, per media lane)',
+  '02h': 'Alarm colouring uses the module-wide Tx thresholds (Page 02h) — '
+       + 'this module publishes no per-lane ones',
+  'fallback': 'Page 02h thresholds have not been read yet, so colouring falls '
+            + 'back to fixed reference values',
+};
 
 /** Say plainly that what is on screen is no longer live. */
 function markMonitoringStale(reason) {
@@ -1177,9 +1199,11 @@ async function _loadMonitoringOnce() {
   tbody.innerHTML = lanes.map(lane => {
     const txDbm = lane.tx_power_dbm;
     const rxDbm = lane.rx_power_dbm;
-    const lim = _powerLimits();
+    const lim = _powerLimits(lane);
     const txCls = txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
     const rxCls = rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
+    const txTip = `${_TX_SRC_NOTE[lim.TX_SRC]}: `
+                + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`;
     const stateClass = lane.datapath_state === 'Activated'
       ? 'state-activated' : lane.datapath_state === 'Init'
       ? 'state-init' : 'state-deactivated';
@@ -1193,7 +1217,7 @@ async function _loadMonitoringOnce() {
                    : 'state-deactivated';
     return `<tr>
       <td>${lane.lane}</td>
-      <td class="${txCls}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
+      <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
       <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
       <td class="${stateClass}">${lane.datapath_state}</td>

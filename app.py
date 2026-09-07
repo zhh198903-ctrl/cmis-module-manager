@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.14.0'
+__version__ = '2.15.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -800,6 +800,17 @@ def api_module_monitoring():
                                       cmis.REG_OUTPUT_STATUS_RX[1], 2):
             out_rx += cmis.parse_lane_flags(raw[0])
             out_tx += cmis.parse_lane_flags(raw[1])
+        # 8.32: Page 62h is the per-media-lane version of the Tx output power
+        # thresholds, in 0.01 dBm rather than Page 02h's module-wide 0.1 uW.
+        # Where the module publishes it, it is what applies to each lane -
+        # colouring a lane against the module-wide numbers instead is a
+        # judgement the module did not make. Read here rather than cached at
+        # connect because 7.5.3 lets a lane's thresholds move with its
+        # programmed output power.
+        lane_thr = []
+        if (_state.get('caps') or {}).get('page_62h_supported'):
+            for _bank, raw in _read_banks(*cmis.REG_LANE_PWR_THRESHOLDS):
+                lane_thr += cmis.parse_lane_power_thresholds(raw)
         tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
         tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
         rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
@@ -824,6 +835,15 @@ def api_module_monitoring():
                 # property of the code, not of how its name is spelled.
                 'config_rejected': cfg_codes[i] in cmis.CONFIG_STATUS_REJECTED,
             })
+            if i < len(lane_thr):
+                t = lane_thr[i]
+                lanes[-1].update({
+                    'tx_threshold_source': '62h',
+                    'tx_power_high_alarm_dbm': t['hi_alarm_dbm'],
+                    'tx_power_low_alarm_dbm':  t['lo_alarm_dbm'],
+                    'tx_power_high_warn_dbm':  t['hi_warn_dbm'],
+                    'tx_power_low_warn_dbm':   t['lo_warn_dbm'],
+                })
 
         return _ok({'lanes': lanes})
     except Exception as e:

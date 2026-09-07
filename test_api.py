@@ -135,8 +135,16 @@ class TestMonitoringPresentation(CMISTestCase):
         so the monitoring table, the thresholds card and the lane flags gave
         three different answers about one lane."""
         js = self._js()
-        self.assertIn('_powerLimits()', js)
-        self.assertIn('tx_power_low_alarm_dbm', js)
+        # The condition, not the call: the helper gained a lane argument, and
+        # asserting its old spelling proved nothing about the colouring.
+        body = js[js.index('function _powerLimits('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r'num\(t\.tx_power_low_alarm_dbm',
+                         'the module-wide low alarm is not consulted')
+        self.assertRegex(body, r'num\(t\.rx_power_high_alarm_dbm',
+                         'the module-wide high alarm is not consulted')
+        self.assertRegex(js, r'const lim = _powerLimits\(',
+                         'the monitoring row computes no limits at all')
         self.assertIn('_moduleThresholds = d', js,
                       'thresholds are read but never fed back into colouring')
 
@@ -7329,6 +7337,112 @@ class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
         body = body[:body.index(chr(10) + '}')]
         self.assertRegex(body, r'cc\.regular_reconfig')
         self.assertRegex(body, r'cc\.hot_reconfig')
+
+
+class TestWhichThresholdsALaneIsJudgedBy(CMISTestCase):
+    """8.32: Page 62h holds the Tx output power thresholds per media lane, in
+    0.01 dBm rather than Page 02h's module-wide 0.1 uW. Where a module
+    publishes it, that is what applies to a lane. The tool read the page,
+    showed it in its own card, and went on colouring every lane against the
+    module-wide numbers - so a lane could sit outside its own alarm threshold
+    and still be painted as healthy."""
+
+    def _connect(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _set_lane_threshold(self, lane, hi_dbm, lo_dbm):
+        """Write one lane's 62h quad. The two 1600G profiles derive Page 62h
+        from the module-wide values, so nothing in the shipped data can tell
+        the two rules apart - the discriminating case has to be built."""
+        import cmis_registers as c
+        base = c.REG_LANE_PWR_THRESHOLDS[1] + (lane - 1) * 8
+        for off, dbm in ((0, hi_dbm), (2, lo_dbm)):
+            raw = struct.pack('>h', int(round(dbm * 100)))
+            poke(0x62, base + off, raw[0])
+            poke(0x62, base + off + 1, raw[1])
+
+    def test_the_per_lane_thresholds_reach_the_monitoring_table(self):
+        self._connect()
+        lane = self._lanes()[0]
+        self.assertEqual(lane['tx_threshold_source'], '62h')
+        self.assertIsInstance(lane['tx_power_low_alarm_dbm'], float)
+
+    def test_a_module_without_the_page_says_nothing(self):
+        """Absent is not the same as zero: a lane with no per-lane thresholds
+        has to keep being judged by the module-wide ones."""
+        self._connect('mock_dr8')
+        self.assertNotIn('tx_threshold_source', self._lanes()[0])
+
+    def test_one_lane_can_be_judged_differently_from_its_neighbour(self):
+        """The whole point of a per-lane page."""
+        self._connect()
+        before = self._lanes()[0]['tx_power_dbm']
+        # Lane 1 alone gets a window this module's output sits well above.
+        self._set_lane_threshold(1, hi_dbm=before - 1.0, lo_dbm=before - 3.0)
+        lanes = self._lanes()
+        self.assertAlmostEqual(lanes[0]['tx_power_high_alarm_dbm'],
+                               round(before - 1.0, 2), places=1)
+        self.assertNotAlmostEqual(lanes[1]['tx_power_high_alarm_dbm'],
+                                  lanes[0]['tx_power_high_alarm_dbm'],
+                                  places=1)
+
+    def test_the_thresholds_are_re_read_rather_than_cached_at_connect(self):
+        """7.5.3 lets a lane's thresholds move with its programmed output
+        power, so a value cached once at connect would go stale silently."""
+        self._connect()
+        first = self._lanes()[0]['tx_power_high_alarm_dbm']
+        self._set_lane_threshold(1, hi_dbm=first + 4.0, lo_dbm=-20.0)
+        self.assertAlmostEqual(self._lanes()[0]['tx_power_high_alarm_dbm'],
+                               round(first + 4.0, 2), places=1)
+
+    def test_the_colouring_follows_the_lane_not_the_module(self):
+        js = self._read_js()
+        row = js[js.index('const lim = _powerLimits(lane);'):]
+        row = row[:row.index('return `<tr>')]
+        self.assertRegex(row, r'txDbm < lim\.TX_LOW',
+                         'the Tx cell no longer colours against a threshold')
+        body = js[js.index('function _powerLimits('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r"lane\.tx_threshold_source === '62h'",
+                         'the per-lane page is never preferred')
+        self.assertRegex(body, r'base\.TX_LOW\s*=\s*num\(lane\.tx_power_low_alarm_dbm',
+                         'the lane low alarm never replaces the module-wide one')
+        self.assertRegex(body, r'base\.TX_HIGH\s*=\s*num\(lane\.tx_power_high_alarm_dbm',
+                         'the lane high alarm never replaces the module-wide one')
+
+    def test_rx_is_left_on_the_module_wide_thresholds(self):
+        """Page 62h is Tx output power only; silently reusing a Tx threshold
+        for Rx would be worse than having none."""
+        js = self._read_js()
+        body = js[js.index('function _powerLimits('):]
+        body = body[:body.index(chr(10) + '}')]
+        inner = body[body.index("=== '62h'"):]
+        self.assertNotIn('RX_LOW', inner)
+        self.assertNotIn('RX_HIGH', inner)
+
+    def test_the_cell_says_which_rule_it_used(self):
+        """Two lanes can be coloured by different rules in the same table, so
+        the rule has to be legible per cell."""
+        js = self._read_js()
+        self.assertRegex(js, r'_TX_SRC_NOTE\[lim\.TX_SRC\]',
+                         'the Tx cell tooltip does not name the threshold source')
+        for key in ("'62h'", "'02h'", "'fallback'"):
+            self.assertIn(key, js[js.index('const _TX_SRC_NOTE'):
+                                  js.index('const _TX_SRC_NOTE') + 600],
+                          'no wording for source ' + key)
+
+    def _read_js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
 
 
 if __name__ == '__main__':

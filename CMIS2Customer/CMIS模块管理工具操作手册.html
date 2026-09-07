@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.14.0<br>
+      <b>版本</b>　2.15.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.14.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.14.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.15.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.15.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -997,11 +997,26 @@
     <table>
       <thead><tr><th>颜色</th><th>含义</th></tr></thead>
       <tbody>
-        <tr><td><span class="badge badge-ok">正常</span></td><td class="label">功率在模块自己广播的 Low/High Alarm 阈值之间</td></tr>
+        <tr><td><span class="badge badge-ok">正常</span></td><td class="label">功率在该 lane 适用的 Low/High Alarm 阈值之间（Tx 优先用 Page 62h 的每-lane 值，没有则用 Page 02h）</td></tr>
         <tr><td><span class="badge badge-warn">橙色</span></td><td class="label">功率低于模块的 Tx/Rx Power <b>Low Alarm</b></td></tr>
         <tr><td><span class="badge badge-danger">红色</span></td><td class="label">功率高于模块的 Tx/Rx Power <b>High Alarm</b></td></tr>
       </tbody>
     </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Tx 功率的阈值优先看每条 lane 自己的。</b>
+    Page 02h 里只有<b>一套</b>全模块共用的阈值；
+    模块如果广播了 <b>Page 62h</b>（规范 8.32），
+    那里是<b>按媒体 lane 分开</b>的 Tx 功率阈值，
+    单位 0.01 dBm——对某一条 lane 而言，那一套才是
+    生效的。工具现在逐 lane 取用，而不是把
+    全模块那套套到每条 lane 上。<br>
+    鼠标悬停在 Tx Power 格子上会直接写明<b>这一格
+    用的是哪一套阈值、区间是多少</b>——
+    同一张表里两条 lane 可能按不同规则着色，
+    不写清楚就看不出来。<br>
+    Rx 功率没有对应的每-lane 页，仍然用 Page 02h。</span>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -2232,7 +2247,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.14.0<br>
+    CMIS Module Manager 操作手册 v2.15.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
