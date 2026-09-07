@@ -7749,6 +7749,120 @@ class TestTheGridCmis54Added(CMISTestCase):
         self.assertEqual(c.parse_grid_channel_ranges(wide[:40]), {9: [-7, 7]})
 
 
+class TestAShippedProfileDemonstratesTheLaneEscape(CMISTestCase):
+    """TestVeryWideModules already drives the 01h:142.1-0 = 11b escape, using
+    throwaway profiles registered for the duration of the test. What it cannot
+    cover is the manual\'s claim about it - that the interface lays itself out
+    to the real lane count - because a fixture nobody can select from the
+    dropdown demonstrates nothing to whoever is reading that claim.
+
+    Every other CMIS 5.4 row in the manual\'s feature table is demonstrable on
+    a shipped profile. This asserts the same of the one the table leads with.
+    """
+
+    def _connect(self, backend):
+        return self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))['data']
+
+    def _caps(self):
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _shipped(self):
+        import i2c_interface
+        import i2c_backends            # noqa: F401 - triggers registration
+        return sorted(n for n in i2c_interface._BACKENDS if n.startswith('mock'))
+
+    def test_some_shipped_profile_uses_the_escape(self):
+        using = []
+        for name in self._shipped():
+            self._connect(name)
+            if self._caps()['extra_lane_banks'] is not None:
+                using.append(name)
+        self.assertTrue(using,
+                        'no profile a user can select exercises the CMIS 5.4 '
+                        'lane count escape, so the manual claim about it '
+                        'cannot be checked by using the tool')
+
+    def test_that_profile_reports_three_banks_end_to_end(self):
+        self._connect('mock_24lane')
+        caps = self._caps()
+        self.assertEqual(caps['extra_lane_banks'], 2)
+        self.assertEqual(caps['banks_supported'], 3)
+        self.assertEqual(caps['max_lanes'], 24)
+        for path in ('/api/module/monitoring', '/api/module/datapath',
+                     '/api/module/flags'):
+            lanes = self.assertOk(self.client.get(path))['data']['lanes']
+            self.assertEqual([l['lane'] for l in lanes], list(range(1, 25)),
+                             path)
+
+    def test_a_datapath_write_reaches_the_third_bank(self):
+        """TestVeryWideModules drives banked writes through the squelch
+        endpoint; the DataPath endpoint builds its own per-bank masks and can
+        stop short on its own. Masks are one bit per lane, so lane 17 only
+        moves if all three bytes are written."""
+        self._connect('mock_24lane')
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'tx_disable_mask': [0x00, 0x00, 0x05]}),
+            content_type='application/json'))
+        lanes = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes if not l['tx_enable']],
+                         [17, 19])
+
+    def test_a_write_to_one_bank_does_not_move_another_banks_readings(self):
+        """The mock models the eight lanes of bank 0 dynamically and keeps the
+        built values for the rest. Taking the Tx disable mask from whichever
+        bank was written last let a write aimed at lane 17 zero the monitor of
+        lane 1 - the DataPath table and the monitoring table then disagreed
+        about which lanes were on."""
+        self._connect('mock_24lane')
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'tx_disable_mask': [0x00, 0x00, 0x05]}),
+            content_type='application/json'))
+        lanes = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertGreater(lanes[0]['tx_power_uw'], 0,
+                           'disabling a lane in the third bank silenced the '
+                           'first lane of the first')
+        # And the bank that is modelled still responds, or the fix would just
+        # be ignoring the register.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'tx_disable_mask': [0x05, 0x00, 0x00]}),
+            content_type='application/json'))
+        lanes = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertEqual(lanes[0]['tx_power_uw'], 0)
+        self.assertEqual(lanes[2]['tx_power_uw'], 0)
+
+    def test_a_profile_the_legacy_field_can_spell_does_not_use_the_escape(self):
+        """01h:174 is not required to exist on a module answering 00b/01b/10b,
+        so believing it there reads a bank count out of whatever is at that
+        address. The fixtures are all wide; this is the negative case."""
+        self._connect('mock_1600g_16lane')
+        caps = self._caps()
+        self.assertIsNone(caps['extra_lane_banks'])
+        self.assertEqual(caps['banks_supported'], 2)
+
+    def test_only_the_escape_value_unlocks_the_extra_register(self):
+        """Same 01h:174 either way: the legacy code alone decides whether it
+        is believed."""
+        import cmis_registers as c
+        ext = bytes([0x80, 0xE2])
+        spelled = c.parse_supported_pages(0x21, ext)
+        escaped = c.parse_supported_pages(0x23, ext)
+        self.assertIsNone(spelled['extra_lane_banks'])
+        self.assertEqual(spelled['banks_supported'], 2)
+        self.assertEqual(escaped['extra_lane_banks'], 2)
+        self.assertEqual(escaped['banks_supported'], 3)
+        self.assertEqual(escaped['max_lanes'], 24)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

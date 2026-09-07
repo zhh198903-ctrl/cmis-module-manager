@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.17.0<br>
+      <b>版本</b>　2.18.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -408,7 +408,8 @@
       <tbody>
         <tr><td><b>E14</b> 模块通道数上限从 32 提升到 <b>256</b></td>
             <td><code>01h:142[1:0]</code> = <code>11b</code> 时改读 <code>01h:174[4:0]</code></td>
-            <td><span class="badge badge-ok">已支持</span> 连接时读取，界面按实际通道数铺开，跨 Bank 读写</td></tr>
+            <td><span class="badge badge-ok">已支持</span> 连接时读取，界面按实际通道数铺开，跨 Bank 读写。
+            逃逸路径由 <code>mock_24lane</code> 演示（其余 profile 的通道数旧字段都拼得出来，走不到这条路）</td></tr>
         <tr><td><b>E1</b> 通道默认极性广告</td>
             <td><code>01h:171–172</code>（Table 8-57）</td>
             <td><span class="badge badge-ok">已支持</span> Module Info 的 <b>Default Polarity</b> 行</td></tr>
@@ -510,6 +511,10 @@
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_1600g_dr8</code></td><td class="label">模拟 <b>1.6TBASE-DR8</b>（8 × 106.25 GBd PAM4, SMF 500m, 功率等级 8 / 26 W），光参数按 <b>IEEE P802.3dj/D3.1 第 180 章</b>建模，自报 <b>CMIS 5.4</b> 并广告全部 5.4 可选页</td></tr>
         <tr><td><code>mock_1600g_16lane</code></td><td class="label">模拟 <b>1.6T 16×100G</b>（主机侧即 <b>1.6TAUI-16 C2M</b>，<b>16 通道 / 双 Bank</b>, 功率等级 8 / 28 W），用于演示跨 Bank 读写与 5.4 新增字段</td></tr>
+        <tr><td><code>mock_24lane</code></td><td class="label">模拟一块 <b>24 通道 / 三 Bank</b> 的模块（功率等级 8 / 30 W）。
+            24 是<b>旧字段拼不出来</b>的通道数（旧字段只能表达 8 / 16 / 32），
+            因此它是唯一会走 <b>CMIS 5.4 通道数逃逸路径</b>的 profile：
+            <code>01h:142[1:0] = 11b</code> 时改读 <code>01h:174[4:0]</code></td></tr>
         <tr><td><code>ch341</code></td><td class="label">通过 CH341 USB 转 I2C 适配器连接真实模块</td></tr>
         <tr><td><code>ch347</code></td><td class="label">通过 CH347 USB 转 I2C 适配器连接真实模块</td></tr>
         <tr><td><code>ftdi</code></td><td class="label">通过 FTDI 系列芯片连接真实模块</td></tr>
@@ -518,7 +523,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>7 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，以及两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），可用于不同场景演示与培训。</span>
+    <span>8 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），以及一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），可用于不同场景演示与培训。</span>
   </div>
 </div>
 
@@ -617,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.17.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.17.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.18.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.18.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -2141,7 +2146,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 7 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>，以及两块 1.6T 模块。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 8 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，以及 <code>mock_24lane</code>（24 通道 / 三 Bank）。</div>
   </div>
 
   <div class="faq-item">
@@ -2297,7 +2302,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.17.0<br>
+    CMIS Module Manager 操作手册 v2.18.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

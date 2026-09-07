@@ -344,6 +344,54 @@ _XD16_1600G = {
     'heatsink_fiber':      0x30,
 }
 
+# CMIS 5.4 raised the lane ceiling from 32 to 256 by giving 01h:142.1-0 an
+# escape value: 11b means the real bank count is in 01h:174.4-0. Every other
+# profile here has a lane count the legacy field can spell (8, 16 or 32), so
+# nothing exercised the escape - neither the mock branch that writes it nor
+# the host decode that reads it. Twenty-four lanes is the smallest count that
+# has no legacy spelling, which is exactly what the escape exists for.
+_XD24 = {
+    'display':         '24 host lanes, three banks (CMIS 5.4 bank escape)',
+    'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
+    'vendor_name':     b"OPENCMIS DEMO   ",
+    'vendor_pn':       b"DEMO-XD24-3BANK ",
+    'vendor_sn':       b"DEMO000000008   ",
+    'vendor_rev':      b"A0",
+    'vendor_oui':      (0x00, 0x00, 0x00),
+    'date_code':       b"26010200",
+    'clei':            b"DEMOCLEI24",
+    'media_type':          0x02,             # SMF
+    'connector_type':      0x28,             # MPO
+    'media_if_tech':       0x06,             # 1310 nm EML
+    'power_class_bits':    0xE0,             # Class 8
+    'max_power_0_25w':     0x78,             # 120 x 0.25 = 30.0 W
+    'tunable':             False,
+    'tx_power_uw_nom':     1259,             # +1.0 dBm per lane
+    'rx_power_uw_nom':     500,              # -3.0 dBm per lane
+    'tx_bias_ma_nom':      72.0,
+    'temperature_c_nom':   67.0,
+    'base_ber':            8.0e-6,
+    'snr_db_nom':          20.5,
+    'app_descriptors': [
+        # An Application is capped at eight lanes (5.4 section 6.4.1), so the
+        # module advertises ones that fit a lane group and instantiates them
+        # per group - three groups here rather than the two a 16-lane module
+        # has. 0x11 is the bitmap of permissible starting lanes, 1 and 5.
+        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M -> 800GBASE-DR8 (8H/8M)
+        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M -> 400GBASE-DR4 (4H/4M)
+    ],
+    'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km
+    'cmis_rev':            0x54,
+    'lanes':               24,               # three banks; 01h:142.1-0 = 11b
+    'default_polarity_tx': 0b00001001,       # lanes 1 and 4 wired inverted
+    'default_polarity_rx': 0b00000100,       # lane 3 wired inverted
+    'pages_ext_173':       0b10000000,       # Page 0Ch
+    'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h
+    'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
+    'module_subtype':      0x01,
+    'heatsink_fiber':      0x30,
+}
+
 _SR8_800G = {
     'display':         '800GBASE-SR8 (OM4 100m, VCSEL 850nm)',
     # A simpler retimer throughout: no host-controlled Tx input EQ target and
@@ -1350,7 +1398,11 @@ class MockBackend(I2CInterface):
             span = range(register, register + len(data))
             if 0x80 in span:                                        # DPDeinit
                 self._set_dp_deinit(data[0x80 - register])
-            if 0x82 in span:                                        # OutputDisableTx
+            if 0x82 in span and self._current_bank == 0:             # OutputDisableTx
+                # The dynamic model covers the eight lanes of bank 0; the
+                # other banks keep the values built for them. Taking this mask
+                # from whichever bank was written last let a write aimed at
+                # lane 17 zero the readings of lane 1.
                 self._tx_disable_mask = data[0x82 - register]
             if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
                 self._start_apply(data[0x8F - register], hot=False)
@@ -1725,6 +1777,11 @@ class Mock1600GDr8Backend(MockBackend):
 @register_backend("mock_1600g_16lane")
 class Mock1600G16LaneBackend(MockBackend):
     PROFILE = _XD16_1600G
+
+
+@register_backend("mock_24lane")
+class Mock24LaneBackend(MockBackend):
+    PROFILE = _XD24
 
 
 @register_backend("mock_coherent_zr")
