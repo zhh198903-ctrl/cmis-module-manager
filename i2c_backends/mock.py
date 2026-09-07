@@ -155,6 +155,20 @@ _ZR_800G = {
         (0x4F, 0x41, 0x41, 0x01),            # AppSel 2: 400GAUI-4-S C2M -> 200GBASE-ER4 (4H/1M)
     ],
     'link_lengths': {},                      # no cable length advertised
+    'cmis_rev':            0x54,
+    'pages_ext_173':       0b10000000,       # Page 0Ch
+    # Page 62h only. 60h and 61h are separate features this module does not
+    # claim, and Page 0Ch's map is built from what is actually served, so
+    # serving a page it does not advertise would put the two at odds.
+    'pages_ext_174':       0b00100000,
+    # 04h:196.6: programmable output power is what relative supervision
+    # thresholds are relative to, so this is the profile that has them.
+    'rel_thr_cap_196':     0x40,
+    # 12h:216-217, U4 halves of a dB: +2.0/+1.5 dB and -2.0/-1.5 dB.
+    'rel_thr_offsets_216': (0x32, 0x32),
+    # Lanes 1-4 were left switched to relative supervision by whoever
+    # configured this module; 5-8 still use the module-wide thresholds.
+    'rel_thr_enabled_lanes': (1, 1, 1, 1, 0, 0, 0, 0),
 }
 
 _DR8_800G = {
@@ -446,6 +460,7 @@ class MockBackend(I2CInterface):
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
+        self._absolute_tx_thr = None      # 62h quad when no lane is relative
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
         self._error_counts = [0] * 8
@@ -716,6 +731,10 @@ class MockBackend(I2CInterface):
             p04[0xC0] = v[0]; p04[0xC1] = v[1]
             v = struct.pack(">h", 12500)
             p04[0xC2] = v[0]; p04[0xC3] = v[1]
+            # 04h:196.6 OutputPowerTxRelativeThresholdsSupported (5.4). Only
+            # a module with programmable output power has anything to relate
+            # the thresholds to.
+            p04[0xC4] = p.get('rel_thr_cap_196', 0x00)
             # Programmable output power range
             v = struct.pack(">h", -1000)
             p04[0xC6] = v[0]; p04[0xC7] = v[1]
@@ -783,6 +802,18 @@ class MockBackend(I2CInterface):
                 p12[a + 2] = (freq_u32 >> 8) & 0xFF
                 p12[a + 3] = freq_u32 & 0xFF
             for i in range(16): p12[0xC8 + i] = 0x00   # target power = 0
+            # 12h:216-217 (Table 8-109): the relative supervision offsets, not
+            # per lane - 7.5.3 takes the view that a meaningful monitoring
+            # window is a property of the optics, not of the lane.
+            rel = p.get('rel_thr_offsets_216', None)
+            if rel is not None:
+                p12[0xD8], p12[0xD9] = rel
+            # 12h:128-135.1 enables it per media lane. A module keeps what the
+            # host last programmed, so a profile may come up with it already on
+            # for some lanes - which is the state worth demonstrating.
+            for i, on in enumerate(p.get('rel_thr_enabled_lanes', ())):
+                if on:
+                    p12[0x80 + i] |= 0x02
             for i in range(8): p12[0xDE + i] = 0x00    # status: locked, not tuning
             for i in range(8): p12[0xE7 + i] = 0x00    # flags clear
             regs[0x12] = p12
@@ -838,12 +869,18 @@ class MockBackend(I2CInterface):
             p0c[0xA1] = 0x33          # fully compliant on both counts
             regs[0x0C] = p0c          # filled in below, once every page exists
 
+            adv174 = p.get('pages_ext_174', 0x00)
             p60 = {0x80: p.get('default_polarity_tx', 0),
                    0x81: p.get('default_polarity_rx', 0),
                    # Table 8-188: Rx/Tx/DpRx/DpTx supported are bits 7-4;
                    # bits 3-0 are reserved, so 0x0F advertised nothing at all.
                    0x82: 0xF0}
-            regs[0x60] = p60
+            # Page 0Ch's map is built from what regs actually holds, so a page
+            # served but not advertised in 01h:174 would put the two
+            # advertisements at odds - which is the disagreement Page 0Ch
+            # exists to end.
+            if adv174 & 0x80:
+                regs[0x60] = p60
 
             p61 = {}
             for lane in range(8):
@@ -853,14 +890,15 @@ class MockBackend(I2CInterface):
                     v = seed + lane
                     p61[base + lane * 2] = (v >> 8) & 0xFF
                     p61[base + lane * 2 + 1] = v & 0xFF
-            regs[0x61] = p61
+            if adv174 & 0x40:
+                regs[0x61] = p61
 
             p62 = {}
-            # Page 62h carries the per-lane Tx thresholds in 0.01 dBm. Once a
-            # lane switches to power-relative supervision (5.4 section 7.5.3)
-            # these supersede Page 02h; no lane here has, so they agree with it
-            # - and they are derived from the same raw values so that they
-            # cannot drift, whether or not the profile names a PMD.
+            # Page 62h carries the per-lane Tx thresholds in 0.01 dBm. A lane
+            # that has not switched to power-relative supervision (5.4 section
+            # 7.5.3) shows the module-wide values, derived from the same raw
+            # numbers so the two cannot drift; a lane that has gets them
+            # recomputed from its own target power in _refresh_lane_thresholds.
             lane_thr = tuple(_raw_to_dbm_centi(v) for v in tx_thr)
             for lane in range(8):
                 off = 0x80 + lane * 8
@@ -869,7 +907,9 @@ class MockBackend(I2CInterface):
                     v = val & 0xFFFF
                     p62[off + k * 2] = (v >> 8) & 0xFF
                     p62[off + k * 2 + 1] = v & 0xFF
-            regs[0x62] = p62
+            if adv174 & 0x20:
+                regs[0x62] = p62
+                self._absolute_tx_thr = lane_thr
 
             if p.get('misc_caps_252', 0) & 0x20:
                 p6d = {0x80: 0x30}                     # commit duration code 3
@@ -1008,6 +1048,44 @@ class MockBackend(I2CInterface):
                 self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00
 
     # ------------------------------------------------------------------
+    def _refresh_lane_thresholds(self) -> None:
+        """7.5.3: a lane using power-relative supervision has its Page 62h
+        thresholds derived from its own programmed Tx output power, so they
+        move when that power does. A lane that has not enabled it keeps the
+        module-wide values, which is why both cases have to be rewritten on
+        every pass rather than only the enabled ones.
+        """
+        p62 = self._registers.get(0x62)
+        p12 = self._registers.get(0x12)
+        if p62 is None or p12 is None or self._absolute_tx_thr is None:
+            return
+        # 04h:196.6 not advertised means no lane is under relative
+        # supervision, whatever Page 12h happens to hold - so the quads still
+        # get rewritten, with the module-wide values. Skipping the pass
+        # instead would leave whatever was last computed sitting in Page 62h.
+        advertised = bool((self._registers.get(0x04, {}).get(0xC4, 0) >> 6) & 1)
+        hi, lo = p12.get(0xD8, 0), p12.get(0xD9, 0)
+        # Both offsets are U4 counted from half a dB, so the smallest window a
+        # module can express is nominal +/- 0.5 dB.
+        d_hi_alarm = (1 + ((hi >> 4) & 0x0F)) * 0.5
+        d_hi_warn = (1 + (hi & 0x0F)) * 0.5
+        d_lo_alarm = -(1 + ((lo >> 4) & 0x0F)) * 0.5
+        d_lo_warn = -(1 + (lo & 0x0F)) * 0.5
+        for lane in range(8):
+            off = 0x80 + lane * 8
+            if advertised and (p12.get(0x80 + lane, 0) >> 1) & 1:
+                a = 0xC8 + lane * 2
+                tgt = struct.unpack('>h', bytes([p12.get(a, 0),
+                                                 p12.get(a + 1, 0)]))[0] * 0.01
+                quad = [int(round((tgt + d) * 100)) for d in
+                        (d_hi_alarm, d_lo_alarm, d_hi_warn, d_lo_warn)]
+            else:
+                quad = list(self._absolute_tx_thr)
+            for k, val in enumerate(quad):
+                v = val & 0xFFFF
+                p62[off + k * 2] = (v >> 8) & 0xFF
+                p62[off + k * 2 + 1] = v & 0xFF
+
     def _hot_reconfig(self) -> bool:
         """Lower 02h: whether ApplyImmediate does anything on this module."""
         raw = self._registers[None].get(0x02, 0)
@@ -1148,6 +1226,7 @@ class MockBackend(I2CInterface):
             if changed:
                 page_dict[0x99] = page_dict.get(0x99, 0) | changed
 
+        self._refresh_lane_thresholds()
         self._set_module_flags(temp_c)
 
         # CDR-LOL simulation on lane 8

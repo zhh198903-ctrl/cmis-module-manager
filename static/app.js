@@ -29,6 +29,7 @@ const AppState = {
 // the module's own alarm flags.
 const ALARM_FALLBACK = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
 let _moduleThresholds = null;
+let _relThresholds = null;   // 12h:216-217 offsets, when advertised
 let _advertisedApps = [];
 
 // ---------------------------------------------------------------------------
@@ -321,6 +322,7 @@ function _endSession(message, tone) {
   AppState.caps = {};
   // The next module advertises its own limits and its own Applications.
   _moduleThresholds = null;
+  _relThresholds = null;
   _advertisedApps = [];
   stopMonitoring();
   stopHealthWatch();
@@ -2360,6 +2362,25 @@ const TUNING_FLAG_LABELS = {
   wavelength_unlocked:       ['Unlocked', 'Laser wavelength was unlocked'],
 };
 
+// 7.5.3. Two lanes of one module can be supervised under different regimes,
+// and the monitoring table colours them accordingly - so the panel that owns
+// the setting has to say which lane is under which, and against what.
+function supervisionCell(l, offsets) {
+  if (!offsets || !Object.keys(offsets).length) {
+    return '<span class="flag-none" title="This module does not advertise '
+         + 'power-relative supervision thresholds (04h:196.6)">n/a</span>';
+  }
+  if (!l.relative_thresholds_enabled) {
+    return '<span class="state-deactivated" title="Supervised against the '
+         + 'module-wide Page 02h thresholds">Absolute</span>';
+  }
+  const lo = (l.target_power_dbm + offsets.lo_alarm_offset_db).toFixed(2);
+  const hi = (l.target_power_dbm + offsets.hi_alarm_offset_db).toFixed(2);
+  return `<span class="state-activated" title="Supervised against this lane’s `
+       + `own power: ${l.target_power_dbm} dBm ${offsets.lo_alarm_offset_db} / `
+       + `+${offsets.hi_alarm_offset_db} dB, so ${lo} to ${hi} dBm">Relative</span>`;
+}
+
 function tuningFlagCell(lane) {
   const live = Object.keys(TUNING_FLAG_LABELS).filter(k => lane.tuning_flags && lane.tuning_flags[k]);
   const seen = (lane.tuning_flags_seen || []).filter(k => !live.includes(k));
@@ -2382,10 +2403,12 @@ async function loadLaser() {
   const capsEl = document.getElementById('laser-caps');
   if (!tbody) return;
   if (res.status !== 'ok') {
-    tbody.innerHTML = `<tr><td colspan="8" class="placeholder-text">Laser tuning not available: ${res.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="placeholder-text">Laser tuning not available: ${res.message}</td></tr>`;
     return;
   }
   _laserData = res.data;
+  _relThresholds = res.data.relative_power_thresholds_supported
+    ? res.data.relative_power_thresholds : null;
   const d = res.data;
 
   // Non-tunable module: Page 04h reads all zeros → no grids advertised
@@ -2393,7 +2416,7 @@ async function loadLaser() {
     if (capsEl) {
       capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module (Media Interface Technology is not C-band/L-band); Page 04h tuning capabilities not advertised.</span>';
     }
-    tbody.innerHTML = '<tr><td colspan="8" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
     return;
   }
 
@@ -2458,6 +2481,7 @@ async function loadLaser() {
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_thz.toFixed(6)}</td>
       <td title="${tipPwr}"><input type="number" id="laser-pwr-${l.lane}" title="${tipPwr}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>
+      <td>${supervisionCell(l, _relThresholds)}</td>
       <td title="${tipStat}">${lockIcon}</td>
       <td>${tuningFlagCell(l)}</td>
     </tr>`;

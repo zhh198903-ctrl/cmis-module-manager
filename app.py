@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.15.0'
+__version__ = '2.16.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1861,6 +1861,9 @@ def api_laser_get():
             gs = grid_spacing[i]
             gc = (gs >> 4) & 0x0F
             fine_en = bool(gs & 0x01)
+            # 12h:128-135.1 (7.5.3): this lane is supervised against the
+            # thresholds on Page 62h rather than the module-wide Page 02h ones.
+            rel_thr_en = bool(gs & 0x02)
             ch = struct.unpack(">h", channel_num[i*2:i*2+2])[0]
             ft = struct.unpack(">h", fine_offset[i*2:i*2+2])[0]
             freq_mhz = struct.unpack(">I", current_freq[i*4:i*4+4])[0]
@@ -1893,7 +1896,7 @@ def api_laser_get():
                 'wavelength_locked': not bool(st & 1),
                 # 5.4: when set, Page 02h's absolute Tx power thresholds stop
                 # applying to this lane and the relative ones take over.
-                'relative_thresholds_enabled': bool((gs >> 1) & 1),
+                'relative_thresholds_enabled': rel_thr_en,
             })
 
         return _ok({
@@ -1958,8 +1961,18 @@ def api_laser_set():
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0
+                # 12h:128-135 is not only the grid. Bit 1 is
+                # RelativeOutputPowerThresholdsEnableTx, which decides whether
+                # the lane is supervised against Page 62h or the module-wide
+                # Page 02h thresholds (7.5.3) - rebuilding the whole byte from
+                # the grid silently moved a lane back to absolute supervision,
+                # so a request to change a grid changed which alarm limits
+                # applied to that lane.
+                keep = (_read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)[lane]
+                        & 0x0E)
+                _set_page(0x12)
                 _state['backend'].write_bytes(cmis.REG_GRID_SPACING_TX[1] + lane,
-                                              bytes([(gc << 4) | fine_en]))
+                                              bytes([(gc << 4) | keep | fine_en]))
             if 'channel' in ldata:
                 ch = int(ldata['channel'])
                 gc_now = (ldata.get('grid_code') if 'grid_code' in ldata

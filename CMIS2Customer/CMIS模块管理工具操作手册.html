@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.15.0<br>
+      <b>版本</b>　2.16.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.15.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.15.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.16.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.16.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1757,6 +1757,50 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         AppSelect、或该应用要求的起始 lane 与 9.2 的 Host Lane Assign 位图不符。按 9.2 的表重选应用码后再 Apply。</li>
   </ol>
 
+  <h3>Supervision —— 这条 lane 按哪套告警阈值判</h3>
+  <p>Laser Tuning 表新增一列 <b>Supervision</b>。CMIS 5.4 的 7.5.3
+     允许把一条媒体 lane 的 Tx 功率告警阈值改成
+     <b>相对于它自己的目标发射功率</b>，
+     而不是用 Page 02h 那套全模块共用的绝对值。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>显示</th><th>含义</th><th>Page / Addr</th></tr></thead>
+      <tbody>
+        <tr><td><b>Relative</b></td><td class="label">该 lane 已启用相对阈值：
+            告警窗口 = 目标功率 ± 偏移量。
+            <b>重新调功率，告警线自己跟着走</b>，
+            不需要主机再算一遍</td>
+            <td><code>12h / 0x80[1]</code></td></tr>
+        <tr><td><b>Absolute</b></td><td class="label">该 lane 仍用 Page 02h
+            全模块共用的绝对阈值</td>
+            <td><code>12h / 0x80[1] = 0</code></td></tr>
+        <tr><td><code>n/a</code></td><td class="label">模块根本没广播
+            这项能力</td><td><code>04h / 0xC4[6]</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>偏移量在 <code>12h:216-217</code>，<b>不分 lane</b>——
+    规范认为“多大的监控窗口才有意义”
+    是光模块的属性，不是某一条 lane 的属性；
+    但<b>启用与否是逐 lane 的</b>。所以同一个模块里
+    两条 lane 可能按两套规则告警，实时监控表的
+    着色也会相应不同——鼠标悬停在两边都会
+    写明用的是哪一套。<br>
+    两个偏移量都是以<b>半个 dB 为步进</b>的 U4，
+    最小窗口是 ±0.5 dB（不是 0）。</span>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>已修：改 Grid 会把这个开关关掉。</b>
+    <code>12h:128-135</code> 这个字节里不只有 Grid，
+    bit 1 正是上面那个启用位。旧版本写 Grid 时
+    把整个字节重拼了一遍，于是“改一下栅格”
+    会把该 lane 静静地换回绝对阈值，告警线跟着变。
+    现在写入会先读回原字节，只改自己那几位。</span>
+  </div>
+
   <h3>Apply 和 Apply Immediate —— 两个触发器，不同代价</h3>
   <p>规范 8.13.3.1 定义了<b>两个</b>生效触发器，
      以前工具只有第一个：</p>
@@ -2247,7 +2291,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.15.0<br>
+    CMIS Module Manager 操作手册 v2.16.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

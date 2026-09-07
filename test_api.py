@@ -7445,6 +7445,187 @@ class TestWhichThresholdsALaneIsJudgedBy(CMISTestCase):
             return f.read()
 
 
+class TestSupervisionRelativeToTheProgrammedPower(CMISTestCase):
+    """7.5.3: a media lane can be supervised against thresholds relative to
+    its own programmed Tx output power instead of the module-wide absolute
+    ones on Page 02h. The capability is advertised at 04h:196.6, the offsets
+    live in 12h:216-217, and it is enabled per lane at 12h:128-135.1. The
+    decoder for the offsets had been in the codebase unexecuted, because no
+    profile advertised the bit that reaches it."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _window(self, lane):
+        l = self._lanes()[lane - 1]
+        return (l.get('tx_power_low_alarm_dbm'), l.get('tx_power_high_alarm_dbm'))
+
+    def _post_laser(self, body, code=200):
+        rv = self.client.post('/api/module/laser', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def test_the_offsets_are_decoded(self):
+        """Both are U4 counted from half a dB, so the smallest window a module
+        can express is nominal +/- 0.5 dB, not 0."""
+        self._connect()
+        d = self._laser()
+        self.assertIs(d['relative_power_thresholds_supported'], True)
+        self.assertEqual(d['relative_power_thresholds'], {
+            'hi_alarm_offset_db': 2.0, 'hi_warn_offset_db': 1.5,
+            'lo_alarm_offset_db': -2.0, 'lo_warn_offset_db': -1.5})
+
+    def test_a_module_without_the_capability_reports_no_offsets(self):
+        """04h:196.6 clear means the bytes need not mean anything, so reading
+        them anyway would invent a window out of whatever is there."""
+        self._connect('mock_coherent')
+        d = self._laser()
+        self.assertIs(d['relative_power_thresholds_supported'], False)
+        self.assertEqual(d['relative_power_thresholds'], {})
+
+    def test_which_lanes_use_it_is_reported(self):
+        self._connect()
+        self.assertEqual([l['relative_thresholds_enabled']
+                          for l in self._laser()['lanes']],
+                         [True] * 4 + [False] * 4)
+
+    def test_an_enabled_lane_is_judged_against_its_own_power(self):
+        self._connect()
+        self.assertEqual(self._window(1), (-2.0, 2.0))
+
+    def test_a_disabled_lane_keeps_the_module_wide_thresholds(self):
+        """The two regimes coexist in one module, which is why the thresholds
+        had to become per lane before this could be reported at all."""
+        self._connect()
+        self.assertNotEqual(self._window(5), self._window(1))
+        self.assertEqual(self._window(5), (-8.01, 5.0))
+
+    def test_the_window_follows_the_programmed_power(self):
+        """The point of relative supervision: retune the lane and its alarm
+        limits move with it, with no host arithmetic."""
+        self._connect()
+        self._post_laser({'lanes': [{'lane': 1, 'target_power_dbm': -3.0}]})
+        self.assertEqual(self._window(1), (-5.0, -1.0))
+        self.assertEqual(self._window(2), (-2.0, 2.0),
+                         'retuning one lane moved another lane thresholds')
+
+    def test_setting_a_grid_does_not_switch_the_lane_to_absolute(self):
+        """12h:128-135 is not only the grid: bit 1 decides which supervision
+        regime the lane is under. Rebuilding the whole byte from the grid
+        moved the lane back to the module-wide thresholds, so a request to
+        change a grid quietly changed which alarm limits applied."""
+        self._connect()
+        before = self._window(1)
+        self._post_laser({'lanes': [{'lane': 1, 'grid_code': 5}]})
+        self.assertEqual(self._window(1), before)
+        self.assertIs(self._laser()['lanes'][0]['relative_thresholds_enabled'],
+                      True)
+
+    def test_enabling_fine_tuning_does_not_switch_it_either(self):
+        self._connect()
+        before = self._window(1)
+        self._post_laser({'lanes': [{'lane': 1, 'grid_code': 5,
+                                     'fine_tuning_enabled': True}]})
+        self.assertEqual(self._window(1), before)
+        self.assertIs(self._laser()['lanes'][0]['fine_tuning_enabled'], True)
+
+    def test_the_grid_itself_still_gets_written(self):
+        """Preserving the other bits must not cost the write its purpose."""
+        self._connect()
+        self._post_laser({'lanes': [{'lane': 2, 'grid_code': 4}]})
+        self.assertEqual(self._laser()['lanes'][1]['grid_code'], 4)
+
+    def test_the_capability_bit_gates_the_whole_thing(self):
+        """04h:196.6 clear means the module does not do relative supervision at
+        all, so an enable bit left set in Page 12h must not be acted on - the
+        offsets it would use are not required to mean anything."""
+        self._connect()
+        self.assertEqual(self._window(1), (-2.0, 2.0))
+        poke(0x04, 0xC4, 0x00)
+        time.sleep(0.1)
+        self.assertEqual(self._window(1), self._window(5),
+                         'a lane was supervised relatively by a module that '
+                         'does not advertise the capability')
+
+    def test_the_field_is_reported_once(self):
+        """It is built in a dict literal beside a dozen others; a second key of
+        the same name is not an error, it silently wins - and then the value
+        everything else computes is the one that never reaches the caller."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertEqual(src.count("'relative_thresholds_enabled':"), 1)
+
+    def test_the_panel_distinguishes_the_two_regimes(self):
+        js = self._read_js()
+        body = js[js.index('function supervisionCell('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r'!l\.relative_thresholds_enabled',
+                         'the cell does not branch on the lane enable bit')
+        self.assertIn('Absolute', body)
+        self.assertIn('Relative', body)
+        self.assertRegex(body, r'!offsets \|\| !Object\.keys\(offsets\)\.length',
+                         'a module without the capability is still given a regime')
+        self.assertIn('n/a', body)
+
+    def test_the_panel_shows_the_window_the_offsets_produce(self):
+        """The number an operator needs is the resulting window, not two
+        offsets they have to add to a target power themselves."""
+        js = self._read_js()
+        body = js[js.index('function supervisionCell('):]
+        body = body[:body.index(chr(10) + '}')]
+        # The names alone are not enough: they also appear in the tooltip
+        # text, so a cell that printed them without ever adding them up would
+        # still satisfy an assertion that only looked for the identifiers.
+        for edge in ('lo', 'hi'):
+            self.assertRegex(
+                body,
+                r'l\.target_power_dbm \+ offsets\.%s_alarm_offset_db' % edge,
+                'the %s edge of the window is not computed from the '
+                'programmed power' % edge)
+
+    def test_the_offsets_reach_the_panel(self):
+        """The cell is fed from a module-level value filled in when the laser
+        data loads; without that it can only ever render n/a."""
+        js = self._read_js()
+        self.assertRegex(
+            js, r'_relThresholds = res\.data\.relative_power_thresholds_supported',
+            'the offsets are read and then never handed to the panel')
+
+    def _read_js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_module_serves_only_the_pages_it_advertises(self):
+        """Page 0Ch's map is built from what the module actually serves, so a
+        page served without being advertised in 01h:174 puts the two
+        advertisements at odds - which is what Page 0Ch exists to prevent."""
+        self._connect()
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['page_62h_supported'], True)
+        self.assertIs(caps['page_60h_supported'], False)
+        self.assertIs(caps['page_61h_supported'], False)
+        pages = self.assertOk(
+            self.client.get('/api/module/ext54'))['data']['supported_pages']
+        self.assertIn(0x62, pages)
+        self.assertNotIn(0x60, pages)
+        self.assertNotIn(0x61, pages)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
