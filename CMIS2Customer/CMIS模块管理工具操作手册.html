@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.25.0<br>
+      <b>版本</b>　2.26.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.25.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.25.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.26.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.26.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1553,6 +1553,21 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     不再写成容易误读的「App 0」。</span>
   </div>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>“停下来再改”这套动作以前是无效的。</b>
+    规范 6.2.4.3 规定，改变一条数据通道的<b>宽度</b>只能在 DPDeactivated 下进行，
+    所以换应用是两步：先勾 <b>DP Deinit</b> + Apply 把通道停下，
+    再选新的 Application、取消勾选、Apply。<br>
+    第二步是一次 Apply 同时带着<b>新配置</b>和<b>释放</b>，而工具写寄存器的顺序是
+    <b>先写 DPDeinit、后写 AppSelect</b>——释放的那一刻数据通道就开始重启，
+    模块按当时暂存区里的内容去承载，也就是<b>旧的那个 Application</b>。
+    于是通道原样起来，Config Status 还报 ConfigSuccess：
+    <b>规范唯一允许的换应用流程，恰好是工具做不成的那个</b>。<br>
+    现在暂存区（AppSelect、两个极性掩码、Tx Disable）一律<b>先于</b> DPDeinit 写入，
+    释放时模块看到的是你要的新配置。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>未使用的 lane 一定显示 Deactivated。</b>
@@ -1830,9 +1845,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）</td><td><code>10h / 0x82[n−1]</code></td></tr>
         <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
         <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
-        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化位（每 lane 1 bit），显示为 <code>Deinit</code> / <code>Active</code> 文字。
-            <b>本列是只读的</b>，界面上没有对应的复选框，Apply 也不会下发这一位——不用去找。
-            需要改这一位请用 Raw Registers 直接写。
+        <tr><td>DP Deinit</td><td class="label">DataPath 去初始化位（每 lane 1 bit），<b>可勾选</b>，Apply 时随其它配置一起下发。
+            勾上并 Apply 会把该 lane 所在的<b>整条 DataPath</b> 停到 DPDeactivated（规范要求同一条通道的所有 lane 取值一致）；
+            取消勾选再 Apply，通道重新走 DPInit 上来。
             注意是 <b>10h</b>，Page 11h 的 0x80 是只读的 DataPath State，不要混淆</td><td><code>10h / 0x80[n−1]</code></td></tr>
       </tbody>
     </table>
@@ -2492,7 +2507,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.25.0<br>
+    CMIS Module Manager 操作手册 v2.26.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

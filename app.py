@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.25.0'
+__version__ = '2.26.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1259,8 +1259,13 @@ def api_datapath_set():
 
         for bank in range(banks):
             _set_page(0x10, bank)
-            _state['backend'].write_bytes(cmis.REG_DP_DEINIT[1],
-                                          bytes([dp_deinit[bank]]))
+            # The Staged Control Set goes down before DPDeinit, not after.
+            # Releasing a deinit hold restarts the Data Path, and the module
+            # commissions whatever is staged at that moment - so writing 128
+            # first brought the path back up on the *previous* Application and
+            # reported ConfigSuccess for it. That is the second half of the
+            # only sequence 6.2.4.3 allows for a width change, so the one
+            # procedure the standard mandates was the one that did not work.
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
             _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],
                                           bytes([tx_pol[bank], tx_disable[bank]]))
@@ -1269,6 +1274,8 @@ def api_datapath_set():
             _state['backend'].write_bytes(
                 cmis.REG_APP_SELECT[1],
                 cmis.pack_appselect(app_select[bank * 8:bank * 8 + 8]))
+            _state['backend'].write_bytes(cmis.REG_DP_DEINIT[1],
+                                          bytes([dp_deinit[bank]]))
 
         # ApplyDPInit deinitialises and re-initialises the Data Paths whose
         # lanes are selected, so the mask decides what drops. Writing 0xFF

@@ -8885,6 +8885,114 @@ class TestALaneCarryingNoApplication(CMISTestCase):
                          'the dropdown has to add it itself')
 
 
+
+class TestReleasingADeinitHoldCommissionsWhatWasStaged(CMISTestCase):
+    """6.2.4.3 allows a Data Path to change width "only while in the
+    DPDeactivated state", so reconfiguring one is a two-step procedure: take
+    the path down, then set the new Application and release the hold. The
+    second step is a single Apply carrying both, and the order the tool wrote
+    those registers in decided what the module commissioned.
+
+    DPDeinit went down first. Releasing the hold restarts the Data Path, and
+    the module commissions whatever the Staged Control Set holds at that
+    moment - which was still the previous Application, because AppSel was
+    written afterwards. The path came back up on the old configuration and
+    ConfigStatus read ConfigSuccess for it, so the only sequence the standard
+    allows for a width change was the one that silently did nothing."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+
+    def _active(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['active_app_select']
+
+    def _states(self):
+        return [l['datapath_state'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def test_the_new_application_is_what_comes_back_up(self):
+        self._connect()
+        self.assertEqual(self._active(), [1] * 8)
+        self._post({'dp_deinit_mask': 0xFF, 'apply': True})
+        time.sleep(0.6)
+        self.assertEqual(set(self._states()), {'Deactivated'},
+                         'the Data Path never came down')
+        # One Apply carrying both the new Application and the release.
+        self._post({'app_select': [2] * 8, 'dp_deinit_mask': 0x00,
+                    'apply': True})
+        time.sleep(1.6)
+        self.assertEqual(self._active(), [2] * 8,
+                         'the Data Path came back up on the Application it '
+                         'was running before')
+        self.assertEqual(set(self._states()), {'Activated'})
+
+    def test_the_staged_set_is_written_before_the_hold_is_released(self):
+        """Pinning the order, because the symptom is silent: the module
+        reports ConfigSuccess either way, for whichever configuration it had
+        when the path restarted."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        body = src[src.index('        for bank in range(banks):\n'
+                             '            _set_page(0x10, bank)'):]
+        body = body[:body.index('        applied = []')]
+        self.assertLess(body.index('REG_APP_SELECT'), body.index('REG_DP_DEINIT'),
+                        'DPDeinit is written before the Staged Control Set, so '
+                        'releasing a hold restarts the path on the old '
+                        'Application')
+
+    def test_the_polarity_half_of_the_staged_set_goes_first_too(self):
+        """Everything the restart commissions has to be in place before the
+        release, not just the Application."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        body = src[src.index('        for bank in range(banks):\n'
+                             '            _set_page(0x10, bank)'):]
+        body = body[:body.index('        applied = []')]
+        for reg in ('REG_TX_POL_FLIP', 'REG_RX_POL_FLIP'):
+            self.assertLess(body.index(reg), body.index('REG_DP_DEINIT'),
+                            '%s is written after the hold is released' % reg)
+
+    def test_a_release_that_changes_nothing_still_brings_the_path_back(self):
+        """The reorder must not cost the plain case: hold, then release with
+        the same Application staged."""
+        self._connect()
+        self._post({'dp_deinit_mask': 0xFF, 'apply': True})
+        time.sleep(0.6)
+        self._post({'dp_deinit_mask': 0x00, 'apply': True})
+        time.sleep(1.6)
+        self.assertEqual(set(self._states()), {'Activated'},
+                         'a released Data Path never came back')
+        self.assertEqual(self._active(), [1] * 8)
+
+    def test_taking_the_path_down_still_works_from_the_same_request(self):
+        """The other direction: staging first must not stop DPDeinit taking
+        effect when it is set rather than released.
+
+        This needs a module carrying two Data Paths. On one whose Application
+        spans all eight host lanes, holding lanes 5-8 asks for the whole path
+        (Table 8-78), and every lane going down is the right answer."""
+        self._connect('mock_fr4x2')
+        self._post({'app_select': [1, 1, 1, 1, 2, 2, 2, 2],
+                    'dp_deinit_mask': 0xF0, 'apply': True})
+        time.sleep(0.6)
+        states = self._states()
+        self.assertEqual(states[4:], ['Deactivated'] * 4,
+                         'the lanes named in DPDeinit stayed up')
+        self.assertEqual(states[:4], ['Activated'] * 4,
+                         'lanes nobody asked to hold went down')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
