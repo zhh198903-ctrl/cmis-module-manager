@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.19.0<br>
+      <b>版本</b>　2.20.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.19.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.19.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.20.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.20.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1836,6 +1836,36 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     hot 重配置。</span>
   </div>
 
+  <h3>Bank Broadcast —— 开了之后“写一个 Bank”就不存在了</h3>
+  <p><code>Lower 0x1A[7]</code> BankBroadcastEnable（Table 8-11，广告位
+     <code>01h:156[7]</code>）。置 1 之后，向<b>任何一个
+     Bank</b> 的控制寄存器写入，都会被模块
+     当作<b>对所有 Bank 的同时写入</b>执行。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>这会把逐 Bank 不同的配置静静拍平。</b>
+    多 Bank 模块上，工具本来是按 Bank 分别写入
+    不同的掩码字节的；开了广播之后，
+    每一次写都落到全部 Bank，<b>最后一个 Bank
+    的值会盖掉前面全部</b>。例子：在 24 通道
+    模块上请求关掉 lane 1 / 10 / 19，开广播后实际
+    关掉的是 lane 3 / 11 / 19——而接口还回了成功。<br>
+    现在遇到这种情况工具会<b>直接拒绝</b>并
+    告诉你是哪一项逐 Bank 不一致，而不是写下去
+    再报成功；原来的配置不会被动。
+    所有 Bank 取<b>同一个值</b>时照常写入（那本来
+    就是广播能表达的）。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>这个位在所有模块上都是可读写的，
+    但<b>只有广告了才真的生效</b>；未广告的
+    模块上写它只会让界面看起来“开了”。
+    因此工具对未广告的模块拒绝这个写入。
+    内置模拟模块里只有 <code>mock_24lane</code>（3 个 Bank）
+    广告它——单 Bank 模块根本无处可广播。</span>
+  </div>
+
   <h3>9.4 Output Controls（输出控制）</h3>
   <div class="table-wrap">
     <table>
@@ -2333,7 +2363,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.19.0<br>
+    CMIS Module Manager 操作手册 v2.20.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

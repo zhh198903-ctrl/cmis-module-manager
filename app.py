@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.19.0'
+__version__ = '2.20.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -238,6 +238,41 @@ def _masks_per_bank(value, banks: int) -> list:
     else:
         vals = [int(value) & 0xFF]
     return (vals + [0] * banks)[:banks]
+
+
+def _bank_broadcast_active() -> bool:
+    """Lower 0x1A.7, and only where 01h:156.7 advertises the control.
+
+    The bit is RW on every module but is only acted on where it is
+    advertised, so a module that does not advertise it cannot be in this
+    state however the byte happens to read.
+    """
+    if not (_state.get('caps') or {}).get('controls', {}).get('bank_broadcast'):
+        return False
+    try:
+        return bool((_read_lower(0x1A, 1)[0] >> 7) & 1)
+    except Exception:
+        return False
+
+
+def _refuse_broadcast_divergence(named: dict):
+    """Table 8-11: with bank broadcast enabled, a write to a control register
+    in any bank of a lane-banked page is executed in every bank. Per-bank
+    values that differ cannot be expressed that way - writing them in turn
+    leaves the last bank's value on every lane, which is not what was asked
+    for, and the write reports success.
+    """
+    if (_state['lanes'] + 7) // 8 < 2 or not _bank_broadcast_active():
+        return None
+    for name, values in named.items():
+        vals = list(values)
+        if len(set(vals)) > 1:
+            return _err(
+                'Bank broadcast is enabled (Lower 0x1A.7), so a write to any '
+                'bank lands in all of them. %s differs between banks (%s) and '
+                'cannot be written while it is on - clear bank broadcast '
+                'first, or send one value for every bank' % (name, vals), 400)
+    return None
 
 
 def _read_grid_ranges(with_300: bool) -> bytes:
@@ -1019,6 +1054,14 @@ def api_module_control_set():
         if bad:
             return bad
         action = body.get('action', '')
+        # 01h:156.7 advertises the control (Table 8-11). Setting a bit the
+        # module does not implement asks for a write policy it will not apply
+        # while telling the operator it is on.
+        if body.get('bank_broadcast') and not (
+                _state.get('caps') or {}).get('controls', {}).get(
+                    'bank_broadcast'):
+            return _err('This module does not advertise bank broadcast '
+                        '(01h:156.7), so the control has no effect', 400)
 
         # Byte 0x1A packs unrelated controls together, so read it first and
         # change only the requested bits. Rebuilding the byte from scratch used
@@ -1172,6 +1215,17 @@ def api_datapath_set():
         ))
         if refused:
             return refused
+
+        bad = _refuse_broadcast_divergence({
+            'tx_disable_mask': tx_disable,
+            'tx_polarity_flip_mask': tx_pol,
+            'rx_polarity_flip_mask': rx_pol,
+            'dp_deinit_mask': dp_deinit,
+            'app_select': [tuple(app_select[b * 8:b * 8 + 8])
+                           for b in range((_state['lanes'] + 7) // 8)],
+        })
+        if bad:
+            return bad
 
         # "All lanes of a Data Path must have the same value" (Table 8-78), so
         # a request that deinitialises one lane takes its whole Data Path down
@@ -1477,6 +1531,13 @@ def api_squelch_set():
         ))
         if refused:
             return refused
+
+        bad = _refuse_broadcast_divergence({
+            'tx_squelch_disable': tx_sq, 'tx_squelch_force': tx_sf,
+            'rx_output_disable': rx_od, 'rx_squelch_disable': rx_sq,
+        })
+        if bad:
+            return bad
 
         for b in range(banks):
             _set_page(0x10, b)

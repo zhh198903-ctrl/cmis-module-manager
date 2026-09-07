@@ -383,6 +383,9 @@ _XD24 = {
     'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km
     'cmis_rev':            0x54,
     'lanes':               24,               # three banks; 01h:142.1-0 = 11b
+    # 01h:156.7 BankBroadcastSupported. Only a lane-banked module has anything
+    # to broadcast to, and this is the widest one here.
+    'controls_156':        0x87,
     'default_polarity_tx': 0b00001001,       # lanes 1 and 4 wired inverted
     'default_polarity_rx': 0b00000100,       # lane 3 wired inverted
     'pages_ext_173':       0b10000000,       # Page 0Ch
@@ -1206,6 +1209,32 @@ class MockBackend(I2CInterface):
                 (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
                 | (0x0C << shift))          # ConfigInProgress
 
+    def _write_targets(self):
+        """Where an upper-memory write lands: the selected bank, or every bank
+        of a lane-banked page when bank broadcast is on.
+
+        Table 8-11: with BankBroadcastEnable set, a write to a control
+        register in any bank "is executed as a bank broadcast - a virtually
+        simultaneous and atomic WRITE of the same value to the same register
+        and the same page, in all supported banks", and a read from any bank
+        must then return what was broadcast.
+        """
+        page = self._current_page
+        selected = ((page, self._current_bank)
+                    if (page, self._current_bank) in self._registers else page)
+        if not self._bank_broadcast():
+            return [self._registers.setdefault(selected, {})]
+        targets = self._page_dicts(page)
+        return targets or [self._registers.setdefault(selected, {})]
+
+    def _bank_broadcast(self) -> bool:
+        """Lower 0x1A.7, and only where 01h:156.7 advertises it - a module
+        that does not advertise the control does not act on the bit."""
+        p01 = self._registers.get(0x01, {})
+        if not ((p01.get(0x9C, 0) >> 7) & 1):
+            return False
+        return bool((self._registers.get(None, {}).get(0x1A, 0) >> 7) & 1)
+
     def _page_dicts(self, page: int):
         """Every bank's copy of one page, so banked lanes do not go stale."""
         return [d for key, d in self._registers.items()
@@ -1746,12 +1775,9 @@ class MockBackend(I2CInterface):
             if register <= 0x7F <= register + len(data) - 1:
                 self._current_page = data[0x7F - register]
         else:
-            key = ((self._current_page, self._current_bank)
-                   if (self._current_page, self._current_bank) in self._registers
-                   else self._current_page)
-            page_dict = self._registers.setdefault(key, {})
-            for i, b in enumerate(data):
-                page_dict[register + i] = b
+            for page_dict in self._write_targets():
+                for i, b in enumerate(data):
+                    page_dict[register + i] = b
 
 
 # ============================================================================

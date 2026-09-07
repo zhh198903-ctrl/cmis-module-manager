@@ -8002,6 +8002,162 @@ class TestWhichDiagnosticsAModuleActuallyReports(CMISTestCase):
                          'a panel decides on something other than the flag')
 
 
+class TestBankBroadcastChangesWhatAWriteMeans(CMISTestCase):
+    """Table 8-11: with BankBroadcastEnable (Lower 0x1A.7) set, a write to a
+    control register in any bank of a lane-banked page "is executed as a bank
+    broadcast - a virtually simultaneous and atomic WRITE of the same value to
+    the same register and the same page, in all supported banks".
+
+    The tool writes a different mask byte to each bank in turn. Under
+    broadcast every one of those writes lands everywhere, so the last bank's
+    value ends up on every lane - a configuration nobody asked for, reported
+    as a success. No profile advertised the control, so this could not happen
+    and the write path had never been driven in that state."""
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body, code=200):
+        rv = self.client.post(path, data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def _tx_off(self):
+        lanes = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['lanes']
+        return [l['lane'] for l in lanes if not l['tx_enable']]
+
+    def _enable(self):
+        self._post('/api/module/control', {'bank_broadcast': True})
+
+    def _poke_lower_1a(self, value):
+        # Lower memory is visible whatever page is selected, so this needs no
+        # page select and cannot desynchronise the API's page cache.
+        _state['backend'].write_bytes(0x1A, bytes([value]))
+
+    def test_some_profile_advertises_it(self):
+        """Only a lane-banked module has anywhere to broadcast to, so the
+        control means nothing on the eight-lane profiles - but with none of
+        them advertising it, the whole path was unreachable."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        advertising = []
+        for name in sorted(n for n in i2c_interface._BACKENDS
+                           if n.startswith('mock')):
+            self._connect(name)
+            caps = self.assertOk(
+                self.client.get('/api/module/capabilities'))['data']
+            if caps['controls']['bank_broadcast']:
+                advertising.append(name)
+        self.assertTrue(advertising,
+                        'no profile advertises bank broadcast, so nothing '
+                        'exercises what it does to a banked write')
+
+    def test_an_unadvertised_module_refuses_the_control(self):
+        self._connect('mock_dr8')
+        body = self._post('/api/module/control', {'bank_broadcast': True}, 400)
+        self.assertIn('01h:156.7', body['message'])
+
+    def test_the_mock_broadcasts_when_it_is_on(self):
+        """Written behind the API's back, so what is tested is the module's
+        behaviour and not the guard in front of it."""
+        self._connect()
+        self._enable()
+        import cmis_registers as c
+        app_module._set_page(0x10, 1)
+        _state['backend'].write_bytes(c.REG_TX_OUTPUT_DIS[1], bytes([0x20]))
+        app_module._invalidate_page()
+        lanes = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes if not l['tx_enable']],
+                         [6, 14, 22],
+                         'a write to one bank did not reach the others')
+
+    def test_it_does_not_broadcast_when_it_is_off(self):
+        self._connect()
+        import cmis_registers as c
+        app_module._set_page(0x10, 1)
+        _state['backend'].write_bytes(c.REG_TX_OUTPUT_DIS[1], bytes([0x20]))
+        app_module._invalidate_page()
+        self.assertEqual(self._tx_off(), [14])
+
+    def test_a_module_that_does_not_advertise_it_ignores_the_bit(self):
+        """The bit is RW everywhere; only the advertisement makes it mean
+        something. Setting it on a module without the capability must not
+        change how writes land."""
+        self._connect('mock_1600g_16lane')
+        self._poke_lower_1a(0x80)
+        import cmis_registers as c
+        app_module._set_page(0x10, 1)
+        _state['backend'].write_bytes(c.REG_TX_OUTPUT_DIS[1], bytes([0x20]))
+        app_module._invalidate_page()
+        self.assertEqual(self._tx_off(), [14])
+
+    def test_differing_masks_are_refused_rather_than_flattened(self):
+        self._connect()
+        self._post('/api/module/datapath', {'tx_disable_mask': [1, 2, 4]})
+        self.assertEqual(self._tx_off(), [1, 10, 19])
+        self._enable()
+        body = self._post('/api/module/datapath',
+                          {'tx_disable_mask': [1, 2, 4]}, 400)
+        self.assertIn('Lower 0x1A.7', body['message'])
+        self.assertIn('tx_disable_mask', body['message'])
+        self.assertEqual(self._tx_off(), [1, 10, 19],
+                         'the refused write changed the configuration anyway')
+
+    def test_one_value_for_every_bank_is_still_accepted(self):
+        """A guard that refused every banked write would pass the test above
+        and make the module unusable while broadcast is on."""
+        self._connect()
+        self._enable()
+        self._post('/api/module/datapath', {'tx_disable_mask': [8, 8, 8]})
+        self.assertEqual(self._tx_off(), [4, 12, 20])
+
+    def test_the_squelch_masks_are_guarded_too(self):
+        """They are written by their own handler, with their own per-bank
+        loop, so the DataPath guard says nothing about them."""
+        self._connect()
+        self._enable()
+        body = self._post('/api/module/squelch',
+                          {'tx_squelch_force': [1, 2, 3]}, 400)
+        self.assertIn('tx_squelch_force', body['message'])
+
+    def test_an_eight_lane_module_is_never_blocked(self):
+        """A single-bank module keeps working with broadcast on.
+
+        One bank cannot diverge from itself: every per-bank list has a single
+        element, so the divergence check can never fire whether or not the
+        bank count is looked at first. The early exit on bank count is
+        therefore an expression of intent rather than a behavioural guard, and
+        no test can distinguish the two - what this pins is the outcome, that
+        such a module is not refused.
+
+        No shipped eight-lane profile advertises the control, since broadcast
+        has nowhere to go on one bank, so the advertisement is forced here.
+        """
+        self._connect('mock_dr8')
+        _state['caps']['controls']['bank_broadcast'] = True
+        self._poke_lower_1a(0x80)
+        self._post('/api/module/datapath', {'tx_disable_mask': 0x05})
+        self.assertEqual(self._tx_off(), [1, 3])
+
+    def test_the_guard_needs_the_advertisement_not_just_the_bit(self):
+        """The bit reads back set on any module. If the guard believed it
+        without the advertisement it would refuse perfectly legal per-bank
+        writes on every banked module whose byte happens to have bit 7 set."""
+        self._connect('mock_1600g_16lane')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['controls']['bank_broadcast'], False)
+        self._poke_lower_1a(0x80)
+        self._post('/api/module/datapath', {'tx_disable_mask': [1, 2]})
+        self.assertEqual(self._tx_off(), [1, 10])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
