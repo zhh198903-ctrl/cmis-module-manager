@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.26.0<br>
+      <b>版本</b>　2.27.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.26.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.26.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.27.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.27.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1551,6 +1551,25 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     现在下拉框第一项就是 <b>— unused (AppSel 0) —</b>，
     模块运行中的 0 也能被正确选中；提示文字一律写「no Application」，
     不再写成容易误读的「App 0」。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>换应用之前要先把数据通道停下来。</b>
+    规范 6.2.4.3 把这条写了两遍：把一条<b>正在用的 lane 释放成“未使用”</b>，
+    以及<b>改变一条数据通道的宽度</b>（换成通道数不同的 Application），
+    都只能在 DPDeactivated 状态下做。做不到就是
+    <code>ConfigRejectedLanesInUse</code>（6h，“有 lane 不在 DPDeactivated”）。<br>
+    <b>本工具内置的八个演示模块，声明的两个 Application 通道数都不一样</b>
+    （8 lane 和 4 lane），所以在这些模块上<b>任何一次换应用都要先停通道</b>。
+    正确顺序是：<br>
+    1）勾上要改的那条通道的 <b>DP Deinit</b>，按 <b>Apply</b>，等它显示 Deactivated；<br>
+    2）选好新的 Application，<b>取消</b> DP Deinit 勾选，再按一次 <b>Apply</b>。<br>
+    只是<b>重新下发同一个 Application</b>（re-commission）不受这条限制，
+    把<b>本来就空闲</b>的 lane 编进通道也不受限制——空闲 lane 本来就是 Deactivated。<br>
+    以前演示模块不检查这个前提，一律回 ConfigSuccess，
+    所以这个拒绝码<b>从来没在界面上出现过</b>，
+    工具也就从没提示过这个顺序。现在被拒时提示会直接写出该勾哪个框、按几次 Apply。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2507,7 +2526,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.26.0<br>
+    CMIS Module Manager 操作手册 v2.27.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

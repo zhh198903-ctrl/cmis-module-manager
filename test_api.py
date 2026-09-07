@@ -50,6 +50,34 @@ def poke(page, addr, value):
     app_module._invalidate_page()
 
 
+def deactivated(client, lanes=0xFF):
+    """Stop the Data Paths so a reconfiguration is legal.
+
+    6.2.4.3 allows freeing a lane, or moving a Data Path to an Application of
+    a different width, "only while in the DPDeactivated state". Every shipped
+    profile advertises Applications of differing widths, so on these modules
+    any change of Application needs this first - which is why so many tests
+    below take the path down before they reconfigure it. Doing it in one Apply
+    earns ConfigRejectedLanesInUse, exactly as a real module answers.
+    """
+    rv = client.post('/api/module/datapath',
+                     data=json.dumps({'dp_deinit_mask': lanes, 'apply': True}),
+                     content_type='application/json')
+    assert rv.status_code == 200, rv.data
+    time.sleep(0.5)
+
+
+def reconfigure(client, app_select, **body):
+    """The two-step procedure: stop the path, then stage the new Application
+    and release the hold in one Apply."""
+    deactivated(client)
+    body = dict(body, app_select=app_select, dp_deinit_mask=0x00, apply=True)
+    rv = client.post('/api/module/datapath', data=json.dumps(body),
+                     content_type='application/json')
+    assert rv.status_code == 200, rv.data
+    return rv
+
+
 def connect_mock(client):
     """Helper: connect to mock backend."""
     rv = client.post('/api/connect',
@@ -1954,10 +1982,8 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
         # App 2 is four lanes wide, so lanes 1-4 are a Data Path in their own
         # right and a trigger naming just them is a whole command. Half of the
         # eight-lane App 1 would be ConfigRejectedPartialDataPath instead.
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
-            content_type='application/json'))
+        # Getting there is a width change, so the path stops first (6.2.4.3).
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.2)
         self.client.get('/api/module/flags')
         self.assertOk(self.client.post('/api/module/flags/clear'))
@@ -1976,10 +2002,7 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
         the only way to tell - with the same value staged everywhere,
         committing them anyway looks identical."""
         self._connect()
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
-            content_type='application/json'))
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.2)
         # Free lanes 5-8 in the staged set without applying it.
         self.assertOk(self.client.post(
@@ -1998,7 +2021,12 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
         """Same again for the status: a rejected lane must not be quietly
         marked successful by an Apply aimed at other lanes."""
         self._connect()
-        # Every lane refused first, so the status to preserve differs from
+        # Reach the four-lane Application first, so that re-applying it later
+        # is neither a width change nor a lane being freed - the partial
+        # trigger has to be the only thing this test varies.
+        reconfigure(self.client, [2] * 8)
+        time.sleep(1.2)
+        # Every lane refused next, so the status to preserve differs from
         # what a fresh validation would produce. With the same staged set
         # everywhere, re-validating the unselected lanes lands on the value
         # they already had and overwriting them looks identical.
@@ -2029,10 +2057,7 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
     def test_unselected_lanes_keep_their_config_status(self):
         self._connect()
         backend = _state['backend']
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
-            content_type='application/json'))
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.2)
         poke(0x10, 0x8F, 0x0F)
         time.sleep(1.2)
@@ -3076,10 +3101,7 @@ class TestAConfigurationTheModuleRefused(CMISTestCase):
                 '/api/connect',
                 data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
                 content_type='application/json'))
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': sel, 'apply': True}),
-            content_type='application/json'))
+        reconfigure(self.client, sel)
         time.sleep(1.0)
         return (self.assertOk(self.client.get('/api/module/monitoring'))['data'],
                 self.assertOk(self.client.get('/api/module/datapath'))['data'])
@@ -3105,10 +3127,7 @@ class TestAConfigurationTheModuleRefused(CMISTestCase):
 
     def test_a_refused_lane_keeps_running_what_it_had(self):
         self.connect()
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
-            content_type='application/json'))
+        reconfigure(self.client, [1] * 8)
         time.sleep(1.0)
         mon, dp = self._apply([2, 2, 2, 2, 14, 14, 14, 14], connect=False)
 
@@ -3124,9 +3143,17 @@ class TestAConfigurationTheModuleRefused(CMISTestCase):
         """Execution is skipped, so the path never goes through DPInit - and
         DPStateChangedFlag is the evidence either way."""
         self.connect()
+        # Stopping the path is itself a state change, so it has to happen
+        # before the flags are cleared or every lane looks like it bounced.
+        deactivated(self.client)
         self.client.get('/api/module/flags')          # start from a clean slate
         self.assertOk(self.client.post('/api/module/flags/clear'))
-        self._apply([2, 2, 2, 2, 14, 14, 14, 14], connect=False)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2, 2, 2, 2, 14, 14, 14, 14],
+                             'dp_deinit_mask': 0x00, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.0)
         lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
         bounced = [l['lane'] for l in lanes
                    if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
@@ -3156,9 +3183,13 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
     own clock - not when the host happens to read."""
 
     def _stage_and_apply(self, sel):
+        # Carries the release, so it works from a stopped Data Path as well as
+        # a running one - these tests are about when the module acts, not
+        # about what it will accept.
         return self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': sel, 'apply': True}),
+            data=json.dumps({'app_select': sel, 'dp_deinit_mask': 0x00,
+                             'apply': True}),
             content_type='application/json'))
 
     def _active(self):
@@ -3169,21 +3200,21 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         """The state machine used to advance only inside read_bytes, so two
         Applies with no read between them lost the first one outright."""
         self.connect()
-        self._stage_and_apply([2] * 8)
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.0)                       # deliberately no read here
-        self._stage_and_apply([0, 0, 0, 0, 14, 14, 14, 14])
+        self._stage_and_apply([14] * 8)       # refused, so it changes nothing
         time.sleep(1.0)
-        self.assertEqual(self._active(), [0, 0, 0, 0, 2, 2, 2, 2],
+        self.assertEqual(self._active(), [2] * 8,
                          'the first Apply never reached its result step')
 
     def test_an_intervening_read_changes_nothing(self):
         self.connect()
-        self._stage_and_apply([2] * 8)
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.0)
         self.client.get('/api/module/datapath')
-        self._stage_and_apply([0, 0, 0, 0, 14, 14, 14, 14])
+        self._stage_and_apply([14] * 8)
         time.sleep(1.0)
-        self.assertEqual(self._active(), [0, 0, 0, 0, 2, 2, 2, 2],
+        self.assertEqual(self._active(), [2] * 8,
                          'the outcome depends on whether anyone was looking')
 
     def test_an_apply_during_one_already_running_is_ignored(self):
@@ -3191,6 +3222,9 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         module "aborts all further command handling steps for the relevant
         Data Path silently (without feedback)"."""
         self.connect()
+        # From DPDeactivated both commands would be accepted on their own, so
+        # what is being tested is the readiness check and not the width rule.
+        deactivated(self.client)
         self._stage_and_apply([2] * 8)
         self._stage_and_apply([1] * 8)        # arrives while still in progress
         time.sleep(1.2)
@@ -3201,7 +3235,7 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         """Committing whatever 10h holds at the completion step let a late
         Apply install a configuration nobody had validated."""
         self.connect()
-        self._stage_and_apply([2] * 8)
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.0)
         # Stage something invalid but do not apply it.
         self.assertOk(self.client.post(
@@ -7267,30 +7301,36 @@ class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
         commit the same values again and leave no trace of having run.
         """
         self._connect('mock_dr8')
-        self._running()
+        # Park two lanes free, so the staged change is one ApplyImmediate is
+        # allowed to commit on a running path: bringing unused lanes into a
+        # Data Path is neither a width change nor a lane being freed.
+        reconfigure(self.client, [2, 2, 2, 2, 0, 0, 0, 0])
+        time.sleep(1.2)
+        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0])
         self._post({'app_select': [2] * 8})       # staged, deliberately not applied
-        self.assertEqual(self._active(), [1] * 8)
         poke(0x10, 0x90, 0xFF)
         time.sleep(0.7)
-        self.assertEqual(self._active(), [1] * 8,
+        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0],
                          'the module committed a configuration through a '
                          'trigger it advertises that it ignores')
-        self.assertEqual({l['datapath_state'] for l in self._lanes()},
-                         {'Activated'})
 
     def test_the_same_write_is_honoured_where_it_is_advertised(self):
         """Otherwise the test above would pass on a mock that ignores every
-        write to 10h:144, advertised or not."""
-        self._connect('mock_coherent')
-        self._running()
-        # App 2 is the 4-lane Application here, so it lives on lanes 1-4 with
-        # the rest marked unused - eight lanes of it is not an allocation the
-        # descriptor offers.
-        self._post({'app_select': [2, 2, 2, 2, 0, 0, 0, 0]})
-        self.assertEqual(self._active(), [1] * 8)
+        write to 10h:144, advertised or not.
+
+        Same module and same staged change as above - only Lower 02h differs,
+        so the advertisement is the single variable."""
+        self._connect('mock_dr8')
+        reconfigure(self.client, [2, 2, 2, 2, 0, 0, 0, 0])
+        time.sleep(1.2)
+        self._poke_lower_02(0x00)                 # legacy default: both supported
+        self._post({'app_select': [2] * 8})
+        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0])
         poke(0x10, 0x90, 0xFF)
         time.sleep(0.7)
-        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0])
+        self.assertEqual(self._active(), [2] * 8,
+                         'a module advertising hot reconfiguration ignored '
+                         'the trigger anyway')
 
     def test_lower_02h_decodes_all_four_fields(self):
         self._connect('mock_1600g_16lane')
@@ -8517,10 +8557,12 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
 
-    def _stage(self, sel, apply_=True):
+    def _stage(self, sel, apply_=True, release=False):
+        body = {'app_select': sel, 'apply': apply_}
+        if release:
+            body['dp_deinit_mask'] = 0x00
         self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': sel, 'apply': apply_}),
+            '/api/module/datapath', data=json.dumps(body),
             content_type='application/json'))
 
     def _status(self):
@@ -8569,7 +8611,8 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
         completely allocated on lanes supported for that Application". App 2
         on this profile needs four host lanes; two is not that Application."""
         self._connect()
-        self._stage([2, 2, 0, 0, 0, 0, 0, 0])
+        deactivated(self.client)          # freeing lanes 3-8 needs the path down
+        self._stage([2, 2, 0, 0, 0, 0, 0, 0], release=True)
         time.sleep(1.0)
         got = self._status()
         for lane in (0, 1):
@@ -8591,7 +8634,8 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
         self.assertEqual(apps[1]['host_lane_assign_mask'], 0x11,
                          'this test needs an Application with restricted '
                          'starting lanes')
-        self._stage([0, 2, 2, 2, 2, 0, 0, 0])
+        deactivated(self.client)
+        self._stage([0, 2, 2, 2, 2, 0, 0, 0], release=True)
         time.sleep(1.0)
         got = self._status()
         for lane in range(1, 5):
@@ -8605,7 +8649,8 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
         four-lane Application is two Data Paths, and refusing it would be a
         stricter module than CMIS describes."""
         self._connect()
-        self._stage([2] * 8)
+        deactivated(self.client)          # App 1 is eight lanes wide; App 2 is four
+        self._stage([2] * 8, release=True)
         time.sleep(1.0)
         for lane, (name, code, rejected) in enumerate(self._status()):
             self.assertEqual((name, code, rejected),
@@ -8656,9 +8701,9 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
         """The host-side rounding and the module-side rule now meet: changing
         one Data Path of two must still leave both whole."""
         self._connect()
-        self._stage([2] * 8)
+        reconfigure(self.client, [2] * 8)
         time.sleep(1.0)
-        self._stage([2, 2, 2, 2, 0, 0, 0, 0])
+        reconfigure(self.client, [2, 2, 2, 2, 0, 0, 0, 0])
         time.sleep(1.0)
         for lane, (name, code, _r) in enumerate(self._status()):
             self.assertEqual(code, 1,
@@ -8776,10 +8821,9 @@ class TestALaneCarryingNoApplication(CMISTestCase):
             content_type='application/json'))
 
     def _apply(self, sel):
-        self.assertOk(self.client.post(
-            '/api/module/datapath',
-            data=json.dumps({'app_select': sel, 'apply': True}),
-            content_type='application/json'))
+        # Freeing a lane is allowed only from DPDeactivated (6.2.4.3), so this
+        # is the two-step procedure, not a single Apply.
+        reconfigure(self.client, sel)
         time.sleep(1.3)
 
     def _lanes(self):
@@ -8991,6 +9035,160 @@ class TestReleasingADeinitHoldCommissionsWhatWasStaged(CMISTestCase):
                          'the lanes named in DPDeinit stayed up')
         self.assertEqual(states[:4], ['Activated'] * 4,
                          'lanes nobody asked to hold went down')
+
+
+
+class TestChangingAPathThatIsStillRunning(CMISTestCase):
+    """6.2.4.3 states the precondition twice: a lane in use "can be
+    reconfigured to become unused only when the Data Path is in the
+    DPDeactivated state", and "the host can change the width of a Data Path
+    only while in the DPDeactivated state ... the host must always transition
+    an existing Data Path to DPDeactivated before selecting an Application
+    with a different lane count". Table 8-101 gives that refusal its own code:
+    6h ConfigRejectedLanesInUse, "some lanes not in DPDeactivated".
+
+    The mock never checked, so the tool reported ConfigSuccess for changes a
+    real module refuses, and 6h had never been produced. Every shipped profile
+    advertises Applications of differing widths, which makes this the rule an
+    operator meets first - on these modules any change of Application needs
+    the Data Path stopped, and nothing said so."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+
+    def _status(self):
+        return [(l['config_status'], l['config_status_code'])
+                for l in self.assertOk(
+                    self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _active(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['active_app_select']
+
+    # ---- the two changes the rule is about -------------------------------
+
+    def test_changing_the_width_of_a_running_path_is_refused(self):
+        self._connect()
+        self.assertEqual(self._active(), [1] * 8, 'App 1 is the eight-lane one')
+        self._post({'app_select': [2] * 8, 'apply': True})
+        time.sleep(1.2)
+        for lane, (name, code) in enumerate(self._status()):
+            self.assertEqual((name, code), ('ConfigRejectedLanesInUse', 6),
+                             'lane %d changed width on a running Data Path'
+                             % (lane + 1))
+
+    def test_freeing_a_lane_that_is_in_use_is_refused(self):
+        """Isolated from the width rule: the module runs two four-lane Data
+        Paths, and only the second is asked to give its lanes up. Freeing
+        lanes 5-8 of the eight-lane Application instead would leave lanes 1-4
+        holding half of it, which is ConfigRejectedInvalidDataPath before the
+        state is ever considered."""
+        self._connect()
+        reconfigure(self.client, [2] * 8)
+        time.sleep(1.3)
+        self._post({'app_select': [2, 2, 2, 2, 0, 0, 0, 0], 'apply': True})
+        time.sleep(1.3)
+        got = self._status()
+        for lane in range(4, 8):
+            self.assertEqual(got[lane], ('ConfigRejectedLanesInUse', 6),
+                             'lane %d was freed while its Data Path was up, '
+                             'and the module said %s' % (lane + 1, got[lane][0]))
+        for lane in range(4):
+            self.assertEqual(got[lane][1], 1,
+                             'lane %d was refused for a change asked of the '
+                             'other Data Path' % (lane + 1))
+
+    def test_a_refused_change_leaves_the_module_running_what_it_had(self):
+        """Validation failing means execution is skipped, so the refusal must
+        cost nothing."""
+        self._connect()
+        self._post({'app_select': [2] * 8, 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual(self._active(), [1] * 8,
+                         'a refused change was commissioned anyway')
+        self.assertEqual({l['datapath_state'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']},
+            {'Activated'}, 'a refused change restarted the Data Path')
+
+    # ---- and what is still allowed ---------------------------------------
+
+    def test_the_same_change_is_accepted_once_the_path_is_down(self):
+        """A rule that refused everything would pass the tests above."""
+        self._connect()
+        deactivated(self.client)
+        self._post({'app_select': [2] * 8, 'dp_deinit_mask': 0x00,
+                    'apply': True})
+        time.sleep(1.6)
+        for lane, (name, code) in enumerate(self._status()):
+            self.assertEqual(code, 1,
+                             'lane %d refused a change from DPDeactivated: %s'
+                             % (lane + 1, name))
+        self.assertEqual(self._active(), [2] * 8)
+
+    def test_re_commissioning_what_is_already_running_is_still_allowed(self):
+        """Table 6-3 allows ApplyDPInit on a Data Path in DPActivated - what
+        it does not allow is these two particular changes. Refusing a plain
+        re-commission would take that away."""
+        self._connect()
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        for lane, (name, code) in enumerate(self._status()):
+            self.assertEqual(code, 1,
+                             'lane %d refused to be re-commissioned on the '
+                             'Application it is already running: %s'
+                             % (lane + 1, name))
+
+    def test_provisioning_a_lane_that_is_free_needs_no_stop(self):
+        """The rule is about lanes in use. A lane carrying no Application is
+        already deactivated, so bringing it into a Data Path is not the case
+        6.2.4.3 gates."""
+        self._connect()
+        reconfigure(self.client, [2, 2, 2, 2, 0, 0, 0, 0])
+        time.sleep(1.3)
+        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0])
+        self._post({'app_select': [2] * 8, 'apply': True})
+        time.sleep(1.3)
+        for lane, (name, code) in enumerate(self._status()):
+            self.assertEqual(code, 1,
+                             'lane %d refused to be brought into service from '
+                             'free: %s' % (lane + 1, name))
+        self.assertEqual(self._active(), [2] * 8)
+
+    def test_the_staged_set_is_judged_before_the_state(self):
+        """An Application the module never advertised is wrong whatever the
+        Data Path is doing, and naming the state instead would send the
+        operator to the wrong control."""
+        self._connect()
+        self._post({'app_select': [14] * 8, 'apply': True})
+        time.sleep(1.2)
+        for lane, (name, code) in enumerate(self._status()):
+            self.assertEqual((name, code),
+                             ('ConfigRejectedInvalidAppSel', 3),
+                             'lane %d was told about its state when the '
+                             'AppSel code was the problem' % (lane + 1))
+
+    # ---- what the interface says about it --------------------------------
+
+    def test_the_reason_names_the_control_that_fixes_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        table = js[js.index('const _CFG_WHY = {'):]
+        table = table[:table.index(chr(10) + '};')]
+        entry = table[table.index('0x6:'):table.index('0x7:')]
+        self.assertIn('DP Deinit', entry,
+                      'the remedy does not name the control that performs it')
+        self.assertIn('Apply', entry,
+                      'nothing says the change takes two Applies')
 
 
 if __name__ == '__main__':

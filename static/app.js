@@ -1288,8 +1288,9 @@ const _CFG_WHY = {
   0x5: ['the signal integrity settings staged with it are not valid',
         'check the equalisation and amplitude controls on these lanes'],
   0x6: ['some lanes of this Data Path are not in DPDeactivated',
-        'take the Data Path down before changing its width or freeing '
-        + 'its lanes'],
+        'tick DP Deinit for those lanes and press Apply, then make the '
+        + 'change and press Apply again - a Data Path can only change '
+        + 'width, or give up a lane, while it is stopped'],
   0x7: ['the Apply named only some lanes of this Data Path',
         'trigger every lane of the path, or use ApplyImmediate if the '
         + 'module supports hot reconfiguration'],

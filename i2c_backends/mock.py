@@ -1745,8 +1745,8 @@ class MockBackend(I2CInterface):
         it is not a valid allocation at all. Lanes staged AppSel 0 are unused
         and belong to no Data Path.
 
-        Returns (lanes, code) pairs where code is the Table 8-101 result the
-        group has earned from validation alone.
+        Returns (lanes, code, appsel) where code is the Table 8-101 result
+        the group has earned from the staged set alone.
         """
         staged = [(self._registers[0x10].get(0x91 + i, 0x10) >> 4) & 0x0F
                   for i in range(8)]
@@ -1759,9 +1759,9 @@ class MockBackend(I2CInterface):
             run = list(range(i, j))
             i = j
             if code == 0:
-                groups += [([lane], 0x1) for lane in run]
+                groups += [([lane], 0x1, 0) for lane in run]
             elif code > len(apps):
-                groups.append((run, 0x3))
+                groups.append((run, 0x3, code))
             else:
                 width = (apps[code - 1][2] >> 4) & 0x0F
                 allowed = apps[code - 1][3]
@@ -1769,13 +1769,13 @@ class MockBackend(I2CInterface):
                 while k < len(run):
                     if (width and k + width <= len(run)
                             and (allowed >> run[k]) & 1):
-                        groups.append((run[k:k + width], 0x1))
+                        groups.append((run[k:k + width], 0x1, code))
                         k += width
                     else:
                         # Whatever is left over cannot start an instance here,
                         # so those are the lanes to name - not the whole run,
                         # which may hold perfectly good Data Paths ahead of it.
-                        groups.append((run[k:], 0x4))
+                        groups.append((run[k:], 0x4, code))
                         break
         return groups
 
@@ -1800,13 +1800,39 @@ class MockBackend(I2CInterface):
         the same mask. Deciding it twice is how the two answers drift apart.
         """
         result = [0x1] * 8
-        for lanes, code in self._staged_datapaths():
+        for lanes, code, appsel in self._staged_datapaths():
             if (code == 0x1 and not subset_ok
                     and not all((mask >> lane) & 1 for lane in lanes)):
                 code = 0x7
+            elif code == 0x1 and self._needs_deactivated(lanes, appsel):
+                # 6.2.4.3 states the precondition twice: a lane "can be
+                # reconfigured to become unused only when the Data Path is in
+                # the DPDeactivated state", and "the host can change the width
+                # of a Data Path only while in the DPDeactivated state".
+                # Table 6-3 still allows ApplyDPInit on a running path - what
+                # it does not allow is these two changes.
+                if any(self._dp_lane_states[lane] != 0x1 for lane in lanes):
+                    code = 0x6
             for lane in lanes:
                 result[lane] = code
         return result
+
+    def _needs_deactivated(self, lanes, appsel) -> bool:
+        """Whether this group's change is one 6.2.4.3 allows only from
+        DPDeactivated: freeing a lane that is in use, or moving a Data Path to
+        an Application of a different width."""
+        apps = self._profile['app_descriptors']
+        active = [(self._registers[0x11].get(0xCE + lane, 0x10) >> 4) & 0x0F
+                  for lane in lanes]
+        if not appsel:
+            return any(active)               # in use, and asked to become unused
+
+        def width(code):
+            return ((apps[code - 1][2] >> 4) & 0x0F
+                    if 0 < code <= len(apps) else 0)
+        # A lane that is unused today is already deactivated, so provisioning
+        # one is never the case this rule is about.
+        return any(a and width(a) != width(appsel) for a in active)
 
     def _clear_acq_counters(self, mask, base):
         """Zero the lanes named in a 60h reset mask, within the current bank.
