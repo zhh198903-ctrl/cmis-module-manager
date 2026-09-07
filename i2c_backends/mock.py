@@ -73,6 +73,7 @@ _COHERENT_800G = {
     # does not fit. 1.8 V is the secondary rail a coherent module reports.
     'aux_values':         (-38.0, 45.0, 1.8),
     'display':         '800GBASE-LR1 coherent lite (DP-16QAM, SMF 10km, 802.3dj)',
+    'config_caps_02':  0x00,  # legacy default: hot and regular both supported
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-LR1-800GQDD",
     'vendor_sn':       b"DEMO000000001   ",
@@ -126,6 +127,7 @@ _ZR_800G = {
     # does not fit. 1.8 V is the secondary rail a coherent module reports.
     'aux_values':         (-38.0, 45.0, 1.8),
     'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
+    'config_caps_02':  0x00,  # retuned under traffic, so hot reconfiguration matters
     # Biased past the 131 mA that x1 scaling can express, so 160.4-3 says x2.
     'monitors_160':    0x0F,
     'bias_thresholds_ma': (260.0, 90.0, 240.0, 100.0),
@@ -285,6 +287,7 @@ _DR8_1600G = {
 
 _XD16_1600G = {
     'display':         '1.6T 16×100G host (1.6TAUI-16 C2M, two banks)',
+    'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-1600G-XD16 ",
     'vendor_sn':       b"DEMO000000006   ",
@@ -437,7 +440,8 @@ class MockBackend(I2CInterface):
         self._apply_time = 0.0
         self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
         self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
-        self._apply_mask = 0xFF           # lanes the last ApplyDPInit selected
+        self._apply_mask = 0xFF           # lanes the last Apply selected
+        self._apply_hot = False           # ApplyImmediate rather than DPInit
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
@@ -465,7 +469,11 @@ class MockBackend(I2CInterface):
         lower = {}
         lower[0x00] = 0x1E                  # QSFP-DD CMIS
         lower[0x01] = p.get('cmis_rev', 0x53)   # 0x54 = CMIS 5.4
-        lower[0x02] = 0x00                  # MemoryModel: paged
+        # [7] MemoryModel, [6] SteppedConfigOnly, [5:2] MciMaxSpeed,
+        # [1:0] AutoCommissioning. 0x00 is the legacy default that claims
+        # every reconfiguration procedure works, which is not what an
+        # Ethernet transceiver reports.
+        lower[0x02] = p.get('config_caps_02', 0x41)
         lower[0x03] = (0b011 << 1)          # ModuleReady, interrupt deasserted
         for a in range(0x04, 0x0E): lower[a] = 0x00
         # Temperature
@@ -946,34 +954,30 @@ class MockBackend(I2CInterface):
         # DataPath state machine (ApplyDataPath)
         if self._apply_time > 0 and self._reset_time == 0:
             dt = now - self._apply_time
-            if dt < 0.2:
+            if self._apply_hot:
+                # 8.13.3.1: ApplyImmediate is Provision-and-Commission - the
+                # staged set goes straight into hardware and the Data Path
+                # never leaves the state it is in. No transient, so no
+                # DPStateChangedFlag either.
+                if dt >= 0.5:
+                    self._apply_time = 0
+                    self._commit_apply()
+            elif dt < 0.2:
                 for i in range(8):
-                    if not ((self._apply_mask >> i) & 1):
-                        continue
-                    if (self._dp_deinit_mask >> i) & 1:
-                        continue
-                    if self._config_result[i] != 0x1:
+                    if not self._apply_selects(i):
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x2
             elif dt < 0.5:
                 for i in range(8):
-                    if not ((self._apply_mask >> i) & 1):
-                        continue
-                    if (self._dp_deinit_mask >> i) & 1:
-                        continue
-                    if self._config_result[i] != 0x1:
+                    if not self._apply_selects(i):
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x5
             else:
                 for i in range(8):
-                    if not ((self._apply_mask >> i) & 1):
-                        continue        # this lane was not selected
-                    if (self._dp_deinit_mask >> i) & 1:
-                        continue        # held deinitialised by 10h:128
-                    if self._config_result[i] != 0x1:
-                        continue        # validation failed: nothing executed
+                    if not self._apply_selects(i):
+                        continue
                     if not ((self._tx_disable_mask >> i) & 1):
                         self._dp_lane_states[i] = 0x4
                     else:
@@ -983,21 +987,10 @@ class MockBackend(I2CInterface):
                     # has just happened, since the path went through DPInit and
                     # DPTxTurnOn to get here. It is a Flag, so it latches until
                     # read: this is the module's record that the path bounced.
-                    self._registers[0x11][0x86] =                         self._registers[0x11].get(0x86, 0) | (1 << i)
+                    self._registers[0x11][0x86] = (
+                        self._registers[0x11].get(0x86, 0) | (1 << i))
                 self._apply_time = 0
-                # The Active Control Set only picks up the lanes that passed
-                # validation; the rest keep running what they were running.
-                for i in range(8):
-                    if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
-                        self._registers[0x11][0xCE + i] = self._config_staged[i]
-                for lane in range(8):
-                    if not ((self._apply_mask >> lane) & 1):
-                        continue        # unselected lanes keep their status
-                    a = 0xCA + lane // 2
-                    shift = 4 if lane % 2 else 0
-                    self._registers[0x11][a] = (
-                        (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
-                        | (self._config_result[lane] << shift))
+                self._commit_apply()
 
         # Write DP states back to Page 11h:0x80-0x83
         for i in range(8):
@@ -1015,6 +1008,62 @@ class MockBackend(I2CInterface):
                 self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00
 
     # ------------------------------------------------------------------
+    def _hot_reconfig(self) -> bool:
+        """Lower 02h: whether ApplyImmediate does anything on this module."""
+        raw = self._registers[None].get(0x02, 0)
+        if not ((raw >> 6) & 1):
+            return True                      # legacy default: both supported
+        return (raw & 0x03) == 0b10
+
+    def _apply_selects(self, lane: int) -> bool:
+        if not ((self._apply_mask >> lane) & 1):
+            return False                     # this lane was not selected
+        if (self._dp_deinit_mask >> lane) & 1:
+            return False                     # held deinitialised by 10h:128
+        return self._config_result[lane] == 0x1   # validation failed: no execution
+
+    def _commit_apply(self):
+        """Step (4): copy the staged set that passed into the Active Control
+        Set and report the result. Shared by both Apply triggers - only the
+        Data Path transitions differ between them."""
+        for i in range(8):
+            if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
+                self._registers[0x11][0xCE + i] = self._config_staged[i]
+        for lane in range(8):
+            if not ((self._apply_mask >> lane) & 1):
+                continue                     # unselected lanes keep their status
+            a = 0xCA + lane // 2
+            shift = 4 if lane % 2 else 0
+            self._registers[0x11][a] = (
+                (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
+                | (self._config_result[lane] << shift))
+
+    def _start_apply(self, mask: int, hot: bool) -> None:
+        # Let an Apply already under way reach its result step first.
+        self._update_state_machine()
+        # CMIS 8.13.3 step (1): a command arriving while any relevant lane
+        # still reads ConfigInProgress is aborted "silently (without
+        # feedback)" - the module does not restage anything.
+        if self._apply_time > 0:
+            return
+        self._apply_time = time.time()
+        self._apply_hot = hot
+        self._apply_mask = mask
+        self._config_result = self._validate_staged_appsel()
+        # Validation and execution both act on the Staged Control Set as it
+        # stood when the Apply arrived. Reading 10h again at the completion
+        # step would commit whatever was staged since.
+        self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
+                               for i in range(8)]
+        for lane in range(8):
+            if not ((mask >> lane) & 1):
+                continue
+            a = 0xCA + lane // 2
+            shift = 4 if lane % 2 else 0
+            self._registers[0x11][a] = (
+                (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
+                | (0x0C << shift))          # ConfigInProgress
+
     def _page_dicts(self, page: int):
         """Every bank's copy of one page, so banked lanes do not go stale."""
         return [d for key, d in self._registers.items()
@@ -1216,29 +1265,13 @@ class MockBackend(I2CInterface):
             if 0x82 in span:                                        # OutputDisableTx
                 self._tx_disable_mask = data[0x82 - register]
             if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
-                # Let an Apply already under way reach its result step first.
-                self._update_state_machine()
-                # CMIS 8.13.3 step (1): a command arriving while any relevant
-                # lane still reads ConfigInProgress is aborted "silently
-                # (without feedback)" - the module does not restage anything.
-                if self._apply_time > 0:
-                    return data
-                self._apply_time = time.time()
-                self._apply_mask = data[0x8F - register]
-                self._config_result = self._validate_staged_appsel()
-                # Validation and execution both act on the Staged Control Set
-                # as it stood when the Apply arrived. Reading 10h again at the
-                # completion step would commit whatever was staged since.
-                self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
-                                       for i in range(8)]
-                for lane in range(8):
-                    if not ((self._apply_mask >> lane) & 1):
-                        continue
-                    a = 0xCA + lane // 2
-                    shift = 4 if lane % 2 else 0
-                    self._registers[0x11][a] = (
-                        (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
-                        | (0x0C << shift))          # ConfigInProgress
+                self._start_apply(data[0x8F - register], hot=False)
+            if 0x90 in span and data[0x90 - register]:              # ApplyImmediate
+                # "When ApplyImmediate is not supported, WRITE access to it is
+                # ignored" - silently, which is why the host has to read Lower
+                # 02h before offering the trigger at all.
+                if self._hot_reconfig():
+                    self._start_apply(data[0x90 - register], hot=True)
         elif self._current_page == 0x12:
             span = range(register, register + len(data))
             touched = {'channel': any(a in span for a in range(0x80, 0x98)),

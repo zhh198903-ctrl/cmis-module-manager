@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.13.0'
+__version__ = '2.14.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -271,6 +271,8 @@ def _discover_capabilities() -> dict:
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
+        caps['config'] = cmis.parse_config_capabilities(
+            _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         b142 = _read_upper(*cmis.REG_BANKS_SUPPORTED)[0]
         ext = _read_upper(*cmis.REG_PAGES_EXT)
         caps.update(cmis.parse_supported_pages(b142, ext))
@@ -495,6 +497,8 @@ def api_module_info():
             'module_type': cmis.module_id_name(ident_raw[0]),
             'cmis_revision': cmis.cmis_revision_str(cmis_rev_raw[0]),
             'memory_model': 'Flat' if (mem_model_raw[0] >> 7) & 1 else 'Paged',
+            'config_capabilities': cmis.parse_config_capabilities(
+                mem_model_raw[0]),
             'media_type': cmis.media_type_name(media_type_raw[0]),
             'vendor_name': cmis.parse_ascii(vendor_name_raw),
             'vendor_oui':  cmis.parse_oui(vendor_oui_raw),
@@ -1087,7 +1091,8 @@ def api_datapath_set():
         banks = (_state['lanes'] + 7) // 8
         bad = _reject_unknown(body, ('tx_disable_mask', 'tx_polarity_flip_mask',
                                      'rx_polarity_flip_mask', 'app_select',
-                                     'dp_deinit_mask', 'apply'))
+                                     'dp_deinit_mask', 'apply',
+                                     'apply_immediate'))
         if bad:
             return bad
 
@@ -1106,6 +1111,7 @@ def api_datapath_set():
         dp_deinit = _keep(body, 'dp_deinit_mask',
                           _mask_now(cmis.REG_DP_DEINIT), banks)
         apply = bool(body.get('apply', False))
+        apply_now = bool(body.get('apply_immediate', False))
 
         # What is staged right now, and how wide each Application is - both
         # are needed to work out which Data Paths this write actually touches.
@@ -1167,7 +1173,17 @@ def api_datapath_set():
         # disable and squelch take effect on the write. Only a changed staged
         # configuration needs an Apply at all.
         applied = []
-        if apply:
+        if apply and apply_now:
+            return _err('Choose one Apply trigger: ApplyDPInit re-initialises '
+                        'the Data Path, ApplyImmediate commits without it', 400)
+        if apply_now and not (_state.get('caps') or {}).get(
+                'config', {}).get('hot_reconfig', True):
+            # "the module ignores any WRITE to ApplyImmediate registers" - a
+            # silent no-op is the one outcome the operator cannot diagnose.
+            return _err('This module does not support intervention-free hot '
+                        'reconfiguration (Lower 02h), so ApplyImmediate is '
+                        'ignored - use Apply', 400)
+        if apply or apply_now:
             # Narrowing only when the change can be located. Pressing Apply on
             # an unchanged table is a request to re-commission, and quietly
             # doing nothing would take that away.
@@ -1184,13 +1200,15 @@ def api_datapath_set():
                     if not mask:
                         continue
                     _set_page(0x10, bank)
-                    _state['backend'].write_bytes(cmis.REG_APPLY_DATAPATH[1],
-                                                  bytes([mask]))
+                    trigger = (cmis.REG_APPLY_IMM if apply_now
+                               else cmis.REG_APPLY_DATAPATH)
+                    _state['backend'].write_bytes(trigger[1], bytes([mask]))
                 applied = sorted(l + 1 for l in need)
                 time.sleep(0.1)
 
         return _ok({'message': 'DataPath configuration written',
-                    'applied_lanes': applied})
+                    'applied_lanes': applied,
+                    'apply_immediate': bool(apply_now)})
     except Exception as e:
         return _err(str(e), 500)
 

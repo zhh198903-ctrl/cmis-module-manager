@@ -288,6 +288,7 @@
         <h3>DataPath Configuration
           <span style="display:flex;gap:8px">
             <button class="btn-secondary btn-sm" id="btn-refresh-datapath">↻ Refresh</button>
+            <button class="btn-secondary btn-sm" id="btn-apply-immediate">Apply Immediate</button>
             <button class="btn-primary btn-sm"   id="btn-apply-datapath">Apply</button>
           </span>
         </h3>
@@ -314,7 +315,10 @@
 
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           TX Enable is the inverse of the TX Disable bitmask. AppSelect selects the application code (0–15 per lane).
-          Click <strong>Apply</strong> to write and activate the configuration.
+          Click <strong>Apply</strong> to write and activate the configuration — that is
+          ApplyDPInit (<code>10h:143</code>), which re-initialises the Data Path.
+          <strong>Apply Immediate</strong> (<code>10h:144</code>) commits the same
+          configuration without taking the Data Path down, on modules that advertise it.
         </p>
       </div>
 

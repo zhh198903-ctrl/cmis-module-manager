@@ -19,7 +19,8 @@ import struct
 
 REG_IDENTIFIER       = (None, 0x00, 1)   # SFF8024Identifier
 REG_CMIS_REVISION    = (None, 0x01, 1)   # Upper nibble=major, lower=minor (0x53 = 5.3)
-REG_MEMORY_MODEL     = (None, 0x02, 1)   # bit7: 0=paged, 1=flat
+REG_MEMORY_MODEL     = (None, 0x02, 1)   # [7] memory model, [6] SteppedConfigOnly,
+                                         # [5:2] MciMaxSpeed, [1:0] AutoCommissioning
 REG_MODULE_STATE     = (None, 0x03, 1)   # bits[3:1]=state, bit0=InterruptDeasserted
 REG_FLAGS_SUMMARY    = (None, 0x04, 4)   # 4 bytes — bank/page flags summary
 REG_MODULE_FLAGS     = (None, 0x08, 6)   # 6 bytes — module-level flags
@@ -755,6 +756,39 @@ SQUELCH_METHOD_TX = {
 # of 2 m, except OM2 which counts single metres.
 _SMF_MULT = (0.1, 1.0, 10.0)
 _SMF_MULT2 = (50.0, 100.0, 200.0, 500.0)
+
+
+# Lower 02h. The I2C column of MciMaxSpeed; a module on SPI reads the same
+# field against a different scale, and this tool only ever speaks I2C.
+_MCI_I2C = {0: '400 kHz', 1: '1 MHz', 2: '3.4 MHz'}
+
+
+def parse_config_capabilities(raw: int) -> dict:
+    """Lower 02h: memory model plus which reconfiguration procedures work.
+
+    ApplyImmediate (10h:144) commits a staged configuration without taking the
+    Data Path down, and a module that does not support it "ignores any WRITE"
+    - silently, so offering the trigger unconditionally would give the host a
+    button that does nothing on most modules.
+    """
+    stepped = bool((raw >> 6) & 1)
+    auto = raw & 0x03
+    if stepped:
+        hot = auto == 0b10
+        regular = auto == 0b01
+    else:
+        # "xx: both regular and hot supported (legacy default)"
+        hot = regular = True
+    speed_code = (raw >> 2) & 0x0F
+    return {
+        'memory_model': 'Flat' if (raw >> 7) & 1 else 'Paged',
+        'stepped_config_only': stepped,
+        'auto_commissioning': auto,
+        'hot_reconfig': hot,
+        'regular_reconfig': regular,
+        'mci_max_speed_code': speed_code,
+        'mci_max_speed_i2c': _MCI_I2C.get(speed_code),
+    }
 
 
 def parse_link_lengths(data: bytes) -> list:

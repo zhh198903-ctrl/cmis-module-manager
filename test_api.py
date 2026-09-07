@@ -7119,6 +7119,218 @@ class TestHowFarTheModuleReaches(CMISTestCase):
         self.assertIn('see Link Length', row)
 
 
+class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
+    """8.13.3.1 defines two Apply triggers. ApplyDPInit (10h:143) walks the
+    Data Path back through DPInit; ApplyImmediate (10h:144) commits the same
+    staged set into hardware with the path staying where it is. The tool had
+    only the first, so every change cost a re-initialisation - and Lower 02h,
+    which says which of the two the module honours, was read for one bit."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body, code=200):
+        rv = self.client.post('/api/module/datapath', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _info(self):
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def _poke_lower_02(self, value):
+        # Lower memory is visible whatever page is selected, so this needs no
+        # page select and cannot desynchronise the API's page cache.
+        _state['backend'].write_bytes(0x02, bytes([value]))
+
+    def _running(self):
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual({l['datapath_state'] for l in self._lanes()},
+                         {'Activated'})
+
+    def test_the_data_path_never_leaves_activated(self):
+        """The whole point: no transient, so no traffic hit."""
+        self._connect('mock_coherent')
+        self._running()
+        self._post({'app_select': [1] * 8, 'apply_immediate': True})
+        seen = set()
+        for _ in range(6):
+            time.sleep(0.15)
+            seen |= {l['datapath_state'] for l in self._lanes()}
+        self.assertEqual(seen, {'Activated'})
+
+    def test_it_still_reports_a_result(self):
+        self._connect('mock_coherent')
+        self._running()
+        self._post({'app_select': [1] * 8, 'apply_immediate': True})
+        time.sleep(0.9)
+        self.assertEqual({l['config_status'] for l in self._lanes()},
+                         {'ConfigSuccess'})
+
+    def test_it_leaves_no_bounce_behind(self):
+        """6.3.3 sets DPStateChangedFlag on a steady state reached through a
+        transient. There was none, so claiming one would send whoever is
+        chasing an intermittent link after a change they made themselves."""
+        self._connect('mock_coherent')
+        self._running()
+        self.client.get('/api/module/flags')
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self._post({'app_select': [1] * 8, 'apply_immediate': True})
+        time.sleep(0.9)
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes
+                          if l['dp_state_changed']
+                          or 'dp_state_changed' in l['seen']],
+                         [])
+
+    def test_apply_dpinit_still_bounces_the_path(self):
+        """The contrast is the point; if both triggers behaved the same the
+        new one would be decoration."""
+        self._connect('mock_coherent')
+        self._running()
+        self.client.get('/api/module/flags')
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes
+                          if l['dp_state_changed']
+                          or 'dp_state_changed' in l['seen']],
+                         list(range(1, 9)))
+
+    def test_a_stepped_only_module_refuses_rather_than_ignores(self):
+        """The module ignores any WRITE to ApplyImmediate registers, and a
+        silent no-op is the one outcome the operator cannot diagnose."""
+        self._connect('mock_dr8')
+        body = self._post({'app_select': [1] * 8, 'apply_immediate': True}, 400)
+        self.assertIn('Lower 02h', body['message'])
+
+    def test_a_stepped_only_module_still_takes_the_other_trigger(self):
+        self._connect('mock_dr8')
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual({l['datapath_state'] for l in self._lanes()},
+                         {'Activated'})
+
+    def test_asking_for_both_triggers_is_refused(self):
+        self._connect('mock_coherent')
+        body = self._post({'app_select': [1] * 8, 'apply': True,
+                           'apply_immediate': True}, 400)
+        self.assertIn('one Apply trigger', body['message'])
+
+    def _active(self):
+        return [l['active_app_select'] for l in self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['lanes']]
+
+    def test_the_mock_ignores_the_write_when_it_says_it_will(self):
+        """Written behind the API's back, so what is tested is the module's
+        own promise and not the guard standing in front of it.
+
+        Something different has to be staged first: an ApplyImmediate that was
+        wrongly honoured while the staged and active sets already agreed would
+        commit the same values again and leave no trace of having run.
+        """
+        self._connect('mock_dr8')
+        self._running()
+        self._post({'app_select': [2] * 8})       # staged, deliberately not applied
+        self.assertEqual(self._active(), [1] * 8)
+        poke(0x10, 0x90, 0xFF)
+        time.sleep(0.7)
+        self.assertEqual(self._active(), [1] * 8,
+                         'the module committed a configuration through a '
+                         'trigger it advertises that it ignores')
+        self.assertEqual({l['datapath_state'] for l in self._lanes()},
+                         {'Activated'})
+
+    def test_the_same_write_is_honoured_where_it_is_advertised(self):
+        """Otherwise the test above would pass on a mock that ignores every
+        write to 10h:144, advertised or not."""
+        self._connect('mock_coherent')
+        self._running()
+        self._post({'app_select': [2] * 8})
+        self.assertEqual(self._active(), [1] * 8)
+        poke(0x10, 0x90, 0xFF)
+        time.sleep(0.7)
+        self.assertEqual(self._active(), [2] * 8)
+
+    def test_lower_02h_decodes_all_four_fields(self):
+        self._connect('mock_1600g_16lane')
+        cc = self._info()['config_capabilities']
+        self.assertEqual(cc['memory_model'], 'Paged')
+        self.assertTrue(cc['stepped_config_only'])
+        self.assertFalse(cc['hot_reconfig'])
+        self.assertTrue(cc['regular_reconfig'])
+        self.assertEqual(cc['mci_max_speed_i2c'], '1 MHz')
+
+    def test_the_legacy_default_advertises_both(self):
+        self._connect('mock_coherent')
+        cc = self._info()['config_capabilities']
+        self.assertFalse(cc['stepped_config_only'])
+        self.assertTrue(cc['hot_reconfig'])
+        self.assertTrue(cc['regular_reconfig'])
+
+    def test_neither_procedure_leaves_the_button_off(self):
+        """SteppedConfigOnly with AutoCommissioning 00b means neither."""
+        self._connect('mock_dr8')
+        self._poke_lower_02(0x40)
+        cc = self._info()['config_capabilities']
+        self.assertFalse(cc['hot_reconfig'])
+        self.assertFalse(cc['regular_reconfig'])
+
+    def test_a_reserved_speed_code_is_not_invented(self):
+        """3-15 are Reserved on the I2C scale; guessing a number for one would
+        be worse than showing the code."""
+        self._connect('mock_dr8')
+        self._poke_lower_02(0x41 | (7 << 2))
+        cc = self._info()['config_capabilities']
+        self.assertIsNone(cc['mci_max_speed_i2c'])
+        self.assertEqual(cc['mci_max_speed_code'], 7)
+
+    def test_the_capabilities_endpoint_carries_what_the_gate_needs(self):
+        """The button is gated on AppState.caps.config, which is only ever
+        filled from this endpoint - a source-level check of the gate proves
+        nothing if the value never arrives."""
+        self._connect('mock_dr8')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['config']['hot_reconfig'], False)
+        self._connect('mock_coherent')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['config']['hot_reconfig'], True)
+
+    def test_the_button_exists_and_is_gated_on_the_advertisement(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('id="btn-apply-immediate"', html,
+                      'there is no Apply Immediate button')
+        self.assertRegex(js, r'hotBtn\.disabled = hot === false',
+                         'the button is not gated on the advertisement')
+        self.assertRegex(js, r'apply_immediate: true',
+                         'the button never sends the immediate trigger')
+
+    def test_the_panel_names_which_triggers_work(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function reconfigSummary('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r'cc\.regular_reconfig')
+        self.assertRegex(body, r'cc\.hot_reconfig')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

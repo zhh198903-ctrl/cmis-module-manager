@@ -518,6 +518,9 @@ async function loadInfo() {
     ['Module ID',       `0x${(d.module_id||0).toString(16).toUpperCase().padStart(2,'0')}`,      'Lower', '0x00',        'Identifier byte (raw hex)'],
     ['CMIS Revision',   d.cmis_revision,                                                          'Lower', '0x01',        'Upper nibble=major, lower=minor (0x53=5.3)'],
     ['Memory Model',    d.memory_model,                                                           'Lower', '0x02[7]',     '0=Paged, 1=Flat'],
+    ['Reconfiguration', reconfigSummary(d.config_capabilities),                                   'Lower', '0x02[6],[1:0]', 'SteppedConfigOnly and AutoCommissioning — which Apply triggers work'],
+    ['MCI Max Speed',   (d.config_capabilities || {}).mci_max_speed_i2c
+                          || `Reserved (${(d.config_capabilities || {}).mci_max_speed_code})`,    'Lower', '0x02[5:2]',   'MciMaxSpeed, read on the I2C scale'],
     ['Media Type',      d.media_type,                                                             'Lower', '0x55',        'Media type code (Table 8-21)'],
     ['Module State',    s.module_state,                                                           'Lower', '0x03[3:1]',   'Current state machine (Table 8-7)'],
     ['Vendor Name',     d.vendor_name,                                                            '00h',   '0x81–0x90',   'Vendor Name, 16-byte ASCII'],
@@ -637,6 +640,17 @@ function linkLengthSummary(list) {
   return list.map(x => x.km !== undefined
     ? `${x.media} ${x.km} km`
     : `${x.media} ${x.m} m`).join('  ·  ');
+}
+
+// Lower 02h[6] and [1:0]. Two independent procedures, and the pair decides
+// which of the two Apply triggers the module actually honours.
+function reconfigSummary(cc) {
+  if (!cc) return '—';
+  const parts = [];
+  if (cc.regular_reconfig) parts.push('regular (ApplyDPInit)');
+  if (cc.hot_reconfig) parts.push('hot (ApplyImmediate)');
+  if (!parts.length) return 'Stepped only — neither intervention-free procedure';
+  return (cc.stepped_config_only ? 'Stepped + ' : 'All: ') + parts.join(' + ');
 }
 
 function polaritySummary(list) {
@@ -1327,6 +1341,22 @@ async function loadDatapath() {
   // 01h:151.0: any OutputDisableTx takes every Tx lane down. A row of boxes
   // that can be cleared one at a time says the opposite, and on a live link
   // the difference is seven other lanes.
+  // Lower 02h: a module that only does stepped reconfiguration ignores writes
+  // to ApplyImmediate, so an enabled button would be a button that does
+  // nothing and says nothing.
+  // _gateControl greys the parent element, which here holds all three
+  // buttons, so this one is gated on its own.
+  const hotBtn = document.getElementById('btn-apply-immediate');
+  if (hotBtn) {
+    const hot = ((AppState.caps && AppState.caps.config) || {}).hot_reconfig;
+    hotBtn.disabled = hot === false;
+    hotBtn.title = hot === false
+      ? 'This module supports only stepped reconfiguration (Lower 02h), so it '
+        + 'ignores writes to ApplyImmediate (10h:144) - use Apply'
+      : 'ApplyImmediate (10h:144): commit the staged configuration without '
+        + 'taking the Data Path down';
+  }
+
   const moduleWide = rxtx.tx_disable_module_wide === true;
   const wideNote = document.getElementById('datapath-txdisable-note');
   if (wideNote) {
@@ -1446,7 +1476,12 @@ function _appHostLanes(appSel) {
   return a ? a.host_lanes : 1;
 }
 
-async function applyDatapath() {
+// 8.13.3.1 defines two Apply triggers. ApplyDPInit walks the Data Path back
+// through DPInit; ApplyImmediate commits the same staged set into hardware
+// with the path staying where it is. A module that does not support the hot
+// one "ignores any WRITE" to it, so the button is gated on Lower 02h rather
+// than left to fail silently.
+async function applyDatapath(immediate) {
   const app_select = [];
   // One mask byte per bank of eight lanes: a 16-lane module needs two, and
   // sending a single byte would silently configure only the first half.
@@ -1482,15 +1517,15 @@ async function applyDatapath() {
     app_select,
     tx_polarity_flip_mask: tx_pol_mask,
     rx_polarity_flip_mask: rx_pol_mask,
-    apply: true,
+    ...(immediate ? { apply_immediate: true } : { apply: true }),
   });
 
   if (res.status !== 'ok') {
     toast(`Apply failed: ${res.message}`, 'error');
     return;
   }
-  // ApplyDPInit restarts the Data Path state machines, so give the module a
-  // moment before reading back what it settled on.
+  // Either trigger needs a moment before reading back what the module settled
+  // on; ApplyDPInit restarts the Data Path state machines to get there.
   await new Promise(r => setTimeout(r, 300));
   await loadDatapath();
   await loadSquelch();
@@ -2495,7 +2530,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-reset-acq')?.addEventListener('click', resetAcqCounters);
   document.getElementById('btn-stage-mls')?.addEventListener('click', () => applyMls(false));
   document.getElementById('btn-commit-mls')?.addEventListener('click', () => applyMls(true));
-  document.getElementById('btn-apply-datapath')?.addEventListener('click', applyDatapath);
+  document.getElementById('btn-apply-datapath')?.addEventListener(
+    'click', () => applyDatapath(false));
+  document.getElementById('btn-apply-immediate')?.addEventListener(
+    'click', () => applyDatapath(true));
   document.getElementById('btn-refresh-datapath')?.addEventListener('click', loadDatapath);
   document.getElementById('btn-refresh-si')?.addEventListener('click', loadDatapath);
 

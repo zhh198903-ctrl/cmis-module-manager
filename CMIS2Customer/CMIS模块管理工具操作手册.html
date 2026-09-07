@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.13.0<br>
+      <b>版本</b>　2.14.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.13.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.13.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.14.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.14.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -883,6 +883,8 @@
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier（如 QSFP-DD、OSFP、CMIS-Compliant）</td><td><code>Lower / 0x00</code></td></tr>
         <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.3 模块完全兼容</td><td><code>Lower / 0x01</code></td></tr>
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）</td><td><code>Lower / 0x02[7]</code></td></tr>
+        <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
+        <tr><td>MCI Max Speed</td><td class="label">模块支持的管理总线最高速率（本工具只走 I2C，按 I2C 一列解：0=400 kHz、1=1 MHz、2=3.4 MHz）。3–15 是保留值，工具直接显示编号而不自己编一个速率出来</td><td><code>Lower / 0x02[5:2]</code></td></tr>
         <tr><td>Media Type</td><td class="label">MMF / SMF / Passive Copper / Active Cable / BASE-T</td><td><code>Lower / 0x55</code></td></tr>
         <tr><td>Module State</td><td class="label">当前状态机（见下表）</td><td><code>Lower / 0x03[3:1]</code></td></tr>
         <tr><td>Vendor Name</td><td class="label">厂商名称，16 字节 ASCII</td><td><code>00h / 0x81–0x90</code></td></tr>
@@ -1740,6 +1742,36 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         AppSelect、或该应用要求的起始 lane 与 9.2 的 Host Lane Assign 位图不符。按 9.2 的表重选应用码后再 Apply。</li>
   </ol>
 
+  <h3>Apply 和 Apply Immediate —— 两个触发器，不同代价</h3>
+  <p>规范 8.13.3.1 定义了<b>两个</b>生效触发器，
+     以前工具只有第一个：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>按钮</th><th>写哪里</th><th>后果</th></tr></thead>
+      <tbody>
+        <tr><td><b>Apply</b></td><td><code>10h:143</code> ApplyDPInit</td>
+            <td class="label">数据通道重走一遍 DPInit → TxTurnOn → Activated，
+            <b>业务会断</b>，且会留下 DP Changed 标志</td></tr>
+        <tr><td><b>Apply Immediate</b></td><td><code>10h:144</code> ApplyImmediate</td>
+            <td class="label">同样把暂存配置提交到硬件，
+            但<b>数据通道不离开当前状态</b>（一直是 Activated），
+            因此<b>不会</b>留下 DP Changed 标志</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>不是每个模块都支持 Apply Immediate。</b>
+    规范写明：不支持时模块<b>直接忽略</b>
+    对 <code>10h:144</code> 的写入——不报错、也没任何反应。
+    所以工具先读 <code>Lower 02h</code>（Module Info 页的
+    <b>Reconfiguration</b> 行），不支持就把按钮置灰并在
+    悬停提示里说明原因。按规范，以太网
+    光模块普遍只支持分步重配置；可调相干
+    模块这类需要在线调整的场景才用得上
+    hot 重配置。</span>
+  </div>
+
   <h3>9.4 Output Controls（输出控制）</h3>
   <div class="table-wrap">
     <table>
@@ -2200,7 +2232,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.13.0<br>
+    CMIS Module Manager 操作手册 v2.14.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
