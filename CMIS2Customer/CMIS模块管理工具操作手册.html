@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.24.0<br>
+      <b>版本</b>　2.25.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.24.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.24.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.25.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.25.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1533,6 +1533,39 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     </table>
   </div>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>「这条 lane 不用」以前在界面上说不出来。</b>
+    规范 6.2.4.3 把 <code>AppSel = 0000b</code> 写成<b>强制</b>要求：
+    「主机必须给每一条未使用的 host lane 赋 AppSel = 0000b」，
+    而且缩窄一条数据通道时「任何变为未使用的 lane 都必须这样标出来」。
+    可下拉框只列模块声明过的 Application，<b>没有 0 这一项</b>——
+    于是在这个页面上根本没法释放一条 lane。<br>
+    反过来读也是错的：模块已经把 lane 5–8 置为未使用时，
+    表格<b>照样显示「App 1 — 800GBASE-DR8 8H/8M」</b>（因为没有值为 0 的选项，
+    浏览器只好选中第一项），而专门为这种情况做的
+    <b>running …</b> 红字提示也不会出现——它的判断条件
+    <code>active && …</code> 在 0 上短路了，偏偏 0 才是最需要提示的那个值。
+    这时候再按 Apply，下发的是「4 条 lane 跑 8-lane 的 App 1」，模块按 4h 拒绝：
+    一个界面自己造出来的死胡同。<br>
+    现在下拉框第一项就是 <b>— unused (AppSel 0) —</b>，
+    模块运行中的 0 也能被正确选中；提示文字一律写「no Application」，
+    不再写成容易误读的「App 0」。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>未使用的 lane 一定显示 Deactivated。</b>
+    规范 6.2.3.2：AppSel 0000b「表示该 lane（及其相关资源）未被使用、不属于任何数据通道」，
+    并且「模块对未使用的 lane 始终报告 DPDeactivated 状态」。
+    内置演示模块以前不管配的是什么，只要被 Apply 选中就一路走到 Activated——
+    于是一条<b>没有任何 Application 的 lane 显示为绿色的“已激活”</b>，
+    悬停还写着“数据通道已激活”。现在它按规范报 Deactivated。<br>
+    判断依据取的是 <b>Active Control Set</b>（模块实际在跑的），不是 Staged
+    Control Set——否则你在下拉框里选了 unused 还没按 Apply，
+    在跑的通道就会先被显示成已停止。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>内置演示模块现在会按这些规则真的拒绝。</b>
@@ -1813,7 +1846,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <ol class="steps">
     <li>点击 <b>↻ Refresh</b> 读取当前配置。</li>
-    <li>参考 9.2 Supported Applications 表选择合适的 AppSelect。</li>
+    <li>参考 9.2 Supported Applications 表选择合适的 AppSelect。
+        <b>下拉框第一项是「— unused (AppSel 0) —」</b>，表示这条 lane 不参与任何数据通道。</li>
     <li>勾选 / 取消 TX Enable、Pol Flip。</li>
     <li>点击 <b>Apply</b> 写入模块并激活（自动触发 ApplyDPInit = 0xFF）。</li>
     <li><b>配置结果工具会自动告诉你，不需要自己去 Monitoring 页查。</b>Apply 后工具等 300 ms
@@ -2458,7 +2492,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.24.0<br>
+    CMIS Module Manager 操作手册 v2.25.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

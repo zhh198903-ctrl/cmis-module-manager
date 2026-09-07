@@ -1134,14 +1134,20 @@ class MockBackend(I2CInterface):
                 self._apply_time = 0
                 self._commit_apply()
 
-        # Write DP states back to Page 11h:0x80-0x83
+        # Write DP states back to Page 11h:0x80-0x83.
+        # 6.2.3.2: AppSel 0000b means the lane "is unused and not part of a
+        # Data Path", and "the module always reports a DPDeactivated state for
+        # unused lanes". Walking every applied lane up to DPActivated made a
+        # lane carrying no Application report a running Data Path - green, and
+        # with a tooltip saying the path was up.
         for i in range(8):
             byte_idx = i // 2
             nibble_pos = (i % 2) * 4
             addr = 0x80 + byte_idx
             old = self._registers[0x11].get(addr, 0)
             mask = 0x0F << nibble_pos
-            self._registers[0x11][addr] = (old & ~mask) | ((self._dp_lane_states[i] & 0x0F) << nibble_pos)
+            state = 0x1 if self._lane_unused(i) else self._dp_lane_states[i]
+            self._registers[0x11][addr] = (old & ~mask) | ((state & 0x0F) << nibble_pos)
 
         # PRBS LOL flags (lock after 0.3 s)
         for key, lol_addr in [('hc', 0x8A), ('mc', 0x8B)]:
@@ -1722,6 +1728,11 @@ class MockBackend(I2CInterface):
                 sel.append(0)                # no Application can start here
                 lane += 1
         return sel
+
+    def _lane_unused(self, lane: int) -> bool:
+        """Whether the Active Control Set leaves this host lane out of a Data
+        Path (AppSelCode 0000b, 11h:206-213)."""
+        return not ((self._registers[0x11].get(0xCE + lane, 0x10) >> 4) & 0x0F)
 
     def _staged_datapaths(self):
         """Split the Staged Control Set into the Data Paths it describes.

@@ -3285,10 +3285,16 @@ class TestTheWholeNegativeRangeCountsAsRejection(CMISTestCase):
         self.assertIn('appsel-mismatch', body,
                       'a refused Application looks exactly like a live one')
         # The marker existing is not the same as it being reachable: pin the
-        # comparison that decides whether a lane gets one.
+        # comparison that decides whether a lane gets one. This assertion used
+        # to carry the `active &&` guard with it, which is how the guard
+        # survived: AppSelCode 0 is falsy, so the one lane state the dropdown
+        # cannot show on its own was also the one with no warning under it.
         self.assertRegex(
-            body, r'const stale = active && active !== lane\.app_select',
+            body, r'const stale = active !== lane\.app_select',
             'the mismatch marker is never actually chosen')
+        self.assertNotRegex(
+            body, r'const stale = active &&',
+            'a lane the module is running nothing on is skipped')
 
 
 class TestTheWatchTellsTheTruthWhenItCannotRead(CMISTestCase):
@@ -8739,6 +8745,144 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
                       'the toast does not say why the module refused')
         self.assertIn('config_status_code', body,
                       'lanes are grouped by something other than the reason')
+
+
+
+class TestALaneCarryingNoApplication(CMISTestCase):
+    """6.2.3.2: AppSelCode 0000b "indicates that the lane (together with its
+    associated resources) is unused and not part of a Data Path", and "the
+    module always reports a DPDeactivated state for unused lanes". 6.2.4.3
+    makes writing it mandatory rather than optional - "the host must assign
+    AppSel = 0000b to each unused host lane", and narrowing a Data Path means
+    "any lane that becomes unused must be marked as such".
+
+    The AppSelect dropdown offered only the Applications the module
+    advertises, so the interface could not express the one assignment the
+    standard requires - a lane could not be freed from this screen at all.
+    Read back, a lane the module reported as unused showed the first
+    Application in the list instead, and the mismatch warning added to catch
+    exactly that could not fire, because `active && active !== staged`
+    short-circuits on the value that needs it most. Pressing Apply from that
+    screen then sent a configuration the module refuses.
+
+    Underneath, the mock walked every applied lane up to DPActivated whatever
+    was staged on it, so a lane carrying no Application reported a running
+    Data Path - green, with a tooltip saying the path was up."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self, sel):
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': sel, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.3)
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module reports -----------------------------------------
+
+    def test_an_unused_lane_reports_deactivated(self):
+        self._connect()
+        self._apply([2, 2, 2, 2, 0, 0, 0, 0])
+        lanes = self._lanes()
+        for l in lanes[:4]:
+            self.assertEqual(l['datapath_state'], 'Activated',
+                             'lane %d carries an Application and should be up'
+                             % l['lane'])
+        for l in lanes[4:]:
+            self.assertEqual(l['datapath_state'], 'Deactivated',
+                             'lane %d carries no Application but reports a '
+                             'running Data Path' % l['lane'])
+            self.assertEqual(l['datapath_state_kind'], 'down')
+
+    def test_freeing_a_lane_is_not_a_rejection(self):
+        """Deprovisioning stays legal - the state is what changes, not the
+        result status."""
+        self._connect()
+        self._apply([2, 2, 2, 2, 0, 0, 0, 0])
+        for l in self._lanes():
+            self.assertFalse(l['config_rejected'],
+                             'lane %d refused to be deprovisioned' % l['lane'])
+
+    def test_a_lane_put_back_to_work_comes_back_up(self):
+        """A one-way rule would pass the test above and leave the lane dead."""
+        self._connect()
+        self._apply([2, 2, 2, 2, 0, 0, 0, 0])
+        self.assertEqual({l['datapath_state'] for l in self._lanes()[4:]},
+                         {'Deactivated'})
+        self._apply([2] * 8)
+        for l in self._lanes():
+            self.assertEqual(l['datapath_state'], 'Activated',
+                             'lane %d never came back' % l['lane'])
+
+    def test_the_active_set_decides_not_the_staged_one(self):
+        """The staged set is what the host is asking for. A lane still running
+        an Application must not be reported down because someone typed 0 into
+        the dropdown and has not pressed Apply."""
+        self._connect()
+        self._apply([2] * 8)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2, 2, 2, 2, 0, 0, 0, 0],
+                             'apply': False}),
+            content_type='application/json'))
+        time.sleep(0.3)
+        for l in self._lanes():
+            self.assertEqual(l['datapath_state'], 'Activated',
+                             'lane %d went down on a staged edit nobody '
+                             'applied' % l['lane'])
+
+    # ---- what the interface offers ---------------------------------------
+
+    def test_the_dropdown_can_say_unused(self):
+        js = self._js()
+        body = js[js.index('const opts = _advertisedApps.length'):]
+        body = body[:body.index('const appOpts')]
+        self.assertRegex(body, r'<option value="0"',
+                         'there is no way to mark a lane unused, so a Data '
+                         'Path cannot be narrowed from this screen')
+        self.assertRegex(body, r"lane\.app_select === 0 \? 'selected'",
+                         'a module already running nothing on a lane would '
+                         'not have that entry selected')
+
+    def test_a_lane_running_nothing_is_not_called_app_zero(self):
+        js = self._js()
+        self.assertIn("const appName = n => n ? 'App ' + n : 'no Application'",
+                      js, '0000b is the absence of an Application, not App 0')
+
+    def test_the_mismatch_warning_fires_on_a_freed_lane(self):
+        js = self._js()
+        self.assertNotIn('const stale = active && active !== lane.app_select',
+                         js,
+                         'the warning still short-circuits on AppSelCode 0')
+        self.assertIn('const stale = active !== lane.app_select', js)
+
+    def test_the_dropdown_and_the_module_agree_about_a_freed_lane(self):
+        """End to end: what the API reports for a freed lane has to be a value
+        the dropdown can actually show as selected."""
+        self._connect()
+        self._apply([2, 2, 2, 2, 0, 0, 0, 0])
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['app_select'], [2, 2, 2, 2, 0, 0, 0, 0])
+        self.assertEqual(dp['active_app_select'], [2, 2, 2, 2, 0, 0, 0, 0])
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertNotIn(0, [a['app_sel'] for a in apps],
+                         'AppSelCode 0 is not an Application descriptor, so '
+                         'the dropdown has to add it itself')
 
 
 if __name__ == '__main__':

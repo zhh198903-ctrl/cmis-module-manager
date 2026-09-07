@@ -1388,6 +1388,12 @@ async function loadDatapath() {
     // Offer only the Applications this module advertises. Listing 0-15 let
     // the user pick a code the module never announced, which it then rejects
     // in ConfigStatus - and AppSelCode 0 means "no application", not App 0.
+    // 6.2.4.3 makes that value mandatory rather than optional: "The host must
+    // assign AppSel = 0000b to each unused host lane", and narrowing a Data
+    // Path means "any lane that becomes unused must be marked as such". With
+    // no such entry the interface could not express it, so a lane could not be
+    // freed here at all - and a module already running one showed the first
+    // Application in the list instead.
     const opts = _advertisedApps.length
       ? _advertisedApps.map(a =>
           `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
@@ -1395,6 +1401,8 @@ async function loadDatapath() {
           + `${a.host_lanes}H/${a.media_lanes}M</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
+    opts.unshift(`<option value="0" ${lane.app_select === 0 ? 'selected' : ''}>`
+                 + `— unused (AppSel 0) —</option>`);
     // A lane can sit on a code the module no longer advertises; keep it
     // visible rather than silently snapping the dropdown to another value.
     if (lane.app_select && !_advertisedApps.some(a => a.app_sel === lane.app_select)) {
@@ -1412,14 +1420,20 @@ async function loadDatapath() {
     // module refuses an Apply it keeps running the previous Application, and
     // this page went on showing the request as though it had taken. The
     // rejection toast is gone in eight seconds; the wrong reading is not.
+    // `active && ...` skipped AppSelCode 0, so the single case where the
+    // dropdown cannot show the truth on its own - the module running nothing
+    // on this lane - was also the case with no warning under it.
     const active = lane.active_app_select;
-    const stale = active && active !== lane.app_select
+    // "App 0" is the misreading 6.2.3.2 exists to prevent: 0000b is not an
+    // Application, it is the absence of one.
+    const appName = n => n ? 'App ' + n : 'no Application';
+    const stale = active !== lane.app_select
       ? `<div class="appsel-mismatch" title="${esc(
-          'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for App ' + lane.app_select
+          'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for ' + appName(lane.app_select)
           + ', but the Active Control Set (Page 11h:' + hex8(0xCE + i)
-          + ') says the module is running App ' + active
+          + ') says the module is running ' + appName(active)
           + '. The module did not accept the staged configuration.')}">`
-        + `running App ${active}</div>`
+        + `running ${appName(active)}</div>`
       : '';
     const tipTx = regTip({
       field: `OutputDisableTx${lane.lane}`, page: 0x10, addr: 0x82,
