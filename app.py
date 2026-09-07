@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.23.0'
+__version__ = '2.24.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -882,6 +882,10 @@ def api_module_monitoring():
                 # Whether the module accepted the configuration is a
                 # property of the code, not of how its name is spelled.
                 'config_rejected': cfg_codes[i] in cmis.CONFIG_STATUS_REJECTED,
+                # Table 8-101 gives each rejection a different reason, and the
+                # reason is what tells the operator what to change. The name
+                # alone cannot carry it: three of the codes have no name.
+                'config_status_code': cfg_codes[i],
             })
             if i < len(lane_thr):
                 t = lane_thr[i]

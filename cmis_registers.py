@@ -368,6 +368,19 @@ CONFIG_STATUS_NAMES = {
 CONFIG_STATUS_REJECTED = frozenset(list(range(0x2, 0xC)) + list(range(0xD, 0x10)))
 
 
+def config_status_name(nibble: int) -> str:
+    """Table 8-101 leaves the Name column empty for 9h-Bh and Dh-Fh, but not
+    the meaning: they sit inside the Negative Result Status block, 9h-Bh as
+    "other validation failures" the spec reserved and Dh-Fh as rejections "for
+    custom reasons". Calling those Unknown told the operator the module had
+    said something unintelligible, when what it said was that it had refused
+    the configuration."""
+    if nibble in CONFIG_STATUS_NAMES:
+        return CONFIG_STATUS_NAMES[nibble]
+    kind = 'custom' if nibble >= 0xD else 'reserved'
+    return 'Rejected (%s %Xh)' % (kind, nibble)
+
+
 def parse_config_status_codes(data: bytes) -> list:
     """The raw ConfigStatus nibbles at Page 11h:202-205, one per lane."""
     codes = []
@@ -528,7 +541,7 @@ def parse_config_status(data: bytes) -> list:
             statuses.append("Unknown")
             continue
         nibble = (data[byte_idx] >> ((lane % 2) * 4)) & 0x0F
-        statuses.append(CONFIG_STATUS_NAMES.get(nibble, f"Unknown(0x{nibble:X})"))
+        statuses.append(config_status_name(nibble))
     return statuses
 
 

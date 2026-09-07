@@ -1618,7 +1618,9 @@ class TestADataPathCanBeTakenOutOfService(CMISTestCase):
             self.client.get('/api/module/datapath'))['data']['dp_deinit_mask']
 
     def _running(self):
-        self._post({'app_select': [1] * 8, 'apply': True})
+        # App 1 advertises lane 1 as its only starting lane and App 2 lane 5,
+        # so this - not eight lanes of App 1 - is what this module can run.
+        self._post({'app_select': [1, 1, 1, 1, 2, 2, 2, 2], 'apply': True})
         time.sleep(1.2)
         self.assertEqual(set(self._states()), {'Activated'})
 
@@ -1949,9 +1951,12 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
     def test_a_partial_mask_moves_only_those_lanes(self):
         self._connect()
         backend = _state['backend']
+        # App 2 is four lanes wide, so lanes 1-4 are a Data Path in their own
+        # right and a trigger naming just them is a whole command. Half of the
+        # eight-lane App 1 would be ConfigRejectedPartialDataPath instead.
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
             content_type='application/json'))
         time.sleep(1.2)
         self.client.get('/api/module/flags')
@@ -1973,19 +1978,19 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
         self._connect()
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
             content_type='application/json'))
         time.sleep(1.2)
-        # Stage a different Application on lanes 5-8 without applying it.
+        # Free lanes 5-8 in the staged set without applying it.
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [1, 1, 1, 1, 2, 2, 2, 2],
+            data=json.dumps({'app_select': [2, 2, 2, 2, 0, 0, 0, 0],
                              'apply': False}),
             content_type='application/json'))
         poke(0x10, 0x8F, 0x0F)                        # apply lanes 1-4 only
         time.sleep(1.2)
         dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
-        self.assertEqual(dp['active_app_select'], [1] * 8,
+        self.assertEqual(dp['active_app_select'], [2] * 8,
                          'an Apply that did not select lanes 5-8 commissioned '
                          'them anyway')
 
@@ -2007,9 +2012,10 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
                         'every lane should be sitting on a refused Application')
 
         # Stage something legal everywhere, then apply it to lanes 1-4 only.
+        # App 2 is four lanes wide, so that trigger names a whole Data Path.
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [1] * 8, 'apply': False}),
+            data=json.dumps({'app_select': [2] * 8, 'apply': False}),
             content_type='application/json'))
         poke(0x10, 0x8F, 0x0F)
         time.sleep(1.2)
@@ -2025,7 +2031,7 @@ class TestTheMockHonoursTheApplyMask(CMISTestCase):
         backend = _state['backend']
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
+            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
             content_type='application/json'))
         time.sleep(1.2)
         poke(0x10, 0x8F, 0x0F)
@@ -3101,17 +3107,17 @@ class TestAConfigurationTheModuleRefused(CMISTestCase):
         self.connect()
         self.assertOk(self.client.post(
             '/api/module/datapath',
-            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
+            data=json.dumps({'app_select': [1] * 8, 'apply': True}),
             content_type='application/json'))
         time.sleep(1.0)
-        mon, dp = self._apply([1, 1, 1, 1, 14, 14, 14, 14], connect=False)
+        mon, dp = self._apply([2, 2, 2, 2, 14, 14, 14, 14], connect=False)
 
         for lane in dp['lanes'][:4]:
-            self.assertEqual(lane['active_app_select'], 1)
+            self.assertEqual(lane['active_app_select'], 2)
         for lane in dp['lanes'][4:]:
             self.assertEqual(lane['app_select'], 14,
                              'the staged set should still hold the request')
-            self.assertEqual(lane['active_app_select'], 2,
+            self.assertEqual(lane['active_app_select'], 1,
                              'a rejected lane was reconfigured anyway')
 
     def test_a_refused_lane_does_not_restart_its_data_path(self):
@@ -3120,7 +3126,7 @@ class TestAConfigurationTheModuleRefused(CMISTestCase):
         self.connect()
         self.client.get('/api/module/flags')          # start from a clean slate
         self.assertOk(self.client.post('/api/module/flags/clear'))
-        self._apply([1, 1, 1, 1, 14, 14, 14, 14], connect=False)
+        self._apply([2, 2, 2, 2, 14, 14, 14, 14], connect=False)
         lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
         bounced = [l['lane'] for l in lanes
                    if l['dp_state_changed'] or 'dp_state_changed' in l['seen']]
@@ -3165,9 +3171,9 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         self.connect()
         self._stage_and_apply([2] * 8)
         time.sleep(1.0)                       # deliberately no read here
-        self._stage_and_apply([1, 1, 1, 1, 14, 14, 14, 14])
+        self._stage_and_apply([0, 0, 0, 0, 14, 14, 14, 14])
         time.sleep(1.0)
-        self.assertEqual(self._active(), [1, 1, 1, 1, 2, 2, 2, 2],
+        self.assertEqual(self._active(), [0, 0, 0, 0, 2, 2, 2, 2],
                          'the first Apply never reached its result step')
 
     def test_an_intervening_read_changes_nothing(self):
@@ -3175,9 +3181,9 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         self._stage_and_apply([2] * 8)
         time.sleep(1.0)
         self.client.get('/api/module/datapath')
-        self._stage_and_apply([1, 1, 1, 1, 14, 14, 14, 14])
+        self._stage_and_apply([0, 0, 0, 0, 14, 14, 14, 14])
         time.sleep(1.0)
-        self.assertEqual(self._active(), [1, 1, 1, 1, 2, 2, 2, 2],
+        self.assertEqual(self._active(), [0, 0, 0, 0, 2, 2, 2, 2],
                          'the outcome depends on whether anyone was looking')
 
     def test_an_apply_during_one_already_running_is_ignored(self):
@@ -7271,11 +7277,14 @@ class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
         write to 10h:144, advertised or not."""
         self._connect('mock_coherent')
         self._running()
-        self._post({'app_select': [2] * 8})
+        # App 2 is the 4-lane Application here, so it lives on lanes 1-4 with
+        # the rest marked unused - eight lanes of it is not an allocation the
+        # descriptor offers.
+        self._post({'app_select': [2, 2, 2, 2, 0, 0, 0, 0]})
         self.assertEqual(self._active(), [1] * 8)
         poke(0x10, 0x90, 0xFF)
         time.sleep(0.7)
-        self.assertEqual(self._active(), [2] * 8)
+        self.assertEqual(self._active(), [2, 2, 2, 2, 0, 0, 0, 0])
 
     def test_lower_02h_decodes_all_four_fields(self):
         self._connect('mock_1600g_16lane')
@@ -8479,6 +8488,257 @@ class TestATransientDataPathIsNotAFault(CMISTestCase):
                              'no wording for a %s Data Path' % kind)
         self.assertIn('not a fault', body,
                       'nothing tells the operator a held path is deliberate')
+
+
+
+class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
+    """Table 8-101 gives a configuration eight named ways to be refused plus a
+    reserved block (9h-Bh, "other validation failures") and a custom one
+    (Dh-Fh), with 2h-Bh and Dh-Fh together forming one Negative Result Status.
+    The monitoring table decided its colour from the name, so a module
+    answering 9h or Eh - a rejection - was painted in the grey that means
+    "this lane is simply not in use", while the Apply toast fired at the same
+    moment read the same register through config_rejected and called it a
+    failure.
+
+    Underneath, the mock's validation step only ever answered ConfigSuccess or
+    ConfigRejectedInvalidAppSel, so the reasons an operator most needs to tell
+    apart had never reached the screen at all."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _stage(self, sel, apply_=True):
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': sel, 'apply': apply_}),
+            content_type='application/json'))
+
+    def _status(self):
+        lanes = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+        return [(l['config_status'], l['config_status_code'],
+                 l['config_rejected']) for l in lanes]
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module said -------------------------------------------
+
+    def test_the_api_reports_the_code_and_not_only_its_name(self):
+        """Three of the sixteen encodings have no name in Table 8-101, so a
+        reader that only gets the name cannot tell them apart."""
+        self._connect()
+        self._stage([1] * 8)
+        time.sleep(1.0)
+        for name, code, rejected in self._status():
+            self.assertEqual((name, code, rejected), ('ConfigSuccess', 1, False))
+
+    def test_the_unnamed_rejections_are_named_as_rejections(self):
+        import cmis_registers as c
+        for code in (0x9, 0xA, 0xB, 0xD, 0xE, 0xF):
+            name = c.config_status_name(code)
+            self.assertNotIn('Unknown', name,
+                             '%Xh is a rejection, not an unintelligible '
+                             'answer' % code)
+            self.assertIn('Rejected', name)
+            self.assertIn(code, c.CONFIG_STATUS_REJECTED)
+        for code in (0xD, 0xE, 0xF):
+            self.assertIn('custom', c.config_status_name(code),
+                          'Dh-Fh is the block Table 8-101 leaves to the '
+                          'vendor, and %Xh is in it' % code)
+        for code in (0x9, 0xA, 0xB):
+            self.assertIn('reserved', c.config_status_name(code))
+
+    # ---- what the mock can now produce ----------------------------------
+
+    def test_an_application_cannot_be_left_on_too_few_lanes(self):
+        """6.2.4.3: each used lane must be part of "a valid Application
+        completely allocated on lanes supported for that Application". App 2
+        on this profile needs four host lanes; two is not that Application."""
+        self._connect()
+        self._stage([2, 2, 0, 0, 0, 0, 0, 0])
+        time.sleep(1.0)
+        got = self._status()
+        for lane in (0, 1):
+            self.assertEqual(got[lane][:2],
+                             ('ConfigRejectedInvalidDataPath', 4),
+                             'lane %d ran half an Application' % (lane + 1))
+        for lane in range(2, 8):
+            self.assertEqual(got[lane][1], 1,
+                             'lane %d was deprovisioned, which is always '
+                             'legal' % (lane + 1))
+
+    def test_an_application_cannot_start_where_it_is_not_allowed(self):
+        """HostLaneAssignmentOptions is a bitmap of the lanes an Application
+        may start on. App 2 here advertises lanes 1 and 5; lanes 2-5 is the
+        right width on the wrong boundary."""
+        self._connect()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertEqual(apps[1]['host_lane_assign_mask'], 0x11,
+                         'this test needs an Application with restricted '
+                         'starting lanes')
+        self._stage([0, 2, 2, 2, 2, 0, 0, 0])
+        time.sleep(1.0)
+        got = self._status()
+        for lane in range(1, 5):
+            self.assertEqual(got[lane][:2],
+                             ('ConfigRejectedInvalidDataPath', 4),
+                             'lane %d started an Application on a lane the '
+                             'module does not offer' % (lane + 1))
+
+    def test_two_instances_side_by_side_are_a_valid_allocation(self):
+        """The rule is a whole number of instances, not one: eight lanes of a
+        four-lane Application is two Data Paths, and refusing it would be a
+        stricter module than CMIS describes."""
+        self._connect()
+        self._stage([2] * 8)
+        time.sleep(1.0)
+        for lane, (name, code, rejected) in enumerate(self._status()):
+            self.assertEqual((name, code, rejected),
+                             ('ConfigSuccess', 1, False),
+                             'lane %d refused a valid pair of Data Paths'
+                             % (lane + 1))
+
+    def test_triggering_half_a_data_path_is_refused(self):
+        """8.14.5: configuration procedures operate on entire Data Paths. The
+        tool already rounds its trigger up to whole ones - but nothing had
+        ever checked that, because the mock accepted any mask it was given."""
+        self._connect()
+        self._stage([1] * 8)
+        time.sleep(1.0)
+        poke(0x10, 0x8F, 0x0F)               # ApplyDPInit, lanes 1-4 only
+        time.sleep(1.0)
+        got = self._status()
+        for lane in range(4):
+            self.assertEqual(got[lane][:2],
+                             ('ConfigRejectedPartialDataPath', 7),
+                             'lane %d accepted a trigger covering half of an '
+                             'eight-lane Data Path' % (lane + 1))
+
+    def test_hot_reconfiguration_is_the_exception_that_may_trigger_a_subset(self):
+        """"with the exception of hot reconfiguration of SI attributes by
+        ApplyImmediate ... where triggers on a subset of lanes are allowed".
+
+        This needs a module that honours ApplyImmediate at all: a
+        SteppedConfigOnly module ignores the write outright, and the
+        validation step the exemption lives in is never reached."""
+        self._connect('mock_coherent')
+        cc = self.assertOk(
+            self.client.get('/api/module/info'))['data']['config_capabilities']
+        self.assertTrue(cc['hot_reconfig'],
+                        'a module that ignores ApplyImmediate cannot show '
+                        'the exemption either way')
+        self._stage([1] * 8)
+        time.sleep(1.0)
+        poke(0x10, 0x90, 0x0F)               # ApplyImmediate, lanes 1-4 only
+        time.sleep(1.0)
+        got = self._status()
+        for lane in range(4):
+            self.assertEqual(got[lane][1], 1,
+                             'lane %d refused a hot reconfiguration the spec '
+                             'allows on a subset' % (lane + 1))
+
+    def test_the_tool_never_triggers_a_partial_data_path_itself(self):
+        """The host-side rounding and the module-side rule now meet: changing
+        one Data Path of two must still leave both whole."""
+        self._connect()
+        self._stage([2] * 8)
+        time.sleep(1.0)
+        self._stage([2, 2, 2, 2, 0, 0, 0, 0])
+        time.sleep(1.0)
+        for lane, (name, code, _r) in enumerate(self._status()):
+            self.assertEqual(code, 1,
+                             'lane %d came back %s from an Apply the tool '
+                             'itself composed' % (lane + 1, name))
+
+    def test_every_shipped_profile_boots_into_a_set_it_would_accept(self):
+        """A module that refuses its own power-up configuration is not a
+        module any host would ship against - and until the validation step
+        existed, nothing here could tell."""
+        names = self.assertOk(self.client.get('/api/backends'))['data']
+        mocks = [b['name'] for b in names if b['name'].startswith('mock')]
+        self.assertGreaterEqual(len(mocks), 7)
+        for backend in mocks:
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                staged = self.assertOk(
+                    self.client.get('/api/module/datapath'))['data']
+                self._stage(staged['app_select'])
+                time.sleep(1.0)
+                for lane, (name, _c, rejected) in enumerate(self._status()):
+                    self.assertFalse(rejected,
+                                     '%s lane %d boots on a configuration it '
+                                     'refuses: %s' % (backend, lane + 1, name))
+
+    # ---- what the interface does with it ---------------------------------
+
+    def test_the_cell_colours_by_the_rejection_the_api_found(self):
+        js = self._js()
+        row = js[js.index("const cfgStatus = lane.config_status"):]
+        row = row[:row.index('return `<tr>')]
+        self.assertNotIn('startsWith', row,
+                         'the cell still decides from how the name is spelled, '
+                         'so a reserved or custom rejection reads as idle')
+        self.assertRegex(row, r"lane\.config_rejected \? 'flag-active'",
+                         'a rejected lane is not painted as a failure')
+        self.assertRegex(row, r"config_status_code === 0x1 \? 'state-activated'")
+        self.assertRegex(row, r"config_status_code === 0xC \? 'state-init'")
+
+    def test_the_cell_says_what_the_code_means(self):
+        js = self._js()
+        self.assertRegex(
+            js, r'<td class="\$\{cfgClass\}" title="\$\{esc\(configStatusNote')
+
+    def test_the_register_it_names_is_the_right_one_on_a_banked_module(self):
+        """Page 11h repeats per bank, so lane 9 is byte 202 of bank 1. The
+        flat arithmetic would have sent the operator to byte 206 of bank 0,
+        which is lane 7."""
+        js = self._js()
+        body = js[js.index('function configStatusNote('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertIn('(lane.lane - 1) % 8', body,
+                      'the byte is computed from the flat lane number')
+        self.assertRegex(body, r"bank \? ' bank ' \+ bank",
+                         'the tooltip never says which bank')
+
+    def test_every_named_rejection_has_a_reason_and_a_remedy(self):
+        js = self._js()
+        table = js[js.index('const _CFG_WHY = {'):]
+        table = table[:table.index(chr(10) + '};')]
+        for code in (0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8):
+            self.assertRegex(table, r'0x%X: \[' % code,
+                             'nothing tells the operator what %Xh means' % code)
+        # Two entries each: why the module refused, and what to change.
+        self.assertEqual(table.count('0x'), 7)
+
+    def test_a_reason_exists_even_for_the_codes_the_spec_does_not_name(self):
+        js = self._js()
+        body = js[js.index('function configStatusReason('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertRegex(body, r'code >= 0xD',
+                         'the custom block is not told apart from the '
+                         'reserved one')
+        self.assertIn('vendor', body)
+
+    def test_the_toast_groups_by_reason_rather_than_repeating_it_per_lane(self):
+        js = self._js()
+        body = js[js.index('  if (rejected.length) {'):]
+        body = body[:body.index('  } else {')]
+        self.assertNotRegex(
+            body, r'`L\$\{l\.lane\}: \$\{l\.config_status\}`',
+            'the toast still prints the enum name once per lane')
+        self.assertIn('configStatusReason(g.sample)', body,
+                      'the toast does not say why the module refused')
+        self.assertIn('config_status_code', body,
+                      'lanes are grouped by something other than the reason')
 
 
 if __name__ == '__main__':

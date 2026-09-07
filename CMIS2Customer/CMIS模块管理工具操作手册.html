@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.23.0<br>
+      <b>版本</b>　2.24.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.23.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.23.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.24.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.24.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1501,6 +1501,51 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     该表把 <b>2h–Bh 和 Dh–Fh 整段</b>都定义为拒绝，工具按代码范围判断，
     不依赖名字拼写——模块返回一个规范里保留的拒绝码也不会被当成成功。</span>
   </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>以前所有拒绝长得一模一样。</b>Table 8-101 给了八种不同的拒绝理由，
+    每一种对应你该改的东西都不同；旧版本只把枚举名原样显示出来，
+    等于只告诉你“被拒了”。而 <b>9h–Bh（规范保留）和 Dh–Fh（厂商自定义）</b>
+    这两段没有名字，于是 Monitoring 表按名字判色时把它们涂成了
+    <b>“该 lane 未使用”的灰色</b>——同一时刻弹出的红色提示却说配置被拒绝，
+    同一个寄存器，界面两处自相矛盾。<br>
+    现在颜色改用代码区间判断，Config Status 单元格<b>鼠标悬停</b>会写出这条码
+    的含义和补救方向，Apply 提示也按理由分组给出同样的说明。</span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>代码</th><th>名称</th><th>含义 / 该改什么</th></tr></thead>
+      <tbody>
+        <tr><td><code>1h</code></td><td>ConfigSuccess</td><td class="label">配置已完成</td></tr>
+        <tr><td><code>2h</code></td><td>ConfigRejected</td><td class="label">校验未通过，模块没有指明是哪一项</td></tr>
+        <tr><td><code>3h</code></td><td>…InvalidAppSel</td><td class="label">该 AppSel 码不是模块声明过的；从模块公布的列表里选</td></tr>
+        <tr><td><code>4h</code></td><td>…InvalidDataPath</td><td class="label">这个应用放不到这组 lane 上：宽度要是应用 Host Lane Count 的整数倍，且每一段的起始 lane 要在 Host Lane Assign 位图里</td></tr>
+        <tr><td><code>5h</code></td><td>…InvalidSI</td><td class="label">同时下发的信号完整性设置不合法</td></tr>
+        <tr><td><code>6h</code></td><td>…LanesInUse</td><td class="label">该 DataPath 还有 lane 不在 DPDeactivated；改宽度或释放 lane 之前要先把通道停下来</td></tr>
+        <tr><td><code>7h</code></td><td>…PartialDataPath</td><td class="label">Apply 只点了这条 DataPath 的一部分 lane；要么整条一起触发，要么用支持热重配的 ApplyImmediate</td></tr>
+        <tr><td><code>8h</code></td><td>…NoEmulation</td><td class="label">模块不支持 DataPath 仿真</td></tr>
+        <tr><td><code>9h–Bh</code></td><td class="label">（规范保留）</td><td class="label">规范预留给其它校验失败，没有给名字——但它属于拒绝段</td></tr>
+        <tr><td><code>Ch</code></td><td>ConfigInProgress</td><td class="label">模块还在处理，这条 lane 上新的命令会被忽略</td></tr>
+        <tr><td><code>Dh–Fh</code></td><td class="label">（厂商自定义）</td><td class="label">模块按自己的理由拒绝，含义查模块文档</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>内置演示模块现在会按这些规则真的拒绝。</b>
+    以前它只校验 AppSel 码有没有被声明过，别的一律放行，
+    所以 4h、7h 这些理由在界面上<b>从来没出现过</b>。
+    现在它按 CMIS 6.2.4.3 的主机规则校验：应用必须整段落在
+    它声明的起始 lane 上（否则 4h），Apply 必须覆盖整条 DataPath
+    （否则 7h，热重配 ApplyImmediate 除外）。<br>
+    连带修正了一处演示模块自相矛盾的地方：双 4-lane 端口的
+    <code>mock_fr4x2</code> 声明 App 1 只能从 lane 1 起、App 2 只能从
+    lane 5 起，开机默认却是八条 lane 全跑 App 1——这是它自己的
+    声明所禁止的配置。现在默认是 <b>lane 1–4 跑 App 1、lane 5–8 跑 App 2</b>。</span>
+  </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>连续点两次 Apply</b>：按规范，上一次还在
@@ -1617,10 +1662,11 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <tbody>
         <tr><td rowspan="3">Config Status<br><span class="label">（Monitoring）</span></td><td><span class="badge badge-ok">绿色</span> ConfigSuccess</td><td class="label">该 lane 的配置被模块接受</td></tr>
         <tr><td><span class="badge badge-warn">琥珀</span> ConfigInProgress</td><td class="label">配置进行中，稍等再看</td></tr>
-        <tr><td><span class="badge badge-danger">红底</span> ConfigRejected…</td><td class="label">被拒绝。<b>不是灰色</b>——灰色留给"该 lane 未使用"</td></tr>
-        <tr><td rowspan="3">DataPath State<br><span class="label">（Monitoring）</span></td><td><span class="badge badge-ok">绿色</span> Activated</td><td class="label">数据通道已激活</td></tr>
-        <tr><td><span class="badge badge-warn">琥珀</span> Init</td><td class="label">初始化中</td></tr>
-        <tr><td><span class="badge badge-neutral">灰色</span> 其它</td><td class="label">Deactivated / Deinit / TxTurnOn 等，均按未激活显示</td></tr>
+        <tr><td><span class="badge badge-danger">红底</span> 任何拒绝码</td><td class="label">被拒绝。判据是 Table 8-101 的<b>代码区间</b>（2h–Bh、Dh–Fh），不是名字拼写——规范保留的 9h–Bh 和厂商自定义的 Dh–Fh 同样红底。<b>不是灰色</b>——灰色留给“该 lane 未使用”。鼠标悬停会写出这条码的含义和该改什么</td></tr>
+        <tr><td rowspan="4">DataPath State<br><span class="label">（Monitoring）</span></td><td><span class="badge badge-ok">绿色</span> Activated</td><td class="label">数据通道已激活（稳态）</td></tr>
+        <tr><td><span class="badge badge-warn">琥珀</span> Init / TxTurnOn / TxTurnOff / Deinit</td><td class="label">过渡态：通道正在上来或下去，<b>不是故障</b></td></tr>
+        <tr><td><b>白字</b> Initialized</td><td class="label">稳态，已初始化、只是 Tx 没开</td></tr>
+        <tr><td><span class="badge badge-neutral">灰色</span> Deactivated</td><td class="label">该通道已停止</td></tr>
         <tr><td rowspan="3">Lane Flags<br><span class="label">（Monitoring）</span></td><td><b>■ ALARM</b>（红底）</td><td class="label">该标志位置起：Tx Fault / LOS / CDR LOL 之一</td></tr>
         <tr><td><b>▲ Warn</b>（橙底）</td><td class="label">仅出现在最右的汇总列，表示有 Warning 级阈值越界但无 Alarm</td></tr>
         <tr><td><b>●</b>（绿色小点）</td><td class="label">正常，无标志</td></tr>
@@ -1773,9 +1819,11 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <li><b>配置结果工具会自动告诉你，不需要自己去 Monitoring 页查。</b>Apply 后工具等 300 ms
         重读配置，再检查每条 lane 的 Config Status：全部通过则右下角弹绿色
         <b>「DataPath configuration applied」</b>；只要有 lane 被拒，就弹<b>红色</b>提示并点名是哪几条
-        （形如 <code>L3: ConfigRejectedInvalidAppSel</code>），停留 8 秒。</li>
-    <li>遇到 <code>ConfigRejected*</code>：说明模块拒绝了该 lane 的配置，常见原因是选了模块不支持的
-        AppSelect、或该应用要求的起始 lane 与 9.2 的 Host Lane Assign 位图不符。按 9.2 的表重选应用码后再 Apply。</li>
+        并<b>按理由分组</b>写清原因和该改什么（形如
+        <code>L5, L6, L7, L8: 该 AppSel 码不在本模块声明的应用里 —— 从模块自己公布的列表里选</code>），停留 12 秒。
+        规范规定同一条 DataPath 的所有 lane 报同一个结果，所以按理由分组比逐条列 lane 更贴近模块真正说的话。</li>
+    <li>遇到拒绝：模块跳过了执行步骤，该 lane 继续跑原来的 Application。提示里已经写明是哪一类原因；
+        对照 9.2 的 Host Lane Assign 位图与应用宽度改好之后再 Apply。</li>
   </ol>
 
   <div class="callout callout-note">
@@ -2410,7 +2458,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.23.0<br>
+    CMIS Module Manager 操作手册 v2.24.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1251,10 +1251,14 @@ async function _loadMonitoringOnce() {
 
     const cfgStatus = lane.config_status || '—';
     // A rejected configuration is a failure, so it must not share the muted
-    // grey used for "this lane is simply not in use".
-    const cfgClass = cfgStatus === 'ConfigSuccess' ? 'state-activated'
-                   : cfgStatus === 'ConfigInProgress' ? 'state-init'
-                   : cfgStatus.startsWith('ConfigRejected') ? 'flag-active'
+    // grey used for "this lane is simply not in use". Table 8-101 puts 2h-Bh
+    // and Dh-Fh in one Negative Result Status block but names only five of
+    // them, so deciding by the name left every reserved and custom rejection
+    // painted as an idle lane - while the Apply toast, which reads the same
+    // register through config_rejected, called it a failure.
+    const cfgClass = lane.config_rejected ? 'flag-active'
+                   : lane.config_status_code === 0x1 ? 'state-activated'
+                   : lane.config_status_code === 0xC ? 'state-init'
                    : 'state-deactivated';
     return `<tr>
       <td>${lane.lane}</td>
@@ -1263,9 +1267,67 @@ async function _loadMonitoringOnce() {
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
       <td class="${stateClass}" title="${esc(dpStateNote(lane))}">${lane.datapath_state}</td>
       <td>${outputCell(lane)}</td>
-      <td class="${cfgClass}">${cfgStatus}</td>
+      <td class="${cfgClass}" title="${esc(configStatusNote(lane))}">${cfgStatus}</td>
     </tr>`;
   }).join('');
+}
+
+// Table 8-101 gives a configuration eight distinct ways to be refused, and
+// CMIS 6.2.4.3 turns each into a host rule. The interface showed the enum name
+// and nothing else, so every one of them read as the same event - "it was
+// rejected" - when the reason is the only part that tells an operator which
+// of their choices the module objected to.
+const _CFG_WHY = {
+  0x2: ['validation failed, without the module naming which setting',
+        'review the whole staged set'],
+  0x3: ['that AppSel code is not one this module advertises',
+        'pick an Application from the list the module publishes'],
+  0x4: ['this Application cannot occupy that set of lanes',
+        'give it a whole number of instances, each as wide as its host lane '
+        + 'count and starting on a lane its assignment options allow'],
+  0x5: ['the signal integrity settings staged with it are not valid',
+        'check the equalisation and amplitude controls on these lanes'],
+  0x6: ['some lanes of this Data Path are not in DPDeactivated',
+        'take the Data Path down before changing its width or freeing '
+        + 'its lanes'],
+  0x7: ['the Apply named only some lanes of this Data Path',
+        'trigger every lane of the path, or use ApplyImmediate if the '
+        + 'module supports hot reconfiguration'],
+  0x8: ['this module does not support Data Path emulation',
+        'configure the lanes to a real Application'],
+};
+
+function configStatusReason(lane) {
+  const why = _CFG_WHY[lane.config_status_code];
+  if (why) return why[0] + ' — ' + why[1];
+  const code = lane.config_status_code;
+  return code >= 0xD
+    ? 'the module refused it for a reason of its own (Table 8-101 leaves '
+      + 'Dh-Fh to the vendor) — see the module documentation'
+    : 'the module refused it for a validation failure Table 8-101 reserves '
+      + 'without naming — see the module documentation';
+}
+
+function configStatusNote(lane) {
+  // ConfigStatus is four bytes of two lanes each, and Page 11h repeats per
+  // bank - so lane 9 is byte 202 of bank 1, not byte 206 of bank 0.
+  const bank = Math.floor((lane.lane - 1) / 8);
+  const addr = 202 + Math.floor(((lane.lane - 1) % 8) / 2);
+  const where = ' (Page 11h' + (bank ? ' bank ' + bank : '')
+              + ':' + addr + ', Table 8-101)';
+  if (lane.config_rejected) {
+    return 'Rejected: ' + configStatusReason(lane) + '.' + where;
+  }
+  if (lane.config_status_code === 0x1) {
+    return 'The module completed the last configuration command on this '
+         + 'lane.' + where;
+  }
+  if (lane.config_status_code === 0xC) {
+    return 'The module is still working on a configuration command, and '
+         + 'ignores a new one on this lane until it finishes.' + where;
+  }
+  return 'The module has not reported a configuration result for this lane '
+       + 'yet.' + where;
 }
 
 // 11h:132-133 are the module's own answer to "is this output actually on".
@@ -1630,8 +1692,21 @@ async function applyDatapath(immediate) {
     ? mon.data.lanes.filter(l => l.config_rejected)
     : [];
   if (rejected.length) {
-    const detail = rejected.map(l => `L${l.lane}: ${l.config_status}`).join(', ');
-    toast(`Module rejected the configuration — ${detail}`, 'error', 8000);
+    // "Only one Data Path result status is reported on all triggered lanes of
+    // a Data Path" (6.2.4.2), so listing the lanes one per line repeated the
+    // same reason four or eight times. Group by the reason instead, and say
+    // what it is: the enum name alone tells the operator nothing to act on.
+    const byReason = new Map();
+    rejected.forEach(l => {
+      if (!byReason.has(l.config_status_code)) {
+        byReason.set(l.config_status_code, {lanes: [], sample: l});
+      }
+      byReason.get(l.config_status_code).lanes.push(l.lane);
+    });
+    const detail = [...byReason.values()]
+      .map(g => `L${g.lanes.join(', L')}: ${configStatusReason(g.sample)}`)
+      .join(' · ');
+    toast(`Module rejected the configuration — ${detail}`, 'error', 12000);
   } else {
     toast('DataPath configuration applied', 'success');
   }

@@ -817,7 +817,13 @@ class MockBackend(I2CInterface):
         p10 = {}
         p10[0x80] = 0x00                            # 128 DataPathDeinit all clear
         for a in range(0x81, 0x91): p10[a] = 0x00   # 129-144 lane controls + Apply*
-        for i in range(8): p10[0x91 + i] = 0x10     # 145-152 DPConfigLane: AppSel=1
+        # 145-152 DPConfigLane. AppSel 1 on all eight lanes is only a legal
+        # set where App 1 is eight lanes wide: on a module carrying two 4-lane
+        # ports, App 1 advertises lane 1 as its only starting lane, so lanes
+        # 5-8 running it is a configuration the module's own advertisement
+        # forbids. Lay the lanes out the way the descriptors allow instead.
+        default_sel = self._default_app_select()
+        for i in range(8): p10[0x91 + i] = default_sel[i] << 4
         # 153-173 Staged Control Set 0 signal integrity (Tables 8-83, 8-84).
         # Absent, these read as zero - which says every Rx CDR is bypassed on
         # a module that advertises having one, and that is not a default any
@@ -855,7 +861,7 @@ class MockBackend(I2CInterface):
         # ConfigStatus: all Success
         for a in range(0xCA, 0xCE): p11[a] = 0x11
         # DPConfigLane: AppSel=1
-        for i in range(8): p11[0xCE + i] = 0x10
+        for i in range(8): p11[0xCE + i] = default_sel[i] << 4
         regs[0x11] = p11
 
         # ==== Page 12h — Laser Tuning Control/Status (ONLY for tunable) ====
@@ -1223,7 +1229,7 @@ class MockBackend(I2CInterface):
         self._apply_time = time.time()
         self._apply_hot = hot
         self._apply_mask = mask
-        self._config_result = self._validate_staged_appsel()
+        self._config_result = self._validate_staged_appsel(mask, subset_ok=hot)
         # Validation and execution both act on the Staged Control Set as it
         # stood when the Apply arrived. Reading 10h again at the completion
         # step would commit whatever was staged since.
@@ -1687,23 +1693,108 @@ class MockBackend(I2CInterface):
             self._update_state_machine()         # let any Apply finish first
             self._apply_time = time.time()
             self._apply_mask = released
-            self._config_result = self._validate_staged_appsel()
+            # Releasing a deinit hold is not an Apply trigger: the module
+            # restarts the lanes it was holding, which is a subset of a Data
+            # Path only because the host chose to hold a subset.
+            self._config_result = self._validate_staged_appsel(released,
+                                                               subset_ok=True)
             self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
                                    for i in range(8)]
 
-    def _validate_staged_appsel(self):
+    def _default_app_select(self):
+        """An AppSel code per host lane that the descriptors actually allow.
+
+        Walking the lanes and taking the first Application whose
+        HostLaneAssignmentOptions offers this lane as a starting point gives
+        the same eight lanes of App 1 on a DR8, and lanes 1-4 of App 1 beside
+        lanes 5-8 of App 2 on a module built from two 4-lane ports.
+        """
+        apps = self._profile['app_descriptors']
+        sel, lane = [], 0
+        while lane < 8:
+            for n, desc in enumerate(apps, start=1):
+                width = (desc[2] >> 4) & 0x0F
+                if width and (desc[3] >> lane) & 1 and lane + width <= 8:
+                    sel += [n] * width
+                    lane += width
+                    break
+            else:
+                sel.append(0)                # no Application can start here
+                lane += 1
+        return sel
+
+    def _staged_datapaths(self):
+        """Split the Staged Control Set into the Data Paths it describes.
+
+        6.2.4.3: every lane of an Application instance carries the same AppSel
+        code, and the instance must be "completely allocated on lanes supported
+        for that Application" - a block as wide as the descriptor's
+        HostLaneCount, starting on a lane its HostLaneAssignmentOptions bitmap
+        allows. A run of lanes therefore holds a whole number of instances, or
+        it is not a valid allocation at all. Lanes staged AppSel 0 are unused
+        and belong to no Data Path.
+
+        Returns (lanes, code) pairs where code is the Table 8-101 result the
+        group has earned from validation alone.
+        """
+        staged = [(self._registers[0x10].get(0x91 + i, 0x10) >> 4) & 0x0F
+                  for i in range(8)]
+        apps = self._profile['app_descriptors']
+        groups, i = [], 0
+        while i < 8:
+            code, j = staged[i], i
+            while j < 8 and staged[j] == code:
+                j += 1
+            run = list(range(i, j))
+            i = j
+            if code == 0:
+                groups += [([lane], 0x1) for lane in run]
+            elif code > len(apps):
+                groups.append((run, 0x3))
+            else:
+                width = (apps[code - 1][2] >> 4) & 0x0F
+                allowed = apps[code - 1][3]
+                k = 0
+                while k < len(run):
+                    if (width and k + width <= len(run)
+                            and (allowed >> run[k]) & 1):
+                        groups.append((run[k:k + width], 0x1))
+                        k += width
+                    else:
+                        # Whatever is left over cannot start an instance here,
+                        # so those are the lanes to name - not the whole run,
+                        # which may hold perfectly good Data Paths ahead of it.
+                        groups.append((run[k:], 0x4))
+                        break
+        return groups
+
+    def _validate_staged_appsel(self, mask, subset_ok=False):
         """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).
 
         A module only accepts an AppSelCode it actually advertises; picking one
         it never announced is ConfigRejectedInvalidAppSel (3h). AppSelCode 0
-        means "no application" - deprovisioning a lane is always legal.
+        means "no application" - deprovisioning a lane is always legal. A code
+        the module does advertise still has to land on a set of lanes the
+        Application can occupy, or it is ConfigRejectedInvalidDataPath (4h).
+
+        8.14.5: configuration procedures act on entire Data Paths, "with the
+        exception of hot reconfiguration of SI attributes by ApplyImmediate",
+        so a regular Apply that triggers only some lanes of a Data Path is
+        ConfigRejectedPartialDataPath (7h). Table 8-101 does not order the
+        codes - "the reporting priority of the result status codes is not
+        specified" - and one value is reported on every lane of the group.
+
+        Every group is judged, triggered or not: which lanes actually take a
+        new status is _commit_apply's business, and it already answers it from
+        the same mask. Deciding it twice is how the two answers drift apart.
         """
-        advertised = len(self._profile['app_descriptors'])
-        result = []
-        for i in range(8):
-            raw = self._registers[0x10].get(0x91 + i, 0x10)
-            code = (raw >> 4) & 0x0F
-            result.append(0x1 if code <= advertised else 0x3)
+        result = [0x1] * 8
+        for lanes, code in self._staged_datapaths():
+            if (code == 0x1 and not subset_ok
+                    and not all((mask >> lane) & 1 for lane in lanes)):
+                code = 0x7
+            for lane in lanes:
+                result[lane] = code
         return result
 
     def _clear_acq_counters(self, mask, base):
