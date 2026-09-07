@@ -655,6 +655,40 @@ function reconfigSummary(cc) {
   return (cc.stepped_config_only ? 'Stepped + ' : 'All: ') + parts.join(' + ');
 }
 
+// 01h:155.5-4 (Table 8-51): the bit at 0x1A[5] is a choice only where the
+// module reports 11b. At 01b or 10b it squelches one way whatever the bit
+// says, so reading the bit out as the method reports the opposite of what the
+// module does the moment anything has set it.
+function _squelchMethodCode() {
+  const c = (AppState.caps && AppState.caps.controls) || {};
+  return c.squelch_method_tx;
+}
+
+function squelchMethodText(d) {
+  const code = _squelchMethodCode();
+  if (code === 3) return d.squelch_method_select ? 'Pav' : 'OMA';
+  if (code === 1) return 'OMA <span class="reg-meta">fixed by the module</span>';
+  if (code === 2) return 'Pav <span class="reg-meta">fixed by the module</span>';
+  if (code === 0) return '\u2014 <span class="reg-meta">no Tx squelching</span>';
+  return d.squelch_method_select ? 'Pav' : 'OMA';
+}
+
+function squelchMethodNote(d) {
+  const code = _squelchMethodCode();
+  if (code === 3) {
+    return d.squelch_method_select
+      ? 'Host selected: squelch on average power (Pav)'
+      : 'Host selected: squelch on modulation amplitude (OMA)';
+  }
+  if (code === 1 || code === 2) {
+    return 'The module squelches by reducing ' + (code === 2 ? 'Pav' : 'OMA')
+         + ' and does not let the host choose (01h:155.5-4), so this bit is '
+         + 'not what decides it';
+  }
+  if (code === 0) return 'This module has no Tx output squelching (01h:155.5-4 = 00b)';
+  return 'Squelch method';
+}
+
 function polaritySummary(list) {
   if (!Array.isArray(list) || !list.length) return '—';
   const tx = list.filter(l => l.input_tx_inverted).map(l => l.lane);
@@ -1625,9 +1659,9 @@ async function loadModuleControl() {
       <td class="td-addr">0x1A[6]</td>
       <td>—</td>
     </tr>
-    <tr title="${ctrlTip('SquelchMethodSelect', 5, d.squelch_method_select ? 'Squelch on average power (Pav)' : 'Squelch on modulation amplitude (OMA)')}">
+    <tr title="${ctrlTip('SquelchMethodSelect', 5, squelchMethodNote(d))}">
       <td>Squelch Method</td>
-      <td>${d.squelch_method_select ? 'Pav' : 'OMA'}</td>
+      <td>${squelchMethodText(d)}</td>
       <td class="td-addr">0x1A[5]</td>
       <td>—</td>
     </tr>`;

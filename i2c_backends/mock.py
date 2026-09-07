@@ -164,6 +164,9 @@ _ZR_800G = {
     # 04h:196.6: programmable output power is what relative supervision
     # thresholds are relative to, so this is the profile that has them.
     'rel_thr_cap_196':     0x40,
+    # 01h:155.5-4 = 10b: a coherent line side squelches by reducing average
+    # power, and the method is the module's, not the host's.
+    'controls_155':        0x2F,
     # 04h:129.5, the 300 GHz grid CMIS 5.4 added, alongside fine tuning.
     'grid_sup_129':        0xA0,
     # 12h:216-217, U4 halves of a dB: +2.0/+1.5 dB and -2.0/-1.5 dB.
@@ -289,6 +292,9 @@ _DR8_1600G = {
         'rx': (4.0, -6.1, 3.5, -5.6),
     },
     'cmis_rev':            0x54,
+    # 01h:155.5-4 = 11b: this one lets the host pick OMA or Pav, which is the
+    # only case where the bit at Lower 0x1A.5 decides anything.
+    'controls_155':        0x3F,
     'lanes':               8,
     'default_polarity_tx': 0x00,
     'default_polarity_rx': 0x00,

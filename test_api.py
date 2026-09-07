@@ -8158,6 +8158,115 @@ class TestBankBroadcastChangesWhatAWriteMeans(CMISTestCase):
         self.assertEqual(self._tx_off(), [1, 10])
 
 
+class TestWhoChoosesTheSquelchMethod(CMISTestCase):
+    """01h:155.5-4 (Table 8-51) says who decides how a Tx output is squelched:
+    00b none, 01b the module reduces OMA, 10b the module reduces Pav, and only
+    11b means "Host controls the method". The bit the host would use is Lower
+    0x1A.5 (Table 8-11).
+
+    Every profile reported 01b, and the control was accepted regardless - so
+    writing it on a module that squelches by OMA left the Module Control panel
+    reporting "Pav", the opposite of what the module does, with the write
+    reported as a success."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _method(self):
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data'][
+                'controls']['squelch_method_tx']
+
+    def _set(self, value, code=200):
+        rv = self.client.post('/api/module/control',
+                              data=json.dumps({'squelch_method': value}),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def _bit(self):
+        return self.assertOk(
+            self.client.get('/api/module/control'))['data'][
+                'squelch_method_select']
+
+    def test_a_module_that_fixes_the_method_refuses_the_control(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._method(), 1)
+        body = self._set(True, 400)
+        self.assertIn('01h:155.5-4', body['message'])
+        self.assertIn('OMA', body['message'])
+        self.assertIs(self._bit(), False, 'the refused write moved the bit')
+
+    def test_the_other_fixed_method_is_named_correctly(self):
+        """A message that always said OMA would pass the test above."""
+        self._connect('mock_coherent_zr')
+        self.assertEqual(self._method(), 2)
+        body = self._set(True, 400)
+        self.assertIn('Pav', body['message'])
+
+    def test_a_module_that_offers_the_choice_accepts_it(self):
+        """A gate that refused everything would pass both tests above and take
+        the control away from the modules that do have it."""
+        self._connect('mock_1600g_dr8')
+        self.assertEqual(self._method(), 3)
+        self._set(True)
+        self.assertIs(self._bit(), True)
+        self._set(False)
+        self.assertIs(self._bit(), False)
+
+    def test_some_profile_offers_the_choice_and_some_do_not(self):
+        """With every profile reporting the same code, neither branch of the
+        gate was ever taken."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        codes = set()
+        for name in sorted(n for n in i2c_interface._BACKENDS
+                           if n.startswith('mock')):
+            self._connect(name)
+            codes.add(self._method())
+        self.assertIn(3, codes, 'no profile lets the host choose the method')
+        self.assertTrue(codes - {3}, 'every profile lets the host choose')
+
+    def test_the_other_controls_in_the_byte_still_work(self):
+        """0x1A packs unrelated controls, and the new refusal must not become
+        a refusal of the whole register."""
+        self._connect('mock_dr8')
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'allow_lp_hw': False}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/control'))['data']
+        self.assertIs(d['low_pwr_allow_request_hw'], False)
+
+    def test_the_panel_reports_the_method_in_force_not_the_bit(self):
+        """Where the module fixes the method, the bit is not what decides it,
+        so rendering the bit reports the opposite of the truth."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function squelchMethodText('):]
+        body = body[:body.index(chr(10) + '}')]
+        # Each code bound to what it renders: asserting the branches merely
+        # exist says nothing about whether they say different things, and two
+        # of them saying the same thing is the whole defect.
+        self.assertRegex(
+            body, r"code === 3\) return d\.squelch_method_select \? 'Pav' : 'OMA'",
+            'where the host chooses, the readout ignores the bit it chose with')
+        self.assertRegex(body, r"code === 1\) return 'OMA",
+            'a module that fixes OMA is not reported as OMA')
+        self.assertRegex(body, r"code === 2\) return 'Pav",
+            'a module that fixes Pav is not reported as Pav')
+        self.assertIn('fixed by the module', body,
+                      'nothing on screen says the bit is not the decision')
+        row = js[js.index("<td>Squelch Method</td>"):]
+        row = row[:row.index('</tr>')]
+        self.assertIn('squelchMethodText(d)', row,
+                      'the row still renders the raw bit')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

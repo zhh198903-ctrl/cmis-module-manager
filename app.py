@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.20.0'
+__version__ = '2.21.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1054,6 +1054,23 @@ def api_module_control_set():
         if bad:
             return bad
         action = body.get('action', '')
+        # 01h:155.5-4 (Table 8-51): only 11b means "Host controls the method
+        # for Tx output squelching". At 01b or 10b the module squelches one
+        # way and the bit is not a choice - writing it leaves the panel
+        # reporting a method the module is not using.
+        if 'squelch_method' in body:
+            method = (_state.get('caps') or {}).get('controls', {}).get(
+                'squelch_method_tx')
+            if method != 3:
+                names = {0: 'has no Tx output squelching',
+                         1: 'squelches by reducing OMA',
+                         2: 'squelches by reducing Pav'}
+                return _err('This module %s and does not let the host choose '
+                            'the method (01h:155.5-4 = %02db)'
+                            % (names.get(method, 'does not advertise the '
+                                                 'choice'),
+                               int(bin(method or 0)[2:]) if method else 0), 400)
+
         # 01h:156.7 advertises the control (Table 8-11). Setting a bit the
         # module does not implement asks for a write policy it will not apply
         # while telling the operator it is on.
