@@ -9191,6 +9191,190 @@ class TestChangingAPathThatIsStillRunning(CMISTestCase):
                       'nothing says the change takes two Applies')
 
 
+
+class TestSignalIntegrityTheModuleCannotCarryOut(CMISTestCase):
+    """Table 8-53 publishes a ceiling for each host-controlled signal
+    integrity target - TxInputEqMax at 01h:153.3-0, RxOutputEqPostCursorMax
+    and RxOutputEqPreCursorMax in the two nibbles of 01h:154 - and the set of
+    Rx output amplitude codes that exist in 01h:153.7-4. Asking for more than
+    the module advertises is ConfigRejectedInvalidSI (5h), the last named
+    rejection in Table 8-101 that nothing here could produce.
+
+    Two reasons it could not. The mock never looked at the signal integrity
+    half of the Staged Control Set at all, so an Apply committed targets the
+    module had never said it could reach. And every shipped profile advertised
+    the largest value that fits in each field - 7, 7, 7 and all four amplitude
+    codes - so no module with real restrictions had ever been modelled, and
+    the pre- and post-cursor maxima, being equal, could have been read from
+    each other's nibble with nothing to notice."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self, sel=None):
+        body = {'app_select': sel or [1, 1, 1, 1, 2, 2, 2, 2], 'apply': True}
+        self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+        time.sleep(1.2)
+
+    def _status(self):
+        return [l['config_status'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _write(self, page, addr, data):
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': page, 'address': addr, 'data': data}),
+            content_type='application/json'))
+
+    def _adv(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['si_advertised']
+
+    # ---- a profile whose limits are not simply "the largest that fits" ----
+
+    def test_one_profile_advertises_real_restrictions(self):
+        self._connect()
+        adv = self._adv()
+        self.assertEqual(adv['tx_input_eq_max'], 3)
+        self.assertEqual(adv['rx_output_eq_pre_cursor_max'], 5)
+        self.assertEqual(adv['rx_output_eq_post_cursor_max'], 2)
+        self.assertEqual(adv['rx_output_levels'], [0, 1])
+
+    def test_the_two_cursor_maxima_are_told_apart(self):
+        """Equal on every other profile, so this is the only place a swap of
+        the two nibbles of 01h:154 would show up."""
+        self._connect()
+        adv = self._adv()
+        self.assertNotEqual(adv['rx_output_eq_pre_cursor_max'],
+                            adv['rx_output_eq_post_cursor_max'],
+                            'the pre- and post-cursor maxima are equal again, '
+                            'so reading either from the wrong nibble is free')
+
+    def test_the_profile_stages_nothing_it_would_refuse(self):
+        """A module advertising codes 0-1 while staging code 2 would reject
+        its own power-up configuration."""
+        self._connect()
+        self._apply()
+        for lane, name in enumerate(self._status()):
+            self.assertEqual(name, 'ConfigSuccess',
+                             'lane %d boots on signal integrity settings this '
+                             'module refuses: %s' % (lane + 1, name))
+
+    # ---- the refusal itself ----------------------------------------------
+
+    def test_a_target_above_the_advertised_maximum_is_refused(self):
+        self._connect()
+        # 10h:162 carries the Rx pre-cursor target for lanes 1 and 2; this
+        # module advertises 5 as the most it can reach.
+        self._write(0x10, 162, [0x06])
+        self._apply()
+        got = self._status()
+        for lane in range(4):
+            self.assertEqual(got[lane], 'ConfigRejectedInvalidSI',
+                             'lane %d accepted a pre-cursor target above the '
+                             'maximum the module advertises' % (lane + 1))
+
+    def test_the_maximum_itself_is_accepted(self):
+        """The ceiling is a value the module reaches, not one it refuses."""
+        self._connect()
+        self._write(0x10, 162, [0x05])
+        self._apply()
+        self.assertEqual(set(self._status()), {'ConfigSuccess'})
+
+    def test_an_amplitude_code_the_module_does_not_have_is_refused(self):
+        self._connect()
+        self._write(0x10, 170, [0x22])        # code 2 on lanes 1 and 2
+        self._apply()
+        got = self._status()
+        for lane in range(4):
+            self.assertEqual(got[lane], 'ConfigRejectedInvalidSI',
+                             'lane %d accepted an amplitude code the module '
+                             'does not list' % (lane + 1))
+
+    def test_only_the_data_path_carrying_it_is_refused(self):
+        """One value is reported on every lane of a Data Path, and on no
+        other - the second port here is untouched."""
+        self._connect()
+        self._write(0x10, 162, [0x06])        # lanes 1-2, so the first port
+        self._apply()
+        got = self._status()
+        self.assertEqual(set(got[:4]), {'ConfigRejectedInvalidSI'})
+        self.assertEqual(set(got[4:]), {'ConfigSuccess'},
+                         'the other Data Path was refused for a setting on '
+                         'lanes it does not own')
+
+    def test_a_control_the_module_does_not_advertise_is_not_judged(self):
+        """A target register a module never announced holds nothing it has to
+        honour, so a value in it cannot make the configuration invalid."""
+        self._connect('mock_sr8')
+        adv = self._adv()
+        self.assertFalse(adv['rx_output_amplitude_control'],
+                         'this test needs a module without amplitude control')
+        self._write(0x10, 170, [0xFF])
+        self._apply([1] * 8)
+        self.assertEqual(set(self._status()), {'ConfigSuccess'},
+                         'a register the module does not implement was held '
+                         'against the configuration')
+
+    def test_a_lane_being_freed_is_not_judged_on_settings_it_gives_up(self):
+        """6.2.3.2: an unused lane "is unused and not part of a Data Path",
+        and what its other registers hold "should be ignored". Holding a
+        signal integrity value against a lane on its way out would refuse a
+        deprovision for a setting that is about to stop mattering."""
+        self._connect()
+        # 10h:172 carries the amplitude code for lanes 5 and 6; code 2 is one
+        # this module does not have.
+        self._write(0x10, 172, [0x22])
+        deactivated(self.client)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1, 1, 1, 1, 0, 0, 0, 0],
+                             'dp_deinit_mask': 0x00, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.4)
+        got = self._status()
+        for lane in range(4, 8):
+            self.assertEqual(got[lane], 'ConfigSuccess',
+                             'lane %d was refused for a signal integrity '
+                             'setting on a lane it no longer carries: %s'
+                             % (lane + 1, got[lane]))
+
+    # ---- and what the table shows ----------------------------------------
+
+    def test_a_value_over_its_limit_is_marked(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('const siLimit = (key) =>'):]
+        body = body[:body.index('const lanes =')]
+        self.assertRegex(body, r'max !== undefined && v > max',
+                         'the cell never compares its value to the limit')
+        self.assertIn('flag-active', body,
+                      'an out-of-range target is not marked as a fault')
+        self.assertIn('rx_output_levels.includes(v)', body,
+                      'an amplitude code the module does not have is not '
+                      'marked')
+        for key in ('tx_input_eq_max', 'rx_output_eq_pre_cursor_max',
+                    'rx_output_eq_post_cursor_max'):
+            self.assertIn(key, body, '%s is never consulted' % key)
+
+    def test_the_mark_says_what_the_module_would_answer(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('const siLimit = (key) =>'):]
+        body = body[:body.index('const lanes =')]
+        self.assertEqual(body.count('ConfigRejectedInvalidSI'), 2,
+                         'the tooltip does not name the rejection this earns')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.27.0<br>
+      <b>版本</b>　2.28.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.27.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.27.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.28.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.28.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1602,6 +1602,26 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
+    <span><b>信号完整性设置也会被校验了。</b>
+    模块在 <code>01h:153–154</code> 里声明了三个上限——
+    Tx 输入均衡最大值、Rx 输出均衡的<b>前/后游标各自的</b>最大值——
+    以及它到底有哪几个 Rx 输出幅度码。
+    要得比模块声明的多，就是 <code>ConfigRejectedInvalidSI</code>（5h）。<br>
+    以前演示模块<b>根本不看</b>暂存区的信号完整性那一半，
+    Apply 会把模块从没说过自己能做到的值一起提交；
+    而且<b>八个演示模块把三个上限全都声明成了字段能装下的最大值</b>
+    （7、7、7，四个幅度码全有），
+    所以从来没有一个“有真实限制”的模块可以用来对照——
+    前后游标两个上限相等，意味着把 <code>01h:154</code> 的两个半字节读反了也看不出来。<br>
+    现在 <code>mock_fr4x2</code>（本来就是那个“声明得比较少”的演示模块）
+    声明的是：Tx 均衡最大 <b>3</b>、前游标最大 <b>5</b>、后游标最大 <b>2</b>、
+    只有 <b>0 和 1</b> 两个幅度码。
+    Signal Integrity 表里<b>超出上限的数值会标红</b>，
+    悬停写明模块声明的上限，以及这样 Apply 会得到哪个拒绝码。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
     <span><b>内置演示模块现在会按这些规则真的拒绝。</b>
     以前它只校验 AppSel 码有没有被声明过，别的一律放行，
     所以 4h、7h 这些理由在界面上<b>从来没出现过</b>。
@@ -2526,7 +2546,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.27.0<br>
+    CMIS Module Manager 操作手册 v2.28.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1589,10 +1589,35 @@ function renderSignalIntegrity(d) {
     `<th title="${esc(tip)}">${esc(label)}<span class="reg-meta">${esc(reg)}</span></th>`
   ).join('') + '</tr>';
 
+  // Table 8-53 publishes a ceiling for each host-controlled target and the
+  // set of amplitude codes that exist. Stating those limits in a footnote and
+  // printing the values as bare numbers left the comparison to the reader -
+  // and a value that breaks one is exactly what the module answers
+  // ConfigRejectedInvalidSI (5h) to, with nothing on the row to say so.
+  const siLimit = (key) => {
+    if (key === 'tx_input_eq_target') return adv.tx_input_eq_max;
+    if (key === 'rx_eq_pre_cursor') return adv.rx_output_eq_pre_cursor_max;
+    if (key === 'rx_eq_post_cursor') return adv.rx_output_eq_post_cursor_max;
+    return undefined;
+  };
   const cell = (key, v) => {
     if (typeof v === 'boolean') {
       return v ? '<span class="flag-ok">On</span>'
                : `<span class="flag-warn">${key === 'rx_cdr_enable' ? 'Bypassed' : 'Off'}</span>`;
+    }
+    const max = siLimit(key);
+    if (max !== undefined && v > max) {
+      return `<span class="flag-active" title="${esc(
+        'Above the maximum this module advertises (' + max
+        + ', 01h:153-154). An Apply carrying this earns '
+        + 'ConfigRejectedInvalidSI.')}">${esc(String(v))}</span>`;
+    }
+    if (key === 'rx_output_amplitude' && Array.isArray(adv.rx_output_levels)
+        && adv.rx_output_levels.length && !adv.rx_output_levels.includes(v)) {
+      return `<span class="flag-active" title="${esc(
+        'This module advertises amplitude codes '
+        + adv.rx_output_levels.join(', ') + ' only (01h:153.7-4). An Apply '
+        + 'carrying this earns ConfigRejectedInvalidSI.')}">${esc(String(v))}</span>`;
     }
     return `<span style="font-family:var(--font-mono)">${esc(String(v))}</span>`;
   };

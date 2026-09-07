@@ -484,6 +484,13 @@ _FR4X2_800G = {
         (0x4F, 0x1D, 0x44, 0x01),            # AppSel 1: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 1
         (0x4F, 0x1D, 0x44, 0x10),            # AppSel 2: 400GAUI-4 → 400G-FR4 (4H/4M), host lane 5
     ],
+    # This profile is the deliberately restricted one (it already declines
+    # force-squelch and Rx polarity flip), so it is where the signal integrity
+    # limits are real: fewer amplitude codes than the four that exist, and a
+    # different ceiling for each equalizer cursor.
+    'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
+    'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
+    'scs_rx_amplitude': 0x11,                # code 1 - one this module has
     'link_lengths': {'smf_len_byte': 0x14},   # 20 × 0.1 km = 2 km
 }
 
@@ -1801,7 +1808,9 @@ class MockBackend(I2CInterface):
         """
         result = [0x1] * 8
         for lanes, code, appsel in self._staged_datapaths():
-            if (code == 0x1 and not subset_ok
+            if code == 0x1 and appsel and self._invalid_si(lanes):
+                code = 0x5
+            elif (code == 0x1 and not subset_ok
                     and not all((mask >> lane) & 1 for lane in lanes)):
                 code = 0x7
             elif code == 0x1 and self._needs_deactivated(lanes, appsel):
@@ -1816,6 +1825,46 @@ class MockBackend(I2CInterface):
             for lane in lanes:
                 result[lane] = code
         return result
+
+    def _invalid_si(self, lanes) -> bool:
+        """Whether the staged signal integrity settings are ones this module
+        said it could carry out.
+
+        Table 8-53 publishes a maximum for each host-controlled target and the
+        set of Rx output amplitude codes that exist; asking for more than the
+        module advertises is ConfigRejectedInvalidSI (5h). Only the controls
+        01h:161-162 announces are judged - a target register a module does not
+        implement holds nothing it has to honour.
+        """
+        p01 = self._registers.get(0x01, {})
+        b153, b154 = p01.get(0x99, 0), p01.get(0x9A, 0)
+        # Read straight from the advertisement bytes, the way the bank
+        # broadcast and hot reconfiguration gates do: a backend decoding its
+        # own registers keeps this file free of cmis_registers.
+        b161, b162 = p01.get(0xA1, 0), p01.get(0xA2, 0)
+        eq = (b162 >> 3) & 0x03                 # 162.4-3 RxOutputEqControl
+        checks = []
+        if (b161 >> 2) & 1:                     # 161.2 host-controlled Tx eq
+            checks.append((0x9C, b153 & 0x0F))
+        if eq in (1, 3):
+            checks.append((0xA2, b154 & 0x0F))          # pre-cursor max
+        if eq in (2, 3):
+            checks.append((0xA6, (b154 >> 4) & 0x0F))   # post-cursor max
+        p10 = self._registers.get(0x10, {})
+        for base, ceiling in checks:
+            for lane in lanes:
+                raw = p10.get(base + lane // 2, 0)
+                value = (raw >> 4) & 0x0F if lane % 2 else raw & 0x0F
+                if value > ceiling:
+                    return True
+        if (b162 >> 2) & 1:                     # 162.2 amplitude control
+            levels = [i for i in range(4) if (b153 >> (4 + i)) & 1]
+            for lane in lanes:
+                raw = p10.get(0xAA + lane // 2, 0)
+                code = (raw >> 4) & 0x0F if lane % 2 else raw & 0x0F
+                if code not in levels:
+                    return True
+        return False
 
     def _needs_deactivated(self, lanes, appsel) -> bool:
         """Whether this group's change is one 6.2.4.3 allows only from
