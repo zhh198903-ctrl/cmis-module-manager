@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.16.0<br>
+      <b>版本</b>　2.17.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -617,8 +617,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.16.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.16.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.17.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.17.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1962,7 +1962,13 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <span class="callout-icon">ℹ</span>
     <span><b>CMIS 5.4 新增两项</b>，模块广告支持时才出现：
     <br>· <b>300 GHz 栅格</b>（栅格码 <code>1001b</code>，广告位 <code>04h:129[5]</code>，
-    通道范围 <code>04h:166–169</code>）——栅格下拉里会多出一档 300 GHz。
+    通道范围 <code>04h:166–169</code>）——栅格下拉里会多出一档 300 GHz，
+    带自己的通道范围提示，写超范围的通道号也会被拦下。
+    <br><span class="label">范围表本来只读到栅格码 8（<code>04h:130–165</code>），
+    而下拉、范围提示、写入校验<b>全部</b>以它为准；
+    于是 300 GHz 虽然列在上方的能力行里，却选不中、也不受校验。
+    现在模块广告了就多读那四个字节，不广告就不读——
+    那几个字节在 5.3 模块上不保证有意义。</span>
     <br>· <b>相对光功率监督门限</b>（广告位 <code>04h:196[6]</code>，门限 <code>12h:216–217</code>）——
     门限以<b>相对标称发射功率的偏移</b>给出，而非绝对值，且<b>对所有通道共用一组</b>。
     高门限 = 标称 + (1+offset)×0.5 dB，低门限 = 标称 − (1+offset)×0.5 dB。
@@ -2291,7 +2297,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.16.0<br>
+    CMIS Module Manager 操作手册 v2.17.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.16.0'
+__version__ = '2.17.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -238,6 +238,18 @@ def _masks_per_bank(value, banks: int) -> list:
     else:
         vals = [int(value) & 0xFF]
     return (vals + [0] * banks)[:banks]
+
+
+def _read_grid_ranges(with_300: bool) -> bytes:
+    """04h:130-165, plus 166-169 when the module advertises the 300 GHz grid.
+
+    The two are contiguous and hold the same structure, so this is one read;
+    what varies is how far it goes. Reading the extra four bytes on a module
+    that does not advertise that grid would turn whatever happens to be there
+    into an advertised channel range.
+    """
+    page, addr, length = cmis.REG_GRID_CHANNELS
+    return _read_upper(page, addr, length + (4 if with_300 else 0))
 
 
 def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
@@ -1832,13 +1844,8 @@ def api_laser_get():
         fine_tuning_supported = bool((grid_sup[1] >> 7) & 1)
 
         grid_channel_ranges = cmis.parse_grid_channel_ranges(
-            _read_upper(*cmis.REG_GRID_CHANNELS))
-
-        grid_300_range = None
-        if grid_300_supported:
-            g300 = _read_upper(*cmis.REG_GRID_300_CHANNELS)
-            grid_300_range = [struct.unpack('>h', g300[0:2])[0],
-                              struct.unpack('>h', g300[2:4])[0]]
+            _read_grid_ranges(grid_300_supported))
+        grid_300_range = grid_channel_ranges.get(9)
         # 04h:196.6 advertises the 5.4 power-relative supervision thresholds.
         rel_supported = bool((_read_upper(*cmis.REG_REL_THR_CAP)[0] >> 6) & 1)
         rel_thresholds = (cmis.parse_relative_thresholds(
@@ -1944,8 +1951,11 @@ def api_laser_set():
         pwr_hi = struct.unpack('>h', _read_upper(*cmis.REG_PROG_PWR_MAX))[0] * 0.01
         fine_lo = struct.unpack('>h', _read_upper(*cmis.REG_FINE_LOW_OFFSET))[0] * 0.001
         fine_hi = struct.unpack('>h', _read_upper(*cmis.REG_FINE_HIGH_OFFSET))[0] * 0.001
-        ch_ranges = cmis.parse_grid_channel_ranges(
-            _read_upper(*cmis.REG_GRID_CHANNELS))
+        # The same gating as the GET side: without it the 300 GHz grid has no
+        # advertised range here, and a channel written to it is the one channel
+        # this handler never checks.
+        grid_300 = bool((_read_upper(*cmis.REG_GRID_SUPPORTED)[1] >> 5) & 1)
+        ch_ranges = cmis.parse_grid_channel_ranges(_read_grid_ranges(grid_300))
         _set_page(0x12)
 
         written = 0

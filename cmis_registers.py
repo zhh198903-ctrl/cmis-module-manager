@@ -187,11 +187,12 @@ REG_CONFIG_STATUS   = (0x11, 0xCA, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
 # ---------------------------------------------------------------------------
 REG_GRID_SUPPORTED   = (0x04, 0x80, 2)   # 128-129: grid support + fine tuning
 REG_GRID_CHANNELS    = (0x04, 0x82, 36)  # 130-165: S16 low/high per grid (9 grids × 4)
+                                         # 166-169 continues it with the 300 GHz
+                                         # grid (5.4), read only when advertised
 REG_FINE_RESOLUTION  = (0x04, 0xBE, 2)   # 190-191: U16 0.001 GHz units
 REG_FINE_LOW_OFFSET  = (0x04, 0xC0, 2)   # 192-193: S16 0.001 GHz
 REG_FINE_HIGH_OFFSET = (0x04, 0xC2, 2)   # 194-195: S16 0.001 GHz
 REG_PROG_PWR_MIN     = (0x04, 0xC6, 2)   # 198-199: S16 0.01 dBm
-REG_GRID_300_CHANNELS= (0x04, 0xA6, 4)   # 166-169: S16 low/high for the 300 GHz grid (5.4)
 REG_REL_THR_CAP      = (0x04, 0xC4, 1)   # 196: bit6 relative Tx power thresholds supported (5.4)
 REG_PROG_PWR_MAX     = (0x04, 0xC8, 2)   # 200-201: S16 0.01 dBm
 
@@ -229,14 +230,19 @@ def parse_tuning_flags(byte_val: int) -> dict:
 
 
 def parse_grid_channel_ranges(data: bytes) -> dict:
-    """04h:130-165, an S16 low/high pair per grid code 0-8.
+    """04h:130 onwards, an S16 low/high pair per grid code.
 
     The module says here which channel numbers are legal on each grid it
     supports, which is the only way for a host to know before it writes.
+
+    Codes 0-8 occupy 130-165 and CMIS 5.4 continued the same table at 166-169
+    with grid code 9, the 300 GHz grid. How many codes this covers is decided
+    by how many bytes the caller passes: 166-169 is not required to mean
+    anything on a module that does not advertise that grid.
     """
     import struct as _struct
     out = {}
-    for code in range(9):
+    for code in range(len(data) // 4):
         off = code * 4
         if off + 4 > len(data):
             break

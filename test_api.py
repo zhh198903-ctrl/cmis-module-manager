@@ -7626,6 +7626,129 @@ class TestSupervisionRelativeToTheProgrammedPower(CMISTestCase):
         self.assertNotIn(0x61, pages)
 
 
+class TestTheGridCmis54Added(CMISTestCase):
+    """CMIS 5.4 added the 300 GHz grid: advertised at 04h:129.5, grid code 9,
+    with its channel range continuing the same table at 04h:166-169. The tool
+    read the advertisement and listed "300 GHz" among the supported grids -
+    then stopped. The channel range table it drives everything else from
+    covered codes 0-8 only, so the grid was never offered in the selector, had
+    no range hint, and a channel written to it was the one channel the laser
+    handler never validated."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _post(self, body, code=200):
+        rv = self.client.post('/api/module/laser', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def test_the_grid_carries_a_channel_range_like_every_other(self):
+        self._connect()
+        d = self._laser()
+        self.assertEqual(d['grid_channel_ranges'].get('9'), [-13, 13])
+        # Reported on its own as well: callers that predate the grid being
+        # part of the range table read it from here, and it is the field the
+        # negative case asserts is None.
+        self.assertEqual(d['grid_300ghz_range'], [-13, 13])
+
+    def test_the_advertised_grids_and_the_selectable_ones_agree(self):
+        """The panel listed a grid the selector could not offer, because the
+        selector is built from the range table and the capability line is
+        not."""
+        self._connect()
+        d = self._laser()
+        self.assertIn('300 GHz', d['grids_supported'])
+        names = {int(k): v for k, v in d['grid_channel_ranges'].items()}
+        self.assertIn(9, names)
+
+    def test_a_channel_outside_the_range_is_refused(self):
+        self._connect()
+        body = self._post({'lanes': [{'lane': 1, 'grid_code': 9,
+                                      'channel': 99}]}, 400)
+        self.assertIn('300 GHz', body['message'])
+        self.assertIn('-13 to 13', body['message'])
+        self.assertIn('04h:166-169', body['message'])
+
+    def test_a_channel_inside_the_range_is_accepted(self):
+        """A validator that refuses everything would pass the test above."""
+        self._connect()
+        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 5}]})
+        lane = self._laser()['lanes'][0]
+        self.assertEqual(lane['grid_code'], 9)
+        self.assertEqual(lane['channel'], 5)
+
+    def test_the_lane_gets_the_range_hint(self):
+        self._connect()
+        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 0}]})
+        self.assertEqual(self._laser()['lanes'][0]['channel_range'], [-13, 13])
+
+    def test_the_extra_bytes_are_not_read_without_the_advertisement(self):
+        """04h:166-169 is a 5.4 addition and is not required to mean anything
+        on a module that does not advertise the grid - reading it anyway would
+        turn whatever is there into an advertised channel range."""
+        self._connect()
+        poke(0x04, 0x81, 0x80)               # fine tuning only, no 300 GHz
+        d = self._laser()
+        self.assertIs(d['grid_300ghz_supported'], False)
+        self.assertNotIn('9', d['grid_channel_ranges'])
+        self.assertIsNone(d['grid_300ghz_range'])
+
+    def test_an_unadvertised_grid_is_not_validated_into_existence(self):
+        """With the grid unadvertised there is no range, and the handler must
+        not invent one - it has nothing to check against."""
+        self._connect()
+        poke(0x04, 0x81, 0x80)
+        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 99}]})
+
+    def test_the_manual_does_not_promise_what_no_module_can_show(self):
+        """The manual's CMIS 5.4 table marked both E17 (the 300 GHz grid) and
+        E9 (relative power thresholds) as supported while neither had a code
+        path anything could reach: no shipped profile advertised either bit,
+        so the claim could not be checked by using the tool. It is checked
+        here instead, against the profile that now demonstrates both."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer',
+                            'CMIS\u6a21\u5757\u7ba1\u7406\u5de5\u5177\u64cd\u4f5c\u624b\u518c.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        for feature, marker in (('E17', '04h:129[5]'),
+                                ('E9', '04h:196[6]')):
+            row = html[html.index('<b>%s</b>' % feature):]
+            row = row[:row.index('</tr>')]
+            self.assertIn(marker, row)
+            self.assertIn('\u5df2\u652f\u6301', row,
+                          'the manual no longer claims %s; this test should '
+                          'be updated with it' % feature)
+        self._connect()
+        d = self._laser()
+        self.assertIs(d['grid_300ghz_supported'], True)
+        self.assertIn('9', d['grid_channel_ranges'])
+        self.assertIs(d['relative_power_thresholds_supported'], True)
+        self.assertTrue(any(l['relative_thresholds_enabled']
+                            for l in d['lanes']))
+
+    def test_the_parser_sizes_itself_to_what_it_is_given(self):
+        import cmis_registers as c
+        # Two shorts per code, so codes 4 and 5 are shorts 8-11.
+        data = struct.pack('>20h', *([0] * 8 + [-1, 1, -2, 2] + [0] * 8))
+        self.assertEqual(c.parse_grid_channel_ranges(data[:36]), {4: [-1, 1],
+                                                                 5: [-2, 2]})
+        self.assertEqual(c.parse_grid_channel_ranges(data[:40]), {4: [-1, 1],
+                                                                 5: [-2, 2]})
+        # Code 9 lives in the last four bytes, which only a 40-byte read has.
+        wide = struct.pack('>20h', *([0] * 18 + [-7, 7]))
+        self.assertEqual(c.parse_grid_channel_ranges(wide[:36]), {})
+        self.assertEqual(c.parse_grid_channel_ranges(wide[:40]), {9: [-7, 7]})
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

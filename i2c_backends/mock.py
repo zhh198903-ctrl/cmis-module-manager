@@ -164,6 +164,8 @@ _ZR_800G = {
     # 04h:196.6: programmable output power is what relative supervision
     # thresholds are relative to, so this is the profile that has them.
     'rel_thr_cap_196':     0x40,
+    # 04h:129.5, the 300 GHz grid CMIS 5.4 added, alongside fine tuning.
+    'grid_sup_129':        0xA0,
     # 12h:216-217, U4 halves of a dB: +2.0/+1.5 dB and -2.0/-1.5 dB.
     'rel_thr_offsets_216': (0x32, 0x32),
     # Lanes 1-4 were left switched to relative supervision by whoever
@@ -713,8 +715,9 @@ class MockBackend(I2CInterface):
         if p['tunable']:
             p04 = {}
             p04[0x80] = 0xB0                # 75/100/50 GHz grids
-            p04[0x81] = 0x80                # FineTuningSupported
-            for a in range(0x82, 0xA6): p04[a] = 0x00
+            p04[0x81] = p.get('grid_sup_129', 0x80)   # bit7 FineTuningSupported,
+                                                     # bit6 150 GHz, bit5 300 GHz
+            for a in range(0x82, 0xAA): p04[a] = 0x00
             # 50 GHz grid channel range ±80
             p04[0x92] = 0xFF; p04[0x93] = 0xB0    # -80
             p04[0x94] = 0x00; p04[0x95] = 0x50    # +80
@@ -725,6 +728,12 @@ class MockBackend(I2CInterface):
             # so it has to say which channels are legal on it as well.
             p04[0x9E] = 0xFF; p04[0x9F] = 0xCB    # -53
             p04[0xA0] = 0x00; p04[0xA1] = 0x35    # +53
+            # 04h:166-169 continues the channel range table with grid code 9.
+            # The C-band span the other grids describe is about ±4000 GHz
+            # (50 GHz × ±80, 100 GHz × ±40), so a 300 GHz grid spans ±13.
+            if p.get('grid_sup_129', 0x80) & 0x20:
+                p04[0xA6] = 0xFF; p04[0xA7] = 0xF3    # -13
+                p04[0xA8] = 0x00; p04[0xA9] = 0x0D    # +13
             # Fine tuning: 1 MHz resolution, ±12.5 GHz
             p04[0xBE] = 0x00; p04[0xBF] = 0x01
             v = struct.pack(">h", -12500)
