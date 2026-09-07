@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.28.0'
+__version__ = '2.29.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -934,6 +934,16 @@ def api_datapath_get():
         for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
             active_app_select += cmis.unpack_appselect(raw)
 
+        # Table 8-106: the Active Control Set having been updated is not the
+        # same as the hardware running it. DPInitPending says a Provision has
+        # copied a staged set across but the transit through DPInit that
+        # commits it "is still pending", so "the Active Control Set content
+        # may deviate from the actual hardware configuration" - which is the
+        # one caveat on reading 11h as what the module is doing.
+        dp_init_pending = []
+        for _bank, raw in _read_banks(*cmis.REG_DP_INIT_PENDING):
+            dp_init_pending += cmis.parse_dp_init_pending(raw[0])
+
         # Bank 0's values are what the summary fields have always reported.
         tx_disable_mask = tx_disable_masks[0]
         dp_deinit_mask = dp_deinit_masks[0]
@@ -952,6 +962,8 @@ def api_datapath_get():
                 'app_select': app_select[i] if i < len(app_select) else 0,
                 'active_app_select': (active_app_select[i]
                                       if i < len(active_app_select) else 0),
+                'dp_init_pending': (dp_init_pending[i]
+                                    if i < len(dp_init_pending) else False),
                 'tx_polarity_flip': bool((tx_pol_masks[b] >> bit) & 1),
                 'rx_polarity_flip': bool((rx_pol_masks[b] >> bit) & 1),
             })

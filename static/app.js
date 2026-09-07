@@ -1436,6 +1436,22 @@ async function loadDatapath() {
           + '. The module did not accept the staged configuration.')}">`
         + `running ${appName(active)}</div>`
       : '';
+    // Table 8-106: with DPInitPending set, a Provision has copied the staged
+    // set into the Active Control Set but the transit through DPInit that
+    // commits it has not happened - so 11h, which this page reads as "what
+    // the module is running", "may deviate from the actual hardware
+    // configuration". On a module supporting neither intervention-free
+    // procedure that is the normal outcome of Apply, and the Data Path has
+    // to be cycled by hand before the configuration is live.
+    const pendingNote = lane.dp_init_pending
+      ? `<div class="appsel-pending" title="${esc(
+          'DPInitPending (Page 11h:235) is set: ' + appName(active)
+          + ' has been provisioned into the Active Control Set, but the Data '
+          + 'Path has not been through DPInit, so the hardware may still be '
+          + 'running the previous configuration. Tick DP Deinit and Apply, '
+          + 'then release it, to commission this.')}">`
+        + `awaiting DPInit</div>`
+      : '';
     const tipTx = regTip({
       field: `OutputDisableTx${lane.lane}`, page: 0x10, addr: 0x82,
       value: d.tx_disable_mask, bit: i,
@@ -1460,7 +1476,7 @@ async function loadDatapath() {
 
     return `<tr class="datapath-lane-row">
       <td>Lane ${lane.lane}</td>
-      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${stale}</td>
+      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${stale}${pendingNote}</td>
       <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
       <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
       <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>

@@ -9375,6 +9375,252 @@ class TestSignalIntegrityTheModuleCannotCarryOut(CMISTestCase):
                          'the tooltip does not name the rejection this earns')
 
 
+
+class TestTheActiveSetAheadOfTheHardware(CMISTestCase):
+    """Table 8-106 makes DPInitPending (11h:235) a Required register, and
+    8.14.7 says what it is for: after a Provision triggered by ApplyDPInit has
+    copied a Staged Control Set into the Active Control Set, the bit stands
+    until the transit through DPInit commits it, because until then "the
+    Active Control Set content may deviate from the actual hardware
+    configuration".
+
+    This page reads 11h as "what the module is running" - that is the whole
+    point of the running-App marker under the dropdown - and the one register
+    that says so may be out of date was never read at all.
+
+    It matters most on the modules Table 6-4 describes. Where neither
+    intervention-free procedure is advertised, ApplyDPInit is accepted in any
+    Data Path state but only provisions: no DPSM transition, so the Active
+    Control Set moves and the hardware does not. The mock cycled the Data Path
+    whatever Lower 02h said, so that whole class of module had never been
+    modelled, and regular_reconfig - parsed and displayed since it was added -
+    was consulted by nothing."""
+
+    LANES = 8
+
+    @classmethod
+    def setUpClass(cls):
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+        # Two Applications of equal width that may start on the same lane, so
+        # that changing between them is a reconfiguration rather than a change
+        # of width. No shipped profile has that shape - every one pairs an
+        # 8-lane Application with a 4-lane one - so regular reconfiguration
+        # could not otherwise be driven at all.
+        base = copy.deepcopy(mock._FR4X2_800G)
+        apps = list(base['app_descriptors'])
+        apps[1] = apps[1][:3] + (0x11,)
+        base['app_descriptors'] = apps
+        # Lower 02h belongs in the profile rather than being poked in: the
+        # API reads the capabilities once, at connect, so a module poked
+        # afterwards behaves one way and is described another.
+        for name, caps_02, label in (
+                ('test_reconfig', 0x00, 'both procedures'),
+                ('test_stepped', 0x40, 'neither procedure'),
+                # Lower 02h can advertise the hot procedure without the
+                # regular one, and there the two halves of the rule pull
+                # apart: ApplyDPInit only provisions, ApplyImmediate commits.
+                ('test_hotonly', 0x42, 'hot only')):
+            profile = copy.deepcopy(base)
+            profile['config_caps_02'] = caps_02
+            profile['display'] = 'same-width fixture, %s' % label
+            i2c_interface._BACKENDS[name] = type(
+                'Fixture_' + name, (mock.MockBackend,), {'PROFILE': profile})
+
+    @classmethod
+    def tearDownClass(cls):
+        import i2c_interface
+        for name in ('test_reconfig', 'test_stepped', 'test_hotonly'):
+            i2c_interface._BACKENDS.pop(name, None)
+
+    def _connect(self, backend='test_reconfig'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self, sel):
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': sel, 'apply': True}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _pending(self):
+        return [l['dp_init_pending'] for l in self._dp()['lanes']]
+
+    def _states(self):
+        return [l['datapath_state'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _caps(self):
+        return self.assertOk(
+            self.client.get('/api/module/info'))['data']['config_capabilities']
+
+    # ---- the fixture earns its keep ---------------------------------------
+
+    def test_no_shipped_profile_can_change_application_without_changing_width(self):
+        """Which is why this fixture exists. If a shipped profile ever grows a
+        same-width pair, this test says so and the fixture can go."""
+        from i2c_backends import mock
+        for name in dir(mock):
+            profile = getattr(mock, name)
+            if not (name.startswith('_') and isinstance(profile, dict)
+                    and 'app_descriptors' in profile):
+                continue
+            shapes = [((d[2] >> 4) & 0x0F, d[3])
+                      for d in profile['app_descriptors']]
+            for i in range(len(shapes)):
+                for j in range(i + 1, len(shapes)):
+                    self.assertFalse(
+                        shapes[i][0] == shapes[j][0]
+                        and shapes[i][1] & shapes[j][1],
+                        '%s can express a same-width reconfiguration' % name)
+
+    # ---- Table 6-3: copy and cycle ----------------------------------------
+
+    def test_a_reconfiguration_cycles_the_path_and_clears_the_flag(self):
+        self._connect()
+        self.assertTrue(self._caps()['regular_reconfig'])
+        self.assertEqual(self._pending(), [False] * self.LANES)
+        self._apply([2] * self.LANES)
+        time.sleep(1.6)
+        self.assertEqual(self._dp()['active_app_select'], [2] * self.LANES)
+        self.assertEqual(set(self._states()), {'Activated'})
+        self.assertEqual(self._pending(), [False] * self.LANES,
+                         'the Data Path went through DPInit, so nothing is '
+                         'still pending')
+
+    def test_the_flag_stands_between_the_provision_and_the_transit(self):
+        """Set by the Provision, cleared by DPInit - so there is a window in
+        which the Active Control Set is ahead of the hardware even here."""
+        self._connect()
+        self._apply([2] * self.LANES)
+        self.assertTrue(any(self._pending()),
+                        'the Provision never raised DPInitPending')
+
+    # ---- Table 6-4: copy only ---------------------------------------------
+
+    def test_a_module_with_neither_procedure_provisions_without_commissioning(self):
+        self._connect('test_stepped')
+        cc = self._caps()
+        self.assertFalse(cc['regular_reconfig'])
+        self.assertFalse(cc['hot_reconfig'])
+        self._apply([2] * self.LANES)
+        time.sleep(1.6)
+        self.assertEqual(self._dp()['active_app_select'], [2] * self.LANES,
+                         'the Provision did not copy the staged set across')
+        self.assertEqual(set(self._states()), {'Activated'},
+                         'the Data Path cycled on a module that advertises '
+                         'neither intervention-free procedure')
+        # Only the first port changed - lanes 5-8 were already on App 2 - and
+        # Apply touches only the Data Paths that changed, so only the lanes
+        # actually provisioned carry the flag.
+        self.assertEqual(self._pending(), [True] * 4 + [False] * 4,
+                         'nothing tells the host the hardware is still '
+                         'running the previous configuration')
+
+    def test_taking_the_path_down_and_back_commissions_it(self):
+        """The pending condition is not a dead end: the stepwise procedure is
+        what commits it, and that clears the flag."""
+        self._connect('test_stepped')
+        self._apply([2] * self.LANES)
+        time.sleep(1.2)
+        self.assertEqual(self._pending(), [True] * 4 + [False] * 4)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0xFF, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(0.7)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0x00, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.6)
+        self.assertEqual(set(self._states()), {'Activated'})
+        self.assertEqual(self._pending(), [False] * self.LANES,
+                         'the path went through DPInit and the flag still '
+                         'says a commissioning is pending')
+
+    def test_hot_reconfiguration_leaves_nothing_pending(self):
+        """"DPInitPending bits are not set in response to ApplyImmediate
+        triggers" - it commits to hardware itself."""
+        self._connect()                       # advertises both procedures
+        self.assertTrue(self._caps()['hot_reconfig'])
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2] * self.LANES,
+                             'apply_immediate': True}),
+            content_type='application/json'))
+        time.sleep(1.0)
+        self.assertEqual(self._dp()['active_app_select'], [2] * self.LANES)
+        self.assertEqual(self._pending(), [False] * self.LANES,
+                         'a hot reconfiguration left a commissioning pending')
+
+    def test_hot_reconfiguration_commits_even_where_the_regular_one_is_not_offered(self):
+        """A module can advertise the hot procedure and not the regular one.
+        ApplyDPInit there only provisions, but ApplyImmediate still "copies
+        and commits" - so the pending condition must not follow the regular
+        advertisement alone."""
+        self._connect('test_hotonly')
+        cc = self._caps()
+        self.assertTrue(cc['hot_reconfig'])
+        self.assertFalse(cc['regular_reconfig'])
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2] * self.LANES,
+                             'apply_immediate': True}),
+            content_type='application/json'))
+        time.sleep(1.0)
+        self.assertEqual(self._dp()['active_app_select'], [2] * self.LANES)
+        self.assertEqual(set(self._states()), {'Activated'},
+                         'a hot reconfiguration cycled the Data Path')
+        self.assertEqual(self._pending(), [False] * self.LANES,
+                         'a hot reconfiguration left a commissioning pending '
+                         'on a module that does not offer the regular one')
+
+    # ---- what the page says about it --------------------------------------
+
+    def test_the_row_says_the_hardware_may_not_have_caught_up(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('const pendingNote = lane.dp_init_pending'):]
+        body = body[:body.index('const appOpts') if 'const appOpts' in body
+                    else body.index('return `<tr>')]
+        self.assertIn('appsel-pending', body)
+        self.assertIn('11h:235', body,
+                      'the note never names the register it comes from')
+        self.assertIn('DP Deinit', body,
+                      'nothing says how to commission what was provisioned')
+
+    def test_the_marker_is_rendered_next_to_the_dropdown(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('${stale}${pendingNote}', js,
+                      'the marker is built and never placed in the row')
+
+    def test_a_pending_commissioning_is_not_styled_as_a_fault(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'style.css')
+        with open(path, encoding='utf-8') as f:
+            css = f.read()
+        pending = re.search(r'\.appsel-pending\s*\{([^}]*)\}', css)
+        mismatch = re.search(r'\.appsel-mismatch\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(pending, 'no style for a pending commissioning')
+        self.assertNotEqual(pending.group(1).strip(),
+                            mismatch.group(1).strip(),
+                            'a provisioned configuration waiting to be '
+                            'commissioned is painted as a refused one')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -526,6 +526,7 @@ class MockBackend(I2CInterface):
         self._apply_mask = 0xFF           # lanes the last Apply selected
         self._apply_hot = False           # ApplyImmediate rather than DPInit
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
+        self._apply_provision_only = False
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
@@ -1093,12 +1094,28 @@ class MockBackend(I2CInterface):
         # DataPath state machine (ApplyDataPath)
         if self._apply_time > 0 and self._reset_time == 0:
             dt = now - self._apply_time
+            if (not self._apply_hot and not self._apply_provision_only
+                    and dt >= 0.15):
+                # 8.14.7 clears the bits "while in DPSM state DPInit", so
+                # what matters is that the transit happened - which is any
+                # cycle, whatever Lower 02h says about the intervention-free
+                # procedures. Clearing from inside the DPInit branch alone
+                # would depend on a read landing in a 150 ms window; miss it
+                # and the flag would claim a commissioning was still pending
+                # on a Data Path that had already been through DPInit.
+                self._clear_dp_init_pending()
             if self._apply_hot:
                 # 8.13.3.1: ApplyImmediate is Provision-and-Commission - the
                 # staged set goes straight into hardware and the Data Path
                 # never leaves the state it is in. No transient, so no
                 # DPStateChangedFlag either.
                 if dt >= 0.5:
+                    self._apply_time = 0
+                    self._commit_apply()
+            elif self._apply_provision_only:
+                # Provision only (Table 6-4): the result is reported and
+                # DPInitPending is left set, but no lane changes state.
+                if dt >= 0.15:
                     self._apply_time = 0
                     self._commit_apply()
             elif dt < 0.15:
@@ -1201,6 +1218,30 @@ class MockBackend(I2CInterface):
                 p62[off + k * 2] = (v >> 8) & 0xFF
                 p62[off + k * 2 + 1] = v & 0xFF
 
+    def _regular_reconfig(self) -> bool:
+        """Lower 02h: whether ApplyDPInit commissions as well as provisions.
+
+        Table 6-3 covers modules that support the intervention-free
+        procedures - there ApplyDPInit on a running Data Path is "copy and
+        cycle". Table 6-4 covers the ones that do not: ApplyDPInit is accepted
+        in any DPSM state but only provisions, and the commissioning transit
+        through DPInit waits for the host. Cycling anyway made every module
+        look like the first kind.
+        """
+        raw = self._registers[None].get(0x02, 0)
+        if not ((raw >> 6) & 1):
+            return True                      # legacy default: both supported
+        return (raw & 0x03) == 0b01
+
+    def _clear_dp_init_pending(self) -> None:
+        """8.14.7: "the module clears all DPInitPendingLane<i> bits of a Data
+        Path while in DPSM state DPInit"."""
+        pending = self._registers[0x11].get(0xEB, 0)
+        for lane in range(8):
+            if self._apply_selects(lane):
+                pending &= ~(1 << lane)
+        self._registers[0x11][0xEB] = pending
+
     def _hot_reconfig(self) -> bool:
         """Lower 02h: whether ApplyImmediate does anything on this module."""
         raw = self._registers[None].get(0x02, 0)
@@ -1243,11 +1284,27 @@ class MockBackend(I2CInterface):
         self._apply_hot = hot
         self._apply_mask = mask
         self._config_result = self._validate_staged_appsel(mask, subset_ok=hot)
+        # Table 6-4: where neither intervention-free procedure is advertised,
+        # ApplyDPInit provisions without commissioning - in "Any DPSM state",
+        # so the state is not part of the question. Commissioning such a path
+        # is the stepwise procedure, which arrives through the DPDeinit
+        # release below rather than through this trigger. Settled here rather
+        # than read live, because the cycle changes the states around it.
+        self._apply_provision_only = not hot and not self._regular_reconfig()
         # Validation and execution both act on the Staged Control Set as it
         # stood when the Apply arrived. Reading 10h again at the completion
         # step would commit whatever was staged since.
         self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
                                for i in range(8)]
+        # 8.14.7: DPInitPending is set by the Provision, so it stands from
+        # here until a transit through DPInit clears it. ApplyImmediate
+        # commits to hardware itself, so it leaves nothing pending.
+        if not hot:
+            pending = self._registers[0x11].get(0xEB, 0)
+            for lane in range(8):
+                if ((mask >> lane) & 1) and self._config_result[lane] == 0x1:
+                    pending |= 1 << lane
+            self._registers[0x11][0xEB] = pending
         for lane in range(8):
             if not ((mask >> lane) & 1):
                 continue
@@ -1706,6 +1763,7 @@ class MockBackend(I2CInterface):
             self._update_state_machine()         # let any Apply finish first
             self._apply_time = time.time()
             self._apply_mask = released
+            self._apply_provision_only = False
             # Releasing a deinit hold is not an Apply trigger: the module
             # restarts the lanes it was holding, which is a subset of a Data
             # Path only because the host chose to hold a subset.

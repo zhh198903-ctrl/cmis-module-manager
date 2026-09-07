@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.28.0<br>
+      <b>版本</b>　2.29.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.28.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.28.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.29.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.29.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1600,6 +1600,26 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     在跑的通道就会先被显示成已停止。</span>
   </div>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>“Active Control Set”不等于“硬件正在跑的”。</b>
+    DataPath Config 里下拉框下方的红字 <b>running App N</b> 读的是
+    Page 11h 的 Active Control Set。但规范里还有一个<b>必备</b>寄存器
+    <code>DPInitPending</code>（<code>11h:235</code>，Table 8-106）专门说明：
+    ApplyDPInit 的 Provision 已经把暂存区拷进 Active Control Set，
+    但真正把它落到硬件的那次 DPInit <b>还没走</b>——
+    此时“Active Control Set 的内容可能与实际硬件配置不一致”。
+    工具以前<b>从来没读过这个寄存器</b>。<br>
+    对于<b>两种免干预流程都不支持</b>的模块（规范 Table 6-4），
+    这正是按 Apply 的<b>正常</b>结果：命令被接受、配置被拷贝，
+    但数据通道<b>不会重启</b>，硬件还在跑原来的配置，
+    要靠你自己把通道停一下再放开才生效。<br>
+    现在这种通道会在下拉框下方多一行琥珀色的
+    <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
+    内置演示模块以前不管 Lower 02h 说什么都会重启通道，
+    所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>信号完整性设置也会被校验了。</b>
@@ -2546,7 +2566,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.28.0<br>
+    CMIS Module Manager 操作手册 v2.29.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

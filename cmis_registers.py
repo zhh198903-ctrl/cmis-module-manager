@@ -181,6 +181,7 @@ REG_TX_POWER        = (0x11, 0x9A, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_TX_BIAS         = (0x11, 0xAA, 16)  # 8 lanes × 2B, ×2 µA
 REG_RX_POWER        = (0x11, 0xBA, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_CONFIG_STATUS   = (0x11, 0xCA, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
+REG_DP_INIT_PENDING    = (0x11, 0xEB, 1)  # 235 DPInitPendingLane, Table 8-106
 
 # ---------------------------------------------------------------------------
 # Page 04h — Laser Capabilities (Table 8-66, RO)
@@ -530,6 +531,19 @@ def parse_dp_states(data: bytes) -> list:
         nibble = (data[byte_idx] >> ((lane % 2) * 4)) & 0x0F
         states.append(DP_STATE_NAMES.get(nibble, f"Unknown(0x{nibble:X})"))
     return states
+
+
+def parse_dp_init_pending(byte_val: int, lanes: int = 8) -> list:
+    """Table 8-106, 11h:235 - DPInitPendingLane<i>, one bit per host lane.
+
+    Set when a Provision triggered by ApplyDPInit has copied a Staged Control
+    Set into the Active Control Set but the transit through DPInit that would
+    commit it to hardware has not happened yet. The spec is blunt about what
+    that means: "the Active Control Set content may deviate from the actual
+    hardware configuration". Reading the Active Control Set as "what the
+    module is running" is only true while this bit is clear.
+    """
+    return [bool((byte_val >> i) & 1) for i in range(lanes)]
 
 
 def parse_config_status(data: bytes) -> list:

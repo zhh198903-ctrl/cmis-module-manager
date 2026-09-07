@@ -1087,6 +1087,17 @@ input[type="checkbox"] {
   cursor: help;
 }
 
+/* A provisioned configuration waiting for the Data Path to be cycled is not
+   a fault - it is the module saying the Active Control Set has moved ahead
+   of the hardware, so it takes the warning colour rather than the alarm. */
+.appsel-pending {
+  font-size: var(--fs-xs);
+  color: var(--warning);
+  margin-top: 2px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 /* The channel box alone cannot say which numbers the module will take. */
 .range-hint {
   font-size: var(--fs-xs);
