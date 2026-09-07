@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.21.0'
+__version__ = '2.22.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2028,6 +2028,14 @@ def api_laser_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
+        # 01h:155.6 TransmitterIsTunable (Table 8-51) is what says Pages 04h
+        # and 12h exist at all. Without it these writes land on a page the
+        # module does not implement: the reads that follow come back as zeros
+        # and the operator is told the laser was retuned.
+        if not (_state.get('caps') or {}).get('controls', {}).get(
+                'transmitter_tunable'):
+            return _err('This module is not tunable (01h:155.6), so it has no '
+                        'Page 04h or 12h to write laser settings to', 400)
         _set_page(0x12)
         lanes = body.get('lanes', [])
         # A body this handler does not understand used to come back as

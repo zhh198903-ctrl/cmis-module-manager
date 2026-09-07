@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.21.0<br>
+      <b>版本</b>　2.22.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.21.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.21.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.22.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.22.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1762,6 +1762,19 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         AppSelect、或该应用要求的起始 lane 与 9.2 的 Host Lane Assign 位图不符。按 9.2 的表重选应用码后再 Apply。</li>
   </ol>
 
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>不可调模块上，这一页的写入会被拒绝。</b>
+    模块是否可调看 <code>01h:155[6]</code>，它同时决定了
+    Page 04h / 12h 到底存不存在。旧版本不看这一位，
+    在不可调模块上依然往 Page 12h 写——写进一个
+    模块根本没实现的页，回读全是 0，
+    而界面会告诉你“已调谐”。界面上本来就
+    不会展示这张卡片，所以这主要影响
+    <b>直接调接口</b>的场景（写脚本、或让
+    Claude Code 驱动工具）。</span>
+  </div>
+
   <h3>Supervision —— 这条 lane 按哪套告警阈值判</h3>
   <p>Laser Tuning 表新增一列 <b>Supervision</b>。CMIS 5.4 的 7.5.3
      允许把一条媒体 lane 的 Tx 功率告警阈值改成
@@ -2381,7 +2394,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.21.0<br>
+    CMIS Module Manager 操作手册 v2.22.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

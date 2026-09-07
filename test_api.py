@@ -8267,6 +8267,84 @@ class TestWhoChoosesTheSquelchMethod(CMISTestCase):
                       'the row still renders the raw bit')
 
 
+class TestWritingLaserSettingsToANonTunableModule(CMISTestCase):
+    """01h:155.6 TransmitterIsTunable (Table 8-51) is what says Pages 04h and
+    12h exist at all. The laser handler wrote grid, channel, fine offset and
+    target power to Page 12h without consulting it, so on a module with no
+    such page the writes went nowhere, the reads that follow came back as
+    zeros, and the caller was told the laser had been retuned.
+
+    Against the mock it was louder than that: indexing a page dict that does
+    not exist raised KeyError(18) out of the backend, which reached the caller
+    as HTTP 500 with the message "18"."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body, code=200):
+        rv = self.client.post('/api/module/laser', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, code, rv.data)
+        return json.loads(rv.data)
+
+    def test_a_non_tunable_module_is_refused(self):
+        self._connect('mock_dr8')
+        for field, value in (('target_power_dbm', 0.0),
+                             ('fine_offset_ghz', 0.0),
+                             ('grid_code', 5),
+                             ('channel', 0)):
+            body = self._post({'lanes': [{'lane': 1, field: value}]}, 400)
+            self.assertIn('01h:155.6', body['message'],
+                          'writing %s was not refused by advertisement' % field)
+
+    def test_the_refusal_is_not_an_internal_error(self):
+        """500 with a page number for a message tells the operator nothing and
+        blames the tool for what the module simply does not have."""
+        self._connect('mock_dr8')
+        rv = self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [{'lane': 1, 'target_power_dbm': 0.0}]}),
+            content_type='application/json')
+        self.assertEqual(rv.status_code, 400)
+        self.assertNotEqual(json.loads(rv.data)['message'], '18')
+
+    def test_a_tunable_module_still_takes_them(self):
+        """A gate that refused everything would pass the tests above and take
+        laser tuning away from the one profile that has it."""
+        self._connect('mock_coherent_zr')
+        self._post({'lanes': [{'lane': 1, 'target_power_dbm': -1.5}]})
+        lanes = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes']
+        self.assertEqual(lanes[0]['target_power_dbm'], -1.5)
+
+    def test_the_advertisement_is_what_decides(self):
+        """Not the profile name, and not whether Page 12h happens to answer:
+        the module states tunability in one place and that is what is read."""
+        self._connect('mock_coherent_zr')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['controls']['transmitter_tunable'], True)
+        self._connect('mock_dr8')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['controls']['transmitter_tunable'], False)
+
+    def test_the_backend_does_not_raise_on_a_page_it_does_not_serve(self):
+        """Behind the API, so what is tested is the backend rather than the
+        guard now standing in front of it. A real module answers a write to an
+        unimplemented page without throwing, and the mock has to as well or it
+        turns a module difference into a tool crash."""
+        self._connect('mock_dr8')
+        import cmis_registers as c
+        app_module._set_page(0x12)
+        _state['backend'].write_bytes(c.REG_TARGET_PWR_TX[1], bytes([0x00, 0x00]))
+        app_module._invalidate_page()
+        self.assertOk(self.client.get('/api/module/monitoring'))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

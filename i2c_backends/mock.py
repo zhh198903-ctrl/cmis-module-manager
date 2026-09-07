@@ -1461,8 +1461,13 @@ class MockBackend(I2CInterface):
                        'power':   any(a in span for a in range(0xC8, 0xD8))}
             if any(touched.values()):
                 # The write lands first; the module judges what it now holds.
+                # A module without Page 12h has no such dict; the generic
+                # write path uses setdefault for exactly this reason, and
+                # indexing here raised KeyError(18) out of the backend
+                # instead - which reached the caller as a 500 saying "18".
+                p12 = self._registers.setdefault(0x12, {})
                 for a, b in zip(span, data):
-                    self._registers[0x12][a] = b
+                    p12[a] = b
                 self._judge_tuning(touched)
         elif self._current_page == 0x13:
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
