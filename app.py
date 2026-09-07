@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.18.0'
+__version__ = '2.19.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1637,6 +1637,7 @@ def _diag_caps() -> dict:
     return {
         'loopback': cmis.parse_loopback_caps(raw[0]),
         'measurement': cmis.parse_diag_meas_caps(raw[1]),
+        'reporting': cmis.parse_diag_reporting_caps(raw[2]),
         'patterns': cmis.parse_pattern_caps(raw[4:12]),
     }
 
@@ -1767,6 +1768,13 @@ def api_module_snr():
     if err:
         return err
     try:
+        # 13h:130.5 and .4 (Table 8-113) advertise the two sides separately.
+        # A module that supports neither still answers a read of the selector
+        # 06h window, so the numbers in it would look like a measurement.
+        rep = _diag_caps()['reporting']
+        if not (rep['host_side_snr'] or rep['media_side_snr']):
+            return _ok({'host_snr_db': [], 'media_snr_db': [],
+                        'supported': {'host': False, 'media': False}})
         _set_page(0x14)
         _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x06]))
         time.sleep(0.005)
@@ -1782,8 +1790,10 @@ def api_module_snr():
         host_snr = host_snr[:_state['lanes']]
         media_snr = media_snr[:_state['lanes']]
         return _ok({
-            'host_snr_db':  host_snr,
-            'media_snr_db': media_snr,
+            'host_snr_db':  host_snr if rep['host_side_snr'] else [],
+            'media_snr_db': media_snr if rep['media_side_snr'] else [],
+            'supported': {'host': rep['host_side_snr'],
+                          'media': rep['media_side_snr']},
         })
     except Exception as e:
         return _err(str(e), 500)
@@ -1795,6 +1805,9 @@ def api_module_ber():
     if err:
         return err
     try:
+        # 13h:130.0 advertises whether selector 01h means anything here.
+        if not _diag_caps()['reporting']['bit_error_ratio']:
+            return _ok({'lanes': [], 'supported': False})
         # Write selector 0x01 = BER F16
         _set_page(0x14)
         _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x01]))
@@ -1809,7 +1822,7 @@ def api_module_ber():
                     'media_ber': cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2]),
                 })
         lanes = lanes[:_state['lanes']]
-        return _ok({'lanes': lanes})
+        return _ok({'lanes': lanes, 'supported': True})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -2051,6 +2064,12 @@ def api_module_counters():
     if err:
         return err
     try:
+        # 13h:130.1 advertises whether selectors 02h-05h mean anything. The
+        # spec expects modules that cannot divide 64 bits to report counts
+        # instead of a ratio, so a module may have one of these and not the
+        # other - they are separate bits and are checked separately.
+        if not _diag_caps()['reporting']['bits_and_errors']:
+            return _ok({'lanes': [], 'supported': False})
         lanes = []
         banks = (_state['lanes'] + 7) // 8
         for bank in range(banks):
@@ -2089,7 +2108,7 @@ def api_module_counters():
                     entry[f'{side}_ber'] = 0.0
 
         lanes.sort(key=lambda x: x['lane'])
-        return _ok({'lanes': lanes})
+        return _ok({'lanes': lanes, 'supported': True})
     except Exception as e:
         return _err(str(e), 500)
 

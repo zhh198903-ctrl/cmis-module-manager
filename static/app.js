@@ -1698,6 +1698,16 @@ async function loadApplications() {
 // ---------------------------------------------------------------------------
 // SNR (Diagnostics tab)
 // ---------------------------------------------------------------------------
+// 13h:130 (Table 8-113) says which DiagnosticsSelector values report
+// anything. A module that supports none of them still answers a read of the
+// Page 14h window, so what came back looked like a measurement and was not
+// one. Saying so beats an empty row, which reads as "zero".
+function diagUnsupportedRow(cols, what, bit) {
+  return `<tr><td colspan="${cols}" class="placeholder-text">`
+       + `${esc(what)} — this module does not report it `
+       + `<span class="reg-badge">13h:130.${bit}</span></td></tr>`;
+}
+
 async function loadSnr() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/snr');
@@ -1707,12 +1717,23 @@ async function loadSnr() {
     tbody.innerHTML = `<tr><td colspan="9" class="placeholder-text">SNR not available: ${res.message}</td></tr>`;
     return;
   }
+  const sup = res.data.supported || {};
+  if (!sup.host && !sup.media) {
+    tbody.innerHTML = diagUnsupportedRow(9, 'Input SNR measurement', '5-4');
+    return;
+  }
   const fmt = (v) => (v == null ? '—' : v.toFixed(2));
-  const hostCells = res.data.host_snr_db.map(v => `<td>${fmt(v)}</td>`).join('');
-  const mediaCells = res.data.media_snr_db.map(v => `<td>${fmt(v)}</td>`).join('');
+  // The two sides are advertised separately, so one can be measured and
+  // the other not; a blank row would read as zero rather than as absent.
+  const sideRow = (label, badge, vals, ok, bit) => ok
+    ? `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
+      + vals.map(v => `<td>${fmt(v)}</td>`).join('') + '</tr>'
+    : `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
+      + `<td colspan="8" class="placeholder-text">not reported `
+      + `<span class="reg-badge">13h:130.${bit}</span></td></tr>`;
   tbody.innerHTML =
-    `<tr><td style="color:var(--text-muted)">Host<span class="reg-badge">14h/0xC0+16 sel=0x06</span></td>${hostCells}</tr>` +
-    `<tr><td style="color:var(--text-muted)">Media<span class="reg-badge">14h/0xC0+48 sel=0x06</span></td>${mediaCells}</tr>`;
+    sideRow('Host', '14h/0xC0+16 sel=0x06', res.data.host_snr_db, sup.host, '4') +
+    sideRow('Media', '14h/0xC0+48 sel=0x06', res.data.media_snr_db, sup.media, '5');
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,6 +2310,10 @@ async function loadBer() {
   const tbody = document.getElementById('tbl-ber');
   if (!tbody) return;
   if (res.status !== 'ok') { toast(`BER error: ${res.message}`, 'error'); return; }
+  if (res.data.supported === false) {
+    tbody.innerHTML = diagUnsupportedRow(9, 'Bit error ratio results', '0');
+    return;
+  }
   const hostCells = res.data.lanes.map(l => `<td>${formatBer(l.host_ber)}</td>`).join('');
   const mediaCells = res.data.lanes.map(l => `<td>${formatBer(l.media_ber)}</td>`).join('');
   tbody.innerHTML =
@@ -2305,6 +2330,10 @@ async function loadCounters() {
   const tbody = document.getElementById('tbl-counters');
   if (!tbody) return;
   if (res.status !== 'ok') { toast(`Counters error: ${res.message}`, 'error'); return; }
+  if (res.data.supported === false) {
+    tbody.innerHTML = diagUnsupportedRow(9, 'Bit and error counting', '1');
+    return;
+  }
   const lanes = res.data.lanes;
   const fmtCount = (v) => v != null ? v.toLocaleString() : '—';
   // While the checker has lost pattern sync the counters keep accumulating but

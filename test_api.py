@@ -7863,6 +7863,145 @@ class TestAShippedProfileDemonstratesTheLaneEscape(CMISTestCase):
         self.assertEqual(escaped['max_lanes'], 24)
 
 
+class TestWhichDiagnosticsAModuleActuallyReports(CMISTestCase):
+    """13h:130 (Table 8-113) is RO and Required, and its bits say which
+    DiagnosticsSelector values report anything: bit 0 for the bit error ratio
+    (selector 01h), bit 1 for bit and error counting (02h-05h), bits 5 and 4
+    for media- and host-side input SNR (06h).
+
+    Every shipped profile advertised 0x00 there - no BER, no counts, no SNR -
+    while all three panels showed numbers anyway. A module that does not
+    support a selector still answers a read of the Page 14h window, so what
+    came back looked like a measurement and was not one."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _get(self, path):
+        return self.assertOk(self.client.get(path))['data']
+
+    def _set_130(self, value):
+        poke(0x13, 0x82, value)
+
+    def test_each_bit_is_decoded(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_diag_reporting_caps(0x00), {
+            'media_side_fec': False, 'host_side_fec': False,
+            'media_side_snr': False, 'host_side_snr': False,
+            'bits_and_errors': False, 'bit_error_ratio': False})
+        full = c.parse_diag_reporting_caps(0xF3)
+        self.assertTrue(all(full.values()))
+        # Each bit on its own, so a mask that happens to cover two fields
+        # cannot pass for either.
+        for bit, field in ((0x80, 'media_side_fec'), (0x40, 'host_side_fec'),
+                           (0x20, 'media_side_snr'), (0x10, 'host_side_snr'),
+                           (0x02, 'bits_and_errors'), (0x01, 'bit_error_ratio')):
+            d = c.parse_diag_reporting_caps(bit)
+            self.assertEqual([k for k, v in d.items() if v], [field],
+                             'bit 0x%02X' % bit)
+
+    def test_no_shipped_profile_claims_it_reports_nothing(self):
+        """0x00 is a legal answer, but it is not the answer any of these
+        modules means - and it is what they all used to give."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        for name in sorted(n for n in i2c_interface._BACKENDS
+                           if n.startswith('mock')):
+            self._connect(name)
+            raw = app_module._read_upper(0x13, 0x82, 1)[0]
+            self.assertNotEqual(raw, 0x00,
+                                '%s advertises that it reports no diagnostics '
+                                'at all' % name)
+
+    def test_a_module_without_snr_returns_none_rather_than_the_window(self):
+        self._connect('mock_sr8')
+        d = self._get('/api/module/snr')
+        self.assertEqual(d['supported'], {'host': False, 'media': False})
+        self.assertEqual(d['host_snr_db'], [])
+        self.assertEqual(d['media_snr_db'], [])
+
+    def test_a_module_with_snr_still_reports_it(self):
+        """A gate that refuses everything would pass the test above."""
+        self._connect('mock_dr8')
+        d = self._get('/api/module/snr')
+        self.assertEqual(d['supported'], {'host': True, 'media': True})
+        self.assertEqual(len(d['host_snr_db']), 8)
+        self.assertEqual(len(d['media_snr_db']), 8)
+
+    def test_the_two_sides_are_gated_separately(self):
+        """Bits 5 and 4 are separate, so a module can measure one side only -
+        and a blank row for the other reads as zero unless it is labelled."""
+        self._connect('mock_dr8')
+        self._set_130(0x13)                     # host SNR, BER, counts
+        d = self._get('/api/module/snr')
+        self.assertEqual(d['supported'], {'host': True, 'media': False})
+        self.assertEqual(len(d['host_snr_db']), 8)
+        self.assertEqual(d['media_snr_db'], [])
+        self._set_130(0x23)                     # media SNR only
+        d = self._get('/api/module/snr')
+        self.assertEqual(d['supported'], {'host': False, 'media': True})
+        self.assertEqual(d['host_snr_db'], [])
+        self.assertEqual(len(d['media_snr_db']), 8)
+
+    def test_the_bit_error_ratio_is_gated(self):
+        self._connect('mock_dr8')
+        self.assertIs(self._get('/api/module/ber')['supported'], True)
+        self._set_130(0x32)                     # everything but bit 0
+        d = self._get('/api/module/ber')
+        self.assertIs(d['supported'], False)
+        self.assertEqual(d['lanes'], [])
+
+    def test_bit_and_error_counting_is_gated(self):
+        """Separate bits: the spec expects a module that cannot divide 64 bits
+        to report counts instead of a ratio, so one can be present without the
+        other."""
+        self._connect('mock_dr8')
+        self.assertIs(self._get('/api/module/counters')['supported'], True)
+        self._set_130(0x31)                     # everything but bit 1
+        d = self._get('/api/module/counters')
+        self.assertIs(d['supported'], False)
+        self.assertEqual(d['lanes'], [])
+        # ... and the ratio it does advertise still works.
+        self.assertIs(self._get('/api/module/ber')['supported'], True)
+
+    def test_an_unsupported_selector_is_never_written(self):
+        """The point is not only to hide the number. Writing a selector the
+        module does not implement asks it to do something it has said it
+        cannot, and leaves the diagnostic window pointing somewhere the host
+        did not choose."""
+        self._connect('mock_dr8')
+        self._set_130(0x00)
+        poke(0x14, 0x80, 0x7E)                  # a value no handler writes
+        for path in ('/api/module/snr', '/api/module/ber',
+                     '/api/module/counters'):
+            self._get(path)
+            app_module._set_page(0x14)
+            self.assertEqual(
+                _state['backend'].read_bytes(0x80, 1)[0], 0x7E,
+                '%s wrote a diagnostic selector the module does not support'
+                % path)
+
+    def test_the_panels_say_so_rather_than_showing_an_empty_row(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function diagUnsupportedRow('):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertIn('13h:130', body,
+                      'the row does not name the register that decided it')
+        for what, bit in (("'Input SNR measurement', '5-4'", 'snr'),
+                          ("'Bit error ratio results', '0'", 'ber'),
+                          ("'Bit and error counting', '1'", 'counters')):
+            self.assertIn('diagUnsupportedRow(9, ' + what, js,
+                          'the %s panel renders no explanation' % bit)
+        self.assertRegex(js, r"res\.data\.supported === false",
+                         'a panel decides on something other than the flag')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

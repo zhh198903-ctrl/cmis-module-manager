@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.18.0<br>
+      <b>版本</b>　2.19.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.18.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.18.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.19.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.19.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1909,6 +1909,37 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     只改了 Generator 点 Apply，Checker 当前界面上的设置同样会被写进模块。</span>
   </div>
 
+  <h3>10.3b 哪些诊断结果模块真的会报</h3>
+  <p><code>13h:130</code>（Table 8-113，<b>只读、必需</b>）逐位
+     声明哪些 DiagnosticsSelector 取值是有意义的：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>位</th><th>含义</th><th>影响哪张卡片</th></tr></thead>
+      <tbody>
+        <tr><td><code>bit 0</code></td><td class="label">支持 Selector <code>01h</code>（误码率结果）</td><td>BER Results</td></tr>
+        <tr><td><code>bit 1</code></td><td class="label">支持 Selector <code>02h–05h</code>（误码/比特计数）</td><td>Error / Bit Counters</td></tr>
+        <tr><td><code>bit 4</code></td><td class="label">支持主机侧输入 SNR 测量（Selector <code>06h</code>）</td><td>SNR Results 的 Host 行</td></tr>
+        <tr><td><code>bit 5</code></td><td class="label">支持媒体侧输入 SNR 测量（Selector <code>06h</code>）</td><td>SNR Results 的 Media 行</td></tr>
+        <tr><td><code>bit 6 / 7</code></td><td class="label">主机侧 / 媒体侧 FEC（可提供 PRBS 错误信息）</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>不支持的 Selector 也能读出数字。</b>
+    模块即使不实现某个 Selector，对 Page 14h
+    结果窗口的读依然会返回内容——那些数字
+    <b>看起来就像测量值</b>，但不是。
+    旧版本不看这个字节，三张卡片对任何模块
+    都直接显示数值。现在不支持时卡片会写明
+    “本模块不上报此项”并标出具体位，
+    <b>而不是留一行空白</b>（空白会被看成零）；
+    工具也<b>不再写入</b>那个 Selector。<br>
+    两侧 SNR 是<b>分开广告</b>的，所以可能只有一边有值。
+    内置模拟模块里 <code>mock_sr8</code> 声明不做 SNR 测量（只有
+    BER 和计数），可用来看这个差别。</span>
+  </div>
+
   <h3>10.4 BER Results（误码率）</h3>
   <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x01</code> 选择 BER F16 诊断。Host BER 在 <code>14h/0xC0</code>，Media BER 在 <code>14h/0xD0</code>，每通道 2 字节。</p>
   <p>F16 解码公式（CMIS 5.4 十进制浮点）：<code>BER = mantissa × 10^(exp − 24)</code>，其中 bits[15:11]=exp, bits[10:0]=mantissa。</p>
@@ -2302,7 +2333,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.18.0<br>
+    CMIS Module Manager 操作手册 v2.19.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

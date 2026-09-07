@@ -407,6 +407,9 @@ _SR8_800G = {
     # All four loopback types, but no per-lane granularity and not host and
     # media at the same time (13h:128 bits 6-4 clear).
     'loopback_caps':   0x0F,
+    # No input SNR measurement on either side, in keeping with the simpler
+    # retimer this profile models: BER and error counts only.
+    'diag_reporting_130': 0x03,
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     'vendor_sn':       b"DEMO000000003   ",
@@ -887,7 +890,11 @@ class MockBackend(I2CInterface):
         p13[0x80] = p.get('loopback_caps', 0x7F)
         p13[0x81] = 0x7C        # gating <=2 ms, results, periodic updates,
                                 # per-lane timers, auto-restart
-        p13[0x82] = 0x00        # reporting capabilities
+        # 13h:130 (Table 8-113): which DiagnosticsSelector values report
+        # anything. 0x00 said this module reports no BER, no error
+        # counts and no SNR - while every one of those panels showed
+        # numbers read out of the window anyway.
+        p13[0x82] = p.get('diag_reporting_130', 0x33)
         p13[0x83] = 0x00        # generation/checking locations
         # Patterns 0,1 (PRBS31Q/31), 6,7 (PRBS13Q/13), 8,9 (PRBS9Q/9),
         # 10,11 (PRBS7Q/7) and 12 (SSPRQ). The 23- and 15-bit patterns are

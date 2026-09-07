@@ -1043,6 +1043,24 @@ def parse_diag_meas_caps(byte_val: int) -> dict:
     }
 
 
+def parse_diag_reporting_caps(byte_val: int) -> dict:
+    """13h:130 (Table 8-113), RO and Required.
+
+    Each bit says whether a DiagnosticsSelector value is supported at all. A
+    module that does not support one still answers a read of Page 14h - with
+    whatever is in that window - so asking without checking here produces a
+    number that looks like a measurement and is not one.
+    """
+    return {
+        'media_side_fec':  bool(byte_val & 0x80),
+        'host_side_fec':   bool(byte_val & 0x40),
+        'media_side_snr':  bool(byte_val & 0x20),   # selector 06h
+        'host_side_snr':   bool(byte_val & 0x10),   # selector 06h
+        'bits_and_errors': bool(byte_val & 0x02),   # selectors 02h-05h
+        'bit_error_ratio': bool(byte_val & 0x01),   # selector 01h
+    }
+
+
 def parse_pattern_caps(data: bytes) -> dict:
     """13h:132-139 (Tables 8-116, 8-117), little endian, two bytes per role.
 
