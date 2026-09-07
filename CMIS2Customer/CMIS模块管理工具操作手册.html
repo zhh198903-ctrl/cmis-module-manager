@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.22.0<br>
+      <b>版本</b>　2.23.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.22.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.22.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.23.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.23.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -995,6 +995,22 @@
         <tr><td><code>0x7</code></td><td>Initialized</td><td class="label">初始化完成（未激活发送）</td></tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>七个状态里有四个是“过渡态”。</b>
+    规范图 6-5 把 DPSM 状态分为<b>稳态</b>（Deactivated、
+    Initialized、Activated）和<b>过渡态</b>（Init、Deinit、
+    TxTurnOn、TxTurnOff）。过渡态意味着通道正在
+    上来或下去，<b>不是故障</b>。<br>
+    旧版本只认 Activated 和 Init 两个名字，其余五个
+    全部按“已停止”的灰色显示——于是
+    Apply 过程中处于 <b>TxTurnOn</b>（正在上来）的通道，
+    看上去和一条死通道一模一样；
+    <b>Initialized</b>（已初始化、只是 Tx 没开，本身是
+    稳态）也被当成故障。现在四类各有颜色，
+    鼠标悬停会说明它是稳态还是在路上。</span>
   </div>
 
   <h3>颜色告警规则</h3>
@@ -2394,7 +2410,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.22.0<br>
+    CMIS Module Manager 操作手册 v2.23.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

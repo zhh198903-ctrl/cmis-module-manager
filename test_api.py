@@ -6981,7 +6981,15 @@ class TestWhetherAnOutputIsActuallyOn(CMISTestCase):
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
-        row = js[js.index('const stateClass = lane.datapath_state'):]
+        # Anchored on the table this is about rather than on one line inside
+        # the renderer: that line has already been rewritten once for an
+        # unrelated reason and took this test with it.
+        # Anchored on the renderer's own tbody rather than on one line inside
+        # it: that line has already been rewritten once for an unrelated
+        # reason and took this test with it. The first mention of the table id
+        # belongs to the stale-marking helper, so match the assignment.
+        row = js[js.index("const tbody = document.getElementById('tbl-monitoring')"):]
+        row = row[row.index('return `<tr>'):]
         row = row[:row.index('}).join')]
         self.assertIn('outputCell(lane)', row,
                       'the monitoring table never renders the output status')
@@ -8343,6 +8351,134 @@ class TestWritingLaserSettingsToANonTunableModule(CMISTestCase):
         _state['backend'].write_bytes(c.REG_TARGET_PWR_TX[1], bytes([0x00, 0x00]))
         app_module._invalidate_page()
         self.assertOk(self.client.get('/api/module/monitoring'))
+
+
+class TestATransientDataPathIsNotAFault(CMISTestCase):
+    """Figure 6-5 splits the seven DataPath states into steady and transient:
+    a transition signal is the exit condition of a steady state, while a
+    transient exits on its own completion. Steady are DPDeactivated,
+    DPInitialized and DPActivated; transient are DPInit, DPDeinit, DPTxTurnOn
+    and DPTxTurnOff.
+
+    The monitoring table coloured by name with two branches - Activated and
+    Init - and dropped the other five into the style that means "down". So a
+    Data Path passing through DPTxTurnOn on its way up looked exactly like a
+    dead one, and DPInitialized, a steady state with the Tx simply not turned
+    on, looked like one too. The mock produced four of the seven encodings, so
+    three of those renderings had never been seen at all."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        self.assertOk(self.client.post('/api/module/datapath',
+                                       data=json.dumps(body),
+                                       content_type='application/json'))
+
+    def _lane1(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+
+    def _watch(self, seconds, step=0.02):
+        """Sample lane 1 across a transition and return {state: kind}."""
+        seen = {}
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            l = self._lane1()
+            seen[l['datapath_state']] = l['datapath_state_kind']
+            time.sleep(step)
+        return seen
+
+    def test_the_kinds_come_from_the_state_machine(self):
+        import cmis_registers as c
+        self.assertEqual(
+            {n: c.dp_state_kind(n) for n in c.DP_STATE_NAMES.values()},
+            {'Reserved': 'unknown', 'Deactivated': 'down', 'Init': 'transient',
+             'Deinit': 'transient', 'Activated': 'up', 'TxTurnOn': 'transient',
+             'TxTurnOff': 'transient', 'Initialized': 'holding'})
+
+    def test_a_path_coming_up_passes_through_states_that_are_not_down(self):
+        self._connect()
+        self._post({'app_select': [1] * 8, 'apply': True})
+        seen = self._watch(0.55)
+        self.assertIn('TxTurnOn', seen, 'the mock never shows DPTxTurnOn')
+        self.assertIn('Initialized', seen,
+                      'DPInitialized is not produced by anything')
+        for state, kind in seen.items():
+            if state != 'Deactivated':
+                self.assertNotEqual(kind, 'down',
+                                    '%s is reported as a down lane' % state)
+
+    def test_a_path_going_down_passes_through_its_transients(self):
+        """Figure 6-5 leaves DPActivated through DPTxTurnOff and DPDeinit;
+        snapping to the bottom meant neither encoding existed here."""
+        self._connect()
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        self._post({'dp_deinit_mask': 0xFF})
+        seen = self._watch(0.25)
+        self.assertIn('TxTurnOff', seen)
+        self.assertIn('Deinit', seen)
+        self.assertEqual(seen['TxTurnOff'], 'transient')
+        self.assertEqual(seen['Deinit'], 'transient')
+
+    def test_it_still_settles_where_it_should(self):
+        """Walking the state machine must not leave a path parked in a
+        transient: those exit on their own completion."""
+        self._connect()
+        self._post({'app_select': [1] * 8, 'apply': True})
+        time.sleep(1.2)
+        self.assertEqual(self._lane1()['datapath_state_kind'], 'up')
+        self._post({'dp_deinit_mask': 0xFF})
+        time.sleep(0.6)
+        l = self._lane1()
+        self.assertEqual(l['datapath_state'], 'Deactivated')
+        self.assertEqual(l['datapath_state_kind'], 'down')
+
+    def test_the_table_colours_by_kind_rather_than_by_two_names(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        row = js[js.index("const tbody = document.getElementById('tbl-monitoring')"):]
+        row = row[:row.index('}).join')]
+        self.assertIn('lane.datapath_state_kind', row,
+                      'the state cell still decides on the name alone')
+        # Each kind bound to its class: four kinds sharing one class is the
+        # defect, so asserting the names merely appear proves nothing.
+        for kind, cls in (('up', 'state-activated'),
+                          ('transient', 'state-init'),
+                          ('holding', 'state-holding'),
+                          ('down', 'state-deactivated')):
+            self.assertRegex(row, r"%s: '%s'" % (kind, cls),
+                             '%s is not given its own style' % kind)
+
+    def test_the_holding_style_exists_and_is_not_the_down_one(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'style.css')
+        with open(path, encoding='utf-8') as f:
+            css = f.read()
+        holding = re.search(r'\.state-holding\s*\{([^}]*)\}', css)
+        down = re.search(r'\.state-deactivated\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(holding, 'no style for a holding Data Path')
+        self.assertNotEqual(holding.group(1).strip(), down.group(1).strip(),
+                            'a holding Data Path is painted as a down one')
+
+    def test_every_state_says_what_kind_it_is(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        body = js[js.index('function dpStateNote('):]
+        body = body[:body.index(chr(10) + '}')]
+        for kind in ('up', 'transient', 'holding', 'down'):
+            self.assertRegex(body, r'\b%s:' % kind,
+                             'no wording for a %s Data Path' % kind)
+        self.assertIn('not a fault', body,
+                      'nothing tells the operator a held path is deliberate')
 
 
 if __name__ == '__main__':

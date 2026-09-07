@@ -522,6 +522,8 @@ class MockBackend(I2CInterface):
         self._tuning_accepted = [True] * 8
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
+        self._deinit_time = 0.0          # walking a path down 6h -> 3h -> 1h
+        self._deinit_mask = 0x00
         self._absolute_tx_thr = None      # 62h quad when no lane is relative
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
@@ -1064,6 +1066,17 @@ class MockBackend(I2CInterface):
             self._last_module_state = self._module_state
         self._registers[None][0x03] = (self._module_state << 1) | 0x01
 
+        # A path being taken down walks DPTxTurnOff -> DPDeinit ->
+        # DPDeactivated rather than arriving at the bottom instantly.
+        if self._deinit_time > 0:
+            dt = now - self._deinit_time
+            state = 0x6 if dt < 0.08 else (0x3 if dt < 0.16 else 0x1)
+            for lane in range(8):
+                if (self._deinit_mask >> lane) & 1:
+                    self._dp_lane_states[lane] = state
+            if state == 0x1:
+                self._deinit_time, self._deinit_mask = 0.0, 0x00
+
         # DataPath state machine (ApplyDataPath)
         if self._apply_time > 0 and self._reset_time == 0:
             dt = now - self._apply_time
@@ -1075,18 +1088,28 @@ class MockBackend(I2CInterface):
                 if dt >= 0.5:
                     self._apply_time = 0
                     self._commit_apply()
-            elif dt < 0.2:
+            elif dt < 0.15:
                 for i in range(8):
                     if not self._apply_selects(i):
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x2
+                        self._dp_lane_states[i] = 0x2      # DPInit
+            elif dt < 0.3:
+                # Figure 6-5: DPInit completes into DPInitialized, a steady
+                # state where the path is up but the Tx is not turned on. It
+                # sat between DPInit and DPTxTurnOn in the state machine and
+                # nowhere at all in this mock, so nothing ever showed it.
+                for i in range(8):
+                    if not self._apply_selects(i):
+                        continue
+                    if not ((self._tx_disable_mask >> i) & 1):
+                        self._dp_lane_states[i] = 0x7      # DPInitialized
             elif dt < 0.5:
                 for i in range(8):
                     if not self._apply_selects(i):
                         continue
                     if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x5
+                        self._dp_lane_states[i] = 0x5      # DPTxTurnOn
             else:
                 for i in range(8):
                     if not self._apply_selects(i):
@@ -1646,12 +1669,20 @@ class MockBackend(I2CInterface):
             return
         was, self._dp_deinit_mask = self._dp_deinit_mask, mask
         released = was & ~mask                   # 1 -> 0: bring these back up
+        taken = 0
         for lane in range(8):
             if (mask >> lane) & 1:
                 if self._dp_lane_states[lane] != 0x1:
-                    self._dp_lane_states[lane] = 0x1      # DPDeactivated
+                    # Figure 6-5: a path leaves DPActivated through
+                    # DPTxTurnOff and DPDeinit rather than arriving at the
+                    # bottom at once. Marking the lane is all that happens
+                    # here; the walk below owns the states, and setting one
+                    # here as well would be overwritten before any read.
+                    taken |= 1 << lane
                     self._registers[0x11][0x86] = \
                         self._registers[0x11].get(0x86, 0) | (1 << lane)
+        if taken:
+            self._deinit_time, self._deinit_mask = time.time(), taken
         if released:
             self._update_state_machine()         # let any Apply finish first
             self._apply_time = time.time()

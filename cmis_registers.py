@@ -324,6 +324,28 @@ DP_STATE_NAMES = {
     0x7: "Initialized",
 }
 
+# Figure 6-5 splits these into steady and transient states: a transition
+# signal (name suffix S) is the exit condition of a steady state, while a
+# transient state exits on its own completion. The difference matters on
+# screen - a Data Path passing through DPTxTurnOn is coming up, and showing
+# it the way a DPDeactivated lane is shown says the opposite.
+DP_STATE_KIND = {
+    "Deactivated": 'down',        # steady, and really down
+    "Initialized": 'holding',     # steady: initialised, Tx not turned on
+    "Activated":   'up',          # steady, carrying traffic
+    "Init":        'transient',
+    "Deinit":      'transient',
+    "TxTurnOn":    'transient',
+    "TxTurnOff":   'transient',
+}
+
+
+def dp_state_kind(name: str) -> str:
+    """Which of those a DataPath state name is; 'unknown' for the reserved
+    encoding, which is not something to colour as either."""
+    return DP_STATE_KIND.get(name, 'unknown')
+
+
 # Table 8-91: ConfigStatus codes (4 bits per lane)
 CONFIG_STATUS_NAMES = {
     0x0: "ConfigUndefined",

@@ -1240,9 +1240,14 @@ async function _loadMonitoringOnce() {
     const rxCls = rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
     const txTip = `${_TX_SRC_NOTE[lim.TX_SRC]}: `
                 + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`;
-    const stateClass = lane.datapath_state === 'Activated'
-      ? 'state-activated' : lane.datapath_state === 'Init'
-      ? 'state-init' : 'state-deactivated';
+    // Figure 6-5: four of the seven states are transients. Colouring by name
+    // caught two of them and dropped the rest into the same style as a lane
+    // that is down, so a Data Path on its way up read as a fault, and
+    // DPInitialized - a steady state, initialised with the Tx not turned on -
+    // read as one too.
+    const stateClass = {up: 'state-activated', transient: 'state-init',
+                        holding: 'state-holding', down: 'state-deactivated'
+                       }[lane.datapath_state_kind] || 'state-deactivated';
 
     const cfgStatus = lane.config_status || '—';
     // A rejected configuration is a failure, so it must not share the muted
@@ -1256,7 +1261,7 @@ async function _loadMonitoringOnce() {
       <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
       <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
-      <td class="${stateClass}">${lane.datapath_state}</td>
+      <td class="${stateClass}" title="${esc(dpStateNote(lane))}">${lane.datapath_state}</td>
       <td>${outputCell(lane)}</td>
       <td class="${cfgClass}">${cfgStatus}</td>
     </tr>`;
@@ -1268,6 +1273,18 @@ async function _loadMonitoringOnce() {
 // output without touching the DataPath State, so a lane can read Activated
 // while sending nothing - and the operator who just ticked one of those boxes
 // has no other way to see that it took effect.
+// The name alone does not say whether a lane is in trouble; the kind does.
+function dpStateNote(lane) {
+  return {
+    up: 'Steady state: the Data Path is up',
+    transient: 'Transient state: the Data Path is moving between steady '
+             + 'states, not stuck',
+    holding: 'Steady state: initialised, with the Tx output not turned on - '
+           + 'not a fault',
+    down: 'Steady state: the Data Path is down',
+  }[lane.datapath_state_kind] || 'Reserved DataPath state encoding';
+}
+
 function outputCell(lane) {
   const dot = (valid, label, why) => valid
     ? `<span class="flag-ok" title="${label} output signal valid">&#9679;</span> ${label}`
