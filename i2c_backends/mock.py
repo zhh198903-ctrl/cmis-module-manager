@@ -527,6 +527,13 @@ _FR4X2_800G = {
     # module that answers a READ of at most 8 bytes. Every other profile
     # advertises full page read, so both read paths are exercised.
     'misc_features_251': 0x55,           # all four: not supported
+    # 2x 400G-FR4: each half is four CWDM wavelengths sharing one duplex
+    # fibre pair, so media lanes 1-4 are one fibre and differ only by
+    # wavelength - which a column of per-lane Rx powers does not show.
+    # Tx lanes 1-4 on fibre 1 (TR1), Rx on fibre 2 (RT1); lanes 5-8 on the
+    # second pair, fibres 3 and 4.
+    'media_lane_map': [0x11, 0x21, 0x31, 0x41, 0x13, 0x23, 0x33, 0x43,
+                       0x12, 0x22, 0x32, 0x42, 0x14, 0x24, 0x34, 0x44],
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
@@ -934,6 +941,12 @@ class MockBackend(I2CInterface):
         for a in range(0xCA, 0xCE): p11[a] = 0x11
         # DPConfigLane: AppSel=1
         for i in range(8): p11[0xCE + i] = default_sel[i] << 4
+        # 240-255 (Table 8-107): which wavelength and which fibre each media
+        # lane is. Zero means "unknown or undefined", which is the right
+        # answer for a parallel module and was the only answer any profile
+        # gave - so the mapping never had anything to show.
+        for i, b in enumerate(p.get('media_lane_map', [0x00] * 16)):
+            p11[0xF0 + i] = b
         regs[0x11] = p11
 
         # ==== Page 12h — Laser Tuning Control/Status (ONLY for tunable) ====

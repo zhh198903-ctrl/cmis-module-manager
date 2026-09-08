@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.39.0<br>
+      <b>版本</b>　2.40.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.39.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.39.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.40.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.40.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,32 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>监控表的「Lane」列现在会写明这条媒体通道是<u>哪个波长、哪根光纤</u>。</b>
+    表里列着媒体通道 1..N，每条一个光功率读数——
+    可这一列<b>看不出模块是并行的还是波分的</b>。
+    这两者完全不是一回事：波分模块上<b>好几条媒体通道共用一根光纤</b>、
+    只靠波长区分；并行模块则每条通道各走各的光纤。
+    于是「第 3 条通道功率低」到底是<b>某个波长弱了</b>，
+    还是<b>整根光纤有问题</b>，界面上分辨不出来。<br>
+    <code>11h:240–255</code>（Table 8-107）说的正是这个映射：
+    高半字节是<b>媒体波长</b>，低半字节是<b>物理光纤</b>
+    （<code>TR1</code>/<code>RT1</code>/<code>TR2</code>… 这套编号来自对应的硬件规范）。
+    这 16 个字节工具<b>从来没读过</b>。<br>
+    现在模块给了映射的通道，Lane 那格下面会多一行小字，
+    例如 <code>λ1 · TR1/RT1</code>；悬停能看到完整的光纤名称。
+    两个方向波长相同时只写一次（双工光纤对本来就是这样）。<br>
+    <b>两个半字节都是 0 的含义是「未知或未定义」</b>——
+    这正是并行模块<b>应该</b>给的回答，所以这种模块下这行小字<b>整个不出现</b>，
+    而不是硬编一个「光纤 0」。<br>
+    内置演示模块以前<b>全都是 0</b>，等于谁都没说，
+    所以就算读了也没东西可显示；现在
+    <code>mock_fr4x2</code>（2× 400G-FR4）会如实声明：
+    通道 1–4 是<b>同一对光纤上的四个 CWDM 波长</b>，
+    通道 5–8 走第二对——这正是原先那一列<b>没法表达</b>的情况。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2824,7 +2850,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.39.0<br>
+    CMIS Module Manager 操作手册 v2.40.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

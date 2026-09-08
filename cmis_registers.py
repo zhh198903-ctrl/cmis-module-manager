@@ -186,6 +186,11 @@ REG_TX_BIAS         = (0x11, 0xAA, 16)  # 8 lanes × 2B, ×2 µA
 REG_RX_POWER        = (0x11, 0xBA, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_CONFIG_STATUS   = (0x11, 0xCA, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
 REG_DP_INIT_PENDING    = (0x11, 0xEB, 1)  # 235 DPInitPendingLane, Table 8-106
+# 240-255 (Table 8-107): which media wavelength and which physical fibre each
+# media lane actually is. On a WDM module several lanes share one fibre and
+# differ only by wavelength; on a parallel one each has its own. A per-lane
+# power reading means different things in the two cases.
+REG_MEDIA_LANE_MAP     = (0x11, 0xF0, 16)  # 240-255 Tx1-8 then Rx1-8
 
 # Tables 8-104 and 8-105: the Active Control Set's half of the signal
 # integrity settings - what the module is actually provisioned with, one
@@ -568,6 +573,46 @@ def parse_dp_states(data: bytes) -> list:
         nibble = (data[byte_idx] >> ((lane % 2) * 4)) & 0x0F
         states.append(DP_STATE_NAMES.get(nibble, f"Unknown(0x{nibble:X})"))
     return states
+
+
+# Table 8-107 gives each fibre code two names, one plain and one from the
+# hardware specification's TR/RT numbering.
+_FIBER_NAMES = {0: None, 1: 'fibre 1 (TR1)', 2: 'fibre 2 (RT1)',
+                3: 'fibre 3 (TR2)', 4: 'fibre 4 (RT2)',
+                5: 'fibre 5 (TR3)', 6: 'fibre 6 (RT3)',
+                7: 'fibre 7 (TR4)', 8: 'fibre 8 (RT4)'}
+# The hardware specification's own name for the same fibre, which is what
+# fits in a table cell.
+_FIBER_SHORT = {0: None, 1: 'TR1', 2: 'RT1', 3: 'TR2', 4: 'RT2',
+                5: 'TR3', 6: 'RT3', 7: 'TR4', 8: 'RT4'}
+
+
+def parse_media_lane_mapping(data: bytes) -> list:
+    """11h:240-255 (Table 8-107), RO and Conditional.
+
+    Sixteen bytes: media lanes 1-8 for Tx, then the same for Rx. The high
+    nibble is the media wavelength and the low nibble the physical fibre, and
+    0000b in either means "Mapping unknown or undefined" - which is what a
+    module that does not multiplex says, so an absent mapping is an answer
+    rather than a gap.
+    """
+    out = []
+    for lane in range(8):
+        entry = {}
+        for side, off in (('tx', 0), ('rx', 8)):
+            byte = data[off + lane] if off + lane < len(data) else 0
+            wl = (byte >> 4) & 0x0F
+            fiber = byte & 0x0F
+            entry[side] = {
+                'wavelength': wl if 1 <= wl <= 8 else None,
+                'fiber': fiber if 1 <= fiber <= 8 else None,
+                'fiber_name': _FIBER_NAMES.get(fiber),
+                'fiber_short': _FIBER_SHORT.get(fiber),
+            }
+        entry['known'] = any(entry[s]['wavelength'] or entry[s]['fiber']
+                             for s in ('tx', 'rx'))
+        out.append(entry)
+    return out
 
 
 def parse_dp_init_pending(byte_val: int, lanes: int = 8) -> list:

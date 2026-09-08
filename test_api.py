@@ -5249,6 +5249,14 @@ class TestPageSelection(CMISTestCase):
     def test_alternating_pages_reselect_each_time(self):
         """Caching must not skip a genuine page change."""
         self.connect()
+        # Start from a known page. Connect leaves whichever page the
+        # capability reads finished on selected, and what is being tested
+        # here is the alternation rather than which page happens to be
+        # current when it starts.
+        self.client.post('/api/register/read',
+                         data=json.dumps({'page': 0x10, 'address': 0x80,
+                                          'length': 1}),
+                         content_type='application/json')
         def alternate():
             for _ in range(2):
                 self.client.post('/api/register/read',
@@ -11340,6 +11348,159 @@ class TestHowManyBytesAReadMayAskFor(CMISTestCase):
         self.assertIn('longer reads are split into several', body)
         self.assertIn('01h:251.1-0', body,
                       'nothing names the advertisement that decided it')
+
+
+class TestWhichFibreAMediaLaneIs(CMISTestCase):
+    """The monitoring table lists media lanes 1..N with a power reading each,
+    and that column looks the same whether the module is parallel or muxed.
+    It is not the same thing: on a WDM module several media lanes share one
+    fibre and differ only by wavelength, so "lane 3 is low" can mean one
+    wavelength is weak or that a whole fibre is.
+
+    11h:240-255 (Table 8-107) is exactly that mapping - the high nibble is the
+    media wavelength and the low nibble the physical fibre - and it was never
+    read. 0000b means "Mapping unknown or undefined", which is a parallel
+    module's honest answer and was every profile's answer, so there was
+    nothing to show even if it had been read."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _map(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['media_lane_map']
+
+    def _src(self, name):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_the_two_nibbles_are_wavelength_then_fibre(self):
+        import cmis_registers as c
+        got = c.parse_media_lane_mapping(bytes([0x35] + [0] * 15))
+        self.assertEqual(got[0]['tx']['wavelength'], 3)
+        self.assertEqual(got[0]['tx']['fiber'], 5)
+        self.assertEqual(got[0]['tx']['fiber_name'], 'fibre 5 (TR3)')
+        self.assertEqual(got[0]['tx']['fiber_short'], 'TR3')
+
+    def test_the_rx_half_starts_at_the_ninth_byte(self):
+        """Tx lanes 1-8 then Rx lanes 1-8. Reading one half for the other
+        looks right on a module whose two directions match."""
+        import cmis_registers as c
+        got = c.parse_media_lane_mapping(bytes([0] * 8 + [0x12] + [0] * 7))
+        self.assertEqual(got[0]['rx']['wavelength'], 1)
+        self.assertEqual(got[0]['rx']['fiber'], 2)
+        self.assertIsNone(got[0]['tx']['wavelength'],
+                          'the Rx mapping was read as the Tx one')
+        got = c.parse_media_lane_mapping(bytes([0] * 7 + [0x88] + [0] * 8))
+        self.assertEqual(got[7]['tx']['wavelength'], 8, 'lane 8 is byte 7')
+        self.assertIsNone(got[0]['tx']['wavelength'])
+
+    def test_zero_is_undefined_rather_than_fibre_zero(self):
+        import cmis_registers as c
+        got = c.parse_media_lane_mapping(bytes(16))
+        for lane in got:
+            self.assertFalse(lane['known'])
+            for side in ('tx', 'rx'):
+                self.assertIsNone(lane[side]['wavelength'])
+                self.assertIsNone(lane[side]['fiber'])
+                self.assertIsNone(lane[side]['fiber_name'])
+
+    def test_a_reserved_code_is_not_a_fibre(self):
+        """Table 8-107 stops at 8 in both nibbles; 1001-1111 are Reserved and
+        naming them would invent hardware."""
+        import cmis_registers as c
+        got = c.parse_media_lane_mapping(bytes([0xF9] + [0] * 15))
+        self.assertIsNone(got[0]['tx']['wavelength'])
+        self.assertIsNone(got[0]['tx']['fiber'])
+        self.assertFalse(got[0]['known'])
+
+    def test_every_fibre_code_has_both_names(self):
+        import cmis_registers as c
+        pairs = [(1, 'TR1'), (2, 'RT1'), (3, 'TR2'), (4, 'RT2'),
+                 (5, 'TR3'), (6, 'RT3'), (7, 'TR4'), (8, 'RT4')]
+        for code, short in pairs:
+            got = c.parse_media_lane_mapping(bytes([code] + [0] * 15))
+            self.assertEqual(got[0]['tx']['fiber_short'], short)
+            self.assertIn(short, got[0]['tx']['fiber_name'])
+            self.assertIn(str(code), got[0]['tx']['fiber_name'])
+
+    # ---- and what the profiles say -----------------------------------------
+
+    def test_a_parallel_module_declines_to_map(self):
+        self._connect()
+        self.assertTrue(all(not lane['known'] for lane in self._map()),
+                        'a parallel module should leave this undefined '
+                        'rather than invent a mapping')
+
+    def test_a_wdm_module_shares_a_fibre_between_lanes(self):
+        """2x 400G-FR4: four CWDM wavelengths per duplex pair, so lanes 1-4
+        are one fibre and 5-8 the other. This is the case the lane column
+        could not show."""
+        self._connect('mock_fr4x2')
+        m = self._map()
+        self.assertTrue(all(lane['known'] for lane in m))
+        for lane in range(4):
+            self.assertEqual(m[lane]['tx']['wavelength'], lane + 1)
+            self.assertEqual(m[lane]['tx']['fiber_short'], 'TR1')
+            self.assertEqual(m[lane]['rx']['fiber_short'], 'RT1')
+        for lane in range(4, 8):
+            self.assertEqual(m[lane]['tx']['wavelength'], lane - 3)
+            self.assertEqual(m[lane]['tx']['fiber_short'], 'TR2',
+                             'the second FR4 shares the first one\'s fibre')
+            self.assertEqual(m[lane]['rx']['fiber_short'], 'RT2')
+
+    def test_it_is_read_once_rather_than_every_poll(self):
+        """An advertisement that cannot change does not belong in a loop that
+        runs every couple of seconds."""
+        src = self._src('app.py')
+        disc = src[src.index('def _discover_capabilities('):]
+        disc = disc[:disc.index('\ndef ', 10)]
+        self.assertIn('REG_MEDIA_LANE_MAP', disc,
+                      'the mapping is not read at connect')
+        mon = src[src.index('def api_module_monitoring('):]
+        mon = mon[:mon.index('\n@app.route')]
+        self.assertNotIn('REG_MEDIA_LANE_MAP', mon,
+                         'the mapping is re-read on every monitoring poll')
+        self.assertIn("_state['caps'].get('media_lane_map', [])", mon)
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_an_unmapped_lane_shows_nothing(self):
+        js = self._src(os.path.join('static', 'app.js'))
+        body = js[js.index('function _laneMapCell('):]
+        body = body[:body.index('async function loadMonitoring')]
+        self.assertIn("if (!entry || !entry.known) return '';", body,
+                      'a module that declined to map still gets a label')
+
+    def test_a_duplex_pair_says_its_wavelength_once(self):
+        js = self._src(os.path.join('static', 'app.js'))
+        body = js[js.index('function _laneMapCell('):]
+        body = body[:body.index('async function loadMonitoring')]
+        self.assertIn('tx.wavelength === rx.wavelength', body,
+                      'the same wavelength is printed twice per lane')
+        self.assertIn('[...new Set(fibres)].join', body,
+                      'a lane on one fibre both ways lists it twice')
+
+    def test_the_cell_names_the_register_it_came_from(self):
+        js = self._src(os.path.join('static', 'app.js'))
+        body = js[js.index('function _laneMapCell('):]
+        body = body[:body.index('async function loadMonitoring')]
+        self.assertIn('11h:240-255', body)
+        self.assertIn('separated by wavelength, not by fibre', body,
+                      'nothing explains why two lanes share a fibre')
+
+    def test_the_lane_column_actually_uses_it(self):
+        js = self._src(os.path.join('static', 'app.js'))
+        self.assertIn('const laneMap = monRes.data.media_lane_map || [];', js,
+                      'the renderer never receives the mapping')
+        self.assertIn('${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}',
+                      js, 'the lane cell never shows it')
 
 
 if __name__ == '__main__':

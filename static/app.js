@@ -1143,6 +1143,36 @@ let _monitoringInFlight = false;
 // again.
 let _monitoringHaltedByError = false;
 
+// 11h:240-255 (Table 8-107). On a WDM module several media lanes share one
+// fibre and differ only by wavelength; on a parallel one each lane has its
+// own fibre. A column of per-lane powers looks identical either way, so which
+// one you are looking at was never on screen. 0000b in both nibbles is the
+// module saying the mapping is unknown or undefined, and then there is
+// nothing to show.
+function _laneMapCell(entry) {
+  if (!entry || !entry.known) return '';
+  const tx = entry.tx || {}, rx = entry.rx || {};
+  // A duplex pair carries the same wavelength each way and differs only in
+  // fibre, so saying it twice fills the cell without adding anything.
+  const bits = [];
+  if (tx.wavelength && tx.wavelength === rx.wavelength) {
+    bits.push('λ' + tx.wavelength);
+  } else {
+    if (tx.wavelength) bits.push('Tx λ' + tx.wavelength);
+    if (rx.wavelength) bits.push('Rx λ' + rx.wavelength);
+  }
+  const fibres = [tx.fiber_short, rx.fiber_short].filter(Boolean);
+  if (fibres.length) bits.push([...new Set(fibres)].join('/'));
+  if (!bits.length) return '';
+  const full = [tx.fiber_name && 'Tx on ' + tx.fiber_name,
+                rx.fiber_name && 'Rx on ' + rx.fiber_name]
+    .filter(Boolean).join(', ');
+  return `<div class="reg-meta" title="${esc('Media lane to wavelength and '
+    + 'fibre mapping (11h:240-255)' + (full ? ': ' + full : '')
+    + '. Lanes sharing a fibre are separated by wavelength, not by fibre.'
+    )}">${esc(bits.join(' · '))}</div>`;
+}
+
 async function loadMonitoring() {
   if (!AppState.connected) return;
   if (_monitoringInFlight) return;
@@ -1232,6 +1262,7 @@ async function _loadMonitoringOnce() {
   const dotEl = document.getElementById('monitor-all-activated-dot');
   if (dotEl) dotEl.style.display = allActivated ? 'inline-block' : 'none';
 
+  const laneMap = monRes.data.media_lane_map || [];
   tbody.innerHTML = lanes.map(lane => {
     const txDbm = lane.tx_power_dbm;
     const rxDbm = lane.rx_power_dbm;
@@ -1261,7 +1292,7 @@ async function _loadMonitoringOnce() {
                    : lane.config_status_code === 0xC ? 'state-init'
                    : 'state-deactivated';
     return `<tr>
-      <td>${lane.lane}</td>
+      <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
       <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
       <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>

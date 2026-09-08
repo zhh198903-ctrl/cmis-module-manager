@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.39.0'
+__version__ = '2.40.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -385,6 +385,11 @@ def _discover_capabilities() -> dict:
         ext['fiber_face_name'] = cmis.FIBER_FACE_TYPES.get(
             ext['fiber_face_type'], f"Reserved (0x{ext['fiber_face_type']:X})")
         caps.update(ext)
+        # 11h:240-255 (Table 8-107) is an advertisement rather than live
+        # state, so it is read once here with the rest rather than on every
+        # monitoring poll.
+        caps['media_lane_map'] = cmis.parse_media_lane_mapping(
+            _read_upper(*cmis.REG_MEDIA_LANE_MAP))
     except Exception:
         # A module that cannot answer the capability block is still usable at
         # the default eight lanes; failing the whole connection over an
@@ -937,7 +942,11 @@ def api_module_monitoring():
                     'tx_power_low_warn_dbm':   t['lo_warn_dbm'],
                 })
 
-        return _ok({'lanes': lanes})
+        return _ok({'lanes': lanes,
+                    # Which wavelength and fibre each media lane is, where
+                    # the module says. Read at connect, so it costs nothing
+                    # per poll.
+                    'media_lane_map': _state['caps'].get('media_lane_map', [])})
     except Exception as e:
         return _err(str(e), 500)
 
