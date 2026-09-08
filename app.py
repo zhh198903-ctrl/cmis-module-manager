@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.31.0'
+__version__ = '2.32.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -510,7 +510,8 @@ def api_module_info():
         # The same Media Interface ID means different things on MMF and SMF,
         # so the module's global media type picks the table.
         apps = cmis.parse_application_descriptors(
-            appdesc_raw, media_type_raw[0], _additional_app_descriptors())
+            appdesc_raw, media_type_raw[0], _additional_app_descriptors(),
+            _media_lane_assignments())
         host_lanes_app1 = apps[0]['host_lanes'] if apps else 0
         media_lanes_app1 = apps[0]['media_lanes'] if apps else 0
         host_total, media_total = _compute_module_capacity(apps)
@@ -1060,7 +1061,8 @@ def api_applications():
         data = _read_lower(0x56, 32)  # the first eight, 4 bytes each
         media_type = _read_lower(0x55, 1)[0]
         apps = cmis.parse_application_descriptors(
-            data, media_type, _additional_app_descriptors())
+            data, media_type, _additional_app_descriptors(),
+            _media_lane_assignments())
         return _ok({'applications': apps})
     except Exception as e:
         return _err(str(e), 500)
@@ -1161,6 +1163,16 @@ def api_module_control_set():
         return _ok({'message': f'Module control written (0x{val:02X})', 'value': val})
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _media_lane_assignments():
+    """01h:176-190, the fifth descriptor byte for Applications 1-15 (Table
+    8-60). "Not required for flat Memory Map modules", which have no Page 01h
+    at all - there the descriptors are simply four bytes long."""
+    try:
+        return _read_upper(*cmis.REG_MEDIA_LANE_ASSIGN)
+    except Exception:
+        return b''
 
 
 def _additional_app_descriptors():

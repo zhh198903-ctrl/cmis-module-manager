@@ -189,6 +189,7 @@ REG_DP_INIT_PENDING    = (0x11, 0xEB, 1)  # 235 DPInitPendingLane, Table 8-106
 # clear these "were determined by the module according to the selected
 # Application", so they are not the staged values at all.
 REG_ADDITIONAL_APPS    = (0x01, 0xDF, 28)  # 223-250 App 9-15, Table 8-61
+REG_MEDIA_LANE_ASSIGN  = (0x01, 0xB0, 15)  # 176-190 App 1-15, Table 8-60
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
 REG_ACS_TX_CDR         = (0x11, 0xDD, 1)  # 221 CDREnableTx
@@ -697,7 +698,8 @@ def cmis_revision_str(rev: int) -> str:
 
 
 def parse_application_descriptors(data: bytes, media_type: int = 0x02,
-                                  extra: bytes = b'') -> list:
+                                  extra: bytes = b'',
+                                  media_assign: bytes = b'') -> list:
     """Parse Application Descriptors from lower memory bytes 86-117 and,
     where the module has them, the additional ones on Page 01h.
 
@@ -706,6 +708,12 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
       +1: MediaInterfaceID
       +2: bits[7:4]=HostLaneCount, bits[3:0]=MediaLaneCount
       +3: HostLaneAssignmentOptions (bitmap)
+
+    6.2.1.6 calls MediaLaneAssignmentOptions "the fifth byte" of the
+    descriptor, and notes that its registers "are located on Memory Map Page
+    01h ... separated from the first four bytes". Reading only the four left
+    every descriptor four fifths told: the host side said where an Application
+    may start, and nothing said where the instance lands on the media.
 
     8.4.17: "Bytes 01h:223-250 provide space for seven additional Application
     Descriptors ... in addition to the eight Application Descriptors in Bytes
@@ -736,6 +744,11 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
             'host_lanes': (lane_count >> 4) & 0x0F,
             'media_lanes': lane_count & 0x0F,
             'host_lane_assign_mask': host_lane_assign,
+            # Not required of a flat-memory module, which has no Page 01h to
+            # put it on, so its absence is a shape of module rather than a
+            # read that failed.
+            'media_lane_assign_mask': (media_assign[i]
+                                       if i < len(media_assign) else None),
         })
     return apps
 

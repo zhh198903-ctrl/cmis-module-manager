@@ -9968,6 +9968,130 @@ class TestAModuleWithMoreThanEightApplications(CMISTestCase):
             'was grouped one lane at a time')
 
 
+
+class TestTheFifthByteOfAnApplicationDescriptor(CMISTestCase):
+    """6.2.1.6 describes the Application Descriptor as five bytes and says
+    where the last one lives: "The fifth byte (MediaLaneAssignmentOptions)
+    identifies where the Application instance is supported on the module's
+    media interface. Note that the MediaLaneAssignmentOptions registers are
+    located on Memory Map Page 01h ... separated from the first four bytes."
+
+    The tool read the four in lower memory and stopped, so every descriptor
+    was four fifths told: the Applications table said where an Application may
+    start on the host side and nothing about where the instance lands on the
+    media. On a breakout Application - four media lanes out of eight - that
+    bitmap is the only thing that says which media lanes an instance occupies.
+
+    It is "not required for flat Memory Map modules", which have no Page 01h
+    at all, so absent is a shape of module and not a failed read."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apps(self):
+        return self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the module's answer ---------------------------------------------
+
+    def test_every_application_reports_one(self):
+        self._connect()
+        for a in self._apps():
+            self.assertIsNotNone(a.get('media_lane_assign_mask'),
+                                 'App %d has no media lane assignment'
+                                 % a['app_sel'])
+
+    def test_each_application_reads_its_own_byte(self):
+        """The two Applications here differ, so reading either from the
+        other's address shows up. An eight-media-lane Application can only
+        start on media lane 1; a four-lane one can start on 1 or 5."""
+        self._connect()
+        apps = self._apps()
+        self.assertEqual(apps[0]['media_lanes'], 8)
+        self.assertEqual(apps[0]['media_lane_assign_mask'], 0b00000001)
+        self.assertEqual(apps[1]['media_lanes'], 4)
+        self.assertEqual(apps[1]['media_lane_assign_mask'], 0b00010001,
+                         'the second Application read the first byte')
+
+    def test_it_is_not_the_host_bitmap_under_another_name(self):
+        """A profile where the two sides differ, so returning one for the
+        other cannot pass."""
+        self._connect('mock_coherent')
+        for a in self._apps():
+            self.assertEqual(a['media_lanes'], 1)
+            self.assertEqual(a['media_lane_assign_mask'], 0xFF,
+                             'a single media lane Application may start on '
+                             'any of them')
+            self.assertNotEqual(a['media_lane_assign_mask'],
+                                a['host_lane_assign_mask'])
+
+    def test_a_descriptor_without_the_fifth_byte_says_so(self):
+        """Flat memory map modules do not carry it, and None is how that
+        reads - not a zero, which would claim no lane is supported."""
+        import cmis_registers as c
+        four = bytes([0x4F, 0x1C, 0x44, 0x11]) + b'\xff' * 28
+        apps = c.parse_application_descriptors(four)
+        self.assertEqual(len(apps), 1)
+        self.assertIsNone(apps[0]['media_lane_assign_mask'])
+
+    def test_the_bytes_line_up_with_the_applications(self):
+        """01h:176 is App 1, so a list read one byte out would still look
+        plausible on a module whose Applications share a value."""
+        import cmis_registers as c
+        four = bytes([0x4F, 0x1C, 0x44, 0x11]) * 3 + b'\xff' * 20
+        apps = c.parse_application_descriptors(
+            four, 0x02, b'', bytes([0x11, 0x22, 0x44]))
+        self.assertEqual([a['media_lane_assign_mask'] for a in apps],
+                         [0x11, 0x22, 0x44])
+
+    # ---- and the table that shows it --------------------------------------
+
+    def test_the_table_has_a_column_for_it(self):
+        html = self._html()
+        head = html[html.index('<th>AppSel'):html.index('<tbody id="tbl-apps"')]
+        self.assertIn('Media Lane Assign', head,
+                      'the descriptor is displayed without its fifth byte')
+        self.assertEqual(head.count('<th>'), 7)
+
+    def test_the_empty_state_spans_the_new_width(self):
+        html = self._html()
+        row = html[html.index('<tbody id="tbl-apps"'):]
+        row = row[:row.index('</tbody>')]
+        self.assertIn('colspan="7"', row,
+                      'the placeholder row is narrower than the table')
+
+    def test_the_cell_says_where_the_value_comes_from(self):
+        js = self._js()
+        body = js[js.index('function mediaAssignCell('):]
+        body = body[:body.index('async function loadApplications')]
+        self.assertIn('01h:', body,
+                      'the tooltip never names the register')
+        self.assertIn('media lane', body)
+        self.assertRegex(body, r'm === null \|\| m === undefined',
+                         'a module that does not report it would render a '
+                         'bitmap of nothing rather than saying so')
+
+    def test_the_cell_is_rendered_in_the_row(self):
+        js = self._js()
+        self.assertIn('${mediaAssignCell(a)}', js,
+                      'the cell is built and never placed in the row')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

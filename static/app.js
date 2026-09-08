@@ -1869,6 +1869,23 @@ async function loadModuleControl() {
 // ---------------------------------------------------------------------------
 // Application Descriptors (DataPath tab)
 // ---------------------------------------------------------------------------
+// 6.2.1.6 calls this "the fifth byte" of the Application Descriptor, and it
+// lives apart from the other four on Page 01h. A flat memory map module has no
+// Page 01h to put it on, so absent is a shape of module rather than a gap.
+function mediaAssignCell(a) {
+  const m = a.media_lane_assign_mask;
+  if (m === null || m === undefined) {
+    return `<td title="${esc('MediaLaneAssignmentOptions is not required of a '
+      + 'flat memory map module, and this one does not report it.')}">`
+      + '<span style="color:var(--text-muted)">—</span></td>';
+  }
+  const bin = '0b' + m.toString(2).padStart(8, '0');
+  const tip = `Media Lane Assignment: ${bin} bin = ${hex8(m)} hex = ${m} dec`
+    + `\nBit n set = an instance of this Application may start on media lane n+1`
+    + `\n01h:${176 + a.app_sel - 1}`;
+  return `<td title="${esc(tip)}"><code>${bin}</code></td>`;
+}
+
 async function loadApplications() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/applications');
@@ -1899,6 +1916,7 @@ async function loadApplications() {
       <td title="Host lane count (dec)">${a.host_lanes || '—'}</td>
       <td title="Media lane count (dec)">${a.media_lanes || '—'}</td>
       <td title="${esc(lanesTip)}"><code>${assignBin}</code></td>
+      ${mediaAssignCell(a)}
     </tr>`;
   }).join('');
 }

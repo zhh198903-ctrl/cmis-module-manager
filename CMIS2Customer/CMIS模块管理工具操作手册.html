@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.31.0<br>
+      <b>版本</b>　2.32.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.31.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.31.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.32.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.32.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1620,6 +1620,21 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
   </div>
 
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Applications 表补上了「Media Lane Assign」一列。</b>
+    规范 6.2.1.6 把 Application 描述符定义为<b>五个字节</b>，
+    第五个字节 <code>MediaLaneAssignmentOptions</code> 说明这个应用的实例
+    在<b>媒体侧</b>能落在哪几条 lane 上；它不跟前四个字节放在一起，
+    而是单独放在 <code>01h:176–190</code>。
+    工具以前只读前四个字节，所以每条描述符都少了五分之一——
+    主机侧的起始 lane 位图有，媒体侧的没有。
+    对<b>分路（breakout）应用</b>来说，这一位图正是告诉你
+    每个实例占用哪几条媒体 lane 的唯一依据。<br>
+    （平坦内存模块没有 01h 页，本来就不带这个字节，这一列会显示
+    <code>—</code>，不是读失败。）</span>
+  </div>
+
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span><b>模块最多可以声明 15 个 Application，工具以前只读前 8 个。</b>
@@ -2599,7 +2614,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.31.0<br>
+    CMIS Module Manager 操作手册 v2.32.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
