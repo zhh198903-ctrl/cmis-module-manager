@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.35.0'
+__version__ = '2.36.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1855,11 +1855,17 @@ def api_prbs_get():
             media_gate = _read_upper(*cmis.REG_MEDIA_GATE_DONE)[0]
             # 132.7, module-wide rather than per lane.
             ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
+            # Whether that matters here is a question about 13h:176 and 178:
+            # a generator on the internal clock and a checker on a recovered
+            # clock do not stop working because the reference clock went away.
+            clk = _read_upper(*cmis.REG_CLOCK_MEAS)
+            clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
         except Exception:
             host_lol = media_lol = 0
             host_gen_lol = media_gen_lol = 0
             host_gate = media_gate = 0
             ref_clock_lost = False
+            clock_sources = {}
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
@@ -1897,9 +1903,10 @@ def api_prbs_get():
             # read without it may be the previous period's.
             'host_gate_done_mask':  host_gate,
             'media_gate_done_mask': media_gate,
-            # 132.7 is module-wide: with no reference clock nothing on this
-            # page is measuring anything.
+            # 132.7 is module-wide, but it only invalidates a pattern run
+            # for the engines actually clocked from the reference clock.
             'reference_clock_lost': ref_clock_lost,
+            'clock_sources': clock_sources,
         })
     except Exception as e:
         return _err(str(e), 500)

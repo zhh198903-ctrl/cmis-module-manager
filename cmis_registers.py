@@ -281,6 +281,10 @@ REG_MEDIA_PRBS_CHK   = (0x13, 0xA8, 8)   # 168-175
 # module has, how it can gate a measurement, and which patterns each generator
 # and checker actually supports. Offering the rest is offering nothing.
 REG_DIAG_CAPS        = (0x13, 0x80, 15)  # 128-142
+# 176-179 (Table 8-127): where each pattern generator and checker takes its
+# clock from. Whether a lost reference clock invalidates a pattern run is a
+# question about these bytes, not about the flag on its own.
+REG_CLOCK_MEAS       = (0x13, 0xB0, 4)   # 176-179
 REG_MEDIA_OUT_LB     = (0x13, 0xB4, 1)
 REG_MEDIA_IN_LB      = (0x13, 0xB5, 1)
 REG_HOST_OUT_LB      = (0x13, 0xB6, 1)
@@ -1154,6 +1158,54 @@ def parse_diag_reporting_caps(byte_val: int) -> dict:
         'bits_and_errors': bool(byte_val & 0x02),   # selectors 02h-05h
         'bit_error_ratio': bool(byte_val & 0x01),   # selector 01h
     }
+
+
+def parse_clock_sources(b176: int, b178: int) -> dict:
+    """13h:176 and 13h:178 (Table 8-127), both RW and Optional.
+
+    Each pattern generator and checker takes its clock from one of three
+    places: the module's internal clock, a reference clock, or a clock
+    recovered from the traffic. The four fields are not coded alike - the
+    host generator counts reference clocks by media lane and the media
+    generator by host lane, with an extra "all lanes use Reference Clock"
+    value the host generator does not have.
+    """
+    out = {}
+
+    code = (b176 >> 4) & 0x0F
+    if code == 0:
+        name, ref = 'Internal clock', False
+    elif 1 <= code <= 8:
+        name, ref = 'Reference clock, media lane %d' % code, True
+    elif code == 15:
+        name, ref = 'Recovered clock per media lane or Data Path', False
+    else:
+        name, ref = 'Reserved (%d)' % code, False
+    out['host_gen'] = {'code': code, 'name': name, 'uses_reference': ref}
+
+    code = b176 & 0x0F
+    if code == 0:
+        name, ref = 'Internal clock', False
+    elif code == 1:
+        name, ref = 'Reference clock', True
+    elif 2 <= code <= 9:
+        name, ref = 'Reference clock, host lane %d' % (code - 1), True
+    elif code == 15:
+        name, ref = 'Recovered clock per host lane or Data Path', False
+    else:
+        name, ref = 'Reserved (%d)' % code, False
+    out['media_gen'] = {'code': code, 'name': name, 'uses_reference': ref}
+
+    for key, shift, side in (('host_chk', 2, 'host'), ('media_chk', 0, 'media')):
+        code = (b178 >> shift) & 0x03
+        name, ref = {
+            0: ('Recovered clock from the %s lane or Data Path' % side, False),
+            1: ('Internal clock', False),
+            2: ('Reference clock', True),
+            3: ('Reserved (3)', False),
+        }[code]
+        out[key] = {'code': code, 'name': name, 'uses_reference': ref}
+    return out
 
 
 def parse_pattern_locations(b131: int) -> dict:

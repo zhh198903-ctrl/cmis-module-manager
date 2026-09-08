@@ -2590,15 +2590,48 @@ async function loadPrbs() {
                    'Media', d.media_chk_lol_seen,
                    (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
                    pl.media_chk);
-  // 14h:132.7 is module-wide: with no reference clock, nothing measured on
-  // this page means anything, whatever the per-lane flags say.
+  // 13h:176 and 178 (Table 8-127) say where each engine takes its clock
+  // from. It changes what a pattern run means - an internally clocked
+  // generator is not being driven by the host's clock at all - and it is what
+  // decides whether a lost reference clock matters here.
+  const cs = d.clock_sources || {};
+  const listOf = (xs) => xs.length < 2 ? (xs[0] || '')
+    : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
+  const ROLE_LABEL = {host_gen: 'host side generator',
+                      media_gen: 'media side generator',
+                      host_chk: 'host side checker',
+                      media_chk: 'media side checker'};
+  for (const role of ['host_gen', 'media_gen', 'host_chk', 'media_chk']) {
+    const el = document.getElementById('prbs-clk-' + role.replace('_', '-'));
+    if (!el) continue;
+    const src = cs[role];
+    const addr = role.endsWith('_gen') ? '13h:176' : '13h:178';
+    el.innerHTML = src
+      ? 'Clock source: <b>' + esc(src.name) + '</b> '
+        + '<span class="reg-meta">' + addr + '</span>'
+      : '';
+  }
+  // 14h:132.7 is module-wide and latched. Condemning the whole page on it was
+  // a claim the module never made: a generator on the internal clock and a
+  // checker on a recovered clock keep working without a reference clock.
   const refNote = document.getElementById('prbs-ref-clock');
   if (refNote) {
-    refNote.innerHTML = d.reference_clock_lost
+    const onRef = Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference);
+    refNote.innerHTML = !d.reference_clock_lost ? ''
+      : onRef.length
       ? '<span class="flag-active">Loss of reference clock</span> '
-        + '<span class="reg-meta">14h:132.7 — pattern generation and checking '
-        + 'on this module cannot be relied on until it returns</span>'
-      : '';
+        + '<span class="reg-meta">14h:132.7 — '
+        + (onRef.length === 4
+           ? 'every generator and checker on this page is'
+           : 'the ' + esc(listOf(onRef.map(k => ROLE_LABEL[k])))
+             + (onRef.length > 1 ? ' are' : ' is'))
+        + ' clocked from it (13h:176/178), so what '
+        + (onRef.length > 1 ? 'they generate and check' : 'it produces')
+        + ' cannot be relied on until it returns</span>'
+      : '<span class="flag-was">Loss of reference clock</span> '
+        + '<span class="reg-meta">14h:132.7 — no generator or checker on '
+        + 'this page is clocked from the reference clock (13h:176/178), so the '
+        + 'patterns below are unaffected</span>';
   }
 }
 

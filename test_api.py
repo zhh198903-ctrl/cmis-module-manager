@@ -10243,7 +10243,8 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         # Pin the condition, not the identifier: leaving the text in place
         # while the render no longer depends on the flag would satisfy every
         # assertion above and show nothing.
-        self.assertRegex(js, r'refNote\.innerHTML = d\.reference_clock_lost',
+        self.assertRegex(js,
+                         r"refNote\.innerHTML = !d\.reference_clock_lost \? ''",
                          'the note is no longer driven by the flag')
 
     def test_the_generator_tables_have_the_column_header(self):
@@ -10602,6 +10603,187 @@ class TestPatternEnginesTheModuleDoesNotHave(CMISTestCase):
         self.assertIn('fecFixed ? fecForced : fec', fec_cell,
                       'the locked box shows the stored bit rather than the '
                       'only location the module has')
+
+
+class TestWhetherALostReferenceClockMatters(CMISTestCase):
+    """The panel already read 14h:132.7 (LossOfReferenceClockFlag) and put a
+    line at the top of the PRBS card saying "pattern generation and checking
+    on this module cannot be relied on until it returns".
+
+    That is a claim the module never made. 13h:176 and 13h:178 (Table 8-127)
+    say where each of the four engines takes its clock from - the internal
+    clock, a reference clock, or a clock recovered from the traffic - and
+    those bytes were never read. A generator on the internal clock and a
+    checker on a recovered clock keep producing exactly what they produced
+    before the reference clock went away.
+
+    Every shipped profile left both bytes at zero, which is generators on the
+    internal clock and checkers on recovered clocks: the one arrangement in
+    which the warning was wrong about everything on the page."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _sources(self):
+        return self.assertOk(
+            self.client.get('/api/module/prbs'))['data']['clock_sources']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_every_engine_reports_a_clock_source(self):
+        self._connect()
+        cs = self._sources()
+        self.assertEqual(sorted(cs),
+                         ['host_chk', 'host_gen', 'media_chk', 'media_gen'])
+        for role, v in cs.items():
+            self.assertEqual(sorted(v), ['code', 'name', 'uses_reference'],
+                             '%s is missing part of its clock source' % role)
+            self.assertTrue(v['name'], '%s has no readable name' % role)
+
+    def test_the_default_profile_uses_no_reference_clock(self):
+        """Zeroes mean internal clocks for the generators and recovered clocks
+        for the checkers, which is why the old warning was wrong."""
+        self._connect()
+        cs = self._sources()
+        self.assertFalse(any(v['uses_reference'] for v in cs.values()))
+        self.assertEqual(cs['host_gen']['name'], 'Internal clock')
+        self.assertIn('Recovered clock', cs['media_chk']['name'])
+
+    def test_a_profile_that_really_runs_on_the_reference_clock(self):
+        """One profile has to be on the reference clock or the warning that
+        matters would never be rendered by anything."""
+        self._connect('mock_sr8')
+        cs = self._sources()
+        self.assertTrue(all(v['uses_reference'] for v in cs.values()))
+        self.assertEqual(cs['host_gen']['name'],
+                         'Reference clock, media lane 1')
+        self.assertEqual(cs['media_gen']['name'], 'Reference clock')
+
+    def test_the_two_generator_fields_are_not_coded_alike(self):
+        """13h:176 counts reference clocks by media lane in the high nibble
+        and by host lane in the low one, and only the low nibble has a plain
+        "all lanes use Reference Clock" value. Decoding one like the other is
+        the mistake this byte invites."""
+        import cmis_registers as c
+        got = c.parse_clock_sources(0x21, 0x00)
+        self.assertEqual(got['host_gen']['name'],
+                         'Reference clock, media lane 2')
+        self.assertEqual(got['media_gen']['name'], 'Reference clock')
+        got = c.parse_clock_sources(0x03, 0x00)
+        self.assertEqual(got['media_gen']['name'],
+                         'Reference clock, host lane 2')
+        self.assertEqual(got['host_gen']['name'], 'Internal clock')
+
+    def test_a_recovered_clock_is_not_a_reference_clock(self):
+        import cmis_registers as c
+        got = c.parse_clock_sources(0xFF, 0x00)
+        self.assertFalse(got['host_gen']['uses_reference'],
+                         'code 15 is a recovered clock, not a reference one')
+        self.assertFalse(got['media_gen']['uses_reference'])
+        self.assertIn('Recovered', got['host_gen']['name'])
+        self.assertFalse(got['host_chk']['uses_reference'])
+        self.assertFalse(got['media_chk']['uses_reference'])
+        # Code 1 is the checker's internal clock, and it is the value that
+        # sits between the two the assertions above already covered.
+        got = c.parse_clock_sources(0x00, 0x05)
+        self.assertEqual(got['host_chk']['name'], 'Internal clock')
+        self.assertFalse(got['host_chk']['uses_reference'],
+                         'a checker on the internal clock does not need the '
+                         'reference clock')
+        self.assertEqual(got['media_chk']['name'], 'Internal clock')
+        self.assertFalse(got['media_chk']['uses_reference'])
+
+    def test_a_reserved_code_is_not_read_as_a_reference_clock(self):
+        import cmis_registers as c
+        got = c.parse_clock_sources(0xA0, 0x0F)
+        self.assertFalse(got['host_gen']['uses_reference'])
+        self.assertIn('Reserved', got['host_gen']['name'])
+        self.assertFalse(got['host_chk']['uses_reference'],
+                         'checker code 3 is reserved, not a reference clock')
+
+    def test_each_checker_reads_its_own_bit_pair(self):
+        """Both checkers live in one byte; reading one pair for the other
+        looks right on a module that answers alike on both sides."""
+        import cmis_registers as c
+        got = c.parse_clock_sources(0x00, 0x08)
+        self.assertEqual(got['host_chk']['name'], 'Reference clock')
+        self.assertTrue(got['host_chk']['uses_reference'])
+        self.assertIn('Recovered', got['media_chk']['name'])
+        self.assertFalse(got['media_chk']['uses_reference'])
+
+    # ---- and what the panel does with it ------------------------------------
+
+    def test_each_engine_has_somewhere_to_show_its_clock(self):
+        html = self._html()
+        for role in ('host-gen', 'media-gen', 'host-chk', 'media-chk'):
+            self.assertIn('id="prbs-clk-%s"' % role, html,
+                          '%s has nowhere to report its clock source' % role)
+        js = self._js()
+        self.assertIn("document.getElementById('prbs-clk-' "
+                      "+ role.replace('_', '-'))", js,
+                      'the notes are never filled in')
+        self.assertIn('const cs = d.clock_sources || {};', js,
+                      'the panel no longer reads the clock sources')
+        self.assertIn("el.innerHTML = src\n      ? 'Clock source: <b>'", js,
+                      'the note no longer depends on there being a source')
+        self.assertIn("role.endsWith('_gen') ? '13h:176' : '13h:178'", js,
+                      'the note does not name the register it came from')
+
+    def test_the_warning_names_the_engines_that_are_clocked_from_it(self):
+        js = self._js()
+        self.assertIn('const onRef = Object.keys(ROLE_LABEL)'
+                      '.filter(k => cs[k] && cs[k].uses_reference);', js,
+                      'the warning no longer asks which engines use it')
+        self.assertIn('13h:176/178', js,
+                      'the warning does not say what decided it')
+        self.assertIn('cannot be relied on until it returns', js,
+                      'the real warning was lost with the false one')
+
+    def test_the_warning_stands_down_when_nothing_uses_it(self):
+        """The flag is module-wide and still latched, so it is worth showing -
+        but as a fact about the module, not a verdict on this page."""
+        js = self._js()
+        self.assertIn('no generator or checker on ', js)
+        self.assertIn('patterns below are unaffected', js)
+        note = js[js.index('const refNote'):]
+        note = note[:note.index('async function applyPrbs')]
+        self.assertIn("refNote.innerHTML = !d.reference_clock_lost ? ''", note,
+                      'the note is no longer driven by the flag')
+        self.assertIn(": onRef.length\n      ? '<span class=\"flag-active\">",
+                      note,
+                      'the choice between warning and stand-down no longer '
+                      'depends on which engines use the reference clock')
+        self.assertLess(note.index('flag-active'), note.index('flag-was'),
+                        'the stand-down branch should not be the loud one')
+
+    def test_the_warning_does_not_recite_four_names_when_it_means_all(self):
+        """Reading out all four role names is how a warning stops being read."""
+        js = self._js()
+        self.assertIn("onRef.length === 4", js,
+                      'the all-four case is spelled out name by name')
+        self.assertIn('every generator and checker on this page is', js)
+
+    def test_a_partial_list_reads_as_a_sentence(self):
+        js = self._js()
+        self.assertIn("const listOf = (xs) => xs.length < 2 ? (xs[0] || '')",
+                      js, 'the engine list is no longer built as prose')
+        self.assertIn("' and ' + xs[xs.length - 1]", js,
+                      'a two-engine list still reads as a comma-separated dump')
 
 
 if __name__ == '__main__':

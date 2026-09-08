@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.35.0<br>
+      <b>版本</b>　2.36.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.35.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.35.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.36.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.36.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1393,6 +1393,10 @@
             <td>测量能力：门控精度、门控统计、周期更新、
                 逐通道计时器、自动重启门控</td>
             <td class="label">Table 8-112</td></tr>
+        <tr><td><code>13h:176</code> / <code>13h:178</code></td>
+            <td>四个引擎各自的<b>时钟来源</b>：内部时钟 / 参考时钟 /
+                恢复时钟（决定参考时钟丢失到底影响不影响这一页）</td>
+            <td class="label">Table 8-127</td></tr>
         <tr><td><code>13h:131</code></td>
             <td>四个图案引擎（主机/媒体 × 发生器/检测器）
                 <b>模块里到底有没有</b>，以及每个位于自己 FEC 的<b>哪一侧</b></td>
@@ -1622,6 +1626,29 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>「参考时钟丢失」以前是句过头的话。</b>
+    工具读了 <code>14h:132.7</code>（LossOfReferenceClockFlag），
+    并在 PRBS 卡片顶部写「本模块的图案发生与检测在它恢复前都不可信」。<br>
+    这句话<b>模块从来没说过</b>。<code>13h:176</code> 和 <code>13h:178</code>
+    （Table 8-127）逐字段说明四个引擎各自的<b>时钟来源</b>——
+    模块内部时钟、参考时钟，还是从业务里恢复出来的时钟——
+    而这两个字节工具<b>从来没读过</b>。
+    跑在内部时钟上的发生器、跑在恢复时钟上的检测器，
+    参考时钟丢了照样是原来那个样子。<br>
+    这两个字段的编码<b>还不一样</b>：<code>176</code> 高半字节按
+    <b>媒体 lane</b> 数参考时钟，低半字节按<b>主机 lane</b> 数，
+    而且只有低半字节有「所有 lane 用参考时钟」这个取值。<br>
+    现在：四个分区各自在标题下写明自己的时钟来源；
+    参考时钟真丢了的时候，那行字<b>只点名真正用它的引擎</b>，
+    四个都用就直接说「整页都用它」；一个都不用时，
+    它降为一条普通提示，说明这一页的图案不受影响。<br>
+    内置演示模块以前这两个字节都是 0（发生器内部时钟、检测器恢复时钟），
+    正好是那句警告<b>全说错</b>的那种配置；现在 <code>mock_sr8</code>
+    四个引擎全跑参考时钟，两种写法都能看到。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2243,6 +2270,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     </table>
   </div>
   <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体，以及 SSPRQ（Table 8-105）。</p>
+  <p>每个分区标题下会写明该引擎的<b>时钟来源</b>（<code>13h:176</code> /
+     <code>13h:178</code>）：内部时钟、参考时钟，或从业务里恢复的时钟。
+     这决定了顶部「参考时钟丢失」那行字对这一页是不是坏消息。</p>
   <p><b>PreFEC</b> 这一列由 <code>13h:131</code> 决定：模块只在 FEC 的一侧有发生器时，
      它会按实际位置勾好并置灰；两侧都没有，则整张表换成一行说明——
      那个引擎不在这个模块里（见上文 <code>13h:131</code>）。</p>
@@ -2692,7 +2722,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.35.0<br>
+    CMIS Module Manager 操作手册 v2.36.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

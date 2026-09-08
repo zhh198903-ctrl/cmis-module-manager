@@ -423,6 +423,10 @@ _SR8_800G = {
     # post-FEC generators and pre-FEC checkers: the FEC column on all four
     # tables has one legal value rather than two.
     'pattern_locations_131': 0x66,
+    # Both generators and both checkers run off the reference clock, which is
+    # the case where losing it really does invalidate the whole page.
+    'clock_src_176': 0x11,               # host gen: ref clock media lane 1
+    'clock_src_178': 0x0A,               # both checkers: reference clock
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     'vendor_sn':       b"DEMO000000003   ",
@@ -969,6 +973,13 @@ class MockBackend(I2CInterface):
         p13[0x8E] = p.get('pattern_ctrl_142', 0xFF)
         for base in [0x90, 0x98, 0xA0, 0xA8]:
             for off in range(8): p13[base + off] = 0x00
+        # 13h:176 and 178 (Table 8-127): where each generator and checker
+        # takes its clock from. All zero means the generators run on the
+        # internal clock and the checkers on recovered clocks - so nothing on
+        # the page uses the reference clock, and the panel said losing it made
+        # pattern generation and checking unreliable anyway.
+        p13[0xB0] = p.get('clock_src_176', 0x00)
+        p13[0xB2] = p.get('clock_src_178', 0x00)
         p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0
         regs[0x13] = p13
 
