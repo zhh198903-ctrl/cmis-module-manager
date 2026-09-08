@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.33.0<br>
+      <b>版本</b>　2.34.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.33.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.33.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.34.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.34.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1618,6 +1618,26 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>PRBS 表里那几列，模块不一定支持。</b>
+    <code>13h:141–142</code> 是两个<b>必备</b>寄存器，
+    工具本来就把它们连同旁边的能力字节一起读了进来，却<b>直接丢掉</b>：<br>
+    <code>141</code> 说明每个角色（主机/媒体 × 发生器/检测器）
+    到底有没有 <b>DataInvert</b> 和 <b>SwapSymbolBits</b> 这两个字节；
+    没有的话，勾了也不会有任何效果。<br>
+    <code>142</code> 说明 <b>Enable 和 Pattern 是不是按 lane 分</b>：
+    位为 0 时，勾第 3 条 lane 的 Enable 实际上<b>启动的是整个 Bank</b>，
+    而 Pattern「一律用 lane 1 的」——也就是说第 2–8 行的下拉框
+    <b>只是摆设</b>。<br>
+    现在这四列按模块声明置灰，悬停写明是哪个寄存器决定的；
+    lane 1 那一行始终可用（模块确实有这个控制，只是作用范围是整个 Bank）。
+    内置演示模块之前把这两个字节留成 0，等于声明「全都不支持」，
+    而界面把四列全摆着——现在它们会如实声明，
+    <code>mock_fr4x2</code>（那个“声明得比较少”的模块）
+    不支持符号位交换、主机检测器也不支持按 lane 启停。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2634,7 +2654,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.33.0<br>
+    CMIS Module Manager 操作手册 v2.34.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

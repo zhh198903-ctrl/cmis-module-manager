@@ -10226,8 +10226,8 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         js = self._js()
         block = js[js.index("_renderPrbsTable('tbl-prbs-host-gen'"):]
         block = block[:block.index('const refNote')]
-        self.assertRegex(block, r"tbl-prbs-host-gen'[\s\S]*?false\)")
-        self.assertRegex(block, r"tbl-prbs-host-chk'[\s\S]*?true\)")
+        self.assertRegex(block, r"tbl-prbs-host-gen'[\s\S]*?false,")
+        self.assertRegex(block, r"tbl-prbs-host-chk'[\s\S]*?true,")
 
     def test_the_module_wide_flag_has_somewhere_to_appear(self):
         js = self._js()
@@ -10253,6 +10253,158 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
             html = f.read()
         self.assertEqual(html.count('<th>LOL</th>'), 4,
                          'all four pattern tables should carry a LOL column')
+
+
+
+class TestPatternControlsTheModuleDoesNotHave(CMISTestCase):
+    """13h:141 and 142 are both RO and Required, and both sit inside the
+    fifteen bytes _diag_caps already reads. It used bytes 128-130 and 132-139
+    and threw the last two away - under a docstring saying "What the module
+    says it can do, which is the only thing that makes an option worth
+    offering".
+
+    141 says whether the DataInvert and SwapSymbolBits bytes exist for each
+    role: "0b/1b: Byte 13h:145 not supported/supported". 142 says whether
+    Enable and PatternSelect are per lane - with the bit clear, enabling lane
+    i "enables lane i (or all lanes of the Bank)", and "Lane 1 pattern ... is
+    used for all lanes".
+
+    So the panel offered four controls per row that a module may not have:
+    two that do nothing when written, and two whose rows 2-8 are decoration.
+    Every shipped profile left both bytes at zero, which said none of it was
+    supported while the panel showed all of it."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _controls(self):
+        return self.assertOk(
+            self.client.get('/api/module/prbs'))['data']['pattern_controls']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_all_four_roles_are_reported(self):
+        self._connect()
+        c = self._controls()
+        self.assertEqual(sorted(c),
+                         ['host_chk', 'host_gen', 'media_chk', 'media_gen'])
+        for role, v in c.items():
+            self.assertEqual(sorted(v), ['data_invert', 'data_swap',
+                                         'per_lane_enable',
+                                         'per_lane_pattern'],
+                             '%s is missing a control' % role)
+
+    def test_a_capable_module_advertises_all_of_it(self):
+        self._connect()
+        for role, v in self._controls().items():
+            self.assertTrue(all(v.values()),
+                            '%s: a retimed module that declines all of this '
+                            'would be a strange default' % role)
+
+    def test_the_restricted_profile_declines_some(self):
+        """Every profile answering the same way would leave the gating
+        untested, which is how these bytes went unread in the first place."""
+        self._connect('mock_fr4x2')
+        c = self._controls()
+        for role in ('host_gen', 'host_chk', 'media_gen', 'media_chk'):
+            self.assertTrue(c[role]['data_invert'])
+            self.assertFalse(c[role]['data_swap'],
+                             '%s still advertises symbol-bit swap' % role)
+        self.assertFalse(c['host_chk']['per_lane_enable'],
+                         'the host checker still claims a per-lane enable')
+        self.assertTrue(c['host_gen']['per_lane_enable'],
+                        'only the checker was meant to lose it')
+
+    def test_each_bit_belongs_to_its_own_role(self):
+        """Eight bits over four roles: reading one role's bit for another
+        would look plausible on a module that answers alike everywhere."""
+        import cmis_registers as c
+        got = c.parse_pattern_control_caps(0x01, 0x08)
+        self.assertTrue(got['host_gen']['data_invert'])
+        self.assertFalse(got['host_gen']['data_swap'])
+        self.assertFalse(got['media_chk']['data_invert'])
+        self.assertTrue(got['host_chk']['per_lane_enable'])
+        self.assertFalse(got['host_chk']['per_lane_pattern'])
+        self.assertFalse(got['host_gen']['per_lane_enable'])
+
+    # ---- and what the panel does with it ----------------------------------
+
+    def test_the_renderer_is_given_the_controls(self):
+        js = self._js()
+        self.assertIn('const pc = d.pattern_controls || {};', js)
+        for role in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            self.assertIn('pc.' + role, js,
+                          '%s never receives its own capabilities' % role)
+
+    def test_an_unadvertised_control_is_disabled_rather_than_offered(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertRegex(body, r'const canInvert = ctl\.data_invert !== false',
+                         'DataInvert is offered whatever the module says')
+        self.assertRegex(body, r'const canSwap = ctl\.data_swap !== false')
+        self.assertIn("${canSwap ? '' : 'disabled'}", body,
+                      'the swap box is never actually disabled')
+        self.assertIn("${canInvert ? '' : 'disabled'}", body)
+
+    def test_a_row_that_only_follows_lane_one_says_so(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        # Pin the two conditions themselves. Matching "perLaneEnable || i ===
+        # 0" anywhere in the function passes while the const behind it is a
+        # constant true, or while only the pattern cell still carries the
+        # lane-1 exemption - the text is the same in both cells.
+        self.assertIn('const perLaneEnable = ctl.per_lane_enable !== false;',
+                      body, 'the enable gate no longer reads the module')
+        self.assertIn('const perLanePattern = ctl.per_lane_pattern !== false;',
+                      body, 'the pattern gate no longer reads the module')
+        self.assertIn('follows lane 1', body,
+                      'nothing explains why the row is inert')
+
+    def test_lane_one_keeps_the_control_the_module_still_has(self):
+        """With per-lane enable unsupported the module still has an enable -
+        it just covers the bank. Disabling every row would take away a control
+        that exists, so the exemption belongs in the enable cell itself and
+        not merely somewhere in the function."""
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        en_cell = body[body.index('id="${tbodyId}-en-${i}"'):]
+        en_cell = en_cell[:en_cell.index('</td>')]
+        self.assertIn("${(perLaneEnable || i === 0) ? '' : 'disabled'}", en_cell,
+                      'the enable cell disables lane 1 along with the rest')
+        pat_cell = body[body.index('id="${tbodyId}-pat-${i}"'):]
+        pat_cell = pat_cell[:pat_cell.index('</td>')]
+        self.assertIn("${(perLanePattern || i === 0) ? '' : 'disabled'}",
+                      pat_cell,
+                      'the pattern cell disables lane 1 along with the rest')
+
+    def test_the_notes_name_the_register(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertIn('13h:', body,
+                      'neither note says which register decided this')
+        self.assertIn('has no effect', body)
+
+    def test_an_unavailable_control_is_marked_the_same_way_as_elsewhere(self):
+        """The lane controls already had this problem and solved it with
+        control-unavailable; a second visual language for the same fact would
+        be worse than none."""
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertIn('control-unavailable', body)
 
 
 if __name__ == '__main__':

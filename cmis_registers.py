@@ -1156,6 +1156,34 @@ def parse_diag_reporting_caps(byte_val: int) -> dict:
     }
 
 
+def parse_pattern_control_caps(b141: int, b142: int) -> dict:
+    """13h:141-142 (Table 8-117 continuation), both RO and Required.
+
+    Two questions per role that the pattern tables answer wrongly without
+    them. 141 says whether the DataInvert and SwapSymbolBits bytes exist at
+    all - offering those columns on a module without them is a control that
+    silently does nothing. 142 says whether Enable and PatternSelect are per
+    lane: with the bit clear, enabling lane i "enables lane i (or all lanes of
+    the Bank)", and "Lane 1 pattern ... is used for all lanes", so seven of
+    the eight rows are decoration.
+    """
+    roles = (('host_gen', 0, 1), ('host_chk', 2, 3),
+             ('media_gen', 4, 5), ('media_chk', 6, 7))
+    out = {}
+    for name, inv_bit, swap_bit in roles:
+        out[name] = {
+            'data_invert': bool((b141 >> inv_bit) & 1),
+            'data_swap':   bool((b141 >> swap_bit) & 1),
+        }
+    # 142 pairs them the other way round: pattern in the low bit of each
+    # pair, enable in the high one.
+    for name, pat_bit, en_bit in (('host_gen', 0, 1), ('host_chk', 2, 3),
+                                  ('media_gen', 4, 5), ('media_chk', 6, 7)):
+        out[name]['per_lane_pattern'] = bool((b142 >> pat_bit) & 1)
+        out[name]['per_lane_enable'] = bool((b142 >> en_bit) & 1)
+    return out
+
+
 def parse_pattern_caps(data: bytes) -> dict:
     """13h:132-139 (Tables 8-116, 8-117), little endian, two bytes per role.
 

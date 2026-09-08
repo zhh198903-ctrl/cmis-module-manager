@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.33.0'
+__version__ = '2.34.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1797,6 +1797,12 @@ def _diag_caps() -> dict:
         'measurement': cmis.parse_diag_meas_caps(raw[1]),
         'reporting': cmis.parse_diag_reporting_caps(raw[2]),
         'patterns': cmis.parse_pattern_caps(raw[4:12]),
+        # 141-142 were read with the rest and thrown away, which left the
+        # pattern tables offering DataInvert and SwapSymbolBits columns on
+        # modules without those bytes, and eight independent rows on modules
+        # where one enable covers the bank and lane 1's pattern covers them
+        # all.
+        'pattern_controls': cmis.parse_pattern_control_caps(raw[13], raw[14]),
     }
 
 
@@ -1869,6 +1875,7 @@ def api_prbs_get():
 
         return _ok({
             'pattern_capabilities': _diag_caps()['patterns'],
+            'pattern_controls': _diag_caps()['pattern_controls'],
             'host_gen':  _read_prbs_block(0x90),
             'media_gen': _read_prbs_block(0x98),
             'host_chk':  _read_prbs_block(0xA0),

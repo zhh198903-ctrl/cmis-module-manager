@@ -2398,7 +2398,7 @@ async function applyLoopback() {
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
 function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
-                         isChecker) {
+                         isChecker, controls) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   // The role used to be inferred from whether a LOL mask was passed, which
@@ -2407,6 +2407,23 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
   // not locked is not sending the pattern this table says it is - so the two
   // are separate questions now.
   const hasLol = (lolMask !== undefined);
+  // 13h:141-142, both Required. 141 says whether the DataInvert and
+  // SwapSymbolBits bytes exist for this role at all; 142 says whether Enable
+  // and PatternSelect are per lane, or whether one enable covers the bank and
+  // lane 1's pattern covers every lane. Offering all four unconditionally is
+  // the same fault the lane controls had: a box that writes a register the
+  // module ignores, ticked, reported applied, and doing nothing.
+  const ctl = controls || {};
+  const canInvert = ctl.data_invert !== false;
+  const canSwap = ctl.data_swap !== false;
+  const perLaneEnable = ctl.per_lane_enable !== false;
+  const perLanePattern = ctl.per_lane_pattern !== false;
+  const off = (what, addr) => esc('This module does not advertise ' + what
+    + ' for the ' + side.toLowerCase() + ' side ' + role.toLowerCase()
+    + ' (13h:' + addr + '). Writing it has no effect.');
+  const follows = (what, addr) => esc('This module applies lane 1\u2019s '
+    + what + ' to every lane of the bank (13h:' + addr + '), so this row '
+    + 'follows lane 1.');
   // Field names follow CMIS 5.4 Tables 8-109/8-111/8-113/8-115: each block is
   // 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits, Pre/PostFECEnable,
   // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
@@ -2477,11 +2494,27 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
 
     return `<tr>
       <td>L${i+1}</td>
-      <td title="${tEn}"><input type="checkbox" id="${tbodyId}-en-${i}" title="${tEn}" ${en  ? 'checked' : ''}></td>
-      <td title="${tInv}"><input type="checkbox" id="${tbodyId}-inv-${i}" title="${tInv}" ${inv ? 'checked' : ''}></td>
-      <td title="${tSw}"><input type="checkbox" id="${tbodyId}-sw-${i}" title="${tSw}" ${sw  ? 'checked' : ''}></td>
+      <td title="${(perLaneEnable || i === 0) ? tEn : follows('enable', base)}"
+          class="${(perLaneEnable || i === 0) ? '' : 'control-unavailable'}"><input
+          type="checkbox" id="${tbodyId}-en-${i}"
+          title="${(perLaneEnable || i === 0) ? tEn : follows('enable', base)}"
+          ${(perLaneEnable || i === 0) ? '' : 'disabled'} ${en  ? 'checked' : ''}></td>
+      <td title="${canInvert ? tInv : off('DataInvert', base + 1)}"
+          class="${canInvert ? '' : 'control-unavailable'}"><input
+          type="checkbox" id="${tbodyId}-inv-${i}"
+          title="${canInvert ? tInv : off('DataInvert', base + 1)}"
+          ${canInvert ? '' : 'disabled'} ${inv ? 'checked' : ''}></td>
+      <td title="${canSwap ? tSw : off('SwapSymbolBits', base + 2)}"
+          class="${canSwap ? '' : 'control-unavailable'}"><input
+          type="checkbox" id="${tbodyId}-sw-${i}"
+          title="${canSwap ? tSw : off('SwapSymbolBits', base + 2)}"
+          ${canSwap ? '' : 'disabled'} ${sw  ? 'checked' : ''}></td>
       <td title="${tFec}"><input type="checkbox" id="${tbodyId}-fec-${i}" title="${tFec}" ${fec ? 'checked' : ''}></td>
-      <td title="${patTip}"><select class="app-select-input" id="${tbodyId}-pat-${i}" title="${patTip}">${patOpts}</select></td>
+      <td title="${(perLanePattern || i === 0) ? patTip : follows('pattern', base + 4)}"
+          class="${(perLanePattern || i === 0) ? '' : 'control-unavailable'}"><select
+          class="app-select-input" id="${tbodyId}-pat-${i}"
+          title="${(perLanePattern || i === 0) ? patTip : follows('pattern', base + 4)}"
+          ${(perLanePattern || i === 0) ? '' : 'disabled'}>${patOpts}</select></td>
       ${lolCell}
     </tr>`;
   }).join('');
@@ -2516,16 +2549,19 @@ async function loadPrbs() {
   const res = await apiGet('/api/module/prbs');
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
+  const pc = d.pattern_controls || {};
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
-                   d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false);
+                   d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false,
+                   pc.host_gen);
   _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, d.media_gen_lol_mask, 0x98, 'Media',
-                   d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false);
+                   d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false,
+                   pc.media_gen);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
                    'Host', d.host_chk_lol_seen,
-                   (d.pattern_capabilities || {}).host_chk, true);
+                   (d.pattern_capabilities || {}).host_chk, true, pc.host_chk);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
                    'Media', d.media_chk_lol_seen,
-                   (d.pattern_capabilities || {}).media_chk, true);
+                   (d.pattern_capabilities || {}).media_chk, true, pc.media_chk);
   // 14h:132.7 is module-wide: with no reference clock, nothing measured on
   // this page means anything, whatever the per-lane flags say.
   const refNote = document.getElementById('prbs-ref-clock');

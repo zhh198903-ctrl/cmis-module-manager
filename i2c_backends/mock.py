@@ -488,6 +488,10 @@ _FR4X2_800G = {
     # force-squelch and Rx polarity flip), so it is where the signal integrity
     # limits are real: fewer amplitude codes than the four that exist, and a
     # different ceiling for each equalizer cursor.
+    # Its pattern engine is simpler too: no symbol-bit swap on either side,
+    # and the host checker enables a whole bank at a time rather than a lane.
+    'pattern_ctrl_141': 0x55,            # invert yes, swap no, all four roles
+    'pattern_ctrl_142': 0xF7,            # host checker: no per-lane enable
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
@@ -943,7 +947,14 @@ class MockBackend(I2CInterface):
             p13[a] = 0xC3
         for a in (0x85, 0x87, 0x89, 0x8B):      # 133/135/137/139: IDs 8-15
             p13[a] = 0x1F
-        for a in range(0x8C, 0x8F): p13[a] = 0x00
+        p13[0x8C] = 0x00                     # 140 user pattern length
+        # 141-142 (Table 8-117): whether DataInvert and SwapSymbolBits exist,
+        # and whether Enable and PatternSelect are per lane. Left at zero
+        # these said the module supported none of it, while the panel offered
+        # every column - so they had to be set before the gating could mean
+        # anything.
+        p13[0x8D] = p.get('pattern_ctrl_141', 0xFF)
+        p13[0x8E] = p.get('pattern_ctrl_142', 0xFF)
         for base in [0x90, 0x98, 0xA0, 0xA8]:
             for off in range(8): p13[base + off] = 0x00
         p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0
