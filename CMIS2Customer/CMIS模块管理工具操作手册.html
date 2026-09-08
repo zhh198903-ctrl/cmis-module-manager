@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.37.0<br>
+      <b>版本</b>　2.38.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.37.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.37.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.38.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.38.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1406,6 +1406,12 @@
             <td>四个图案引擎（主机/媒体 × 发生器/检测器）
                 <b>模块里到底有没有</b>，以及每个位于自己 FEC 的<b>哪一侧</b></td>
             <td class="label">Table 8-114</td></tr>
+        <tr><td><code>13h:140</code></td>
+            <td>用户自定义图案<b>最多能放多长</b>（L = 2(n+1)，2–32 字节）</td>
+            <td class="label">Table 8-118</td></tr>
+        <tr><td><code>13h:224–255</code></td>
+            <td><b>用户自定义图案本身</b>（Pattern ID 15 发的就是它）</td>
+            <td class="label">Table 8-134</td></tr>
         <tr><td><code>13h:132–139</code></td>
             <td>主机/媒体侧 <b>发生器</b>、主机/媒体侧 <b>检测器</b>
                 各自支持的图案 ID（每角色 2 字节，小端）</td>
@@ -1631,6 +1637,45 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>模块声明了的图案，下拉框里可能<u>根本没有</u>。</b>
+    规范 Table 8-115 一共定义了 16 个 Pattern ID。
+    工具的寄存器层认得其中 15 个名字，
+    但<b>网页自己另外存了一份图案名列表</b>，而那份<b>只排到 SSPRQ（ID 12）</b>。
+    两份必须一致的列表分放两处——而<b>用户看到的是短的那份</b>。<br>
+    结果：模块声明支持 <b>Custom（14）</b> 或 <b>User Pattern（15）</b> 时，
+    它们会被<b>无声地从下拉框里滤掉</b>；
+    某条 lane 本来就停在这两个图案上的话，
+    界面会显示一个<b>光秃秃的数字</b>并标注
+    <i>not advertised</i>——而模块<b>明明声明了</b>。<br>
+    现在图案名<b>由模块读取时一并下发</b>，网页不再自己存一份，
+    这一类「两份列表迟早对不上」的问题从根上没有了。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>User Pattern（ID 15）现在可以真的用了。</b>
+    这个图案的内容<b>由主机自己定义</b>，放在
+    <code>13h:224–255</code>（Table 8-134）；
+    能放多长则写在 <code>13h:140.3-0</code>
+    （<b>L = 2(n+1)</b>，最短 2 字节、最长 32 字节）。
+    这两处工具此前<b>都没读</b>——也就是说就算选中了 User Pattern，
+    发出去的也是那段字节里<b>本来碰巧是什么就是什么</b>。<br>
+    现在：只要有<b>任一</b>发生器或检测器声明了 ID 15，
+    PRBS Generator 卡片下方就会出现<b>用户图案</b>输入框，
+    显示模块里当前的字节（十六进制），并写明是哪个寄存器、
+    以及模块<b>最多收多少字节</b>；随 <b>Apply</b> 一起下发。
+    输入不是完整的十六进制字节会被<b>当场拒绝</b>，
+    而不是把半个字节发下去。
+    比声明长度多写会被挡下并说明模块只收几字节。<br>
+    没有任何角色声明 ID 15 的模块，这个框<b>整个不出现</b>——
+    那段字节在这种模块上不是任何人能选中的图案。<br>
+    内置演示模块里 <code>mock_coherent</code> 支持完整 32 字节，
+    <code>mock_coherent_zr</code> 只收 <b>4 字节</b>——
+    规范原文就写着「模块不一定支持完整的 32 字节长度」。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2301,7 +2346,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       </tbody>
     </table>
   </div>
-  <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体，以及 SSPRQ（Table 8-105）。</p>
+  <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体、SSPRQ，
+     以及 <b>Custom</b>（厂商自定义）和 <b>User Pattern</b>（主机自定义，见上文
+     <code>13h:224–255</code>）——下拉框里出现哪些，完全按模块自己声明的来。</p>
   <p>每个分区标题下会写明该引擎的<b>时钟来源</b>（<code>13h:176</code> /
      <code>13h:178</code>）：内部时钟、参考时钟，或从业务里恢复的时钟。
      这决定了顶部「参考时钟丢失」那行字对这一页是不是坏消息。</p>
@@ -2754,7 +2801,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.37.0<br>
+    CMIS Module Manager 操作手册 v2.38.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

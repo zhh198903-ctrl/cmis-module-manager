@@ -10978,6 +10978,188 @@ class TestTheWindowTheseNumbersCover(CMISTestCase):
         self.assertIn('ctl.update_period_s', body)
 
 
+class TestThePatternsThePageWouldNotOffer(CMISTestCase):
+    """Table 8-115 defines sixteen Pattern IDs. cmis_registers knew fifteen of
+    them by name; static/app.js kept its own array and it ran out at SSPRQ
+    (ID 12). Two lists that have to agree, kept in two places, and the one the
+    operator sees was the short one.
+
+    So a module advertising Custom (14) or User Pattern (15) had them filtered
+    straight out of the dropdown - `supported.filter(id => PRBS_PATTERNS[id]
+    !== undefined)` - with nothing said. A lane already running one was
+    labelled with a bare number and "not advertised", which it was not.
+
+    ID 15 also has somewhere the pattern itself lives: "Programmable pattern
+    provided in Bytes 13h:224-255" (Table 8-134), with 13h:140.3-0 saying how
+    much of it the module takes. Both were unread, so selecting User Pattern
+    would have sent whatever was already in those bytes."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _write(self, **body):
+        return self.client.post('/api/module/prbs', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the names ---------------------------------------------------------
+
+    def test_the_module_read_carries_the_names(self):
+        self._connect()
+        names = self._prbs()['pattern_names']
+        self.assertEqual(names['12'], 'SSPRQ')
+        self.assertEqual(names['14'], 'Custom',
+                         'the vendor-defined pattern has no name to offer')
+        self.assertEqual(names['15'], 'User Pattern')
+        self.assertNotIn('13', names, 'ID 13 is Reserved in Table 8-115')
+
+    def test_the_page_no_longer_keeps_its_own_list(self):
+        js = self._js()
+        self.assertIn('let PRBS_PATTERNS = {};', js,
+                      'the page still holds a hard-coded pattern list')
+        self.assertIn('PRBS_PATTERNS = d.pattern_names || {};', js,
+                      'the list is never filled in from the module')
+        self.assertNotIn("'PRBS13Q','PRBS13'", js,
+                         'the old array is still there to drift out of date')
+
+    def test_the_fallback_list_comes_from_the_same_names(self):
+        """With nothing advertised the dropdown offers everything, and that
+        list has to be the module's names too or it is the old bug again."""
+        js = self._js()
+        self.assertIn('Object.keys(PRBS_PATTERNS).map(Number)'
+                      '.sort((a, b) => a - b)', js)
+
+    # ---- the user pattern --------------------------------------------------
+
+    def test_the_advertised_length_is_decoded(self):
+        import cmis_registers as c
+        self.assertEqual(c.user_pattern_max_bytes(0x00), 2)
+        self.assertEqual(c.user_pattern_max_bytes(0x01), 4)
+        self.assertEqual(c.user_pattern_max_bytes(0x0F), 32)
+        self.assertEqual(c.user_pattern_max_bytes(0xFF), 32,
+                         'bit 4 and up are Reserved and must not be read')
+
+    def test_a_module_without_id_15_is_not_offered_one(self):
+        self._connect()
+        up = self._prbs()['user_pattern']
+        self.assertEqual(up['available'], [],
+                         'a pattern nothing can select is not a control')
+        self.assertEqual(up['pattern'], [])
+
+    def test_a_module_with_id_15_reports_the_pattern(self):
+        self._connect('mock_coherent')
+        up = self._prbs()['user_pattern']
+        self.assertEqual(up['available'],
+                         ['host_gen', 'media_gen', 'host_chk', 'media_chk'],
+                         'the roles are not in the order of the panel')
+        self.assertEqual(up['max_bytes'], 32)
+        self.assertEqual(len(up['pattern']), 32)
+        self.assertEqual(up['pattern'][:4], [0xAA, 0x55, 0xAA, 0x55])
+
+    def test_a_module_that_takes_less_than_the_full_length(self):
+        """Table 8-134: "The module may not support the full 32-byte length".
+        With every profile at 32 the advertised maximum would be decoration."""
+        self._connect('mock_coherent_zr')
+        up = self._prbs()['user_pattern']
+        self.assertEqual(up['max_bytes'], 4)
+        self.assertEqual(len(up['pattern']), 4,
+                         'the pattern is reported past the length the module '
+                         'said it would take')
+
+    def test_the_pattern_is_written_and_read_back(self):
+        self._connect('mock_coherent_zr')
+        self.assertOk(self._write(user_pattern=[0x12, 0x34, 0xAB, 0xCD]))
+        self.assertEqual(self._prbs()['user_pattern']['pattern'],
+                         [0x12, 0x34, 0xAB, 0xCD])
+
+    def test_more_bytes_than_the_module_takes_is_refused(self):
+        self._connect('mock_coherent_zr')
+        r = self._write(user_pattern=[1, 2, 3, 4, 5])
+        self.assertEqual(r.status_code, 400)
+        msg = json.loads(r.data)['message']
+        self.assertIn('at most 4 bytes', msg)
+        self.assertIn('13h:140.3-0', msg,
+                      'the refusal does not say what it is going by')
+
+    def test_a_module_with_no_user_pattern_refuses_one(self):
+        """The bytes answer a read on any module. Writing them where nothing
+        can select ID 15 is writing a pattern that cannot be sent."""
+        self._connect()
+        r = self._write(user_pattern=[0xAA, 0x55])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('13h:132-139', json.loads(r.data)['message'])
+
+    def test_a_short_pattern_leaves_the_rest_alone(self):
+        """The module repeats what it was given; zero-filling the tail would
+        be a different pattern from the one that was typed."""
+        self._connect('mock_coherent')
+        self.assertOk(self._write(user_pattern=[0x0F, 0xF0]))
+        got = self._prbs()['user_pattern']['pattern']
+        self.assertEqual(got[:2], [0x0F, 0xF0])
+        self.assertEqual(got[2:4], [0xAA, 0x55],
+                         'the untouched tail was overwritten')
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_pattern_has_somewhere_to_be_edited(self):
+        html = self._html()
+        self.assertIn('id="prbs-user-pattern"', html)
+        self.assertIn('id="user-pattern-input"', html)
+        self.assertIn('id="user-pattern-note"', html)
+
+    def test_the_box_is_absent_where_nothing_can_select_it(self):
+        js = self._js()
+        body = js[js.index('function _renderUserPattern('):]
+        body = body[:body.index('function _readUserPattern')]
+        self.assertIn("if (!roles.length) { box.style.display = 'none';", body,
+                      'the box is offered on modules with no user pattern')
+        # Scoped to the note itself. up.max_bytes also sets the input's
+        # maxLength a few lines up, so matching it anywhere in the function
+        # passes while the sentence the operator reads has lost the number.
+        note = body[body.index('note.innerHTML ='):]
+        note = note[:note.index('written with Apply')]
+        self.assertIn('13h:224-255', note,
+                      'the note never names where the pattern lives')
+        self.assertIn('13h:140.3-0', note,
+                      'the note never names the advertised maximum')
+        self.assertIn("+ up.max_bytes + ' bytes</b>", note,
+                      'the note names the register but not how many bytes '
+                      'the module will take')
+
+    def test_half_a_byte_is_not_sent_as_a_pattern(self):
+        js = self._js()
+        body = js[js.index('function _readUserPattern('):]
+        body = body[:body.index('async function loadPrbs')]
+        self.assertIn('if (!/^[0-9a-fA-F]+$/.test(text) || text.length % 2) '
+                      'return undefined;', body,
+                      'a malformed pattern is sent rather than refused')
+        self.assertIn("if (userPattern === undefined) {", js,
+                      'the refusal never reaches the operator')
+
+    def test_apply_carries_the_pattern(self):
+        js = self._js()
+        self.assertIn('if (userPattern !== null) body.user_pattern = '
+                      'userPattern;', js,
+                      'the pattern is never written with the rest')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -2046,10 +2046,12 @@ function formatHexDump(byteArray, baseAddr) {
 // ---------------------------------------------------------------------------
 // PRBS pattern names
 // ---------------------------------------------------------------------------
-const PRBS_PATTERNS = [
-  'PRBS31Q','PRBS31','PRBS23Q','PRBS23','PRBS15Q','PRBS15',
-  'PRBS13Q','PRBS13','PRBS9Q','PRBS9','PRBS7Q','PRBS7','SSPRQ',
-];
+// Table 8-115, filled in from the module read rather than kept here. The
+// page used to hold its own array and it ran out at SSPRQ (ID 12), so a
+// module that advertised Custom (14) or User Pattern (15) had them quietly
+// filtered out of the dropdown - and a lane already running one was labelled
+// with a bare number and "not advertised", which it was.
+let PRBS_PATTERNS = {};
 
 /**
  * Render a module-reported BER.
@@ -2474,7 +2476,7 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
     // the module simply would not do it.
     const ids = supported && supported.length
       ? supported.filter(id => PRBS_PATTERNS[id] !== undefined)
-      : PRBS_PATTERNS.map((_n, idx) => idx);
+      : Object.keys(PRBS_PATTERNS).map(Number).sort((a, b) => a - b);
     const patOpts = ids.map(idx =>
       `<option value="${idx}" ${pattern === idx ? 'selected' : ''}>${PRBS_PATTERNS[idx]}</option>`
     ).join('')
@@ -2569,11 +2571,63 @@ function _readPrbsSection(tbodyId) {
   };
 }
 
+// Shared by the reference clock warning and the user pattern note: both name
+// a subset of the four engines, and a bare comma list reads as a dump.
+const listOf = (xs) => xs.length < 2 ? (xs[0] || '')
+  : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
+
+// 13h:224-255 (Table 8-134) is what Pattern ID 15 sends, and 13h:140.3-0 is
+// how much of it the module takes. PATTERN_NAMES has always had "User
+// Pattern" in it, so the dropdown offered ID 15 wherever a module advertised
+// it - with nowhere to see or set the bytes it would transmit.
+function _renderUserPattern(d) {
+  const box = document.getElementById('prbs-user-pattern');
+  const input = document.getElementById('user-pattern-input');
+  const note = document.getElementById('user-pattern-note');
+  if (!box || !input || !note) return;
+  const up = d.user_pattern || {};
+  const roles = up.available || [];
+  // On a module where nothing can select ID 15 these bytes are not a pattern
+  // anyone can send, and a box for them would be a control the module does
+  // not have.
+  if (!roles.length) { box.style.display = 'none'; input.value = ''; return; }
+  box.style.display = '';
+  input.value = (up.pattern || [])
+    .map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+  input.maxLength = up.max_bytes * 3;
+  const ROLE_LABEL = {host_gen: 'host generator', media_gen: 'media generator',
+                      host_chk: 'host checker', media_chk: 'media checker'};
+  note.innerHTML = 'User pattern for <b>Pattern ID 15</b>, sent by '
+    + (roles.length === 4 ? 'every generator and checker'
+       : 'the ' + esc(listOf(roles.map(r => ROLE_LABEL[r] || r))))
+    + ' <span class="reg-meta">13h:224-255</span> \u00b7 at most <b>'
+    + up.max_bytes + ' bytes</b> <span class="reg-meta">13h:140.3-0</span>'
+    + ' \u00b7 written with Apply';
+}
+
+// Hex bytes, however the operator spaces them. Refusing here rather than
+// sending something half-parsed: a pattern is transmitted, and a byte lost to
+// a typo is a different pattern rather than an error the module reports.
+function _readUserPattern() {
+  const box = document.getElementById('prbs-user-pattern');
+  const input = document.getElementById('user-pattern-input');
+  if (!box || !input || box.style.display === 'none') return null;
+  const text = input.value.replace(/0[xX]/g, '').replace(/[\s,]/g, '');
+  if (!text) return [];
+  if (!/^[0-9a-fA-F]+$/.test(text) || text.length % 2) return undefined;
+  const out = [];
+  for (let i = 0; i < text.length; i += 2) {
+    out.push(parseInt(text.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
 async function loadPrbs() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/prbs');
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
+  PRBS_PATTERNS = d.pattern_names || {};
   const pc = d.pattern_controls || {};
   const pl = d.pattern_locations || {};
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
@@ -2595,8 +2649,6 @@ async function loadPrbs() {
   // generator is not being driven by the host's clock at all - and it is what
   // decides whether a lost reference clock matters here.
   const cs = d.clock_sources || {};
-  const listOf = (xs) => xs.length < 2 ? (xs[0] || '')
-    : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
   const ROLE_LABEL = {host_gen: 'host side generator',
                       media_gen: 'media side generator',
                       host_chk: 'host side checker',
@@ -2614,6 +2666,7 @@ async function loadPrbs() {
   // 14h:132.7 is module-wide and latched. Condemning the whole page on it was
   // a claim the module never made: a generator on the internal clock and a
   // checker on a recovered clock keep working without a reference clock.
+  _renderUserPattern(d);
   const refNote = document.getElementById('prbs-ref-clock');
   if (refNote) {
     const onRef = Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference);
@@ -2636,12 +2689,20 @@ async function loadPrbs() {
 }
 
 async function applyPrbs() {
-  return applyAndReload('PRBS configuration', '/api/module/prbs', {
+  const userPattern = _readUserPattern();
+  if (userPattern === undefined) {
+    toast('User pattern must be whole hex bytes, e.g. AA 55', 'error');
+    return;
+  }
+  const body = {
     host_gen:  _readPrbsSection('tbl-prbs-host-gen'),
     media_gen: _readPrbsSection('tbl-prbs-media-gen'),
     host_chk:  _readPrbsSection('tbl-prbs-host-chk'),
     media_chk: _readPrbsSection('tbl-prbs-media-chk'),
-  }, loadPrbs);
+  };
+  if (userPattern !== null) body.user_pattern = userPattern;
+  return applyAndReload('PRBS configuration', '/api/module/prbs', body,
+                        loadPrbs);
 }
 
 // ---------------------------------------------------------------------------

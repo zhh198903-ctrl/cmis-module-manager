@@ -284,6 +284,10 @@ REG_DIAG_CAPS        = (0x13, 0x80, 15)  # 128-142
 # 176-179 (Table 8-127): where each pattern generator and checker takes its
 # clock from. Whether a lost reference clock invalidates a pattern run is a
 # question about these bytes, not about the flag on its own.
+# 224-255 (Table 8-134): the pattern that Pattern ID 15 sends. Offering
+# "User Pattern" in a dropdown without this is offering to transmit whatever
+# happens to be in these bytes.
+REG_USER_PATTERN     = (0x13, 0xE0, 32)  # 224-255
 REG_CLOCK_MEAS       = (0x13, 0xB0, 4)   # 176-179
 REG_MEDIA_OUT_LB     = (0x13, 0xB4, 1)
 REG_MEDIA_IN_LB      = (0x13, 0xB5, 1)
@@ -1162,6 +1166,16 @@ def parse_diag_reporting_caps(byte_val: int) -> dict:
 
 MEASUREMENT_TIMES = {0: None, 1: 5.0, 2: 10.0, 3: 30.0, 4: 60.0,
                      5: 120.0, 6: 300.0}
+
+
+def user_pattern_max_bytes(b140: int) -> int:
+    """13h:140 bits 3-0 (Table 8-118), RO.
+
+    UserPatternLengthSupported: "the field value n encodes L as L=2(n+1),
+    i.e. 0000b: 2 bytes, ..., 1111b: 32 bytes". A module may take far less
+    than the 32 bytes Table 8-134 reserves.
+    """
+    return 2 * ((b140 & 0x0F) + 1)
 
 
 def parse_measurement_controls(b177: int) -> dict:

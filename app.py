@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.37.0'
+__version__ = '2.38.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1801,6 +1801,10 @@ def _diag_caps() -> dict:
         # single bit set has no choice of FEC location left to offer.
         'pattern_locations': cmis.parse_pattern_locations(raw[3]),
         'patterns': cmis.parse_pattern_caps(raw[4:12]),
+        # 140 is how long a user-defined pattern this module will take. The
+        # dropdown has always offered Pattern ID 15 wherever it was
+        # advertised, with nowhere to say what the pattern is.
+        'user_pattern_max_bytes': cmis.user_pattern_max_bytes(raw[12]),
         # 141-142 were read with the rest and thrown away, which left the
         # pattern tables offering DataInvert and SwapSymbolBits columns on
         # modules without those bytes, and eight independent rows on modules
@@ -1823,6 +1827,34 @@ def _measurement_window() -> dict:
     return {
         'capabilities': caps,
         'controls': cmis.parse_measurement_controls(raw[1]),
+    }
+
+
+def _user_pattern() -> dict:
+    """Pattern ID 15 sends whatever is in 13h:224-255 (Table 8-134).
+
+    Only worth reading where some engine advertises ID 15: on a module that
+    does not, these bytes are not a pattern anyone can select, and showing
+    them would be inventing a control.
+
+    Page 13h is banked, but the user pattern is one definition rather than a
+    per-lane control, so bank 0 is what is shown and every bank is written -
+    a module that keeps one copy sees the same value written twice.
+    """
+    caps = _diag_caps()
+    # Panel order rather than alphabetical: the operator reads this against
+    # the four tables above it.
+    available = [role for role in ('host_gen', 'media_gen',
+                                   'host_chk', 'media_chk')
+                 if 15 in caps['patterns'][role]]
+    if not available:
+        return {'available': [], 'max_bytes': caps['user_pattern_max_bytes'],
+                'pattern': []}
+    raw = _read_upper(*cmis.REG_USER_PATTERN)
+    return {
+        'available': available,
+        'max_bytes': caps['user_pattern_max_bytes'],
+        'pattern': list(raw[:caps['user_pattern_max_bytes']]),
     }
 
 
@@ -1901,8 +1933,14 @@ def api_prbs_get():
 
         return _ok({
             'pattern_capabilities': _diag_caps()['patterns'],
+            # Table 8-115. The page used to carry its own list of names and it
+            # stopped at ID 12, so a module advertising Custom or User Pattern
+            # had them dropped from the dropdown without a word. Two lists
+            # that have to agree, kept in two places.
+            'pattern_names': {str(k): v for k, v in cmis.PATTERN_NAMES.items()},
             'pattern_controls': _diag_caps()['pattern_controls'],
             'pattern_locations': _diag_caps()['pattern_locations'],
+            'user_pattern': _user_pattern(),
             'host_gen':  _read_prbs_block(0x90),
             'media_gen': _read_prbs_block(0x98),
             'host_chk':  _read_prbs_block(0xA0),
@@ -1928,6 +1966,29 @@ def api_prbs_get():
         return _err(str(e), 500)
 
 
+def _write_user_pattern(values, caps, banks):
+    """13h:224-255. Returns an error response, or None once written."""
+    if not any(15 in ids for ids in caps['patterns'].values()):
+        return _err('This module has no user-defined pattern: no generator '
+                    'or checker advertises Pattern ID 15 in 13h:132-139', 400)
+    try:
+        data = [int(v) & 0xFF for v in values]
+    except (TypeError, ValueError):
+        return _err('The user pattern must be a list of byte values', 400)
+    limit = caps['user_pattern_max_bytes']
+    if len(data) > limit:
+        return _err('This module takes at most %d bytes of user pattern '
+                    '(13h:140.3-0), and %d were given'
+                    % (limit, len(data)), 400)
+    # Short of the limit the remaining bytes are left as they were rather
+    # than zero-filled: the module repeats the pattern it was given, and a
+    # trailing run of zeros is a different pattern.
+    for bank in range(banks):
+        _set_page(0x13, bank)
+        _state['backend'].write_bytes(cmis.REG_USER_PATTERN[1], bytes(data))
+    return None
+
+
 @app.route('/api/module/prbs', methods=['POST'])
 def api_prbs_set():
     err = _require_connected()
@@ -1939,6 +2000,10 @@ def api_prbs_set():
         caps = _diag_caps()
         pattern_caps = caps['patterns']
         locations = caps['pattern_locations']
+        if body.get('user_pattern') is not None:
+            err = _write_user_pattern(body['user_pattern'], caps, banks)
+            if err:
+                return err
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),

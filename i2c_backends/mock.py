@@ -65,6 +65,12 @@ def _raw_to_dbm_centi(raw):
 # coherent lite from a ZR module. The tunable C-band profile this one used to
 # be still exists below as _ZR_800G.
 _COHERENT_800G = {
+    # A coherent module with a programmable test pattern: Pattern ID 15 plus
+    # the full 32 bytes Table 8-134 reserves for it.
+    'pattern_caps_high': 0x9F,           # IDs 8-12 and 15
+    'user_pattern_140': 0x0F,            # L = 2(15+1) = 32 bytes
+    'user_pattern':     [0xAA, 0x55] * 16,
+
     # Cooled transmitter: Aux1 = TEC current, Aux2 = laser temperature,
     # Aux3 = Vcc2 (01h:145 = cooled | aux1 TEC | aux3 Vcc2).
     'aux_observable_145': 0x85,
@@ -119,6 +125,13 @@ _COHERENT_800G = {
 # profile with a tunable laser, so Pages 04h and 12h would otherwise have
 # nothing to demonstrate.
 _ZR_800G = {
+    # Also programmable, but "The module may not support the full 32-byte
+    # length" - this one takes four, so the advertised maximum is not
+    # decoration.
+    'pattern_caps_high': 0x9F,           # IDs 8-12 and 15
+    'user_pattern_140': 0x01,            # L = 2(1+1) = 4 bytes
+    'user_pattern':     [0xF0, 0x0F, 0xF0, 0x0F],
+
     # Cooled transmitter: Aux1 = TEC current, Aux2 = laser temperature,
     # Aux3 = Vcc2 (01h:145 = cooled | aux1 TEC | aux3 Vcc2).
     'aux_observable_145': 0x85,
@@ -972,8 +985,14 @@ class MockBackend(I2CInterface):
         for a in (0x84, 0x86, 0x88, 0x8A):      # 132/134/136/138: IDs 0-7
             p13[a] = 0xC3
         for a in (0x85, 0x87, 0x89, 0x8B):      # 133/135/137/139: IDs 8-15
-            p13[a] = 0x1F
-        p13[0x8C] = 0x00                     # 140 user pattern length
+            p13[a] = p.get('pattern_caps_high', 0x1F)
+        # 13h:140 bits 3-0: how long a user-defined pattern the module takes,
+        # L = 2(n+1). It only means anything where Pattern ID 15 is
+        # advertised, and no profile advertised it - so the one entry in the
+        # dropdown with nothing behind it was never reachable to notice.
+        p13[0x8C] = p.get('user_pattern_140', 0x00)
+        for i, b in enumerate(p.get('user_pattern', [0x00] * 32)):
+            p13[0xE0 + i] = b               # 224-255 (Table 8-134)
         # 141-142 (Table 8-117): whether DataInvert and SwapSymbolBits exist,
         # and whether Enable and PatternSelect are per lane. Left at zero
         # these said the module supported none of it, while the panel offered
