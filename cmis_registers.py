@@ -188,6 +188,7 @@ REG_DP_INIT_PENDING    = (0x11, 0xEB, 1)  # 235 DPInitPendingLane, Table 8-106
 # register for each of the staged ones on Page 10h. With ExplicitControl
 # clear these "were determined by the module according to the selected
 # Application", so they are not the staged values at all.
+REG_ADDITIONAL_APPS    = (0x01, 0xDF, 28)  # 223-250 App 9-15, Table 8-61
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
 REG_ACS_TX_CDR         = (0x11, 0xDD, 1)  # 221 CDREnableTx
@@ -695,17 +696,26 @@ def cmis_revision_str(rev: int) -> str:
     return f"{(rev >> 4) & 0x0F}.{rev & 0x0F}"
 
 
-def parse_application_descriptors(data: bytes, media_type: int = 0x02) -> list:
-    """Parse Application Descriptors from lower memory bytes 86-117 (8 × 4 bytes).
+def parse_application_descriptors(data: bytes, media_type: int = 0x02,
+                                  extra: bytes = b'') -> list:
+    """Parse Application Descriptors from lower memory bytes 86-117 and,
+    where the module has them, the additional ones on Page 01h.
 
     Each descriptor:
       +0: HostInterfaceID (0xFF = unused/end)
       +1: MediaInterfaceID
       +2: bits[7:4]=HostLaneCount, bits[3:0]=MediaLaneCount
       +3: HostLaneAssignmentOptions (bitmap)
+
+    8.4.17: "Bytes 01h:223-250 provide space for seven additional Application
+    Descriptors ... in addition to the eight Application Descriptors in Bytes
+    86-177", and AppSelCode is four bits wide. Reading only the first eight
+    made Applications 9-15 invisible - absent from the list a host can choose
+    from, and indistinguishable from codes the module never advertised.
     """
+    data = bytes(data) + bytes(extra)
     apps = []
-    for i in range(8):
+    for i in range(15):
         off = i * 4
         if off + 4 > len(data):
             break

@@ -9799,6 +9799,175 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
         self.assertIn('ExplicitControl', hint)
 
 
+
+class TestAModuleWithMoreThanEightApplications(CMISTestCase):
+    """AppSelCode is four bits wide, so a module may advertise fifteen
+    Applications. Only eight descriptors fit in lower memory; 8.4.17 puts the
+    rest on Page 01h - "Bytes 01h:223-250 provide space for seven additional
+    Application Descriptors ... in addition to the eight Application
+    Descriptors in Bytes 86-177".
+
+    The tool read 32 bytes of lower memory and looped over eight. Anything
+    beyond that was invisible three times over: absent from the AppSelect
+    dropdown, indistinguishable from a code the module never advertised - so
+    the validation answered ConfigRejectedInvalidAppSel to an Application the
+    module really has - and unknown to the Data Path grouping, which needs
+    each Application's host lane count to decide what an Apply touches."""
+
+    @classmethod
+    def setUpClass(cls):
+        import copy
+        import i2c_interface
+        from i2c_backends import mock
+        # Ten Applications: the eight that fit in lower memory and two that
+        # only exist on Page 01h. No shipped profile has more than two, so
+        # this registers a fixture rather than shipping one.
+        profile = copy.deepcopy(mock._DR8_800G)
+        base = list(profile['app_descriptors'])
+        profile['app_descriptors'] = (base * 5)[:10]
+        profile['display'] = 'ten-application fixture'
+        i2c_interface._BACKENDS['test_tenapps'] = type(
+            'FixtureTenApps', (mock.MockBackend,), {'PROFILE': profile})
+
+    @classmethod
+    def tearDownClass(cls):
+        import i2c_interface
+        i2c_interface._BACKENDS.pop('test_tenapps', None)
+
+    def _connect(self, backend='test_tenapps'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apps(self):
+        return self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+
+    def _status(self):
+        return [l['config_status'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    # ---- the list runs past lower memory ----------------------------------
+
+    def test_all_ten_are_reported(self):
+        self._connect()
+        self.assertEqual([a['app_sel'] for a in self._apps()],
+                         list(range(1, 11)),
+                         'the list stopped at the end of lower memory')
+
+    def test_the_ninth_descriptor_comes_from_page_01h(self):
+        """Its fields have to be read from 01h:223 onwards, not from
+        somewhere that happens to hold plausible numbers."""
+        self._connect()
+        apps = self._apps()
+        self.assertEqual(apps[8]['app_sel'], 9)
+        self.assertEqual(apps[8]['host_lanes'], 8)
+        self.assertEqual(apps[8]['host_lane_assign_mask'], 0x01)
+        self.assertEqual(apps[9]['app_sel'], 10)
+        self.assertEqual(apps[9]['host_lanes'], 4,
+                         'the tenth descriptor was read from the wrong offset')
+        self.assertEqual(apps[9]['host_lane_assign_mask'], 0x11)
+
+    def test_a_module_with_two_applications_still_reports_two(self):
+        """The terminator ends the list wherever it falls. Reading the extra
+        block unconditionally would invent Applications out of FFh."""
+        self._connect('mock_dr8')
+        self.assertEqual([a['app_sel'] for a in self._apps()], [1, 2])
+
+    def test_every_shipped_profile_is_unchanged(self):
+        names = [b['name'] for b in self.assertOk(
+            self.client.get('/api/backends'))['data']
+            if b['name'].startswith('mock')]
+        for name in names:
+            with self.subTest(backend=name):
+                self._connect(name)
+                self.assertEqual([a['app_sel'] for a in self._apps()], [1, 2],
+                                 '%s grew Applications it does not have'
+                                 % name)
+
+    # ---- and the module accepts them --------------------------------------
+
+    def test_an_application_past_the_eighth_is_not_refused(self):
+        """The whole cost of not reading them: a code the module advertises
+        answered as one it never announced."""
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0xFF, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(0.7)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [9] * 8, 'dp_deinit_mask': 0x00,
+                             'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.6)
+        self.assertEqual(set(self._status()), {'ConfigSuccess'},
+                         'AppSel 9 was refused on a module that advertises it')
+        self.assertEqual(self.assertOk(self.client.get(
+            '/api/module/datapath'))['data']['active_app_select'], [9] * 8)
+
+    def test_a_code_past_the_advertised_list_is_still_refused(self):
+        """Ten advertised, so eleven is still a code this module never
+        announced - the fix must not accept everything."""
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [11] * 8, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.4)
+        self.assertEqual(set(self._status()),
+                         {'ConfigRejectedInvalidAppSel'})
+
+    def test_the_apply_path_knows_the_width_too(self):
+        """The datapath endpoint builds its own host_lanes_by_app, and uses
+        it to round a mask up to whole Data Paths (Table 8-78). Without a
+        width for App 10 that rounding has nothing to round to, and asking to
+        deinitialise one lane would take one lane rather than its path."""
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0xFF, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(0.7)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2, 2, 2, 2, 10, 10, 10, 10],
+                             'dp_deinit_mask': 0x00, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.6)
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['active_app_select'],
+                         [2, 2, 2, 2, 10, 10, 10, 10],
+                         'the ten-lane fixture never reached App 10')
+        # Lane 5 alone: its Data Path is lanes 5-8, four lanes wide.
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0x10, 'apply': True}),
+            content_type='application/json'))
+        time.sleep(0.6)
+        self.assertEqual(self.assertOk(self.client.get(
+            '/api/module/datapath'))['data']['dp_deinit_mask'], 0xF0,
+            'App 10 has no width here, so one lane was taken down instead of '
+            'the Data Path it belongs to')
+
+    def test_the_grouping_knows_how_wide_the_tenth_application_is(self):
+        """host_lanes_by_app feeds _datapath_groups. Without a width for App
+        10 it would default to one lane and split a four-lane Data Path into
+        four."""
+        self._connect()
+        apps = self._apps()
+        self.assertEqual(apps[9]['host_lanes'], 4)
+        self.assertEqual(
+            app_module._datapath_groups([10] * 8,
+                                        {a['app_sel']: a['host_lanes']
+                                         for a in apps}),
+            [[0, 1, 2, 3], [4, 5, 6, 7]],
+            'an Application past the eighth has no width, so its Data Path '
+            'was grouped one lane at a time')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

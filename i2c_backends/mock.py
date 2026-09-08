@@ -588,8 +588,11 @@ class MockBackend(I2CInterface):
         lower[0x27] = 2; lower[0x28] = 5    # Active FW 2.5
         lower[0x55] = p['media_type']       # Media Type
 
-        # Application Descriptors (lower 0x56-0x75)
-        appdesc = list(p['app_descriptors']) + [(0xFF, 0, 0, 0)] * 8
+        # Application Descriptors (lower 0x56-0x75). AppSelCode is four bits
+        # wide, and 8.4.17 puts descriptors 9-15 on Page 01h - see the block
+        # written at 0xDF below. The terminator is the same either way: the
+        # first unused descriptor carries HostInterfaceID FFh.
+        appdesc = list(p['app_descriptors']) + [(0xFF, 0, 0, 0)] * 15
         for i, (h, m, lc, hla) in enumerate(appdesc[:8]):
             base = 0x56 + i * 4
             lower[base] = h
@@ -693,11 +696,23 @@ class MockBackend(I2CInterface):
         # module. An Application that uses m of the eight media lanes can start
         # on every m-th one, which is what a breakout Application needs the
         # host to know.
-        for i, desc in enumerate(p['app_descriptors'][:8]):
+        for i, desc in enumerate(p['app_descriptors'][:15]):
             media_lanes = desc[2] & 0x0F
             if media_lanes:
                 p01[0xB0 + i] = sum(1 << (k * media_lanes)
                                     for k in range(8 // media_lanes))
+
+        # 223-250 (Table 8-61): the seven Application Descriptors that do not
+        # fit in lower memory. A module with eight or fewer never reaches
+        # them - its list has already ended at the FFh terminator - so this
+        # writes the terminator there too rather than leaving the block blank.
+        extra = list(p['app_descriptors'])[8:] + [(0xFF, 0, 0, 0)] * 7
+        for i, (h, m, lc, hla) in enumerate(extra[:7]):
+            base = 0xDF + i * 4
+            p01[base] = h
+            p01[base + 1] = m
+            p01[base + 2] = lc
+            p01[base + 3] = hla
 
         # 155-156 Supported Controls Advertisement (Table 8-51). Tunability is
         # taken from the profile so the two cannot disagree: 155.6 says Pages

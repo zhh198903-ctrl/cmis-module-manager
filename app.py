@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.30.0'
+__version__ = '2.31.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -509,7 +509,8 @@ def api_module_info():
         appdesc_raw = _read_lower(0x56, 32)
         # The same Media Interface ID means different things on MMF and SMF,
         # so the module's global media type picks the table.
-        apps = cmis.parse_application_descriptors(appdesc_raw, media_type_raw[0])
+        apps = cmis.parse_application_descriptors(
+            appdesc_raw, media_type_raw[0], _additional_app_descriptors())
         host_lanes_app1 = apps[0]['host_lanes'] if apps else 0
         media_lanes_app1 = apps[0]['media_lanes'] if apps else 0
         host_total, media_total = _compute_module_capacity(apps)
@@ -1056,9 +1057,10 @@ def api_applications():
     if err:
         return err
     try:
-        data = _read_lower(0x56, 32)  # 8 descriptors × 4 bytes
+        data = _read_lower(0x56, 32)  # the first eight, 4 bytes each
         media_type = _read_lower(0x55, 1)[0]
-        apps = cmis.parse_application_descriptors(data, media_type)
+        apps = cmis.parse_application_descriptors(
+            data, media_type, _additional_app_descriptors())
         return _ok({'applications': apps})
     except Exception as e:
         return _err(str(e), 500)
@@ -1159,6 +1161,16 @@ def api_module_control_set():
         return _ok({'message': f'Module control written (0x{val:02X})', 'value': val})
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _additional_app_descriptors():
+    """01h:223-250, the seven Application Descriptors that do not fit in lower
+    memory (Table 8-61). Absent on a module that does not serve Page 01h, and
+    harmless there: the list already ended at its FFh terminator."""
+    try:
+        return _read_upper(*cmis.REG_ADDITIONAL_APPS)
+    except Exception:
+        return b''
 
 
 def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
@@ -1267,7 +1279,8 @@ def api_datapath_set():
         host_lanes_by_app = {}
         try:
             _apps = cmis.parse_application_descriptors(
-                _read_lower(0x56, 32), _read_lower(0x55, 1)[0])
+                _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
+                _additional_app_descriptors())
             for a in _apps:
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
