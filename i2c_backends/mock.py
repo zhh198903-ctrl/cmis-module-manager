@@ -419,6 +419,10 @@ _SR8_800G = {
     # No input SNR measurement on either side, in keeping with the simpler
     # retimer this profile models: BER and error counts only.
     'diag_reporting_130': 0x03,
+    # A module with no internal FEC, which per Table 8-114 leaves only
+    # post-FEC generators and pre-FEC checkers: the FEC column on all four
+    # tables has one legal value rather than two.
+    'pattern_locations_131': 0x66,
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     'vendor_sn':       b"DEMO000000003   ",
@@ -492,6 +496,9 @@ _FR4X2_800G = {
     # and the host checker enables a whole bank at a time rather than a lane.
     'pattern_ctrl_141': 0x55,            # invert yes, swap no, all four roles
     'pattern_ctrl_142': 0xF7,            # host checker: no per-lane enable
+    # Host side only, and one FEC location each (13h:131 bits 3 and 0 clear):
+    # the media generator and media checker are not in this module at all.
+    'pattern_locations_131': 0x06,
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
@@ -939,7 +946,12 @@ class MockBackend(I2CInterface):
         # counts and no SNR - while every one of those panels showed
         # numbers read out of the window anyway.
         p13[0x82] = p.get('diag_reporting_130', 0x33)
-        p13[0x83] = 0x00        # generation/checking locations
+        # 13h:131 (Table 8-114): which of the four pattern engines the
+        # module has, and whether each sits before or after its FEC.
+        # 0x00 said this module had no pattern generator and no pattern
+        # checker anywhere - while the panel offered four full tables,
+        # and a Pre/PostFECEnable column with both values available.
+        p13[0x83] = p.get('pattern_locations_131', 0xFF)
         # Patterns 0,1 (PRBS31Q/31), 6,7 (PRBS13Q/13), 8,9 (PRBS9Q/9),
         # 10,11 (PRBS7Q/7) and 12 (SSPRQ). The 23- and 15-bit patterns are
         # not offered, which is typical and gives the host something to hide.

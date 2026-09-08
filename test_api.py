@@ -10407,6 +10407,203 @@ class TestPatternControlsTheModuleDoesNotHave(CMISTestCase):
         self.assertIn('control-unavailable', body)
 
 
+class TestPatternEnginesTheModuleDoesNotHave(CMISTestCase):
+    """13h:131 (Table 8-114) is RO and Required, and it sits inside the fifteen
+    bytes _diag_caps already reads - between the reporting byte it uses and the
+    pattern capability bytes it uses. It was read and dropped.
+
+    The byte says which of the four pattern engines exist and where each one
+    sits relative to the module's FEC. Both bits clear means the engine is not
+    in the module: 13h:144/152/160/168 each name their own bit pair as "the"
+    advertisement for their Enable byte. One bit set means Pre/PostFECEnable
+    has a single legal value, because the other location has no engine in it.
+
+    Every shipped profile left the byte at zero, which said the module had no
+    pattern generator and no pattern checker anywhere - while the panel showed
+    four full tables of eight lanes, each with a FEC column offering both
+    values."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _locations(self):
+        return self.assertOk(
+            self.client.get('/api/module/prbs'))['data']['pattern_locations']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _prbs(self, **body):
+        return self.client.post('/api/module/prbs', data=json.dumps(body),
+                                content_type='application/json')
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_all_four_engines_are_reported(self):
+        self._connect()
+        loc = self._locations()
+        self.assertEqual(sorted(loc),
+                         ['host_chk', 'host_gen', 'media_chk', 'media_gen'])
+        for role, v in loc.items():
+            self.assertEqual(sorted(v),
+                             ['bits', 'post_fec', 'pre_fec', 'present'],
+                             '%s is missing part of its advertisement' % role)
+
+    def test_a_module_with_fec_offers_both_locations(self):
+        self._connect()
+        for role, v in self._locations().items():
+            self.assertTrue(v['present'], '%s is not there at all' % role)
+            self.assertTrue(v['pre_fec'] and v['post_fec'],
+                            '%s lost a location it used to advertise' % role)
+
+    def test_each_engine_reads_its_own_bit_pair(self):
+        """Eight bits over four engines. Reading one engine's pair for another
+        looks right on a module that answers alike everywhere, which is what
+        every profile did before this."""
+        import cmis_registers as c
+        got = c.parse_pattern_locations(0x80)
+        self.assertTrue(got['media_gen']['pre_fec'])
+        self.assertFalse(got['media_gen']['post_fec'])
+        self.assertFalse(got['media_chk']['present'])
+        self.assertFalse(got['host_gen']['present'])
+        self.assertFalse(got['host_chk']['present'])
+        got = c.parse_pattern_locations(0x01)
+        self.assertTrue(got['host_chk']['post_fec'])
+        self.assertFalse(got['host_chk']['pre_fec'])
+        self.assertFalse(got['host_gen']['present'])
+        self.assertEqual([got[r]['bits'] for r in
+                          ('media_gen', 'media_chk', 'host_gen', 'host_chk')],
+                         ['7-6', '5-4', '3-2', '1-0'])
+
+    def test_a_module_without_fec_has_one_location_per_engine(self):
+        """Table 8-114: "In modules without FEC, only Post-FEC generators and
+        Pre-FEC checkers exist". A profile that says so is what makes the FEC
+        column's gating testable at all."""
+        self._connect('mock_sr8')
+        loc = self._locations()
+        for role in ('host_gen', 'media_gen'):
+            self.assertTrue(loc[role]['post_fec'])
+            self.assertFalse(loc[role]['pre_fec'],
+                             '%s still claims a pre-FEC generator' % role)
+        for role in ('host_chk', 'media_chk'):
+            self.assertTrue(loc[role]['pre_fec'])
+            self.assertFalse(loc[role]['post_fec'],
+                             '%s still claims a post-FEC checker' % role)
+
+    def test_the_restricted_profile_has_no_media_side_engine(self):
+        self._connect('mock_fr4x2')
+        loc = self._locations()
+        self.assertFalse(loc['media_gen']['present'])
+        self.assertFalse(loc['media_chk']['present'])
+        self.assertTrue(loc['host_gen']['present'],
+                        'the host side was meant to keep its engines')
+        self.assertTrue(loc['host_chk']['present'])
+
+    # ---- and what a write does with it ------------------------------------
+
+    def test_starting_an_engine_the_module_does_not_have_is_refused(self):
+        self._connect('mock_fr4x2')
+        for role, bits, addr in (('media_gen', '7-6', 152),
+                                 ('media_chk', '5-4', 168)):
+            r = self._prbs(**{role: {'enable_mask': 0x0F, 'fec_mask': 0,
+                                     'patterns': [1] * 8}})
+            self.assertEqual(r.status_code, 400,
+                             '%s started on a module without one' % role)
+            msg = json.loads(r.data)['message']
+            self.assertIn('13h:131 bits %s' % bits, msg)
+            self.assertIn('13h:%d' % addr, msg)
+
+    def test_a_stopped_engine_that_is_absent_is_not_an_error(self):
+        """Apply sends every table. Refusing a write that turns nothing on
+        would make the button unusable on this module."""
+        self._connect('mock_fr4x2')
+        self.assertOk(self._prbs(
+            media_gen={'enable_mask': 0, 'fec_mask': 0, 'patterns': [0] * 8},
+            media_chk={'enable_mask': 0, 'fec_mask': 0, 'patterns': [0] * 8}))
+
+    def test_the_fec_location_the_module_does_not_have_is_refused(self):
+        self._connect('mock_sr8')
+        r = self._prbs(host_gen={'enable_mask': 0x01, 'fec_mask': 0x01,
+                                 'patterns': [1] * 8})
+        self.assertEqual(r.status_code, 400,
+                         'the generator was placed before a FEC it has no '
+                         'generator in front of')
+        self.assertIn('PreFECEnable', json.loads(r.data)['message'])
+        r = self._prbs(host_chk={'enable_mask': 0x01, 'fec_mask': 0x01,
+                                 'patterns': [1] * 8})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('PostFECEnable', json.loads(r.data)['message'])
+
+    def test_the_location_the_module_does_have_is_written(self):
+        self._connect('mock_sr8')
+        self.assertOk(self._prbs(
+            host_gen={'enable_mask': 0x03, 'fec_mask': 0x00,
+                      'patterns': [1] * 8},
+            host_chk={'enable_mask': 0x03, 'fec_mask': 0x00,
+                      'patterns': [1] * 8}))
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_gen']['enable_mask'], 0x03)
+        self.assertEqual(d['host_gen']['fec_mask'], 0x00)
+
+    def test_only_the_enabled_lanes_are_judged(self):
+        """A lane that is off is not asking for a location, so the stored bit
+        on it is nobody's business - otherwise clearing a run would be
+        impossible on a module with one location."""
+        self._connect('mock_sr8')
+        self.assertOk(self._prbs(
+            host_gen={'enable_mask': 0x00, 'fec_mask': 0xFF,
+                      'patterns': [1] * 8}))
+
+    # ---- and what the panel does with it ------------------------------------
+
+    def test_the_renderer_is_given_the_locations(self):
+        js = self._js()
+        self.assertIn('const pl = d.pattern_locations || {};', js)
+        for role in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            self.assertIn('pl.' + role, js,
+                          '%s never receives its own advertisement' % role)
+
+    def test_an_absent_engine_is_named_rather_than_tabulated(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertIn('if (loc.present === false) {', body,
+                      'the table is drawn whatever the module advertises')
+        head = body[body.index('if (loc.present === false) {'):]
+        head = head[:head.index('  }')]
+        self.assertIn('placeholder-text', head,
+                      'the empty table is not marked as a placeholder')
+        self.assertIn('13h:131.', head, 'nothing says which byte decided it')
+        self.assertIn('does not have one', head)
+
+    def test_a_single_location_locks_the_fec_box(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertIn('const fecFixed = loc.pre_fec !== undefined '
+                      '&& !(loc.pre_fec && loc.post_fec);', body,
+                      'the FEC gate no longer reads the module')
+        self.assertIn('const fecForced = isChecker ? !!loc.post_fec '
+                      ': !!loc.pre_fec;', body,
+                      'the locked box no longer shows the location the '
+                      'module actually has')
+        fec_cell = body[body.index('-fec-${i}') - 400:]
+        fec_cell = fec_cell[:fec_cell.index('-pat-${i}')]
+        self.assertIn("${fecFixed ? 'disabled' : ''}", fec_cell,
+                      'the FEC box is offered whatever the module says')
+        self.assertIn("class=\"${fecFixed ? 'control-unavailable' : ''}\"",
+                      fec_cell, 'a locked FEC box looks like a live one')
+        self.assertIn('fecFixed ? fecForced : fec', fec_cell,
+                      'the locked box shows the stored bit rather than the '
+                      'only location the module has')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

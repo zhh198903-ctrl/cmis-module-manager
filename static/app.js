@@ -2398,7 +2398,7 @@ async function applyLoopback() {
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
 function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
-                         isChecker, controls) {
+                         isChecker, controls, location) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   // The role used to be inferred from whether a LOL mask was passed, which
@@ -2429,6 +2429,27 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
   // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
   const role = isChecker ? 'Checker' : 'Generator';
   const fecName = isChecker ? 'PostFECEnable' : 'PreFECEnable';
+  // 13h:131 (Table 8-114). Both bits clear means the module has no such
+  // engine at all, and 13h:144/152/160/168 each name their own bit pair here
+  // as the advertisement for their Enable byte - so there is nothing to
+  // offer, not even a stopped lane.
+  const loc = location || {};
+  if (loc.present === false) {
+    tbody.innerHTML = `<tr><td colspan="${hasLol ? 7 : 6}" class="placeholder-text">`
+      + esc(side + ' side pattern ' + role.toLowerCase()
+            + ' \u2014 this module does not have one')
+      + ` <span class="reg-badge">13h:131.${esc(loc.bits || '')}</span></td></tr>`;
+    return;
+  }
+  // With one location advertised the Pre/PostFECEnable bit has a single legal
+  // value: the other side of the FEC has no engine to run in.
+  const fecFixed = loc.pre_fec !== undefined && !(loc.pre_fec && loc.post_fec);
+  const fecForced = isChecker ? !!loc.post_fec : !!loc.pre_fec;
+  const fecWhy = esc('This module has its ' + side.toLowerCase() + ' side '
+    + role.toLowerCase() + ' only ' + ((isChecker ? loc.post_fec : loc.pre_fec)
+      ? (isChecker ? 'after' : 'before') : (isChecker ? 'before' : 'after'))
+    + ' its FEC (13h:131.' + (loc.bits || '') + '), so ' + fecName
+    + ' has one legal value.');
   const tip = (suffix, off, mask, i, note) => esc(regTip({
     field: `${side}Side${role}${suffix}Lane${i + 1}`, page: 0x13, addr: base + off,
     value: mask, bit: i % 8, note,
@@ -2509,7 +2530,11 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
           type="checkbox" id="${tbodyId}-sw-${i}"
           title="${canSwap ? tSw : off('SwapSymbolBits', base + 2)}"
           ${canSwap ? '' : 'disabled'} ${sw  ? 'checked' : ''}></td>
-      <td title="${tFec}"><input type="checkbox" id="${tbodyId}-fec-${i}" title="${tFec}" ${fec ? 'checked' : ''}></td>
+      <td title="${fecFixed ? fecWhy : tFec}"
+          class="${fecFixed ? 'control-unavailable' : ''}"><input
+          type="checkbox" id="${tbodyId}-fec-${i}"
+          title="${fecFixed ? fecWhy : tFec}"
+          ${fecFixed ? 'disabled' : ''} ${(fecFixed ? fecForced : fec) ? 'checked' : ''}></td>
       <td title="${(perLanePattern || i === 0) ? patTip : follows('pattern', base + 4)}"
           class="${(perLanePattern || i === 0) ? '' : 'control-unavailable'}"><select
           class="app-select-input" id="${tbodyId}-pat-${i}"
@@ -2550,18 +2575,21 @@ async function loadPrbs() {
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
   const pc = d.pattern_controls || {};
+  const pl = d.pattern_locations || {};
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
                    d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false,
-                   pc.host_gen);
+                   pc.host_gen, pl.host_gen);
   _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, d.media_gen_lol_mask, 0x98, 'Media',
                    d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false,
-                   pc.media_gen);
+                   pc.media_gen, pl.media_gen);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
                    'Host', d.host_chk_lol_seen,
-                   (d.pattern_capabilities || {}).host_chk, true, pc.host_chk);
+                   (d.pattern_capabilities || {}).host_chk, true, pc.host_chk,
+                   pl.host_chk);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
                    'Media', d.media_chk_lol_seen,
-                   (d.pattern_capabilities || {}).media_chk, true, pc.media_chk);
+                   (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
+                   pl.media_chk);
   // 14h:132.7 is module-wide: with no reference clock, nothing measured on
   // this page means anything, whatever the per-lane flags say.
   const refNote = document.getElementById('prbs-ref-clock');

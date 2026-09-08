@@ -1156,6 +1156,31 @@ def parse_diag_reporting_caps(byte_val: int) -> dict:
     }
 
 
+def parse_pattern_locations(b131: int) -> dict:
+    """13h:131 (Table 8-114), RO and Required.
+
+    Which of the four pattern engines the module has, and where each one sits
+    relative to its FEC. Both bits clear means the engine is not there at all:
+    13h:144/152/160/168 each name a bit pair of this byte as the
+    advertisement for their own Enable byte. With only one bit set the
+    Pre/PostFECEnable control has exactly one legal value, because the other
+    location has no engine to run in.
+    """
+    roles = (('media_gen', 7, 6), ('media_chk', 5, 4),
+             ('host_gen', 3, 2), ('host_chk', 1, 0))
+    out = {}
+    for name, pre_bit, post_bit in roles:
+        pre = bool((b131 >> pre_bit) & 1)
+        post = bool((b131 >> post_bit) & 1)
+        out[name] = {
+            'pre_fec': pre,
+            'post_fec': post,
+            'present': pre or post,
+            'bits': '%d-%d' % (pre_bit, post_bit),
+        }
+    return out
+
+
 def parse_pattern_control_caps(b141: int, b142: int) -> dict:
     """13h:141-142 (Table 8-117 continuation), both RO and Required.
 

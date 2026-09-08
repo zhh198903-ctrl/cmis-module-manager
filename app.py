@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.34.0'
+__version__ = '2.35.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1796,6 +1796,10 @@ def _diag_caps() -> dict:
         'loopback': cmis.parse_loopback_caps(raw[0]),
         'measurement': cmis.parse_diag_meas_caps(raw[1]),
         'reporting': cmis.parse_diag_reporting_caps(raw[2]),
+        # 131 is what 144/152/160/168 point at for their own advertisement:
+        # an engine with both bits clear is not in the module, and one with a
+        # single bit set has no choice of FEC location left to offer.
+        'pattern_locations': cmis.parse_pattern_locations(raw[3]),
         'patterns': cmis.parse_pattern_caps(raw[4:12]),
         # 141-142 were read with the rest and thrown away, which left the
         # pattern tables offering DataInvert and SwapSymbolBits columns on
@@ -1876,6 +1880,7 @@ def api_prbs_get():
         return _ok({
             'pattern_capabilities': _diag_caps()['patterns'],
             'pattern_controls': _diag_caps()['pattern_controls'],
+            'pattern_locations': _diag_caps()['pattern_locations'],
             'host_gen':  _read_prbs_block(0x90),
             'media_gen': _read_prbs_block(0x98),
             'host_chk':  _read_prbs_block(0xA0),
@@ -1908,7 +1913,9 @@ def api_prbs_set():
     try:
         body = request.get_json(silent=True) or {}
         banks = (_state['lanes'] + 7) // 8
-        pattern_caps = _diag_caps()['patterns']
+        caps = _diag_caps()
+        pattern_caps = caps['patterns']
+        locations = caps['pattern_locations']
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),
@@ -1919,6 +1926,49 @@ def api_prbs_set():
             if not section:
                 continue
             supported = pattern_caps[key]
+            # 13h:131 is the advertisement the Enable byte itself points at.
+            # An engine with both bits clear is not in the module, so enabling
+            # it writes a byte nothing reads.
+            loc = locations[key]
+            role = '%s side pattern %s' % (
+                key.split('_')[0], 'generator' if key.endswith('_gen')
+                else 'checker')
+            enabled = _masks_per_bank(section.get('enable_mask', 0), banks)
+            fec_req = _masks_per_bank(section.get('fec_mask', 0), banks)
+            if not loc['present'] and any(enabled):
+                return _err(
+                    'This module has no %s: 13h:131 bits %s are both clear, '
+                    'and 13h:%d names them as the advertisement for its own '
+                    'Enable byte' % (role, loc['bits'], base_addr),
+                    400)
+            # PreFECEnable set means the generator runs before the encoder;
+            # PostFECEnable set means the checker runs after the decoder. The
+            # cleared state of each is the other location, so both values name
+            # an engine that has to exist.
+            is_gen = key.endswith('_gen')
+            for b in range(banks):
+                for bit in range(8):
+                    lane = b * 8 + bit
+                    if lane >= _state['lanes'] or not (enabled[b] >> bit) & 1:
+                        continue
+                    on = bool((fec_req[b] >> bit) & 1)
+                    wants_pre = on if is_gen else not on
+                    if wants_pre and not loc['pre_fec']:
+                        return _err(
+                            'Lane %d: the %s on this module only exists after its '
+                            'FEC (13h:131 bit %s is clear), so %sFECEnable '
+                            'cannot ask for the pre-FEC location'
+                            % (lane + 1, role, loc['bits'].split('-')[0],
+                               'Pre' if is_gen else 'Post'),
+                            400)
+                    if not wants_pre and not loc['post_fec']:
+                        return _err(
+                            'Lane %d: the %s on this module only exists before its '
+                            'FEC (13h:131 bit %s is clear), so %sFECEnable '
+                            'cannot ask for the post-FEC location'
+                            % (lane + 1, role, loc['bits'].split('-')[1],
+                               'Pre' if is_gen else 'Post'),
+                            400)
             for lane, pat in enumerate(section.get('patterns', []) or []):
                 if int(pat) not in supported and any(
                         _masks_per_bank(section.get('enable_mask', 0), banks)):

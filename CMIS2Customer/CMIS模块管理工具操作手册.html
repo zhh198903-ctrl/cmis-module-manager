@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.34.0<br>
+      <b>版本</b>　2.35.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.34.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.34.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.35.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.35.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1393,6 +1393,10 @@
             <td>测量能力：门控精度、门控统计、周期更新、
                 逐通道计时器、自动重启门控</td>
             <td class="label">Table 8-112</td></tr>
+        <tr><td><code>13h:131</code></td>
+            <td>四个图案引擎（主机/媒体 × 发生器/检测器）
+                <b>模块里到底有没有</b>，以及每个位于自己 FEC 的<b>哪一侧</b></td>
+            <td class="label">Table 8-114</td></tr>
         <tr><td><code>13h:132–139</code></td>
             <td>主机/媒体侧 <b>发生器</b>、主机/媒体侧 <b>检测器</b>
                 各自支持的图案 ID（每角色 2 字节，小端）</td>
@@ -1618,6 +1622,35 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>四张 PRBS 表，模块不一定有那个引擎。</b>
+    <code>13h:131</code>（Table 8-114，<b>只读、必需</b>）逐位声明
+    <b>主机侧 / 媒体侧</b> 的<b>发生器</b>与<b>检测器</b>各自存不存在，
+    以及每个位于自己 FEC 的<b>哪一侧</b>。
+    四个 Enable 字节（<code>13h:144 / 152 / 160 / 168</code>）
+    在规范里各自写着「Advertisement: 13h:131.x-y」，
+    指的就是这个字节——工具把它连同旁边的能力字节一起读了进来，
+    却<b>直接丢掉</b>。<br>
+    一对位<b>全为 0</b>，表示模块<b>压根没有这个引擎</b>：
+    界面照样摆一张八行的表，勾了 Enable 也只是往一个没人读的字节里写数。<br>
+    只有<b>一位</b>为 1 时，<b>PreFEC / PostFEC 那一列只有一个合法值</b>——
+    另一侧没有引擎可跑。规范还特别写明：
+    <b>没有内部 FEC 的模块，只存在 Post-FEC 发生器和 Pre-FEC 检测器</b>，
+    也就是这两个框对这类模块<b>本来就该是固定的</b>。<br>
+    现在：模块没有的引擎，那张表整块换成一行说明并注明是
+    <code>13h:131</code> 的哪两位决定的；只有一个位置的，
+    FEC 那一列按模块实际所在的位置勾好并置灰，悬停写明原因；
+    Apply 也会挡下「启动一个不存在的引擎」和
+    「把引擎放到 FEC 的另一侧」这两种写入。<br>
+    内置演示模块以前把这个字节留成 <code>0x00</code>，
+    等于声明「本模块没有任何图案发生器和检测器」，
+    而界面把四张表全摆着——现在它们会如实声明：
+    <code>mock_sr8</code> 是无内部 FEC 的模块（发生器只在 FEC 后、
+    检测器只在 FEC 前），<code>mock_fr4x2</code> 干脆<b>只有主机侧</b>
+    的一对引擎。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2210,6 +2243,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     </table>
   </div>
   <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体，以及 SSPRQ（Table 8-105）。</p>
+  <p><b>PreFEC</b> 这一列由 <code>13h:131</code> 决定：模块只在 FEC 的一侧有发生器时，
+     它会按实际位置勾好并置灰；两侧都没有，则整张表换成一行说明——
+     那个引擎不在这个模块里（见上文 <code>13h:131</code>）。</p>
 
   <h3>10.3 PRBS Checker（PRBS 检测器）</h3>
   <div class="table-wrap">
@@ -2221,6 +2257,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       </tbody>
     </table>
   </div>
+  <p><b>PostFEC</b> 这一列同样由 <code>13h:131</code> 决定，
+     规则与 10.2 的 PreFEC 一致。</p>
   <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -2654,7 +2692,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.34.0<br>
+    CMIS Module Manager 操作手册 v2.35.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
