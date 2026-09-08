@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.29.0'
+__version__ = '2.30.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1003,8 +1003,39 @@ def api_datapath_get():
             # reason to fail the whole page.
             si = {}
 
+        # Tables 8-104/8-105: the module's own statement of what it is
+        # provisioned with. With ExplicitControl clear - which is what this
+        # tool writes - these "were determined by the module according to the
+        # selected Application" rather than taken from the staged set, so the
+        # staged numbers above are a request and these are the answer.
+        si_active = {}
+        try:
+            n = _state['lanes']
+            if si_adv.get('tx_adaptive_input_eq'):
+                si_active['tx_adaptive_eq'] = cmis.parse_lane_flags(
+                    _read_banked(*cmis.REG_ACS_TX_ADAPT_EQ[:2], 1)[0])[:n]
+            if si_adv.get('tx_input_eq_host_control'):
+                si_active['tx_input_eq_target'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_ACS_TX_EQ_TARGET))[:n]
+            if si_adv.get('rx_cdr_bypass_control'):
+                si_active['rx_cdr_enable'] = cmis.parse_lane_flags(
+                    _read_banked(*cmis.REG_ACS_RX_CDR[:2], 1)[0])[:n]
+            eq = si_adv.get('rx_output_eq_control', 0)
+            if eq in (1, 3):
+                si_active['rx_eq_pre_cursor'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_ACS_RX_EQ_PRE))[:n]
+            if eq in (2, 3):
+                si_active['rx_eq_post_cursor'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_ACS_RX_EQ_POST))[:n]
+            if si_adv.get('rx_output_amplitude_control'):
+                si_active['rx_output_amplitude'] = cmis.unpack_nibbles(
+                    _read_upper(*cmis.REG_ACS_RX_AMPLITUDE))[:n]
+        except Exception:
+            si_active = {}
+
         return _ok({
             'signal_integrity': si,
+            'signal_integrity_active': si_active,
             'si_advertised': si_adv,
             'tx_disable_mask': tx_disable_mask,
             'dp_deinit_mask':  dp_deinit_mask,

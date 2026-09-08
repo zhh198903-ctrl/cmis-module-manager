@@ -9621,6 +9621,184 @@ class TestTheActiveSetAheadOfTheHardware(CMISTestCase):
                             'commissioned is painted as a refused one')
 
 
+
+class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
+    """Tables 8-104 and 8-105 are the Active Control Set's half of the signal
+    integrity settings - one Page 11h register for each staged one on Page
+    10h - and they say where the values came from:
+
+      "If the ExplicitControl bit for a lane was set ... the contents of the
+      registers for that lane ... originate from corresponding registers in
+      that Staged Control Set. If the ExplicitControl bit ... was cleared,
+      the contents ... were determined by the module according to the
+      selected Application."
+
+    pack_appselect writes ExplicitControl clear on every lane - its own
+    docstring says "Application-dependent SI settings" - so on every Apply
+    this tool makes, the module picks these itself. The Signal Integrity
+    table showed the staged numbers and told the reader "Apply on the
+    DataPath table commits this set as well", which is true only in the case
+    the tool never uses. 11h:214-234 was never read, and the mock never
+    filled it in, so nothing here could tell the two apart."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self):
+        dp = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': dp['app_select'], 'apply': True}),
+            content_type='application/json'))
+        time.sleep(1.4)
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the module says what it provisioned ------------------------------
+
+    def test_the_active_half_is_reported(self):
+        self._connect()
+        d = self._apply()
+        self.assertIn('signal_integrity_active', d)
+        self.assertEqual(sorted(d['signal_integrity_active']),
+                         sorted(d['signal_integrity']),
+                         'the two halves describe different controls')
+        for key, values in d['signal_integrity_active'].items():
+            self.assertEqual(len(values), 8, '%s is not per-lane' % key)
+
+    def test_the_module_provisions_something_of_its_own(self):
+        """With ExplicitControl clear the staged values are a request. A mock
+        that echoed them back would hide the whole distinction."""
+        self._connect()
+        d = self._apply()
+        differ = [k for k in d['signal_integrity']
+                  if d['signal_integrity'][k] != d['signal_integrity_active'][k]]
+        self.assertTrue(differ,
+                        'the module provisioned exactly what was staged on '
+                        'every control, so nothing here exercises the case '
+                        'the spec describes')
+
+    def test_setting_explicit_control_takes_the_staged_values(self):
+        """The other branch of the same sentence: with the bit set, the
+        Active Control Set is copied from the Staged one."""
+        self._connect()
+        self._apply()
+        before = self.assertOk(self.client.get(
+            '/api/module/datapath'))['data']['signal_integrity_active']
+        self.assertNotEqual(before['rx_output_amplitude'],
+                            [2] * 8, 'this test needs them to start apart')
+        # DPConfigLane bit 0 is ExplicitControl. It has to be set behind the
+        # API and applied the same way: every datapath POST rebuilds these
+        # bytes through pack_appselect, which writes the bit clear, so there
+        # is no way to reach this branch through the tool at all - which is
+        # why the footnote it justified was wrong for every Apply the tool
+        # makes, not merely for the default.
+        for lane in range(8):
+            poke(0x10, 145 + lane, 0x11)
+        poke(0x10, 0x8F, 0xFF)                # ApplyDPInit, all lanes
+        time.sleep(1.6)
+        d = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(d['signal_integrity_active']['rx_output_amplitude'],
+                         d['signal_integrity']['rx_output_amplitude'],
+                         'ExplicitControl was set and the module still chose '
+                         'its own settings')
+
+    def test_the_two_cursors_come_from_their_own_registers(self):
+        """Pre- and post-cursor sit in separate four-byte blocks. Reading
+        either from the other's would look identical while the module happens
+        to provision them alike, so this pins the pair that differs."""
+        self._connect()
+        d = self._apply()
+        self.assertEqual(d['signal_integrity_active']['rx_eq_pre_cursor'],
+                         [1] * 8)
+        self.assertEqual(d['signal_integrity_active']['rx_eq_post_cursor'],
+                         [0] * 8)
+
+    def test_each_lane_gets_its_own_nibble(self):
+        """Every lane staged alike cannot show a swapped nibble pair, and the
+        Active Control Set packs two lanes to a byte just as the staged set
+        does. Stage a different value on each lane and read it back."""
+        self._connect()
+        self._apply()
+        wanted = [0, 1, 2, 3, 3, 2, 1, 0]
+        for lane in range(8):
+            poke(0x10, 145 + lane, 0x11)          # AppSel 1, ExplicitControl
+        for byte, pair in enumerate(zip(wanted[::2], wanted[1::2])):
+            low, high = pair
+            poke(0x10, 170 + byte, (high << 4) | low)
+        poke(0x10, 0x8F, 0xFF)
+        time.sleep(1.6)
+        d = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(d['signal_integrity']['rx_output_amplitude'], wanted,
+                         'the staged set itself was not read per lane')
+        self.assertEqual(d['signal_integrity_active']['rx_output_amplitude'],
+                         wanted,
+                         'the Active Control Set pairs lanes to nibbles the '
+                         'wrong way round')
+
+    def test_an_unadvertised_control_is_absent_from_both_halves(self):
+        """The active half is gated on the same advertisement as the staged
+        one, so a module without a control does not grow one here."""
+        self._connect('mock_sr8')
+        d = self._apply()
+        self.assertNotIn('rx_output_amplitude', d['signal_integrity'],
+                         'this test needs a module without amplitude control')
+        self.assertNotIn('rx_output_amplitude', d['signal_integrity_active'])
+
+    def test_every_shipped_profile_reports_both_halves(self):
+        names = [b['name'] for b in self.assertOk(
+            self.client.get('/api/backends'))['data']
+            if b['name'].startswith('mock')]
+        for name in names:
+            with self.subTest(backend=name):
+                self._connect(name)
+                d = self._apply()
+                self.assertEqual(sorted(d['signal_integrity_active']),
+                                 sorted(d['signal_integrity']),
+                                 '%s reports one half and not the other'
+                                 % name)
+
+    # ---- and the table stops presenting a request as an answer ------------
+
+    def test_the_table_shows_the_value_in_force_where_it_differs(self):
+        js = self._js()
+        body = js[js.index('const inForce = (key, i, staged) =>'):]
+        body = body[:body.index('const lanes =')]
+        self.assertIn('signal_integrity_active', js)
+        self.assertRegex(body, r'live === undefined \|\| live === staged',
+                         'the marker appears even where nothing differs')
+        self.assertIn('11h', body,
+                      'the note never says where the value in force comes from')
+        self.assertIn('ExplicitControl', body,
+                      'nothing explains why the staged value is not the one '
+                      'in use')
+
+    def test_the_marker_is_rendered_in_every_cell(self):
+        js = self._js()
+        self.assertIn('${cell(key, si[key][i])}${inForce(key, i, si[key][i])}',
+                      js, 'the marker is built and never placed in the row')
+
+    def test_the_footnote_no_longer_says_apply_commits_them(self):
+        js = self._js()
+        self.assertNotIn('Apply on the DataPath table commits this ', js,
+                         'the footnote still claims Apply commits the staged '
+                         'signal integrity set, which holds only with '
+                         'ExplicitControl set')
+        hint = js[js.index("hint.textContent = 'Read-only"):]
+        hint = hint[:hint.index('\n  }')]
+        self.assertIn('ExplicitControl', hint)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

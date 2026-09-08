@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.29.0<br>
+      <b>版本</b>　2.30.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.29.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.29.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.30.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.30.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1620,6 +1620,25 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
   </div>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>Signal Integrity 表里的数值，模块<u>不一定</u>在用。</b>
+    这张表读的是 <b>Page 10h 的暂存区</b>——你要求的值。
+    而规范 Table 8-104 / 8-105 说得很清楚：
+    DPConfigLane 里的 <code>ExplicitControl</code> 位<b>置 1</b> 时，
+    生效的值才来自暂存区；<b>清 0</b> 时，
+    「这些值由模块根据所选 Application 自行决定」。<br>
+    <b>本工具写的一直是 0</b>（一条数据通道、从 lane 1 起、SI 由 Application 决定），
+    所以每一次 Apply 之后，真正生效的都不是表里显示的数字。
+    模块把自己实际配置的值发布在 <code>11h:214–234</code>，
+    紧挨着工具早就在读的 Active AppSel——但这一段<b>从来没被读过</b>，
+    表格下方却写着“Apply 会把这一套一起下发”。<br>
+    现在两边不一致的格子会在数值下面标出
+    <b>in force N</b>（模块实际在用的值），
+    悬停说明它来自 Active Control Set 以及 ExplicitControl 的含义；
+    表格下方那句话也改了。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>信号完整性设置也会被校验了。</b>
@@ -2566,7 +2585,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.29.0<br>
+    CMIS Module Manager 操作手册 v2.30.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1589,6 +1589,11 @@ function renderSignalIntegrity(d) {
   if (!head || !body) return;
 
   const si = d.signal_integrity || {};
+  // Tables 8-104/8-105. The staged half above is the request; this is the
+  // module's answer, and with ExplicitControl clear - which is what Apply
+  // writes - the two are not the same thing: those settings "were determined
+  // by the module according to the selected Application".
+  const siLive = d.signal_integrity_active || {};
   const adv = d.si_advertised || {};
   const cols = SI_COLUMNS.filter(([key]) => Array.isArray(si[key]));
 
@@ -1637,9 +1642,25 @@ function renderSignalIntegrity(d) {
     }
     return `<span style="font-family:var(--font-mono)">${esc(String(v))}</span>`;
   };
+  // Showing the staged number alone said the module was running it. Where it
+  // is not, the value in force goes underneath, the same way the DataPath
+  // table reports an Application the module did not accept.
+  const inForce = (key, i, staged) => {
+    const live = (siLive[key] || [])[i];
+    if (live === undefined || live === staged) return '';
+    const text = typeof live === 'boolean'
+      ? (live ? 'on' : (key === 'rx_cdr_enable' ? 'bypassed' : 'off'))
+      : String(live);
+    return `<div class="appsel-pending" title="${esc(
+      'The module is provisioned with ' + text + ' on this lane (Active '
+      + 'Control Set, Page 11h). The staged value is used only when the '
+      + 'ExplicitControl bit is set; with it clear the module chooses these '
+      + 'settings from the Application it is running.')}">in force ${esc(text)}</div>`;
+  };
   const lanes = (si[cols[0][0]] || []).length;
   body.innerHTML = Array.from({length: lanes}, (_, i) =>
-    `<tr><td>${i + 1}</td>` + cols.map(([key]) => `<td>${cell(key, si[key][i])}</td>`).join('')
+    `<tr><td>${i + 1}</td>` + cols.map(([key]) =>
+      `<td>${cell(key, si[key][i])}${inForce(key, i, si[key][i])}</td>`).join('')
     + '</tr>').join('');
 
   if (note) {
@@ -1659,8 +1680,13 @@ function renderSignalIntegrity(d) {
                + ' / post max ' + adv.rx_output_eq_post_cursor_max);
     if (Array.isArray(adv.rx_output_levels) && adv.rx_output_levels.length)
       max.push('amplitude codes ' + adv.rx_output_levels.join(', '));
-    hint.textContent = 'Read-only. Apply on the DataPath table commits this '
-      + 'set as well.' + (max.length ? '  Module limits: ' + max.join(' \u00b7 ') + '.' : '');
+    // "Apply commits this set as well" holds only with ExplicitControl set,
+    // and this tool writes it clear - so Apply stages these values and the
+    // module then provisions its own from the Application.
+    hint.textContent = 'Read-only, and staged: the tool writes ExplicitControl '
+      + 'clear, so the module provisions these from the Application it is '
+      + 'running. A lane where that differs shows the value in force.'
+      + (max.length ? '  Module limits: ' + max.join(' \u00b7 ') + '.' : '');
   }
 }
 

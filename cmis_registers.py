@@ -183,6 +183,19 @@ REG_RX_POWER        = (0x11, 0xBA, 16)  # 8 lanes × 2B, ×0.1 µW
 REG_CONFIG_STATUS   = (0x11, 0xCA, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
 REG_DP_INIT_PENDING    = (0x11, 0xEB, 1)  # 235 DPInitPendingLane, Table 8-106
 
+# Tables 8-104 and 8-105: the Active Control Set's half of the signal
+# integrity settings - what the module is actually provisioned with, one
+# register for each of the staged ones on Page 10h. With ExplicitControl
+# clear these "were determined by the module according to the selected
+# Application", so they are not the staged values at all.
+REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
+REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
+REG_ACS_TX_CDR         = (0x11, 0xDD, 1)  # 221 CDREnableTx
+REG_ACS_RX_CDR         = (0x11, 0xDE, 1)  # 222 CDREnableRx
+REG_ACS_RX_EQ_PRE      = (0x11, 0xDF, 4)  # 223-226 OutputEqPreCursorTargetRx
+REG_ACS_RX_EQ_POST     = (0x11, 0xE3, 4)  # 227-230 OutputEqPostCursorTargetRx
+REG_ACS_RX_AMPLITUDE   = (0x11, 0xE7, 4)  # 231-234 OutputAmplitudeTargetRx
+
 # ---------------------------------------------------------------------------
 # Page 04h — Laser Capabilities (Table 8-66, RO)
 # ---------------------------------------------------------------------------

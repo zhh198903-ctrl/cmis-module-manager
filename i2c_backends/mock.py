@@ -1233,6 +1233,69 @@ class MockBackend(I2CInterface):
             return True                      # legacy default: both supported
         return (raw & 0x03) == 0b01
 
+    # Where each Active Control Set signal integrity register comes from:
+    # (active address, staged address, nibble-packed).
+    _ACS_SI_MAP = (
+        (0xD6, 0x99, False),   # AdaptiveInputEqEnableTx, 1 bit per lane
+        (0xD9, 0x9C, True),    # HostControlledInputEqTargetTx
+        (0xDE, 0xA1, False),   # CDREnableRx
+        (0xDF, 0xA2, True),    # OutputEqPreCursorTargetRx
+        (0xE3, 0xA6, True),    # OutputEqPostCursorTargetRx
+        (0xE7, 0xAA, True),    # OutputAmplitudeTargetRx
+    )
+
+    def _provision_si(self, lane: int, explicit: bool) -> None:
+        """Fill this lane's entry in Tables 8-104 and 8-105.
+
+        The spec makes ExplicitControl decide where the values come from: set,
+        and they "originate from corresponding registers in that Staged
+        Control Set"; clear, and they "were determined by the module according
+        to the selected Application". A host that leaves the bit clear - which
+        is what this tool does - is therefore not running the numbers it
+        staged, and only these registers say what it is running.
+        """
+        for active, staged, nibble in self._ACS_SI_MAP:
+            if explicit:
+                value = self._lane_value(0x10, staged, lane, nibble)
+            else:
+                value = self._application_si(active, lane)
+            self._set_lane_value(0x11, active, lane, nibble, value)
+
+    def _application_si(self, active: int, lane: int) -> int:
+        """What this module picks for a lane it was left to configure itself.
+
+        A demo choice, and a deliberately different one from the staged
+        defaults: a module that happened to land on the same numbers would
+        hide the very distinction these registers exist to report.
+        """
+        return self._profile.get('acs_si', {
+            0xD6: 1,      # adaptive Tx equalization on
+            0xD9: 0,      # so the host-controlled target is not in use
+            0xDE: 1,      # Rx CDR enabled
+            0xDF: 1,      # a pre-cursor the Application asks for
+            0xE3: 0,
+            0xE7: 1,      # amplitude code 1
+        }).get(active, 0)
+
+    def _lane_value(self, page: int, base: int, lane: int, nibble: bool) -> int:
+        regs = self._registers.get(page, {})
+        if not nibble:
+            return (regs.get(base, 0) >> lane) & 1
+        raw = regs.get(base + lane // 2, 0)
+        return (raw >> 4) & 0x0F if lane % 2 else raw & 0x0F
+
+    def _set_lane_value(self, page: int, base: int, lane: int, nibble: bool,
+                        value: int) -> None:
+        regs = self._registers.setdefault(page, {})
+        if not nibble:
+            regs[base] = (regs.get(base, 0) & ~(1 << lane)) | (
+                (value & 1) << lane)
+            return
+        addr = base + lane // 2
+        shift = 4 if lane % 2 else 0
+        regs[addr] = (regs.get(addr, 0) & ~(0x0F << shift)) | (
+            (value & 0x0F) << shift)
+
     def _clear_dp_init_pending(self) -> None:
         """8.14.7: "the module clears all DPInitPendingLane<i> bits of a Data
         Path while in DPSM state DPInit"."""
@@ -1263,6 +1326,7 @@ class MockBackend(I2CInterface):
         for i in range(8):
             if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
                 self._registers[0x11][0xCE + i] = self._config_staged[i]
+                self._provision_si(i, self._config_staged[i] & 0x01)
         for lane in range(8):
             if not ((self._apply_mask >> lane) & 1):
                 continue                     # unselected lanes keep their status
