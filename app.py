@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.38.0'
+__version__ = '2.39.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -50,6 +50,11 @@ _state = {
     'lanes': 8,
     # The 5.4 advertisement block, read once at connect.
     'caps': {},
+    # Section 5.2.2.1: "A host may read N bytes ... 1 <= N <= Nmax. By
+    # default, Nmax = 8. When full page read is supported ... then Nmax =
+    # 128." Eight until 01h:251 says otherwise, so the reads made while
+    # discovering that are legal on a module that does not support more.
+    'max_read': 8,
     # CMIS Flags are latched with clear-on-read: reading the byte that
     # holds one clears it. Polling therefore consumes them, and an event
     # that came and went between two refreshes exists only in whichever
@@ -200,14 +205,38 @@ def _checked(raw: bytes, where: str, length: int) -> bytes:
     return raw
 
 
+def _read_chunked(addr: int, length: int) -> bytes:
+    """Read `length` bytes without asking for more at once than Nmax.
+
+    A module only has to answer a READ of up to 8 bytes unless it advertises
+    full page read (01h:251.1-0), and this tool asks for 64 at a time from
+    the diagnostics window alone. What a module does with an over-long READ
+    is its own business - wrapping the address or NAKing part-way - so the
+    result was never something to rely on.
+
+    Splitting is safe for what is read here: CMIS scalars are at most 8 bytes
+    and sit on 8-byte boundaries, so a chunk never lands in the middle of
+    one, and the specification does not promise coherency across register
+    arrays in the first place (section 5.2.5.1).
+    """
+    limit = _state.get('max_read') or 8
+    if length <= limit:
+        return _state['backend'].read_bytes(addr, length)
+    out = bytearray()
+    while len(out) < length:
+        n = min(limit, length - len(out))
+        out += _state['backend'].read_bytes(addr + len(out), n)
+    return bytes(out)
+
+
 def _read_lower(addr: int, length: int) -> bytes:
-    return _checked(_state['backend'].read_bytes(addr, length),
+    return _checked(_read_chunked(addr, length),
                     'Lower:0x%02X' % addr, length)
 
 
 def _read_upper(page: int, addr: int, length: int, bank: int = 0) -> bytes:
     _set_page(page, bank)
-    return _checked(_state['backend'].read_bytes(addr, length),
+    return _checked(_read_chunked(addr, length),
                     '%02Xh:0x%02X%s' % (page, addr,
                                         '' if bank == 0 else ' bank %d' % bank),
                     length)
@@ -315,9 +344,17 @@ def _discover_capabilities() -> dict:
     those bytes are believed at all.
     """
     caps = {'max_lanes': 8, 'banks_supported': 1, 'cmis_revision': ''}
+    _state['max_read'] = 8
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
+        # Before anything long is read: everything below asks for more than
+        # eight bytes at a time, and whether that is allowed is this byte's
+        # answer to give.
+        b251 = _read_upper(*cmis.REG_MISC_FEATURES)[0]
+        caps['features'] = cmis.parse_misc_features(b251)
+        _state['max_read'] = cmis.max_read_bytes(b251)
+        caps['max_read'] = _state['max_read']
         caps['config'] = cmis.parse_config_capabilities(
             _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         b142 = _read_upper(*cmis.REG_BANKS_SUPPORTED)[0]
@@ -444,6 +481,7 @@ def api_connect():
 
     _state['backend'] = backend
     _state['connected'] = True
+    _state['max_read'] = 8
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()
@@ -2498,6 +2536,10 @@ def api_register_read():
             'length': length,
             'data': list(data),
             'hex': ' '.join(f'{b:02X}' for b in data),
+            # What the module will answer in one transaction, and therefore
+            # whether this read was one or several. 128 is the ceiling only
+            # when full page read is advertised (section 5.2.2.1).
+            'max_read': _state.get('max_read', 8),
         })
     except Exception as e:
         return _err(str(e), 500)

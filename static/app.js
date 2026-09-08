@@ -1972,6 +1972,22 @@ function parseHexOrDec(s) {
   return parseInt(s, 10);
 }
 
+// Section 5.2.2.1 puts Nmax at 8 unless the module advertises full page read
+// (01h:251.1-0). The length box has always gone to 128, which is the limit
+// only for a module that said so; a longer read is now split into several
+// rather than asked for in one transaction the module need not answer.
+function _renderReadLimit(max) {
+  const el = document.getElementById('raw-read-limit');
+  if (!el) return;
+  if (!max) { el.innerHTML = ''; return; }
+  el.innerHTML = max >= 128
+    ? 'This module answers up to <b>128 bytes</b> per read '
+      + '<span class="reg-meta">01h:251.1-0, full page read supported</span>'
+    : `This module answers <b>${max} bytes</b> per read `
+      + '<span class="reg-meta">01h:251.1-0, no full page read</span> \u00b7 '
+      + 'longer reads are split into several';
+}
+
 async function rawRead() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
@@ -1987,6 +2003,7 @@ async function rawRead() {
   }
 
   dumpEl.textContent = formatHexDump(res.data.data, address);
+  _renderReadLimit(res.data.max_read);
 }
 
 async function rawWrite() {

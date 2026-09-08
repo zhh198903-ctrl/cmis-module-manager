@@ -523,6 +523,10 @@ _FR4X2_800G = {
     # tables mean - no periodic updates: on this module the BER and counter
     # values do not move while a measurement is still running.
     'diag_meas_129': 0x00,
+    # No full page read, and no scratchpad or password entry either: a plain
+    # module that answers a READ of at most 8 bytes. Every other profile
+    # advertises full page read, so both read paths are exercised.
+    'misc_features_251': 0x55,           # all four: not supported
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
@@ -547,6 +551,9 @@ class MockBackend(I2CInterface):
     def __init__(self):
         self._profile = self.PROFILE
         self._connected = False
+        # Nmax for a READ (section 5.2.2.1), from this profile's 01h:251.1-0.
+        self._max_read = 128 if (
+            (self.PROFILE.get('misc_features_251', 0xAA) & 0x03) == 2) else 8
         self._current_page = 0x00
         self._current_bank = 0x00
         self._last_module_state = None
@@ -799,6 +806,13 @@ class MockBackend(I2CInterface):
             p01[0xAD] = p.get('pages_ext_173', 0x00)         # 173 (5.4)
             p01[0xAE] = p01.get(0xAE, 0) | p.get('pages_ext_174', 0x00)
             p01[0xFC] = p.get('misc_caps_252', 0x00)         # 252 (5.4)
+        # 251 (Table 8-62) is not 5.4-only: full page read is "recommended
+        # since CMIS 5.3", and 00b means the module predates 5.3 rather than
+        # that it says no. A module that does not advertise it answers a READ
+        # of at most 8 bytes (section 5.2.2.1), which is the case worth having
+        # a profile for.
+        p01[0xFB] = p.get('misc_features_251',
+                          0xAA if p.get('cmis_rev', 0x53) >= 0x53 else 0x00)
         regs[0x01] = p01
 
         # ==== Page 02h — Thresholds ====
@@ -2151,6 +2165,14 @@ class MockBackend(I2CInterface):
     def read_bytes(self, register: int, length: int) -> bytes:
         if not self._connected:
             raise IOError("Not connected")
+        # Section 5.2.2.1: a READ may ask for at most Nmax bytes, which is 8
+        # unless the module advertises full page read. A mock that answers
+        # any length lets the host ask for 64 and never find out, which is
+        # exactly what it was doing.
+        if length > self._max_read:
+            raise IOError(
+                'READ of %d bytes: this module answers at most %d '
+                '(01h:251.1-0)' % (length, self._max_read))
         self._update_dynamic_values()
         if register < 0x80:
             page_dict = self._registers.get(None, {})

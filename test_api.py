@@ -11160,6 +11160,188 @@ class TestThePatternsThePageWouldNotOffer(CMISTestCase):
                       'the pattern is never written with the rest')
 
 
+class TestHowManyBytesAReadMayAskFor(CMISTestCase):
+    """Section 5.2.2.1: "A host may read N bytes of addressable module
+    management memory in a READ access ... By default, Nmax = 8. When full
+    page read is supported (as advertised in 01h:251.4) then Nmax = 128."
+
+    01h:251 (Table 8-62) is RO and Required and was never read. Meanwhile the
+    tool asks for 64 bytes at a time from the diagnostics window, 32 for the
+    user pattern, 28 for the extra Application descriptors - and the raw panel
+    offered "Length must be 1-128", which is Nmax only for a module that said
+    so. What a module does with an over-long READ is its own business, so
+    what came back was never something to rely on.
+
+    Note the two bit positions the specification gives for the same field:
+    section 5.2.2.1 says 01h:251.4 and section 8.16.13 says 01h:251.7, while
+    Table 8-62 places full page read at bits 1-0 and the scratchpad at 7-6.
+    The register table is the definition."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _src(self, name):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_all_four_advertisements_are_decoded(self):
+        import cmis_registers as c
+        got = c.parse_misc_features(0xAA)
+        self.assertEqual(sorted(k for k in got if not k.endswith('_code')),
+                         ['full_page_read', 'password_entry',
+                          'password_entry_result', 'scratch_pad'])
+        for k, v in got.items():
+            if not k.endswith('_code'):
+                self.assertEqual(v, 'supported')
+
+    def test_zero_means_unknown_rather_than_no(self):
+        """Table 8-62: "00: unknown (only for CMIS 5.2 or earlier)". Reading
+        it as a refusal would put words in an old module's mouth."""
+        import cmis_registers as c
+        got = c.parse_misc_features(0x00)
+        self.assertEqual(got['full_page_read'], 'unknown')
+        self.assertEqual(got['scratch_pad'], 'unknown')
+        self.assertEqual(c.parse_misc_features(0x55)['full_page_read'],
+                         'not supported')
+
+    def test_each_field_reads_its_own_bit_pair(self):
+        """Four fields in one byte, and the specification itself cites two
+        different bit positions for them elsewhere."""
+        import cmis_registers as c
+        got = c.parse_misc_features(0x80)
+        self.assertEqual(got['scratch_pad_code'], 2)
+        self.assertEqual(got['full_page_read_code'], 0)
+        got = c.parse_misc_features(0x02)
+        self.assertEqual(got['full_page_read_code'], 2)
+        self.assertEqual(got['scratch_pad_code'], 0)
+        got = c.parse_misc_features(0x20)
+        self.assertEqual(got['password_entry_code'], 2)
+        self.assertEqual(got['password_entry_result_code'], 0)
+        got = c.parse_misc_features(0x08)
+        self.assertEqual(got['password_entry_result_code'], 2)
+        self.assertEqual(got['password_entry_code'], 0)
+
+    def test_nmax_is_eight_unless_the_module_says_otherwise(self):
+        import cmis_registers as c
+        self.assertEqual(c.max_read_bytes(0x02), 128)
+        self.assertEqual(c.max_read_bytes(0x01), 8, 'not supported')
+        self.assertEqual(c.max_read_bytes(0x00), 8, 'unknown')
+        self.assertEqual(c.max_read_bytes(0x03), 8, 'reserved')
+        self.assertEqual(c.max_read_bytes(0xFC), 8,
+                         'the other three fields are not this one')
+
+    # ---- and what the tool does with it ------------------------------------
+
+    def test_the_limit_is_learned_before_anything_long_is_read(self):
+        """Discovery itself asks for more than eight bytes. Reading 251 after
+        those would mean the reads that find the limit have already broken
+        it."""
+        src = self._src('app.py')
+        body = src[src.index('def _discover_capabilities('):]
+        body = body[:body.index('\ndef ', 10)]
+        self.assertIn("_state['max_read'] = 8", body,
+                      'discovery starts by assuming a limit it has not read')
+        self.assertLess(body.index('REG_MISC_FEATURES'),
+                        body.index('REG_SUPPORTED_CONTROLS'),
+                        'the long reads happen before the limit is known')
+
+    def test_a_module_that_answers_eight_bytes(self):
+        self._connect('mock_fr4x2')
+        d = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 0x80, 'length': 64}),
+            content_type='application/json'))['data']
+        self.assertEqual(d['max_read'], 8)
+        self.assertEqual(len(d['data']), 64,
+                         'a read longer than Nmax came back short')
+
+    def test_a_module_that_answers_a_full_page(self):
+        self._connect()
+        d = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 0x80, 'length': 64}),
+            content_type='application/json'))['data']
+        self.assertEqual(d['max_read'], 128)
+
+    def test_the_mock_refuses_what_a_module_would(self):
+        """A backend that answers any length is why this went unnoticed: the
+        tool asked for 64 and always got 64."""
+        import i2c_interface
+        b = i2c_interface.create_backend('mock_fr4x2')
+        b.connect(0, 0x50)
+        try:
+            self.assertEqual(len(b.read_bytes(0x80, 8)), 8)
+            with self.assertRaises(IOError):
+                b.read_bytes(0x80, 64)
+        finally:
+            b.disconnect()
+
+    def test_a_split_read_returns_what_one_read_would(self):
+        """Splitting is only correct if the pieces are addressed and joined
+        in order - an off-by-one on the offset would return the first chunk
+        repeated, which still looks like plausible register content."""
+        self._connect('mock_fr4x2')
+        whole = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 0x80, 'length': 32}),
+            content_type='application/json'))['data']['data']
+        pieces = []
+        for off in range(0, 32, 8):
+            pieces += self.assertOk(self.client.post(
+                '/api/register/read',
+                data=json.dumps({'page': 0x13, 'address': 0x80 + off,
+                                 'length': 8}),
+                content_type='application/json'))['data']['data']
+        self.assertEqual(whole, pieces)
+
+    def test_every_panel_still_works_on_an_eight_byte_module(self):
+        """The panels that read more than eight bytes at a time are the whole
+        point of this, so they are what has to keep working."""
+        self._connect('mock_fr4x2')
+        for endpoint in ('/api/module/info', '/api/module/prbs',
+                         '/api/module/counters', '/api/module/ber',
+                         '/api/module/datapath', '/api/module/monitoring',
+                         '/api/module/applications', '/api/module/flags',
+                         '/api/module/capabilities'):
+            rv = self.client.get(endpoint)
+            self.assertEqual(rv.status_code, 200,
+                             '%s fails on a module that answers 8 bytes: %s'
+                             % (endpoint, rv.data[:200]))
+
+    def test_the_profiles_answer_differently(self):
+        self._connect()
+        self.assertEqual(self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 0x80, 'length': 8}),
+            content_type='application/json'))['data']['max_read'], 128)
+        self._connect('mock_fr4x2')
+        self.assertEqual(self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 0x80, 'length': 8}),
+            content_type='application/json'))['data']['max_read'], 8)
+
+    def test_the_raw_panel_says_which_it_is(self):
+        js = self._src(os.path.join('static', 'app.js'))
+        html = self._src(os.path.join('templates', 'index.html'))
+        self.assertIn('id="raw-read-limit"', html,
+                      'the read limit has nowhere to appear')
+        self.assertIn('_renderReadLimit(res.data.max_read);', js,
+                      'the panel never reports the limit it read')
+        body = js[js.index('function _renderReadLimit('):]
+        body = body[:body.index('async function rawRead')]
+        self.assertIn('max >= 128', body,
+                      'both modules are described the same way')
+        self.assertIn('longer reads are split into several', body)
+        self.assertIn('01h:251.1-0', body,
+                      'nothing names the advertisement that decided it')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

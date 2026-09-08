@@ -77,6 +77,10 @@ REG_BANKS_SUPPORTED  = (0x01, 0x8E, 1)   # 142  bits[1:0]
 # --- CMIS 5.4 additions on Page 01h ---
 REG_DEFAULT_POLARITY = (0x01, 0xAB, 2)   # 171-172 Default Input/Output polarity (Table 8-57)
 REG_PAGES_EXT        = (0x01, 0xAD, 2)   # 173-174 Supported pages + extra banks (Table 8-58)
+# 251 (Table 8-62), RO and Required. Four two-bit advertisements, of which
+# FullPageReadSupported decides how many bytes a single READ may ask for:
+# section 5.2.2.1 puts Nmax at 8 by default and 128 only when it is supported.
+REG_MISC_FEATURES    = (0x01, 0xFB, 1)   # 251
 REG_MISC_CAPS        = (0x01, 0xFC, 1)   # 252  bit5 MediaLaneSwitchingSupported (Table 8-62)
 REG_CDB_CAPS         = (0x01, 0xA3, 4)   # 163-166
 
@@ -1395,6 +1399,34 @@ def parse_extended_module_info(subtype_byte: int, heatsink_byte: int) -> dict:
         'heatsink_type':    (heatsink_byte >> 4) & 0x0F,
         'fiber_face_type':  heatsink_byte & 0x03,
     }
+
+
+# Table 8-62 codes every field in this byte the same way, and 00b is not
+# "no": it means the module predates CMIS 5.3 and has not been asked.
+_TRISTATE = {0: 'unknown', 1: 'not supported', 2: 'supported', 3: 'reserved'}
+
+
+def parse_misc_features(byte_251: int) -> dict:
+    """01h:251 (Table 8-62), RO and Required.
+
+    Note the two ways the specification refers to the same fields: section
+    8.16.13 calls the scratchpad advertisement "01h:251.7" and section
+    5.2.2.1 calls full page read "01h:251.4", while this table places them at
+    bits 7-6 and 1-0. The table is the register definition, so it wins.
+    """
+    out = {}
+    for name, shift in (('scratch_pad', 6), ('password_entry', 4),
+                        ('password_entry_result', 2), ('full_page_read', 0)):
+        code = (byte_251 >> shift) & 0x03
+        out[name] = _TRISTATE[code]
+        out[name + '_code'] = code
+    return out
+
+
+def max_read_bytes(byte_251: int) -> int:
+    """Section 5.2.2.1: "By default, Nmax = 8. When full page read is
+    supported ... then Nmax = 128"."""
+    return 128 if ((byte_251 & 0x03) == 2) else 8
 
 
 def parse_misc_caps(byte_252: int) -> dict:

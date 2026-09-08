@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.38.0<br>
+      <b>版本</b>　2.39.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.38.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.38.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.39.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.39.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,29 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>工具以前一次读的字节数，超过了模块必须回答的数量。</b>
+    规范 5.2.2.1 写得很直白：一次 READ 最多读 <b>Nmax</b> 个字节，
+    <b>默认 Nmax = 8</b>；只有模块声明支持<b>整页读</b>
+    （<code>01h:251.1-0</code>，Table 8-62，<b>只读、必需</b>）时才是 128。<br>
+    这个字节工具<b>从来没读过</b>，而它一次要 64 字节
+    （诊断结果窗口）、32 字节（用户图案）、28 字节（附加 Application 描述符）；
+    Raw 面板更是直接写着「Length must be 1–128」——
+    那是<b>模块说了支持整页读之后</b>才成立的上限。
+    模块碰上超长 READ 怎么办<b>是它自己的事</b>：
+    地址回绕、中途 NAK 都可能，读回来的东西<b>本来就不能当真</b>。<br>
+    现在：连接时先读这个字节，<b>再</b>做后面那些长读
+    （顺序反了的话，找上限的那几次读自己就已经越界了）；
+    超过上限的读会<b>自动拆成若干次</b>，对上层完全透明。
+    Raw 面板下方会写明这个模块一次答多少字节、
+    以及这次读是不是被拆开了。<br>
+    <b>内置演示模块以前来者不拒</b>——要 64 就给 64，
+    所以这件事在演示里<b>永远暴露不出来</b>。现在它会像真模块一样拒绝，
+    <code>mock_fr4x2</code> 声明不支持整页读（一次只答 8 字节），
+    其余 profile 支持整页读，两条路径都跑得到。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2801,7 +2824,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.38.0<br>
+    CMIS Module Manager 操作手册 v2.39.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
