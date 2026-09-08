@@ -427,6 +427,9 @@ _SR8_800G = {
     # the case where losing it really does invalidate the whole page.
     'clock_src_176': 0x11,               # host gen: ref clock media lane 1
     'clock_src_178': 0x0A,               # both checkers: reference clock
+    # A 60 s gate rather than free-running counters, so the panels have a
+    # window to state and the ungated wording is not the only one rendered.
+    'meas_ctrl_177': 0x08,               # MeasurementTime 100b = 60 s
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     'vendor_sn':       b"DEMO000000003   ",
@@ -503,6 +506,10 @@ _FR4X2_800G = {
     # Host side only, and one FEC location each (13h:131 bits 3 and 0 clear):
     # the media generator and media checker are not in this module at all.
     'pattern_locations_131': 0x06,
+    # No gating at all, no gated results, and - the one that changes what the
+    # tables mean - no periodic updates: on this module the BER and counter
+    # values do not move while a measurement is still running.
+    'diag_meas_129': 0x00,
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
@@ -943,8 +950,11 @@ class MockBackend(I2CInterface):
         # without holding a host and a media loopback at once - which is a
         # perfectly ordinary thing for a short-reach module to say.
         p13[0x80] = p.get('loopback_caps', 0x7F)
-        p13[0x81] = 0x7C        # gating <=2 ms, results, periodic updates,
-                                # per-lane timers, auto-restart
+        # 13h:129 (Table 8-112), RO and Required: whether the module gates a
+        # measurement at all, and whether these statistics move while one is
+        # still running. It was parsed and thrown away, so the BER and counter
+        # tables reported numbers over a window nobody had asked about.
+        p13[0x81] = p.get('diag_meas_129', 0x7C)
         # 13h:130 (Table 8-113): which DiagnosticsSelector values report
         # anything. 0x00 said this module reports no BER, no error
         # counts and no SNR - while every one of those panels showed
@@ -979,6 +989,9 @@ class MockBackend(I2CInterface):
         # the page uses the reference clock, and the panel said losing it made
         # pattern generation and checking unreliable anyway.
         p13[0xB0] = p.get('clock_src_176', 0x00)
+        # 13h:177 bits 3-1: 000b is "ungated, counters accrue indefinitely",
+        # which is what every profile was and what nothing on screen said.
+        p13[0xB1] = p.get('meas_ctrl_177', 0x00)
         p13[0xB2] = p.get('clock_src_178', 0x00)
         p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0
         regs[0x13] = p13

@@ -2647,6 +2647,44 @@ async function applyPrbs() {
 // ---------------------------------------------------------------------------
 // BER (Diagnostics tab)
 // ---------------------------------------------------------------------------
+// 13h:129 (RO, Required) and 13h:177 together say what window the numbers in
+// these two tables cover. Both were unread - 129 was parsed and dropped - so a
+// BER was shown as if it were a rate over some understood period, when
+// MeasurementTime 000b means the counters have simply been accruing since
+// whenever ResetErrorInformation was last toggled.
+function _renderMeasurementWindow(elId, data) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const m = data.measurement || {};
+  const caps = m.capabilities || {};
+  const ctl = m.controls || {};
+  if (!m.controls) { el.innerHTML = ''; return; }
+  const reg = (a) => `<span class="reg-meta">${a}</span>`;
+  const parts = [];
+  if (caps.gating_support === 0) {
+    parts.push('<b>Ungated</b> \u2014 this module does not gate a measurement '
+      + reg('13h:129.7-6') + ', so the window is however long you leave the '
+      + 'checkers running');
+  } else if (!ctl.gated) {
+    parts.push('<b>Ungated</b> \u2014 the counters accrue indefinitely '
+      + reg('13h:177.3-1 = 000b') + ', so these are totals since the last '
+      + 'reset rather than a rate over any stated period');
+  } else if (ctl.custom_gate) {
+    parts.push('<b>Vendor-defined gate time</b> ' + reg('13h:177.3-1 = 111b'));
+  } else {
+    parts.push(`<b>${ctl.gate_seconds} s gate</b> ` + reg('13h:177.3-1')
+      + (ctl.auto_restart_gating ? ', restarting automatically' : ''));
+  }
+  if (caps.periodic_updates === false) {
+    parts.push('these values do not move while a measurement is running '
+      + reg('13h:129.4'));
+  } else if (ctl.update_period_s) {
+    parts.push(`updated every ${ctl.update_period_s} s during a measurement `
+      + reg('13h:177.0'));
+  }
+  el.innerHTML = 'Measurement window: ' + parts.join(' \u00b7 ');
+}
+
 async function loadBer() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/ber');
@@ -2655,8 +2693,10 @@ async function loadBer() {
   if (res.status !== 'ok') { toast(`BER error: ${res.message}`, 'error'); return; }
   if (res.data.supported === false) {
     tbody.innerHTML = diagUnsupportedRow(9, 'Bit error ratio results', '0');
+    _renderMeasurementWindow('ber-window', {});
     return;
   }
+  _renderMeasurementWindow('ber-window', res.data);
   const hostCells = res.data.lanes.map(l => `<td>${formatBer(l.host_ber)}</td>`).join('');
   const mediaCells = res.data.lanes.map(l => `<td>${formatBer(l.media_ber)}</td>`).join('');
   tbody.innerHTML =
@@ -2675,8 +2715,10 @@ async function loadCounters() {
   if (res.status !== 'ok') { toast(`Counters error: ${res.message}`, 'error'); return; }
   if (res.data.supported === false) {
     tbody.innerHTML = diagUnsupportedRow(9, 'Bit and error counting', '1');
+    _renderMeasurementWindow('counters-window', {});
     return;
   }
+  _renderMeasurementWindow('counters-window', res.data);
   const lanes = res.data.lanes;
   const fmtCount = (v) => v != null ? v.toLocaleString() : '—';
   // While the checker has lost pattern sync the counters keep accumulating but

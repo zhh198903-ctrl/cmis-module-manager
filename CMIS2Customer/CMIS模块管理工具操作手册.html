@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.36.0<br>
+      <b>版本</b>　2.37.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.36.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.36.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.37.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.37.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1391,8 +1391,13 @@
             <td class="label">Table 8-111</td></tr>
         <tr><td><code>13h:129</code></td>
             <td>测量能力：门控精度、门控统计、周期更新、
-                逐通道计时器、自动重启门控</td>
+                逐通道计时器、自动重启门控
+                （BER / 误码计数两张卡片的「测量窗口」那行就靠它）</td>
             <td class="label">Table 8-112</td></tr>
+        <tr><td><code>13h:177</code></td>
+            <td><b>门控时长</b>（000b = 不门控、计数无限累加）、
+                自动重启、周期更新间隔、ResetErrorInformation</td>
+            <td class="label">Table 8-127</td></tr>
         <tr><td><code>13h:176</code> / <code>13h:178</code></td>
             <td>四个引擎各自的<b>时钟来源</b>：内部时钟 / 参考时钟 /
                 恢复时钟（决定参考时钟丢失到底影响不影响这一页）</td>
@@ -1626,6 +1631,33 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>BER 和误码计数，以前<u>没说</u>是多长时间里的数。</b>
+    两张表把数字摆出来，却从不说这些数覆盖<b>多长的窗口</b>；
+    而回答这个问题的两个寄存器<b>都没被读</b>。<br>
+    <code>13h:129</code>（Table 8-112，<b>只读、必需</b>）说明模块
+    <b>到底会不会门控</b>一次测量，以及测量还在跑的时候
+    <b>这些数会不会更新</b>。工具其实早就把它解码了——
+    从诊断面板写出来那天起——但<b>解出来的结果没有任何地方用</b>。<br>
+    <code>13h:177</code>（Table 8-127）则完全没读过。其中
+    <b>MeasurementTime</b> 取值 <code>000b</code> 的含义是
+    「<b>不门控，计数无限累加</b>」——也就是说界面上那个 BER
+    是「自从上次有人翻动 ResetErrorInformation 以来的总账」，
+    <b>不是任何一段确定时间里的误码率</b>。
+    内置演示模块<b>全都是这一种</b>，而表格一个字都没提。<br>
+    现在两张卡片顶部各写一行<b>测量窗口</b>：不门控就直说计数在无限累加、
+    这是总账不是速率；有门控就写出<b>门控时长</b>（如 60 秒）；
+    模块<b>根本不支持门控</b>时（<code>13h:129.7-6</code>）
+    就说明窗口取决于你让检测器跑了多久。
+    模块声明<b>测量期间不做周期更新</b>（<code>13h:129.4</code>）时
+    还会额外点出来——否则一个会自动刷新的面板，
+    看着就像数字在实时变。<br>
+    内置演示模块现在<b>三种写法都能看到</b>：
+    默认那种不门控、<code>mock_sr8</code> 有 60 秒门控、
+    <code>mock_fr4x2</code> 既不门控、测量期间数字也不动。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2722,7 +2754,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.36.0<br>
+    CMIS Module Manager 操作手册 v2.37.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

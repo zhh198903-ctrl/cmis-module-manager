@@ -10786,6 +10786,198 @@ class TestWhetherALostReferenceClockMatters(CMISTestCase):
                       'a two-engine list still reads as a comma-separated dump')
 
 
+class TestTheWindowTheseNumbersCover(CMISTestCase):
+    """The BER table and the error counter table put numbers on screen with
+    nothing said about the period they cover, and the two registers that
+    answer that were both unread.
+
+    13h:129 (Table 8-112) is RO and Required. parse_diag_meas_caps had been
+    decoding it since the diagnostics panel was written, and nothing ever
+    read the result - it says whether the module gates a measurement at all,
+    and whether these statistics move while one is still running.
+
+    13h:177 (Table 8-127) was never read. MeasurementTime 000b is "ungated,
+    counters accrue indefinitely", which makes a BER a total since whoever
+    last toggled ResetErrorInformation rather than a rate over any period.
+    Every shipped profile was exactly that, and the tables said nothing."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _window(self, endpoint='/api/module/ber'):
+        return self.assertOk(self.client.get(endpoint))['data']['measurement']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module says ---------------------------------------------
+
+    def test_both_tables_report_their_window(self):
+        """A BER and a bit count over different windows would be two
+        different measurements, so both endpoints have to answer."""
+        self._connect()
+        for endpoint in ('/api/module/ber', '/api/module/counters'):
+            m = self._window(endpoint)
+            self.assertEqual(sorted(m), ['capabilities', 'controls'],
+                             '%s reports no window' % endpoint)
+            self.assertEqual(sorted(m['controls']),
+                             ['auto_restart_gating', 'custom_gate',
+                              'gate_seconds', 'gated', 'measurement_time_code',
+                              'reset_error_information',
+                              'start_stop_is_global', 'update_period_s'])
+
+    def test_the_capability_byte_finally_reaches_someone(self):
+        self._connect()
+        caps = self._window()['capabilities']
+        self.assertEqual(sorted(caps),
+                         ['auto_restart_gating', 'gating_results',
+                          'gating_support', 'per_lane_gating_timers',
+                          'periodic_updates'])
+        self.assertEqual(caps['gating_support'], 1)
+        self.assertTrue(caps['periodic_updates'])
+
+    def test_the_default_profile_is_ungated(self):
+        self._connect()
+        ctl = self._window()['controls']
+        self.assertFalse(ctl['gated'])
+        self.assertIsNone(ctl['gate_seconds'])
+        self.assertEqual(ctl['measurement_time_code'], 0)
+
+    def test_a_profile_with_a_real_gate_time(self):
+        """Without one, the ungated wording would be the only branch any test
+        ever rendered."""
+        self._connect('mock_sr8')
+        ctl = self._window()['controls']
+        self.assertTrue(ctl['gated'])
+        self.assertEqual(ctl['gate_seconds'], 60.0)
+        self.assertFalse(ctl['custom_gate'])
+
+    def test_a_module_that_does_not_gate_at_all(self):
+        self._connect('mock_fr4x2')
+        m = self._window()
+        self.assertEqual(m['capabilities']['gating_support'], 0)
+        self.assertFalse(m['capabilities']['periodic_updates'],
+                         'this profile was meant to be the one whose numbers '
+                         'stand still during a measurement')
+        self.assertFalse(m['capabilities']['gating_results'])
+
+    def test_every_coded_gate_time_is_the_one_the_spec_names(self):
+        import cmis_registers as c
+        expected = {0: None, 1: 5.0, 2: 10.0, 3: 30.0,
+                    4: 60.0, 5: 120.0, 6: 300.0, 7: None}
+        for code, seconds in expected.items():
+            got = c.parse_measurement_controls(code << 1)
+            self.assertEqual(got['measurement_time_code'], code)
+            self.assertEqual(got['gate_seconds'], seconds,
+                             'code %d decoded to the wrong gate time' % code)
+        self.assertTrue(c.parse_measurement_controls(7 << 1)['custom_gate'])
+        self.assertTrue(c.parse_measurement_controls(7 << 1)['gated'],
+                        'a vendor-defined gate time is still a gate')
+        self.assertFalse(c.parse_measurement_controls(0)['gated'])
+
+    def test_each_control_reads_its_own_bit(self):
+        """Seven fields in one byte, and the neighbours are easy to mistake:
+        the update period sits below MeasurementTime and auto-restart above
+        it."""
+        import cmis_registers as c
+        got = c.parse_measurement_controls(0x80)
+        self.assertTrue(got['start_stop_is_global'])
+        self.assertFalse(got['auto_restart_gating'])
+        self.assertFalse(got['reset_error_information'])
+        got = c.parse_measurement_controls(0x20)
+        self.assertTrue(got['reset_error_information'])
+        self.assertFalse(got['start_stop_is_global'])
+        got = c.parse_measurement_controls(0x10)
+        self.assertTrue(got['auto_restart_gating'])
+        self.assertEqual(got['measurement_time_code'], 0,
+                         'auto-restart bled into the measurement time')
+        self.assertEqual(c.parse_measurement_controls(0x00)['update_period_s'],
+                         1.0)
+        self.assertEqual(c.parse_measurement_controls(0x01)['update_period_s'],
+                         5.0)
+        self.assertEqual(c.parse_measurement_controls(0x01)
+                         ['measurement_time_code'], 0,
+                         'the update period bled into the measurement time')
+
+    # ---- and what the panel does with it ------------------------------------
+
+    def test_both_cards_have_somewhere_to_say_it(self):
+        html = self._html()
+        for ident in ('ber-window', 'counters-window'):
+            self.assertIn('id="%s"' % ident, html,
+                          '%s has nowhere to state its window' % ident)
+        js = self._js()
+        self.assertIn("_renderMeasurementWindow('ber-window', res.data)", js)
+        self.assertIn("_renderMeasurementWindow('counters-window', res.data)",
+                      js)
+        # Being called is not the same as writing anything. An unconditional
+        # bail-out leaves every sentence below it in the file, and both cards
+        # blank, which is exactly the state this round set out to fix.
+        body = js[js.index('function _renderMeasurementWindow('):]
+        body = body[:body.index('async function loadBer')]
+        self.assertIn("if (!m.controls) { el.innerHTML = ''; return; }", body,
+                      'the renderer gives up before reading anything')
+        self.assertIn("el.innerHTML = 'Measurement window: ' + parts.join",
+                      body, 'nothing is ever written to the card')
+
+    def test_an_ungated_reading_is_not_offered_as_a_rate(self):
+        js = self._js()
+        body = js[js.index('function _renderMeasurementWindow('):]
+        body = body[:body.index('async function loadBer')]
+        self.assertIn('} else if (!ctl.gated) {', body,
+                      'the ungated case is no longer distinguished')
+        self.assertIn('the counters accrue indefinitely', body)
+        self.assertIn('13h:177.3-1 = 000b', body,
+                      'nothing names the field that decided it')
+        self.assertIn('rather than a rate over any stated period', body)
+
+    def test_a_module_that_cannot_gate_says_that_instead(self):
+        js = self._js()
+        body = js[js.index('function _renderMeasurementWindow('):]
+        body = body[:body.index('async function loadBer')]
+        self.assertIn('if (caps.gating_support === 0) {', body,
+                      'a module without gating is described by a control it '
+                      'does not honour')
+        self.assertIn('13h:129.7-6', body)
+        self.assertLess(body.index('caps.gating_support === 0'),
+                        body.index('!ctl.gated'),
+                        'the control is read before the capability, so a '
+                        'module that cannot gate is judged by its gate time')
+
+    def test_a_gate_time_is_stated_with_its_length(self):
+        js = self._js()
+        body = js[js.index('function _renderMeasurementWindow('):]
+        body = body[:body.index('async function loadBer')]
+        self.assertIn('${ctl.gate_seconds} s gate', body,
+                      'the gate length is never shown')
+        self.assertIn('ctl.custom_gate', body,
+                      'a vendor-defined gate time is printed as a number the '
+                      'module never gave')
+
+    def test_numbers_that_stand_still_are_called_out(self):
+        js = self._js()
+        body = js[js.index('function _renderMeasurementWindow('):]
+        body = body[:body.index('async function loadBer')]
+        self.assertIn('if (caps.periodic_updates === false) {', body,
+                      'the panel refreshes on a timer and never says the '
+                      'module may not be updating these values')
+        self.assertIn('do not move while a measurement is running', body)
+        self.assertIn('13h:129.4', body)
+        self.assertIn('ctl.update_period_s', body)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

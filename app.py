@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.36.0'
+__version__ = '2.37.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1810,6 +1810,22 @@ def _diag_caps() -> dict:
     }
 
 
+def _measurement_window() -> dict:
+    """What window the free-running error statistics actually cover.
+
+    13h:129 is RO and Required and was parsed and dropped; 13h:177 was never
+    read. Between them they say whether the module is gating at all, over
+    what period, and whether these numbers move while a measurement is still
+    running - none of which a table of BERs conveys on its own.
+    """
+    caps = _diag_caps()['measurement']
+    raw = _read_upper(*cmis.REG_CLOCK_MEAS)
+    return {
+        'capabilities': caps,
+        'controls': cmis.parse_measurement_controls(raw[1]),
+    }
+
+
 def _read_prbs_block(base_addr: int) -> dict:
     """Read the 8-byte PRBS block for every bank: masks, then pattern x4.
 
@@ -2070,7 +2086,8 @@ def api_module_ber():
                     'media_ber': cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2]),
                 })
         lanes = lanes[:_state['lanes']]
-        return _ok({'lanes': lanes, 'supported': True})
+        return _ok({'lanes': lanes, 'supported': True,
+                    'measurement': _measurement_window()})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -2364,7 +2381,8 @@ def api_module_counters():
                     entry[f'{side}_ber'] = 0.0
 
         lanes.sort(key=lambda x: x['lane'])
-        return _ok({'lanes': lanes, 'supported': True})
+        return _ok({'lanes': lanes, 'supported': True,
+                    'measurement': _measurement_window()})
     except Exception as e:
         return _err(str(e), 500)
 

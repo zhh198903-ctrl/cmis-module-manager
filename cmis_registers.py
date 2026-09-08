@@ -1160,6 +1160,34 @@ def parse_diag_reporting_caps(byte_val: int) -> dict:
     }
 
 
+MEASUREMENT_TIMES = {0: None, 1: 5.0, 2: 10.0, 3: 30.0, 4: 60.0,
+                     5: 120.0, 6: 300.0}
+
+
+def parse_measurement_controls(b177: int) -> dict:
+    """13h:177 (Table 8-127), RW.
+
+    What window the free-running error statistics cover. MeasurementTime 000b
+    is "ungated, counters accrue indefinitely", which makes a BER reading a
+    total since whenever ResetErrorInformation was last toggled rather than a
+    rate over any stated period.
+    """
+    code = (b177 >> 1) & 0x07
+    seconds = MEASUREMENT_TIMES.get(code)
+    return {
+        'start_stop_is_global': bool(b177 & 0x80),
+        'reset_error_information': bool(b177 & 0x20),
+        'auto_restart_gating': bool(b177 & 0x10),
+        'measurement_time_code': code,
+        # None where the module is not gating at all, and where the gate time
+        # is the vendor's own (111b) rather than one of the coded intervals.
+        'gate_seconds': seconds,
+        'gated': code != 0,
+        'custom_gate': code == 7,
+        'update_period_s': 5.0 if b177 & 0x01 else 1.0,
+    }
+
+
 def parse_clock_sources(b176: int, b178: int) -> dict:
     """13h:176 and 13h:178 (Table 8-127), both RW and Optional.
 
