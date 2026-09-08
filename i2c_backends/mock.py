@@ -952,7 +952,10 @@ class MockBackend(I2CInterface):
         # ==== Page 14h — Diagnostic Results ====
         p14 = {}
         p14[0x80] = 0x00
-        p14[0x8A] = 0x00; p14[0x8B] = 0x00
+        p14[0x84] = 0x00                    # LossOfReferenceClockFlag
+        p14[0x86] = 0x00; p14[0x87] = 0x00  # PatternCheckGatingComplete
+        p14[0x88] = 0x00; p14[0x89] = 0x00  # PatternGeneratorLOL
+        p14[0x8A] = 0x00; p14[0x8B] = 0x00  # PatternCheckerLOL
         for lane in range(8):
             w = cmis.encode_f16_ber(p['base_ber'])
             p14[0xC0 + lane * 2] = (w >> 8) & 0xFF
@@ -1188,8 +1191,12 @@ class MockBackend(I2CInterface):
             state = 0x1 if self._lane_unused(i) else self._dp_lane_states[i]
             self._registers[0x11][addr] = (old & ~mask) | ((state & 0x0F) << nibble_pos)
 
-        # PRBS LOL flags (lock after 0.3 s)
-        for key, lol_addr in [('hc', 0x8A), ('mc', 0x8B)]:
+        # PRBS LOL flags (lock after 0.3 s). Table 8-138 reports the
+        # generators as well as the checkers: a generator that has not locked
+        # is not sending the pattern its control registers name, which is a
+        # different fault from a checker that cannot find one.
+        for key, lol_addr in [('hc', 0x8A), ('mc', 0x8B),
+                              ('hg', 0x88), ('mg', 0x89)]:
             t_en = self._prbs_enable_times.get(key, 0)
             if t_en > 0:
                 self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00

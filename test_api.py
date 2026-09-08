@@ -10092,6 +10092,169 @@ class TestTheFifthByteOfAnApplicationDescriptor(CMISTestCase):
                       'the cell is built and never placed in the row')
 
 
+
+class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
+    """Table 8-138 "Latched Diagnostics Flags" has five flag bytes on Page
+    14h. The tool read two of them - PatternCheckerLOL for host and media -
+    and showed the result as the LOL column on the checker tables.
+
+    The three it did not read say things the checker flags cannot. 136 and
+    137 are PatternGeneratorLOL: a generator that has not locked is not
+    sending the pattern its control registers name, so a lane could be listed
+    as generating PRBS31 while the module reported it had lost lock, and the
+    errors that followed looked like a link fault rather than a source that
+    was never transmitting properly. 132.7 is LossOfReferenceClockFlag, which
+    is module-wide: without a reference clock nothing measured on this page
+    means anything. 134 and 135 latch when a gated measurement completes.
+
+    The column was tied to the label by one flag - `isChecker = (lolMask !==
+    undefined)` - so generators could not have one without being called
+    checkers."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _start_generator(self):
+        caps = self._prbs()['pattern_capabilities']['host_gen']
+        self.assertTrue(caps, 'this module advertises no host patterns')
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({'host_gen': {'enable_mask': 0xFF,
+                                          'patterns': [caps[0]] * 8}}),
+            content_type='application/json'))
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- what the module reports -----------------------------------------
+
+    def test_the_generator_reports_its_own_lock(self):
+        self._connect()
+        d = self._prbs()
+        for key in ('host_gen_lol_mask', 'media_gen_lol_mask'):
+            self.assertIn(key, d)
+
+    def test_a_generator_that_has_not_locked_says_so(self):
+        """And clears once it has - a flag stuck on would be as useless as one
+        never set."""
+        self._connect()
+        self._start_generator()
+        self.assertEqual(self._prbs()['host_gen_lol_mask'], 0xFF,
+                         'a generator just enabled reports itself locked')
+        time.sleep(0.7)
+        self.assertEqual(self._prbs()['host_gen_lol_mask'], 0x00,
+                         'the generator never reached lock')
+
+    def test_the_slip_is_remembered_after_the_flag_clears(self):
+        """RO/COR: the read that reports it clears it, so without the history
+        a generator that lost lock mid-run reads as though it never did."""
+        self._connect()
+        self._start_generator()
+        self._prbs()                       # the read that latches and clears
+        time.sleep(0.7)
+        d = self._prbs()
+        self.assertEqual(d['host_gen_lol_mask'], 0x00)
+        self.assertTrue(all(d['host_gen_lol_seen'][:8]),
+                        'nothing records that the generator had lost lock')
+
+    def test_the_generator_and_checker_flags_are_separate_bytes(self):
+        """136-137 against 138-139. Starting a generator must not light the
+        checker column, which is what reading one for the other would do."""
+        self._connect()
+        self._start_generator()
+        d = self._prbs()
+        self.assertEqual(d['host_gen_lol_mask'], 0xFF)
+        self.assertEqual(d['host_chk_lol_mask'], 0x00,
+                         'the checker flag followed the generator')
+
+    def test_the_reference_clock_flag_is_reported(self):
+        self._connect()
+        d = self._prbs()
+        self.assertIn('reference_clock_lost', d)
+        self.assertFalse(d['reference_clock_lost'])
+        # 14h:132.7, module-wide rather than per lane.
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x14, 'address': 132, 'data': [0x80]}),
+            content_type='application/json'))
+        self.assertTrue(self._prbs()['reference_clock_lost'],
+                        'the module said its reference clock was gone and '
+                        'the tool did not notice')
+
+    def test_the_gating_complete_flags_are_reported(self):
+        self._connect()
+        d = self._prbs()
+        for key in ('host_gate_done_mask', 'media_gate_done_mask'):
+            self.assertIn(key, d)
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x14, 'address': 134, 'data': [0x0F]}),
+            content_type='application/json'))
+        self.assertEqual(self._prbs()['host_gate_done_mask'], 0x0F)
+
+    # ---- and the table that shows it --------------------------------------
+
+    def test_the_column_no_longer_decides_the_label(self):
+        js = self._js()
+        self.assertNotIn('const isChecker = (lolMask !== undefined)', js,
+                         'the role is still inferred from whether a LOL mask '
+                         'was passed, so a generator cannot have the column')
+        self.assertIn('const hasLol = (lolMask !== undefined)', js)
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('\nfunction ')] if '\nfunction ' in body else body
+        self.assertIn('if (hasLol) {', body)
+
+    def test_the_generator_tables_are_given_their_flags(self):
+        js = self._js()
+        for key in ('host_gen_lol_mask', 'media_gen_lol_mask',
+                    'host_gen_lol_seen', 'media_gen_lol_seen'):
+            self.assertIn('d.' + key, js,
+                          '%s never reaches the table' % key)
+
+    def test_both_kinds_keep_their_own_name(self):
+        """The tables are still labelled Generator and Checker - the point was
+        to separate the column from the label, not to merge the two."""
+        js = self._js()
+        block = js[js.index("_renderPrbsTable('tbl-prbs-host-gen'"):]
+        block = block[:block.index('const refNote')]
+        self.assertRegex(block, r"tbl-prbs-host-gen'[\s\S]*?false\)")
+        self.assertRegex(block, r"tbl-prbs-host-chk'[\s\S]*?true\)")
+
+    def test_the_module_wide_flag_has_somewhere_to_appear(self):
+        js = self._js()
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="prbs-ref-clock"', html,
+                      'the reference clock flag is read and never shown')
+        self.assertIn("getElementById('prbs-ref-clock')", js)
+        self.assertIn('14h:132.7', js,
+                      'the note never names the register it comes from')
+        # Pin the condition, not the identifier: leaving the text in place
+        # while the render no longer depends on the flag would satisfy every
+        # assertion above and show nothing.
+        self.assertRegex(js, r'refNote\.innerHTML = d\.reference_clock_lost',
+                         'the note is no longer driven by the flag')
+
+    def test_the_generator_tables_have_the_column_header(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertEqual(html.count('<th>LOL</th>'), 4,
+                         'all four pattern tables should carry a LOL column')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

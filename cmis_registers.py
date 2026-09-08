@@ -290,6 +290,16 @@ REG_HOST_IN_LB       = (0x13, 0xB7, 1)
 # Page 14h — Diagnostic Results (Tables 8-126..8-129)
 # ---------------------------------------------------------------------------
 REG_DIAG_SELECTOR    = (0x14, 0x80, 1)
+# Table 8-138 "Latched Diagnostics Flags" has five flag bytes; the checker
+# pair below was the only one read. A generator that has lost lock is not
+# sending the pattern the table says it is, and a module that has lost its
+# reference clock cannot be measuring anything - both are RO/COR, so the read
+# that reports them is also the read that clears them.
+REG_REF_CLOCK_LOL    = (0x14, 0x84, 1)   # LossOfReferenceClockFlag (132)
+REG_HOST_GATE_DONE   = (0x14, 0x86, 1)   # PatternCheckGatingComplete Host (134)
+REG_MEDIA_GATE_DONE  = (0x14, 0x87, 1)   # PatternCheckGatingComplete Media (135)
+REG_HOST_GEN_LOL     = (0x14, 0x88, 1)   # PatternGeneratorLOL Host (136)
+REG_MEDIA_GEN_LOL    = (0x14, 0x89, 1)   # PatternGeneratorLOL Media (137)
 REG_HOST_PRBS_LOL    = (0x14, 0x8A, 1)   # PatternCheckerLOL Host (138)
 REG_MEDIA_PRBS_LOL   = (0x14, 0x8B, 1)   # PatternCheckerLOL Media (139)
 REG_DIAG_DATA        = (0x14, 0xC0, 64)  # selector-dependent

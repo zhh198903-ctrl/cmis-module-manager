@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.32.0<br>
+      <b>版本</b>　2.33.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.32.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.32.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.33.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.33.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1620,6 +1620,26 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
   </div>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>PRBS 发生器也会失锁，以前界面上看不出来。</b>
+    规范 Table 8-138（Page 14h 的锁存诊断标志）一共五个标志字节，
+    工具以前只读其中两个——<b>检测器</b>的失锁标志，
+    也就是 Checker 两张表里的 LOL 列。<br>
+    没读的三个里，最要紧的是 <code>14h:136–137</code> 的
+    <b>发生器失锁</b>：发生器没锁上，就说明它<b>并没有在发</b>
+    控制寄存器里写着的那个图案。于是界面会显示某条 lane
+    正在发 PRBS31，而模块其实报告了失锁——
+    对端测到的误码看起来像链路故障，实际上是<b>源头就没发对</b>。<br>
+    另外两个：<code>14h:132.7</code> 是<b>参考时钟丢失</b>（整模块级，
+    丢了的话这一页上测什么都不作数），
+    <code>14h:134–135</code> 是<b>门控测量完成</b>标志。<br>
+    现在 Generator 两张表也有了 LOL 列，语义和 Checker 一致
+    （<code>LOL</code> 正在失锁、<code>●</code> 已锁定、
+    <code>●!</code> 现在锁着但中途丢过——这些标志是读一次即清的）；
+    参考时钟丢失会在 PRBS Generator 卡片顶部单独标出。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>Applications 表补上了「Media Lane Assign」一列。</b>
@@ -2614,7 +2634,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.32.0<br>
+    CMIS Module Manager 操作手册 v2.33.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

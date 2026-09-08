@@ -2397,10 +2397,16 @@ async function applyLoopback() {
 // ---------------------------------------------------------------------------
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
-function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported) {
+function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
+                         isChecker) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
-  const isChecker = (lolMask !== undefined);
+  // The role used to be inferred from whether a LOL mask was passed, which
+  // tied the column to the label: generators got neither. Table 8-138 reports
+  // PatternGeneratorLOL beside PatternCheckerLOL, and a generator that has
+  // not locked is not sending the pattern this table says it is - so the two
+  // are separate questions now.
+  const hasLol = (lolMask !== undefined);
   // Field names follow CMIS 5.4 Tables 8-109/8-111/8-113/8-115: each block is
   // 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits, Pre/PostFECEnable,
   // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
@@ -2438,7 +2444,7 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
        : `<option value="${pattern}" selected>${PRBS_PATTERNS[pattern] || pattern}`
          + ` — not advertised</option>`);
     let lolCell = '';
-    if (isChecker) {
+    if (hasLol) {
       const lol = !!((lolMask >> bit) & 1);
       // Losing lock for a moment part-way through a long pattern run is the
       // thing a long run is for. The flag is cleared by the read that saw it,
@@ -2447,8 +2453,8 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
       lolCell = `<td>${lol
         ? '<span class="flag-active">LOL</span>'
         : slipped
-        ? '<span class="flag-was" title="Locked now, but lock was lost since the '
-          + 'flag history was cleared">&#9679;<sup>!</sup></span>'
+        ? `<span class="flag-was" title="${esc(role + ' is locked now, but lock '
+          + 'was lost since the flag history was cleared')}">&#9679;<sup>!</sup></span>`
         : '<span class="flag-ok">●</span>'}</td>`;
     }
     // Lane i's 4-bit pattern selector sits in the low or high nibble of
@@ -2510,12 +2516,26 @@ async function loadPrbs() {
   const res = await apiGet('/api/module/prbs');
   if (res.status !== 'ok') { toast(`PRBS error: ${res.message}`, 'error'); return; }
   const d = res.data;
-  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  undefined, 0x90, 'Host', undefined, (d.pattern_capabilities || {}).host_gen);
-  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, undefined, 0x98, 'Media', undefined, (d.pattern_capabilities || {}).media_gen);
+  _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
+                   d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false);
+  _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, d.media_gen_lol_mask, 0x98, 'Media',
+                   d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
-                   'Host', d.host_chk_lol_seen, (d.pattern_capabilities || {}).host_chk);
+                   'Host', d.host_chk_lol_seen,
+                   (d.pattern_capabilities || {}).host_chk, true);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
-                   'Media', d.media_chk_lol_seen, (d.pattern_capabilities || {}).media_chk);
+                   'Media', d.media_chk_lol_seen,
+                   (d.pattern_capabilities || {}).media_chk, true);
+  // 14h:132.7 is module-wide: with no reference clock, nothing measured on
+  // this page means anything, whatever the per-lane flags say.
+  const refNote = document.getElementById('prbs-ref-clock');
+  if (refNote) {
+    refNote.innerHTML = d.reference_clock_lost
+      ? '<span class="flag-active">Loss of reference clock</span> '
+        + '<span class="reg-meta">14h:132.7 — pattern generation and checking '
+        + 'on this module cannot be relied on until it returns</span>'
+      : '';
+  }
 }
 
 async function applyPrbs() {

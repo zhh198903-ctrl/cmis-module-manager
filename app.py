@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.32.0'
+__version__ = '2.33.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1830,18 +1830,33 @@ def api_prbs_get():
     if err:
         return err
     try:
-        # Try to also read pattern checker LOL flags from Page 14h
+        # Table 8-138. The checker pair says whether the far end has locked
+        # onto the pattern; the generator pair says whether this module is
+        # actually sending one. Reading only the first showed a lane as
+        # generating PRBS31 while the module reported it had lost lock, and
+        # the errors that followed looked like a link fault rather than a
+        # source that was never transmitting properly.
         try:
             host_lol = _read_upper(*cmis.REG_HOST_PRBS_LOL)[0]
             media_lol = _read_upper(*cmis.REG_MEDIA_PRBS_LOL)[0]
+            host_gen_lol = _read_upper(*cmis.REG_HOST_GEN_LOL)[0]
+            media_gen_lol = _read_upper(*cmis.REG_MEDIA_GEN_LOL)[0]
+            host_gate = _read_upper(*cmis.REG_HOST_GATE_DONE)[0]
+            media_gate = _read_upper(*cmis.REG_MEDIA_GATE_DONE)[0]
+            # 132.7, module-wide rather than per lane.
+            ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
         except Exception:
-            host_lol = 0
-            media_lol = 0
+            host_lol = media_lol = 0
+            host_gen_lol = media_gen_lol = 0
+            host_gate = media_gate = 0
+            ref_clock_lost = False
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
         for mask, name in ((host_lol, 'host_prbs_lol'),
-                           (media_lol, 'media_prbs_lol')):
+                           (media_lol, 'media_prbs_lol'),
+                           (host_gen_lol, 'host_gen_lol'),
+                           (media_gen_lol, 'media_gen_lol')):
             for bit in range(8):
                 if (mask >> bit) & 1:
                     history.setdefault(bit + 1, set()).add(name)
@@ -1862,6 +1877,17 @@ def api_prbs_get():
             'media_chk_lol_mask': media_lol,
             'host_chk_lol_seen':  lol_seen('host_prbs_lol'),
             'media_chk_lol_seen': lol_seen('media_prbs_lol'),
+            'host_gen_lol_mask':  host_gen_lol,
+            'media_gen_lol_mask': media_gen_lol,
+            'host_gen_lol_seen':  lol_seen('host_gen_lol'),
+            'media_gen_lol_seen': lol_seen('media_gen_lol'),
+            # Latched when a gated measurement finishes, so a gated result
+            # read without it may be the previous period's.
+            'host_gate_done_mask':  host_gate,
+            'media_gate_done_mask': media_gate,
+            # 132.7 is module-wide: with no reference clock nothing on this
+            # page is measuring anything.
+            'reference_clock_lost': ref_clock_lost,
         })
     except Exception as e:
         return _err(str(e), 500)
