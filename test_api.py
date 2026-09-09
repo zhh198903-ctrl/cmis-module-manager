@@ -12442,6 +12442,117 @@ class TestTheApplicationsBeyondTheFirstFifteen(CMISTestCase):
         self.assertIn('cannot provision an Application that lives there', js)
 
 
+class TestLaneFlagsPastTheFirstBank(CMISTestCase):
+    """The six latched flag bytes on Page 14h - checker and generator loss of
+    lock on both sides, and the two gating-complete bytes - are one bit per
+    lane, so one byte per bank of eight. All six were read from bank 0 only.
+
+    On a module wider than eight lanes that is not a missing feature but a
+    wrong answer: lane 9 showed the flag belonging to lane 1, and lane 16's
+    loss of lock was invisible. A checker that has lost lock is the whole
+    point of the column.
+
+    The flag history had the same fault one level down. It keyed what had
+    fired by the bit position, so a slip on lane 16 was filed under lane 8
+    and the record pointed at a lane that had been fine."""
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _poke(self, addr, per_bank):
+        """Put a different byte in each bank of one Page 14h flag register."""
+        for bank, val in enumerate(per_bank):
+            app_module._set_page(0x14, bank)
+            app_module._state['backend'].write_bytes(addr, bytes([val]))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the read ----------------------------------------------------------
+
+    def test_a_wide_module_has_a_byte_per_bank(self):
+        self._connect()
+        self.assertEqual(app_module._state['lanes'], 16)
+        self._poke(0x8A, [0x01, 0x80])
+        d = self._prbs()
+        self.assertEqual(d['host_chk_lol_mask_banks'], [0x01, 0x80],
+                         'the second bank of flags was never read')
+
+    def test_bank_zero_keeps_the_original_key(self):
+        """Everything written before banks existed reads the scalar, so it
+        has to go on meaning bank 0."""
+        self._connect()
+        self._poke(0x8A, [0x03, 0x00])
+        self.assertEqual(self._prbs()['host_chk_lol_mask'], 0x03)
+
+    def test_every_one_of_the_six_is_per_bank(self):
+        """One byte fixed and five left reading bank 0 would be the same bug
+        with a smaller blast radius."""
+        self._connect()
+        for addr, key in ((0x8A, 'host_chk_lol_mask_banks'),
+                          (0x8B, 'media_chk_lol_mask_banks'),
+                          (0x88, 'host_gen_lol_mask_banks'),
+                          (0x89, 'media_gen_lol_mask_banks'),
+                          (0x86, 'host_gate_done_mask_banks'),
+                          (0x87, 'media_gate_done_mask_banks')):
+            self._poke(addr, [0x00, 0x40])
+            self.assertEqual(self._prbs()[key], [0x00, 0x40],
+                             '%s still reads bank 0 for every lane' % key)
+
+    def test_an_eight_lane_module_has_one_bank(self):
+        self._connect('mock_dr8')
+        d = self._prbs()
+        self.assertEqual(len(d['host_chk_lol_mask_banks']), 1)
+
+    # ---- the history -------------------------------------------------------
+
+    def test_a_slip_is_filed_under_the_lane_it_happened_on(self):
+        """Keying by the bit alone put bank 1's lanes under lanes 1-8, so the
+        record accused a lane that had been fine and cleared the one that had
+        not."""
+        self._connect()
+        self._poke(0x8A, [0x00, 0x80])       # lane 16 only
+        seen = self._prbs()['host_chk_lol_seen']
+        self.assertEqual(len(seen), 16)
+        self.assertTrue(seen[15], 'lane 16 slipping was not recorded')
+        self.assertFalse(seen[7], 'lane 8 was blamed for lane 16')
+
+    def test_the_history_covers_every_lane(self):
+        self._connect()
+        self._poke(0x88, [0x00, 0x01])       # lane 9, generator side
+        seen = self._prbs()['host_gen_lol_seen']
+        self.assertTrue(seen[8], 'lane 9 slipping was not recorded')
+        self.assertFalse(seen[0], 'lane 1 was blamed for lane 9')
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_renderer_is_given_the_banks(self):
+        js = self._js()
+        self.assertIn('lolMaskBanks', js,
+                      'the table never receives the per-bank flags')
+        for role in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            self.assertIn('d.%s_lol_mask_banks' % role, js,
+                          '%s still renders bank 0 for every lane' % role)
+
+    def test_the_cell_reads_its_own_banks_byte(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function _readPrbsSection')]
+        self.assertIn('lolMaskBanks[b] || 0', body,
+                      'the flag cell takes its bit from bank 0 whatever lane '
+                      'it is on')
+        self.assertIn('(lolByte >> bit) & 1', body)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.46.0<br>
+      <b>版本</b>　2.47.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.46.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.46.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.47.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.47.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,25 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>超过 8 条通道的模块，PRBS 的 <u>LOL 那一列以前是错的</u>。</b>
+    Page 14h 上那六个锁存标志字节——两侧的<b>检测器失锁</b>、
+    两侧的<b>发生器失锁</b>，以及两个<b>门控完成</b>标志——
+    都是<b>每条通道一个 bit</b>，也就是<b>每个 bank（8 条通道）一个字节</b>。
+    而工具<b>六个全都只读了 bank 0</b>。<br>
+    对超过 8 条通道的模块，这不是「少了个功能」，是<b>答错了</b>：
+    <b>第 9 条通道显示的是第 1 条的标志</b>，
+    而<b>第 16 条通道失锁根本看不见</b>。
+    检测器有没有失锁，本来就是这一列存在的全部意义。<br>
+    标志<b>历史</b>还在下一层犯了同样的错：
+    它按 bit 位置记「谁闪过」，于是第 16 条通道的一次失锁
+    被记到了<b>第 8 条</b>头上——
+    <b>冤枉了一条本来好好的通道，又放过了真正出问题的那条</b>。<br>
+    现在六个字节都<b>逐 bank 读</b>，历史也按<b>绝对通道号</b>记。
+    8 通道模块只有一个 bank，行为和以前完全一样。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -3029,7 +3048,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.46.0<br>
+    CMIS Module Manager 操作手册 v2.47.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

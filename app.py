@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.46.0'
+__version__ = '2.47.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2078,6 +2078,7 @@ def api_prbs_get():
     if err:
         return err
     try:
+        banks = (_state['lanes'] + 7) // 8
         # Table 8-138. The checker pair says whether the far end has locked
         # onto the pattern; the generator pair says whether this module is
         # actually sending one. Reading only the first showed a lane as
@@ -2085,12 +2086,18 @@ def api_prbs_get():
         # the errors that followed looked like a link fault rather than a
         # source that was never transmitting properly.
         try:
-            host_lol = _read_upper(*cmis.REG_HOST_PRBS_LOL)[0]
-            media_lol = _read_upper(*cmis.REG_MEDIA_PRBS_LOL)[0]
-            host_gen_lol = _read_upper(*cmis.REG_HOST_GEN_LOL)[0]
-            media_gen_lol = _read_upper(*cmis.REG_MEDIA_GEN_LOL)[0]
-            host_gate = _read_upper(*cmis.REG_HOST_GATE_DONE)[0]
-            media_gate = _read_upper(*cmis.REG_MEDIA_GATE_DONE)[0]
+            # One bit per lane, so one byte per bank of eight. Reading only
+            # bank 0 gave every lane past the eighth the flag belonging to
+            # the lane eight below it - lane 16's loss of lock was invisible
+            # and lane 9 showed lane 1's.
+            def _flag_banks(reg):
+                return [raw[0] for _b, raw in _read_banks(*reg)]
+            host_lol_banks = _flag_banks(cmis.REG_HOST_PRBS_LOL)
+            media_lol_banks = _flag_banks(cmis.REG_MEDIA_PRBS_LOL)
+            host_gen_lol_banks = _flag_banks(cmis.REG_HOST_GEN_LOL)
+            media_gen_lol_banks = _flag_banks(cmis.REG_MEDIA_GEN_LOL)
+            host_gate_banks = _flag_banks(cmis.REG_HOST_GATE_DONE)
+            media_gate_banks = _flag_banks(cmis.REG_MEDIA_GATE_DONE)
             # 132.7, module-wide rather than per lane.
             ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
             # Whether that matters here is a question about 13h:176 and 178:
@@ -2099,21 +2106,27 @@ def api_prbs_get():
             clk = _read_upper(*cmis.REG_CLOCK_MEAS)
             clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
         except Exception:
-            host_lol = media_lol = 0
-            host_gen_lol = media_gen_lol = 0
-            host_gate = media_gate = 0
+            _z = [0] * banks
+            host_lol_banks = media_lol_banks = list(_z)
+            host_gen_lol_banks = media_gen_lol_banks = list(_z)
+            host_gate_banks = media_gate_banks = list(_z)
             ref_clock_lost = False
             clock_sources = {}
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
-        for mask, name in ((host_lol, 'host_prbs_lol'),
-                           (media_lol, 'media_prbs_lol'),
-                           (host_gen_lol, 'host_gen_lol'),
-                           (media_gen_lol, 'media_gen_lol')):
-            for bit in range(8):
-                if (mask >> bit) & 1:
-                    history.setdefault(bit + 1, set()).add(name)
+        for masks, name in ((host_lol_banks, 'host_prbs_lol'),
+                            (media_lol_banks, 'media_prbs_lol'),
+                            (host_gen_lol_banks, 'host_gen_lol'),
+                            (media_gen_lol_banks, 'media_gen_lol')):
+            for bank, mask in enumerate(masks):
+                for bit in range(8):
+                    if (mask >> bit) & 1:
+                        # The absolute lane, not the bit: keying by the bit
+                        # alone filed bank 1's lanes under lanes 1-8 and lost
+                        # which lane had actually slipped.
+                        history.setdefault(bank * 8 + bit + 1,
+                                           set()).add(name)
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
 
@@ -2135,18 +2148,27 @@ def api_prbs_get():
             'media_gen': _read_prbs_block(0x98),
             'host_chk':  _read_prbs_block(0xA0),
             'media_chk': _read_prbs_block(0xA8),
-            'host_chk_lol_mask':  host_lol,
-            'media_chk_lol_mask': media_lol,
+            # Bank 0 stays under the original keys because everything
+            # written before banks existed reads them; the per-bank arrays
+            # are what a module wider than eight lanes needs.
+            'host_chk_lol_mask':  host_lol_banks[0],
+            'media_chk_lol_mask': media_lol_banks[0],
+            'host_chk_lol_mask_banks':  host_lol_banks,
+            'media_chk_lol_mask_banks': media_lol_banks,
             'host_chk_lol_seen':  lol_seen('host_prbs_lol'),
             'media_chk_lol_seen': lol_seen('media_prbs_lol'),
-            'host_gen_lol_mask':  host_gen_lol,
-            'media_gen_lol_mask': media_gen_lol,
+            'host_gen_lol_mask':  host_gen_lol_banks[0],
+            'media_gen_lol_mask': media_gen_lol_banks[0],
+            'host_gen_lol_mask_banks':  host_gen_lol_banks,
+            'media_gen_lol_mask_banks': media_gen_lol_banks,
             'host_gen_lol_seen':  lol_seen('host_gen_lol'),
             'media_gen_lol_seen': lol_seen('media_gen_lol'),
             # Latched when a gated measurement finishes, so a gated result
             # read without it may be the previous period's.
-            'host_gate_done_mask':  host_gate,
-            'media_gate_done_mask': media_gate,
+            'host_gate_done_mask':  host_gate_banks[0],
+            'media_gate_done_mask': media_gate_banks[0],
+            'host_gate_done_mask_banks':  host_gate_banks,
+            'media_gate_done_mask_banks': media_gate_banks,
             # 132.7 is module-wide, but it only invalidates a pattern run
             # for the engines actually clocked from the reference clock.
             'reference_clock_lost': ref_clock_lost,

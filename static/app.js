@@ -2567,7 +2567,7 @@ async function applyLoopback() {
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
 function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
-                         isChecker, controls, location) {
+                         isChecker, controls, location, lolMaskBanks) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   // The role used to be inferred from whether a LOL mask was passed, which
@@ -2652,7 +2652,12 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
          + ` — not advertised</option>`);
     let lolCell = '';
     if (hasLol) {
-      const lol = !!((lolMask >> bit) & 1);
+      // One bit per lane means one byte per bank of eight. Taking the bit
+      // out of bank 0's byte for every lane gave lane 9 lane 1's flag, and
+      // hid lane 16's entirely.
+      const lolByte = Array.isArray(lolMaskBanks)
+        ? (lolMaskBanks[b] || 0) : lolMask;
+      const lol = !!((lolByte >> bit) & 1);
       // Losing lock for a moment part-way through a long pattern run is the
       // thing a long run is for. The flag is cleared by the read that saw it,
       // so a checker that slipped and recovered reads as locked.
@@ -2799,18 +2804,18 @@ async function loadPrbs() {
   const pl = d.pattern_locations || {};
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
                    d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false,
-                   pc.host_gen, pl.host_gen);
+                   pc.host_gen, pl.host_gen, d.host_gen_lol_mask_banks);
   _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, d.media_gen_lol_mask, 0x98, 'Media',
                    d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false,
-                   pc.media_gen, pl.media_gen);
+                   pc.media_gen, pl.media_gen, d.media_gen_lol_mask_banks);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
                    'Host', d.host_chk_lol_seen,
                    (d.pattern_capabilities || {}).host_chk, true, pc.host_chk,
-                   pl.host_chk);
+                   pl.host_chk, d.host_chk_lol_mask_banks);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
                    'Media', d.media_chk_lol_seen,
                    (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
-                   pl.media_chk);
+                   pl.media_chk, d.media_chk_lol_mask_banks);
   // 13h:176 and 178 (Table 8-127) say where each engine takes its clock
   // from. It changes what a pattern run means - an internally clocked
   // generator is not being driven by the host's clock at all - and it is what
