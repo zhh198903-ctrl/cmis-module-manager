@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.41.0'
+__version__ = '2.42.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -373,6 +373,11 @@ def _discover_capabilities() -> dict:
         caps['max_read'] = _state['max_read']
         # How long the module says its own transient states take, and how
         # long it actually needs after a page change.
+        # 146-150: the temperature range the module is allowed to run in and
+        # the supply voltage it needs. The summary line coloured temperature
+        # by two numbers written into the page instead.
+        caps['limits'] = cmis.parse_module_limits(
+            _read_upper(*cmis.REG_MODULE_LIMITS))
         dur = _read_upper(*cmis.REG_DURATIONS)
         caps['durations'] = cmis.parse_durations(
             dur[0], dur[1], _read_upper(*cmis.REG_DURATIONS_EXT))
@@ -720,6 +725,10 @@ def api_module_status():
             'module_state_changed': state_changed,
             'alarm_active': any_alarm,
             'seen': sorted(module_seen),
+            # What this module says it is allowed to run in. The summary
+            # coloured temperature by 60 and 70 written into the page, which
+            # is neither this nor the module's own alarm thresholds.
+            'limits': _state['caps'].get('limits', {}),
             **temp_alarms,
         })
     except Exception as e:

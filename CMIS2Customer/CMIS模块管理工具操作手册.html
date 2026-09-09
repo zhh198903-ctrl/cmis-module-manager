@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.41.0<br>
+      <b>版本</b>　2.42.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.41.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.41.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.42.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.42.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,35 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>温度那个颜色，以前是<u>工具自己定的</u>，不是模块的。</b>
+    监控页顶部那行温度，以前的规则是：
+    <b>超过 60 °C 变黄、超过 70 °C 变红</b>——
+    这两个数字是<b>直接写死在页面里的</b>，
+    既不是模块的告警门限，也不是模块的额定范围。<br>
+    可 <code>01h:146–147</code>（Table 8-50）说的正是
+    <b>这个模块被允许工作的温度范围</b>，
+    <code>01h:150</code> 说的是<b>它需要的最低供电电压</b>——
+    工具<b>都没读过</b>。<br>
+    后果很具体：一只额定到 <b>85 °C</b> 的工业级模块，
+    在 <b>71 °C</b> 时会被标成<b>红色</b>——
+    而它离自己的上限还有整整 14 度；
+    反过来，一只只额定到 <b>55 °C</b> 的模块在 <b>65 °C</b> 时
+    还是<b>绿色</b>，其实早就超了。
+    这是整个界面上<b>最先被看的那个数字</b>，
+    而它的颜色跟模块无关。<br>
+    现在颜色按<b>模块自己的额定范围</b>来，旁边直接写出
+    「rated −40…85 °C」；电压也会跟模块声明的最低电压比。
+    悬停会说明这是哪个寄存器给的。<br>
+    有一点特意写清楚：<b>那条黄色的「还差 5 °C 到上限」是工具自己加的余量</b>，
+    模块给的是<b>上限</b>而不是告警级别——
+    把工具自己的判断说成模块的，就又犯了同一个毛病，
+    所以提示语里明说了这 5 °C 是工具的。<br>
+    模块<b>两个温度字节都是 0</b> 时，规范的含义是「<b>未指定</b>」，
+    这种情况下工具<b>不上任何颜色</b>，而不是替它编一个门限出来。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2888,7 +2917,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.41.0<br>
+    CMIS Module Manager 操作手册 v2.42.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -11730,6 +11730,156 @@ class TestHowLongTheModuleSaidItNeeds(CMISTestCase):
         self.assertIn('.state-overrun', css, 'the class has no style')
 
 
+class TestTheRangeTheModuleIsRatedFor(CMISTestCase):
+    """The monitoring summary coloured module temperature amber above 60 and
+    red above 70. Both numbers were written into the page.
+
+    01h:146-147 (Table 8-50) is the range the module says it is allowed to
+    run in, and 01h:150 the supply voltage it needs. Neither was read, so an
+    industrial part rated to 85 C was shown in red at 71 - ten degrees inside
+    its own rating - and a module rated to 55 stayed green at 65, well past
+    it. The number at the top of the panel is the one an operator looks at
+    first, and its colour was about the tool rather than the module.
+
+    "ModuleTempMax = ModuleTempMin = 0 indicates 'not specified'", and the
+    voltage and propagation delay use zero the same way, so a module that
+    declines to say is saying something rather than leaving a gap."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _limits(self):
+        return self.assertOk(
+            self.client.get('/api/module/status'))['data']['limits']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the decode --------------------------------------------------------
+
+    def test_the_temperatures_are_signed(self):
+        """S8: a module rated down to -40 reads as 216 unsigned, which is a
+        plausible-looking temperature and completely wrong."""
+        import cmis_registers as c
+        got = c.parse_module_limits(bytes([70, 0xD8, 0, 0, 0]))
+        self.assertEqual(got['temp_max_c'], 70)
+        self.assertEqual(got['temp_min_c'], -40)
+
+    def test_both_zero_is_not_specified(self):
+        import cmis_registers as c
+        got = c.parse_module_limits(bytes(5))
+        self.assertIsNone(got['temp_max_c'])
+        self.assertIsNone(got['temp_min_c'])
+        self.assertIsNone(got['voltage_min_v'])
+        self.assertIsNone(got['propagation_delay_ns'])
+
+    def test_one_zero_is_a_real_limit(self):
+        """Only both together mean "not specified". A module rated from 0 C
+        has said so, and dropping that would lose a real limit."""
+        import cmis_registers as c
+        got = c.parse_module_limits(bytes([70, 0, 0, 0, 0]))
+        self.assertEqual(got['temp_max_c'], 70)
+        self.assertEqual(got['temp_min_c'], 0)
+
+    def test_the_voltage_is_twenty_millivolt_steps(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.parse_module_limits(bytes([1, 1, 0, 0, 0xA5]))['voltage_min_v'],
+            3.3)
+        self.assertEqual(
+            c.parse_module_limits(bytes([1, 1, 0, 0, 0x9D]))['voltage_min_v'],
+            3.14)
+
+    def test_the_propagation_delay_is_ten_nanosecond_steps(self):
+        import cmis_registers as c
+        got = c.parse_module_limits(bytes([1, 1, 0x00, 0x64, 0]))
+        self.assertEqual(got['propagation_delay_ns'], 1000)
+        got = c.parse_module_limits(bytes([1, 1, 0x01, 0x00, 0]))
+        self.assertEqual(got['propagation_delay_ns'], 2560,
+                         'the two delay bytes are one big-endian U16')
+
+    # ---- and what the module says ------------------------------------------
+
+    def test_the_profiles_are_rated_differently(self):
+        """One profile has to be rated past the old hardcoded 70 or the bug
+        it caused could not be told apart from correct behaviour."""
+        self._connect()
+        self.assertEqual(self._limits()['temp_max_c'], 70)
+        self._connect('mock_fr4x2')
+        lim = self._limits()
+        self.assertEqual(lim['temp_max_c'], 85,
+                         'no profile is rated past the number the page used '
+                         'to call an alarm')
+        self.assertEqual(lim['temp_min_c'], -40)
+        self.assertEqual(lim['voltage_min_v'], 3.14)
+
+    def test_the_status_endpoint_carries_them(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertIn('limits', d)
+        self.assertEqual(sorted(d['limits']),
+                         ['propagation_delay_ns', 'temp_max_c', 'temp_min_c',
+                          'voltage_min_v'])
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_page_no_longer_carries_its_own_thresholds(self):
+        js = self._js()
+        self.assertNotIn("s.temperature_c > 70 ? 'text-danger'", js,
+                         'the summary still colours by a number written into '
+                         'the page rather than the module')
+        self.assertNotIn("s.temperature_c > 60 ? 'text-warning'", js)
+
+    def test_the_colour_comes_from_the_module(self):
+        js = self._js()
+        body = js[js.index('const lim = s.limits || {};'):]
+        body = body[:body.index('renderHealthIndicator')]
+        # Which condition maps to which colour, not merely that both
+        # conditions are mentioned: swapping them puts the alarm colour
+        # on the last five degrees before the limit and the mild one
+        # past it.
+        self.assertIn("s.temperature_c > tMax ? 'text-danger'", body,
+                      'past the module rating is not the danger band')
+        self.assertIn("s.temperature_c > tMax - 5 ? 'text-warning'", body,
+                      'the approach to the rating is not the amber band')
+        self.assertIn('01h:146-147', body,
+                      'nothing names where the rating came from')
+        self.assertIn('rated ${tMin}…${tMax} °C', body,
+                      'the rating is never put on screen beside the reading')
+
+    def test_a_module_that_says_nothing_is_not_coloured(self):
+        """Inventing a threshold for a module that declined to give one is
+        how the old numbers got there in the first place."""
+        js = self._js()
+        body = js[js.index('const lim = s.limits || {};'):]
+        body = body[:body.index('renderHealthIndicator')]
+        self.assertIn("let tempClass = ''", body,
+                      'a module with no rating still gets a colour')
+        self.assertIn('if (tMax != null) {', body)
+
+    def test_the_amber_band_is_owned_by_the_tool(self):
+        """The module gives a limit, not a warning level. Presenting the
+        tool's own margin as the module's would be the same fault again."""
+        js = self._js()
+        self.assertIn("the amber band is the last 5 °C before that ", js)
+        self.assertIn("this tool's, not the module's", js)
+
+    def test_the_voltage_is_checked_against_the_minimum(self):
+        js = self._js()
+        body = js[js.index('const vMin = lim.voltage_min_v;'):]
+        body = body[:body.index('renderHealthIndicator')]
+        self.assertIn('s.voltage_v < vMin', body,
+                      'the supply voltage is shown without the minimum the '
+                      'module said it needs')
+        self.assertIn('01h:150', body)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

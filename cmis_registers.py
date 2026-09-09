@@ -85,6 +85,10 @@ REG_PAGES_EXT        = (0x01, 0xAD, 2)   # 173-174 Supported pages + extra banks
 # when something failed in the module during these states, for example a
 # module firmware hang up" - and how long it actually needs after a page
 # change, which is not always the specification's worst case.
+# 146-150 (Table 8-50): the temperature range the module is allowed to run in,
+# the supply voltage it needs, and an AOC's cable delay. Each has its own way
+# of saying "not specified", so an absent value is an answer rather than a gap.
+REG_MODULE_LIMITS    = (0x01, 0x92, 5)   # 146-150
 REG_DURATIONS        = (0x01, 0x8F, 2)   # 143-144
 REG_DURATIONS_EXT    = (0x01, 0xA7, 3)   # 167-169
 REG_MISC_FEATURES    = (0x01, 0xFB, 1)   # 251
@@ -1487,6 +1491,31 @@ def state_duration(code: int) -> dict:
     else:
         limit, label = None, 'Reserved (%d)' % code
     return {'code': code, 'max_seconds': limit, 'label': label}
+
+
+def parse_module_limits(data: bytes) -> dict:
+    """01h:146-150 (Table 8-50), RO and Conditional.
+
+    "ModuleTempMax = ModuleTempMin = 0 indicates 'not specified'", and the
+    propagation delay and minimum voltage each use zero for the same thing -
+    so a module that has not been told its own limits says so rather than
+    claiming to run from 0 V at 0 C.
+    """
+    if len(data) < 5:
+        return {'temp_max_c': None, 'temp_min_c': None,
+                'propagation_delay_ns': None, 'voltage_min_v': None}
+    t_max = data[0] - 256 if data[0] > 127 else data[0]
+    t_min = data[1] - 256 if data[1] > 127 else data[1]
+    delay = (data[2] << 8) | data[3]
+    volts = data[4]
+    return {
+        # Both zero is the specification's "not specified"; either one alone
+        # being zero is a real limit at 0 C.
+        'temp_max_c': None if (t_max == 0 and t_min == 0) else t_max,
+        'temp_min_c': None if (t_max == 0 and t_min == 0) else t_min,
+        'propagation_delay_ns': (delay * 10) if delay else None,
+        'voltage_min_v': round(volts * 0.02, 2) if volts else None,
+    }
 
 
 def parse_durations(b143: int, b144: int, ext: bytes = b'') -> dict:

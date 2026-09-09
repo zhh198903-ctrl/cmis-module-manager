@@ -1231,10 +1231,33 @@ async function _loadMonitoringOnce() {
   const s = statusRes.data;
   const summaryEl = document.getElementById('monitor-summary');
   if (summaryEl) {
-    const tempClass = s.temperature_c > 70 ? 'text-danger' : s.temperature_c > 60 ? 'text-warning' : 'text-success';
+    // 60 and 70 were written into this page. 01h:146-147 (Table 8-50) is the
+    // range this module says it is allowed to run in, and an industrial part
+    // rated to 85 C was shown in red at 71 while a module rated to 55 stayed
+    // green at 65. Where the module says nothing, nothing is claimed.
+    const lim = s.limits || {};
+    const tMax = lim.temp_max_c, tMin = lim.temp_min_c;
+    let tempClass = '', tempWhy = 'Module temperature (Lower 0x0E-0x0F)';
+    if (tMax != null) {
+      // Within 5 C of the limit is close enough to say so; the module gives a
+      // limit rather than a warning level, so the margin is the tool's and is
+      // named as such.
+      tempClass = s.temperature_c > tMax ? 'text-danger'
+                : s.temperature_c > tMax - 5 ? 'text-warning' : 'text-success';
+      tempWhy = `This module is rated for ${tMin} to ${tMax} °C `
+              + `(01h:146-147); the amber band is the last 5 °C before that `
+              + `limit and is this tool's, not the module's.`;
+    }
+    const vMin = lim.voltage_min_v;
+    const vClass = vMin != null && s.voltage_v < vMin ? 'text-danger' : '';
+    const vWhy = vMin != null
+      ? `This module needs at least ${vMin} V (01h:150).`
+      : 'Module supply voltage (Lower 0x10-0x11)';
     summaryEl.innerHTML =
-      `<span class="${tempClass}">Temp: ${s.temperature_c?.toFixed(2)} °C</span>` +
-      `&ensp;|&ensp;<span>Voltage: ${s.voltage_v?.toFixed(4)} V</span>` +
+      `<span class="${tempClass}" title="${esc(tempWhy)}">Temp: ${s.temperature_c?.toFixed(2)} °C</span>` +
+      (tMax != null ? `<span class="reg-meta"> rated ${tMin}…${tMax} °C</span>` : '') +
+      `&ensp;|&ensp;<span class="${vClass}" title="${esc(vWhy)}">Voltage: ${s.voltage_v?.toFixed(4)} V</span>` +
+      (vMin != null ? `<span class="reg-meta"> min ${vMin} V</span>` : '') +
       (s.alarm_active ? `&ensp;|&ensp;<span class="text-danger">⚠ Alarm Active</span>` : '');
   }
 

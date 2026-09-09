@@ -532,6 +532,9 @@ _FR4X2_800G = {
     # the tool would always wait the specification's worst case and never
     # find out.
     'durations_169': 0x02,               # MaxDurationBPC = 2 -> 2.5 ms
+    # An industrial-temperature module: allowed up to 85 C, which the page's
+    # hardcoded 70 called an alarm, and a 3.14 V minimum supply.
+    'module_limits': (85, -40, 0, 0, 0x9D),
     'durations_144': 0x25,               # DPDeinit 5-10 ms, DPInit 100-500 ms
     # 2x 400G-FR4: each half is four CWDM wavelengths sharing one duplex
     # fibre pair, so media lanes 1-4 are one fibre and differ only by
@@ -750,6 +753,15 @@ class MockBackend(I2CInterface):
         # long this module's transient states take, and how much of tBPC it
         # actually needs after a page change. Left at zero these said every
         # state completes in under a millisecond, which no module means.
+        # 146-150 (Table 8-50): the module's own operating limits. Zero is
+        # the specification's "not specified" and was every profile's answer,
+        # so there was nothing to colour a reading against.
+        lim = p.get('module_limits', (70, -40, 0, 0, 0xA5))
+        p01[0x92] = lim[0] & 0xFF                  # 146 ModuleTempMax
+        p01[0x93] = lim[1] & 0xFF                  # 147 ModuleTempMin
+        p01[0x94] = (lim[2] >> 8) & 0xFF           # 148 PropagationDelay hi
+        p01[0x95] = lim[3] & 0xFF                  # 149 PropagationDelay lo
+        p01[0x96] = lim[4] & 0xFF                  # 150 OperatingVoltageMin
         p01[0x8F] = p.get('durations_143', 0xD9)   # ModSelWaitTime 1.6 ms
         p01[0x90] = p.get('durations_144', 0x37)   # DPDeinit 10-50 ms,
                                                    # DPInit 1-5 s
