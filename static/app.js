@@ -1396,13 +1396,26 @@ async function _loadMonitoringOnce() {
     const txDbm = lane.tx_power_dbm;
     const rxDbm = lane.rx_power_dbm;
     const lim = _powerLimits(lane);
-    const txCls = !assured ? 'unassured'
+    // 6.3.3 again, one level down: the Flags of a lane's own monitors are
+    // assured only while its Data Path is in DPInitialized or DPActivated.
+    // A lane taken down still publishes a power - this tool's own DPDeinit
+    // leaves every affected lane reading -40 dBm - and colouring that by
+    // threshold announced a fault on a lane that had simply been switched
+    // off. Both conditions have to hold: the module in ModuleReady, and this
+    // lane's Data Path up.
+    const laneAssured = assured && lane.dp_monitors_assured !== false;
+    const txCls = !laneAssured ? 'unassured'
                 : txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
-    const rxCls = !assured ? 'unassured'
+    const rxCls = !laneAssured ? 'unassured'
                 : rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
+    const laneTip = assured
+      ? ' Not assured: this lane\u2019s Data Path is in ' + lane.datapath_state
+        + ', and CMIS assures the Flags of a lane\u2019s monitors only in '
+        + 'DPInitialized and DPActivated.'
+      : unassuredTip;
     const txTip = `${_TX_SRC_NOTE[lim.TX_SRC]}: `
                 + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`
-                + (assured ? '' : unassuredTip);
+                + (laneAssured ? '' : laneTip);
     // Figure 6-5: four of the seven states are transients. Colouring by name
     // caught two of them and dropped the rest into the same style as a lane
     // that is down, so a Data Path on its way up read as a fault, and
@@ -1426,8 +1439,8 @@ async function _loadMonitoringOnce() {
     return `<tr>
       <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
       <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
-      <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
-      <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
+      <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${lane.tx_bias_ma.toFixed(3)} mA</td>
+      <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
       <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
           title="${esc(dpStateNote(lane))}">${lane.datapath_state}${
         lane.state_overrun ? '<sup>!</sup>' : ''}</td>

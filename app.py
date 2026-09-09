@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.50.0'
+__version__ = '2.51.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1119,6 +1119,12 @@ def api_module_monitoring():
                 'tx_bias_ma': round(bias_ma, 3),
                 'datapath_state': dp_states[i],
                 'datapath_state_kind': cmis.dp_state_kind(dp_states[i]),
+                # 6.3.3: the Flags of this lane's monitors are assured only in
+                # DPInitialized and DPActivated. A lane taken down still
+                # reports a power, and colouring that by threshold announced a
+                # fault on a lane that had simply been switched off - which
+                # this tool's own DPDeinit does routinely.
+                'dp_monitors_assured': cmis.dp_monitors_assured(dp_states[i]),
                 'output_valid_tx': out_tx[i],
                 'output_valid_rx': out_rx[i],
                 'config_status': cfg_statuses[i],

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.50.0<br>
+      <b>版本</b>　2.51.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.50.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.50.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.51.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.51.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -982,6 +982,27 @@
     但<b>不再上告警配色</b>——<b>颜色才是那个「下结论」的动作</b>。
     概要行里按额定温度范围给温度上色，同样只在 <code>ModuleReady</code> 时才做。
     回到 <code>ModuleReady</code> 后一切照旧。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>同一条规矩还有<u>逐通道</u>的那一半：把某条数据通道停掉，这条通道就会被画成「告警」。</b>
+    规范对<b>数据通道相关</b>的监控另有一句：它们的告警 / 警告标志，
+    <b>只在 <code>DPInitialized</code> 和 <code>DPActivated</code> 两个状态下有保证</b>——
+    七个状态里就这两个。<br>
+    可通道停掉之后，模块<b>照样报一个光功率</b>：
+    用本工具的 <b>DPDeinit</b> 把通道拉下来，受影响的每条通道立刻读回
+    <code>-40 dBm</code>，表格就按低告警<b>标成红色</b>。
+    而这期间<b>模块本身一直是 <code>ModuleReady</code></b>，
+    所以上一条（模块级）的判断<b>不会触发</b>，也不该触发——
+    那是另一个范围的另一条规矩。<b>结果就是：你自己刚关掉的通道，
+    界面回头告诉你它坏了。</b><br>
+    现在每条通道单独判断：<b>模块在 <code>ModuleReady</code></b>
+    <b>且</b><b>本通道的数据通道处于 <code>DPInitialized</code> / <code>DPActivated</code></b>，
+    两个条件都满足才上告警配色。不满足时该通道的
+    <b>Tx 光功率、Tx 偏置、Rx 光功率</b>三格转为淡色，
+    悬停提示里写明<b>本通道当前是哪个状态</b>、以及为什么这些数不作数。
+    数值照常显示。通道重新起来后一切照旧。</span>
   </div>
 
   <h3>8.1 实时数据表</h3>
@@ -3124,7 +3145,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.50.0<br>
+    CMIS Module Manager 操作手册 v2.51.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -408,6 +408,20 @@ DP_STATE_KIND = {
 }
 
 
+# Section 6.3.3: setting the permitted alarm and warning Flags of Data Path
+# related monitors, and the interrupts that go with them, "is only assured in
+# the DPInitialized and DPActivated states". Everywhere else the module still
+# publishes a power reading, so a lane on its way down reports -40 dBm and a
+# table that colours by threshold calls it a fault - which is the one thing
+# the module has not promised. Two of the seven states, and only these two.
+DP_STATES_MONITORS_ASSURED = ("Initialized", "Activated")
+
+
+def dp_monitors_assured(state: str) -> bool:
+    """Whether this lane's monitors and Flags mean anything yet."""
+    return state in DP_STATES_MONITORS_ASSURED
+
+
 # The four transient states each have a MaxDuration advertisement (Tables
 # 8-48 and 8-56). The steady states have none: they last as long as the
 # module is left in them.

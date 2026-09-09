@@ -13079,11 +13079,21 @@ class TestReadingsTakenOutsideModuleReady(CMISTestCase):
         for the other losing it."""
         js = self._js()
         tx = js[js.index('const txCls = '):js.index('const rxCls = ')]
-        rx = js[js.index('const rxCls = '):js.index('const txTip')]
+        rx = js[js.index('const rxCls = '):js.index('const laneTip')]
+        guard = js[js.index('const laneAssured = '):]
+        guard = guard[:guard.index('\n')]
+        # The cell consults a composed guard rather than the module flag
+        # directly, so both links are checked: the cell reads the guard, and
+        # the guard is built from the module state. Following only the name in
+        # the cell would pass on a guard that had quietly stopped consulting
+        # the module at all.
+        self.assertIn('assured', guard,
+                      'the guard the cells read no longer consults the '
+                      'module state')
         for side, block in (('Tx', tx), ('Rx', rx)):
-            self.assertIn('!assured', block,
+            self.assertIn('!laneAssured', block,
                           'the %s alarm class is chosen without consulting '
-                          'the module state' % side)
+                          'the guard' % side)
             self.assertIn("'unassured'", block,
                           'the %s cell has no unasserted styling to fall back '
                           'on' % side)
@@ -13114,6 +13124,114 @@ class TestReadingsTakenOutsideModuleReady(CMISTestCase):
         block = js[i:js.index('tempWhy = `This module is rated', i)]
         self.assertIn("s.module_state !== 'ModuleReady'", block,
                       'the rated-range colouring ignores the module state')
+
+
+class TestLaneReadingsWhileTheDataPathIsDown(CMISTestCase):
+    """Section 6.3.3: setting the permitted alarm and warning Flags of Data
+    Path related monitors, and the interrupts that go with them, "is only
+    assured in the DPInitialized and DPActivated states".
+
+    That is the per-lane sibling of the ModuleReady rule. A lane whose Data
+    Path is down still publishes a power - this tool's own DPDeinit leaves
+    every affected lane reading -40 dBm - and the module stays in ModuleReady
+    throughout, so the module-level guard correctly does not fire. Colouring
+    those readings by threshold announced a fault on a lane that had simply
+    been switched off, by a control this tool offers."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _deinit(self, mask):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps({'dp_deinit_mask': mask}),
+            content_type='application/json'))
+
+    def _mon(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- which states are assured -------------------------------------------
+
+    def test_only_the_two_steady_up_states_are_assured(self):
+        """Seven states, and the spec names exactly two."""
+        import cmis_registers
+        assured = [s for s in set(cmis_registers.DP_STATE_NAMES.values())
+                   if cmis_registers.dp_monitors_assured(s)]
+        self.assertEqual(sorted(assured), ['Activated', 'Initialized'])
+
+    def test_a_lane_carrying_traffic_is_assured(self):
+        self._connect()
+        for lane in self._mon()['lanes']:
+            self.assertEqual(lane['datapath_state'], 'Activated')
+            self.assertTrue(lane['dp_monitors_assured'])
+
+    def test_a_lane_on_its_way_down_is_not(self):
+        self._connect()
+        self._deinit(0x01)
+        lanes = self._mon()['lanes']
+        self.assertNotIn(lanes[0]['datapath_state'], ('Activated', 'Initialized'))
+        self.assertFalse(lanes[0]['dp_monitors_assured'],
+                         'a lane that was switched off still claimed its '
+                         'readings were assured')
+
+    def test_the_module_stays_ready_throughout(self):
+        """So the module-level guard cannot be what covers this - it is a
+        different rule about a different scope, and it correctly does not
+        fire here."""
+        self._connect()
+        self._deinit(0x01)
+        d = self._mon()
+        self.assertEqual(d['module_state'], 'ModuleReady')
+        self.assertTrue(d['monitors_assured'])
+        self.assertFalse(d['lanes'][0]['dp_monitors_assured'])
+
+    def test_the_reading_is_still_reported(self):
+        self._connect()
+        self._deinit(0x01)
+        self.assertIn('tx_power_dbm', self._mon()['lanes'][0])
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_both_conditions_have_to_hold(self):
+        """Either one alone leaves half the cases asserting."""
+        js = self._js()
+        line = js[js.index('const laneAssured = '):]
+        line = line[:line.index('\n')]
+        self.assertIn('assured &&', line,
+                      'the lane check replaced the module check instead of '
+                      'joining it')
+        self.assertIn('dp_monitors_assured', line)
+        self.assertIn('!== false', line,
+                      'an answer without the field would grey every lane out')
+
+    def test_each_power_cell_consults_the_lane(self):
+        """Checked over one line each: a slice holding both Tx and Rx lets
+        either one keep the guard for the other losing it."""
+        js = self._js()
+        tx = js[js.index('const txCls = '):js.index('const rxCls = ')]
+        rx = js[js.index('const rxCls = '):js.index('const laneTip')]
+        for side, block in (('Tx', tx), ('Rx', rx)):
+            self.assertIn('!laneAssured', block,
+                          '%s colouring ignores this lane Data Path state'
+                          % side)
+            self.assertIn("'alarm-low'", block,
+                          '%s stopped colouring a real alarm' % side)
+
+    def test_the_tooltip_names_the_state_that_caused_it(self):
+        """"Not assured" without the reason sends the reader hunting."""
+        js = self._js()
+        i = js.index('const laneTip = ')
+        block = js[i:js.index('const txTip', i)]
+        self.assertIn('lane.datapath_state', block,
+                      'the note does not say which state the lane is in')
 
 
 if __name__ == '__main__':
