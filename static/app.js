@@ -2262,6 +2262,26 @@ async function loadThresholds() {
     ['Rx Power (dBm)',   '02h / 0xC0–0xC7', d.rx_power_high_alarm_dbm, d.rx_power_low_alarm_dbm, d.rx_power_high_warn_dbm, d.rx_power_low_warn_dbm],
   ];
 
+  // 02h:144-175 (Table 8-64). The Aux readings were on screen in Module Info
+  // with nothing to judge them by, while the module gives four levels for
+  // each. They are three different quantities - TEC current as a signed
+  // percentage, laser temperature, a second supply rail - so each row is
+  // named and scaled by what 01h:145 says its own monitor observes.
+  const AUX_ADDR = {aux1: '02h / 0x90–0x97', aux2: '02h / 0x98–0x9F',
+                    aux3: '02h / 0xA0–0xA7'};
+  // Which monitors exist and what each observes comes back with the
+  // thresholds themselves: depending on another panel having loaded first
+  // would make these rows appear or not according to click order.
+  for (const [key, t] of Object.entries(d.aux_thresholds || {})) {
+    // All four at zero is a module that has given nothing usable; inventing
+    // a threshold from it would be worse than leaving the row out.
+    if (!(t.high_alarm || t.low_alarm || t.high_warn || t.low_warn)) continue;
+    const unit = t.unit === 'degC' ? '°C' : t.unit;
+    rows.push([`Aux${t.index} — ${t.name}${unit ? ' (' + unit + ')' : ''}`,
+               AUX_ADDR[key],
+               t.high_alarm, t.low_alarm, t.high_warn, t.low_warn]);
+  }
+
   tbody.innerHTML = rows.map(([label, reg, ha, la, hw, lw]) =>
     `<tr>
       <td style="color:var(--text-muted)">${label}</td>

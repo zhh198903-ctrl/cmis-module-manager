@@ -78,6 +78,24 @@ _COHERENT_800G = {
     # Aux3 is S16 at 100 uV/LSB, so it tops out at 3.2767 V - a 3.3 V rail
     # does not fit. 1.8 V is the secondary rail a coherent module reports.
     'aux_values':         (-38.0, 45.0, 1.8),
+    # 02h:144-175, four levels each. The three monitors are three different
+    # encodings - TEC current as a signed percentage, laser temperature in
+    # 1/256 C, Vcc2 in 100 uV - so a threshold only means anything decoded as
+    # whatever its own monitor observes.
+    'aux_thresholds': [
+        (0x90, 0x7332),
+        (0x92, 0x8CCE),
+        (0x94, 0x6666),
+        (0x96, 0x999A),
+        (0x98, 0x4B00),
+        (0x9A, 0x0500),
+        (0x9C, 0x4600),
+        (0x9E, 0x0A00),
+        (0xA0, 0x4D58),
+        (0xA2, 0x3F48),
+        (0xA4, 0x4A38),
+        (0xA6, 0x4268),
+    ],
     'display':         '800GBASE-LR1 coherent lite (DP-16QAM, SMF 10km, 802.3dj)',
     'config_caps_02':  0x00,  # legacy default: hot and regular both supported
     'vendor_name':     b"OPENCMIS DEMO   ",
@@ -876,7 +894,7 @@ class MockBackend(I2CInterface):
             (0xBC, bias_thr[2]), (0xBE, bias_thr[3]),
             (0xC0, rx_thr[0]), (0xC2, rx_thr[1]),                            # RxPwr
             (0xC4, rx_thr[2]), (0xC6, rx_thr[3]),
-        ]:
+        ] + list(p.get('aux_thresholds', ()) or ()):
             p02[addr] = (val >> 8) & 0xFF
             p02[addr + 1] = val & 0xFF
         regs[0x02] = p02

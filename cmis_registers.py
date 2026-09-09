@@ -98,6 +98,10 @@ REG_CDB_CAPS         = (0x01, 0xA3, 4)   # 163-166
 # ---------------------------------------------------------------------------
 # Page 02h — Thresholds (Table 8-62)
 # ---------------------------------------------------------------------------
+# 144-175 (Table 8-64): four thresholds each for the three Aux monitors and
+# the Custom monitor. The Aux readings were on screen with nothing to judge
+# them by, though the module says where its own alarms and warnings sit.
+REG_AUX_THRESHOLDS      = (0x02, 0x90, 32)  # 144-175
 REG_TEMP_HIGH_ALARM     = (0x02, 0x80, 2)
 REG_TEMP_LOW_ALARM      = (0x02, 0x82, 2)
 REG_TEMP_HIGH_WARN      = (0x02, 0x84, 2)
@@ -1151,6 +1155,34 @@ def parse_aux_value(raw: bytes, observable: str):
     if observable == 'vcc2':
         return round(v * 0.0001, 4), 'V'
     return v, ''            # custom: the vendor defines it, so claim no unit
+
+
+def parse_aux_thresholds(data: bytes, observables: dict) -> dict:
+    """02h:144-175 (Table 8-64), RO and Conditional.
+
+    Eight bytes per monitor - high alarm, low alarm, high warning, low
+    warning - for Aux1, Aux2, Aux3 and then the Custom monitor. Each is the
+    same raw S16 as the monitor it belongs to, so it has to be decoded as
+    whatever 01h:145 says that monitor observes: reading a TEC current
+    threshold as a temperature gives a number in the right range and the
+    wrong units.
+    """
+    out = {}
+    for idx, off in ((1, 0), (2, 8), (3, 16)):
+        key = 'aux%d' % idx
+        observable = observables.get(key, 'custom')
+        levels = {'index': idx, 'observable': observable,
+                  'name': AUX_OBSERVABLE_NAMES[observable][0]}
+        for name, k in (('high_alarm', 0), ('low_alarm', 2),
+                        ('high_warn', 4), ('low_warn', 6)):
+            raw = data[off + k:off + k + 2]
+            if len(raw) < 2:
+                continue
+            value, unit = parse_aux_value(raw, observable)
+            levels[name] = value
+            levels['unit'] = unit
+        out[key] = levels
+    return out
 
 
 def parse_supported_flags(data: bytes) -> dict:

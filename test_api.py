@@ -11880,6 +11880,138 @@ class TestTheRangeTheModuleIsRatedFor(CMISTestCase):
         self.assertIn('01h:150', body)
 
 
+class TestTheAuxMonitorsHadNoThresholds(CMISTestCase):
+    """Module Info shows Aux1-3 - TEC current, laser temperature, a second
+    supply rail - as plain readings, and the thresholds panel listed
+    temperature, Vcc, Tx power, Tx bias and Rx power. Nothing showed where
+    the aux alarms and warnings sit.
+
+    02h:144-175 (Table 8-64) gives four levels for each of the three Aux
+    monitors and the Custom monitor, and none of it was read. The readings
+    were on screen with nothing to judge them by.
+
+    They are three different quantities, so a threshold only means anything
+    decoded as whatever 01h:145 says its own monitor observes: reading a TEC
+    current threshold as a temperature gives a number in a believable range
+    and the wrong units."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _aux(self):
+        return self.assertOk(
+            self.client.get('/api/module/thresholds'))['data']['aux_thresholds']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- each threshold in its own monitor's units -------------------------
+
+    def test_each_monitor_is_decoded_as_what_it_observes(self):
+        """The three monitors on this profile are a signed percentage, a
+        temperature and a voltage. One decode for all three would put every
+        number in the wrong units for two of them."""
+        self._connect()
+        aux = self._aux()
+        self.assertEqual(aux['aux1']['unit'], '%')
+        self.assertEqual(aux['aux2']['unit'], 'degC')
+        self.assertEqual(aux['aux3']['unit'], 'V')
+        self.assertAlmostEqual(aux['aux1']['high_alarm'], 89.999, places=2)
+        self.assertEqual(aux['aux2']['high_alarm'], 75.0)
+        self.assertEqual(aux['aux3']['high_alarm'], 1.98)
+
+    def test_all_four_levels_come_back(self):
+        self._connect()
+        for key in ('aux1', 'aux2', 'aux3'):
+            got = self._aux()[key]
+            for level in ('high_alarm', 'low_alarm', 'high_warn', 'low_warn'):
+                self.assertIn(level, got, '%s has no %s' % (key, level))
+
+    def test_the_levels_are_in_the_order_the_table_gives(self):
+        """High alarm, low alarm, high warning, low warning - and a warning
+        inside its alarm is the only arrangement that means anything."""
+        self._connect()
+        aux = self._aux()['aux2']
+        self.assertGreater(aux['high_alarm'], aux['high_warn'])
+        self.assertLess(aux['low_alarm'], aux['low_warn'])
+
+    def test_each_monitor_reads_its_own_eight_bytes(self):
+        """Three monitors, eight bytes each. Reading one block for another
+        gives four plausible numbers belonging to a different quantity."""
+        import cmis_registers as c
+        data = bytes([0x01, 0x00] * 4 + [0x02, 0x00] * 4 + [0x03, 0x00] * 4)
+        obs = {'aux1': 'laser_temperature', 'aux2': 'laser_temperature',
+               'aux3': 'laser_temperature'}
+        got = c.parse_aux_thresholds(data, obs)
+        self.assertEqual(got['aux1']['high_alarm'], 1.0)
+        self.assertEqual(got['aux2']['high_alarm'], 2.0)
+        self.assertEqual(got['aux3']['high_alarm'], 3.0)
+
+    def test_the_monitor_says_what_it_is(self):
+        """The panel gets the name and index with the levels rather than from
+        somewhere else, so a row cannot be labelled by the wrong monitor."""
+        self._connect()
+        aux = self._aux()
+        self.assertEqual(aux['aux1']['observable'], 'tec_current')
+        self.assertEqual(aux['aux1']['index'], 1)
+        self.assertEqual(aux['aux2']['observable'], 'laser_temperature')
+        self.assertEqual(aux['aux3']['observable'], 'vcc2')
+        self.assertTrue(aux['aux3']['name'])
+
+    def test_a_module_without_aux_monitors_gets_no_thresholds(self):
+        """Same gate the readings use: thresholds for a monitor the module
+        does not have are not worth a row."""
+        self._connect('mock_dr8')
+        self.assertEqual(self._aux(), {},
+                         'thresholds offered for monitors this module has not')
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_rows_do_not_depend_on_another_panel(self):
+        """Reading the monitor list from a different panel's state would make
+        these rows appear according to which tab was opened first."""
+        js = self._js()
+        self.assertNotIn('AppState.auxMonitors', js,
+                         'the thresholds rows depend on another panel having '
+                         'loaded first')
+        self.assertIn('Object.entries(d.aux_thresholds || {})', js,
+                      'the rows are not built from the thresholds response')
+
+    def test_a_module_that_gave_nothing_gets_no_row(self):
+        js = self._js()
+        self.assertIn('if (!(t.high_alarm || t.low_alarm || t.high_warn '
+                      '|| t.low_warn)) continue;', js,
+                      'a module whose thresholds are all zero still gets '
+                      'rows of zeroes presented as limits')
+
+    def test_the_row_is_named_and_scaled_by_its_monitor(self):
+        js = self._js()
+        self.assertIn('`Aux${t.index} — ${t.name}${unit ? ', js,
+                      'the row does not name which monitor it belongs to')
+        self.assertIn("t.unit === 'degC' ? '°C' : t.unit", js,
+                      'the unit is not carried onto the row')
+        self.assertIn("aux1: '02h / 0x90–0x97'", js,
+                      'the row does not say where the numbers came from')
+        # Looked up by the row's own key: a constant here gives every
+        # monitor the first one's address, which reads as a real
+        # citation and points at the wrong bytes.
+        self.assertIn('AUX_ADDR[key]', js,
+                      'every row cites the same monitor')
+        # The columns are high alarm, low alarm, high warning, low
+        # warning, in that order. Swapping them puts the warnings under
+        # the alarm headings, which is wrong in the direction that makes
+        # a module look safer than it is.
+        self.assertIn('t.high_alarm, t.low_alarm, t.high_warn, t.low_warn]);', js,
+                      'the four levels do not go into the columns the '
+                      'table heads them with')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

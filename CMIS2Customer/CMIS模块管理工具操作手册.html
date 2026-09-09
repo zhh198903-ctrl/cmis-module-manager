@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.42.0<br>
+      <b>版本</b>　2.43.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.42.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.42.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.43.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.43.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,31 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>Aux 那几个读数，以前<u>没有任何门限</u>可比。</b>
+    模块信息页会列出 <b>Aux1–3</b>——TEC 电流、激光器温度、第二路电源——
+    但阈值页只有温度、Vcc、Tx 光功率、Tx 偏置、Rx 光功率，
+    <b>Aux 一个都没有</b>。数字摆在那儿，却没有东西可以对照。<br>
+    <code>02h:144–175</code>（Table 8-64）给的正是这几个监测量各自的
+    <b>高低告警和高低警告</b>（三个 Aux 各四档，外加一个 Custom 监测量），
+    工具<b>一个字节都没读过</b>。<br>
+    这里有个容易踩的点：这三个 Aux <b>根本不是同一种物理量</b>——
+    Aux1 可能是<b>TEC 电流</b>（有符号百分比）、
+    Aux2 是<b>激光器温度</b>（1/256 °C）、
+    Aux3 是<b>第二路电源电压</b>（100 µV/LSB）；
+    究竟是哪一种由 <code>01h:145</code> 声明。
+    <b>门限必须按各自监测量来解码</b>，
+    否则把 TEC 电流的门限当温度读出来，
+    数值落在一个<b>看着挺合理的范围里</b>，单位却完全不对。<br>
+    现在阈值页会按模块声明<b>补上 Aux 各自的四档门限</b>，
+    每行带上自己的名字和单位（如
+    <code>Aux2 — Laser Temperature (°C)</code>）。
+    模块<b>没有</b>某个 Aux 监测量、
+    或者四档门限<b>全是 0</b>（等于没给）时，那一行<b>不出现</b>——
+    不拿一排 0 冒充门限。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -2917,7 +2942,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.42.0<br>
+    CMIS Module Manager 操作手册 v2.43.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

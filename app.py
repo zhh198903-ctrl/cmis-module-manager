@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.42.0'
+__version__ = '2.43.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1651,7 +1651,19 @@ def api_module_thresholds():
         rxpwr_hw_uw = cmis.parse_power_uw(rd(0xC4))
         rxpwr_lw_uw = cmis.parse_power_uw(rd(0xC6))
 
+        # 144-175: the Aux monitors' own thresholds, decoded as whatever
+        # 01h:145 says each monitor observes.
+        _obs = _state['caps'].get('aux') or {}
+        _mons = _state['caps'].get('monitors') or {}
+        aux_thresholds = cmis.parse_aux_thresholds(
+            _read_upper(*cmis.REG_AUX_THRESHOLDS), _obs)
+        # Same gate the readings use: a monitor the module does not have has
+        # no thresholds worth showing either.
+        if _obs:
+            aux_thresholds = {k: v for k, v in aux_thresholds.items()
+                              if _mons.get(k, False)}
         return _ok({
+            'aux_thresholds': aux_thresholds,
             'temp_high_alarm': round(temp_ha, 2),
             'temp_low_alarm':  round(temp_la, 2),
             'temp_high_warn':  round(temp_hw, 2),
