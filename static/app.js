@@ -786,19 +786,51 @@ async function loadExt54() {
   if (d.media_lane_switching) {
     const m = d.media_lane_switching;
     document.getElementById('mls-enable').checked = m.enabled;
+    // Section 8.33: a Bank of 6Dh switches within its own group of 8 lanes,
+    // and every target is numbered 1-8 inside that group. So the register
+    // value 3 means lane 3 in the first group and lane 11 in the second -
+    // printing it bare said lane 11 was fed by lane 3.
+    const groups = (m.enabled_banks || [true]).length;
+    const target = (abs, raw) => abs == null ? '—'
+      : `<span title="${esc('Register value ' + raw
+          + (groups > 1 ? ', which is lane ' + raw + ' of this group of 8' : '')
+          + '. 6Dh is banked and a target is a lane of its own group.'
+          )}">${esc(String(abs))}</span>`;
     document.getElementById('tbl-mls').innerHTML = m.lanes.map(l => {
-      const active = l.active_target == null ? '—' : l.active_target;
       // Staged and active differing is the state worth seeing, not an error:
       // it means the commit has not happened or was rejected.
       const cls = (l.active_target != null && l.active_target !== l.redirected_to)
         ? ' class="flag-active"' : '';
-      return `<tr><td>${l.lane}</td><td>${l.redirected_to}</td>`
-        + `<td${cls}>${active}</td><td>${esc(l.commit_result_name)}</td></tr>`;
+      const grp = groups > 1
+        ? `<div class="reg-meta">group ${l.bank + 1}, lane ${l.lane_in_bank}</div>` : '';
+      return `<tr><td>${l.lane}${grp}</td>`
+        + `<td>${target(l.redirected_to, l.redirected_to_raw)}</td>`
+        + `<td${cls}>${target(l.active_target, l.active_target_raw)}</td>`
+        + `<td>${esc(l.commit_result_name)}</td></tr>`;
     }).join('')
-      + (m.is_permutation ? ''
-         : '<tr><td colspan="4"><span class="flag-active">■ Not a permutation — the module will reject this commit</span></td></tr>')
+      + (m.permutation_banks || []).map((ok, b) => ok ? '' :
+          `<tr><td colspan="4"><span class="flag-active">■ ${esc(
+            groups > 1 ? 'Lanes ' + (b * 8 + 1) + '-' + (b * 8 + 8)
+                         + ' are not a permutation of their group'
+                       : 'Not a permutation')
+          } — the module will reject this commit</span></td></tr>`).join('')
+      + ((m.enabled_banks || []).length > 1
+         && new Set(m.enabled_banks).size > 1
+         ? `<tr><td colspan="4"><span class="flag-active">■ ${esc(
+             'Redirection is enabled on group '
+             + m.enabled_banks.map((e, b) => e ? b + 1 : 0).filter(Boolean).join(', ')
+             + ' only, so a commit moves those lanes and leaves the rest')
+           }</span></td></tr>` : '')
       + (m.committed === false && m.is_permutation
          ? '<tr><td colspan="4"><span class="flag-active">■ Staged mapping is not in effect yet — press Commit</span></td></tr>' : '');
+    // Eight numbers on a sixteen lane module is half a request, and the old
+    // endpoint took it silently.
+    const box = document.getElementById('mls-mapping');
+    if (box && AppState.lanes) {
+      box.placeholder = 'target order for all ' + AppState.lanes
+        + ' lanes, e.g. ' + (AppState.lanes > 8 ? '2,1,3,4,5,6,7,8,2,1,...'
+                                                : '2,1,4,3,5,6,7,8');
+    }
   }
   document.getElementById('ext54-pagemap').textContent = '';
   document.getElementById('ext54-pm').textContent = '';

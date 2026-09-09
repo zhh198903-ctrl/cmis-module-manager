@@ -1860,8 +1860,8 @@ MLS_RESULT_NAMES = {
 
 
 def parse_media_lane_switching(advert: int, redirection: bytes,
-                               enable: int, result: bytes,
-                               status: bytes = b'') -> dict:
+                               enable, result: bytes,
+                               status: bytes = b'', lanes_total: int = 8) -> dict:
     """6Dh (Table 8-196): which external media lane each internal one feeds.
 
     Table 8-196 keeps two arrays apart on purpose: 136-143 is what the host has
@@ -1873,25 +1873,63 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
     A valid redirection is a permutation, so a duplicate or a zero here is the
     module reporting something the host should not commit; the UI shows the raw
     mapping rather than tidying it, because tidying would hide exactly that.
+
+    Page 6Dh is banked, and section 8.33 says each Bank "provides space for
+    media lane switching functionality within a group of 8 lanes". Every field
+    here is numbered {1, ..., 8}, so a target is a lane of its own group and
+    the switch cannot move traffic across groups. `redirection`, `result` and
+    `status` are the banks concatenated, eight bytes each; `enable` is one
+    value per bank, or a single value for a module that has one bank.
+
+    A raw target therefore means different lanes in different banks: 3 in bank
+    1 is lane 11. Both are reported - `redirected_to` is the absolute lane, so
+    the table can be read straight down, and `redirected_to_raw` is what the
+    register holds.
     """
+    enables = list(enable) if isinstance(enable, (list, tuple)) else [enable]
     lanes = []
-    for i in range(min(8, len(redirection))):
+    for i in range(min(lanes_total, len(redirection))):
+        bank, within = divmod(i, 8)
+        raw = redirection[i]
+        act = status[i] if i < len(status) else None
+        res = result[i] if i < len(result) else 0
         lanes.append({
             'lane': i + 1,
-            'redirected_to': redirection[i],
-            'active_target': status[i] if i < len(status) else None,
-            'commit_result': result[i] if i < len(result) else 0,
-            'commit_result_name': MLS_RESULT_NAMES.get(
-                result[i] if i < len(result) else 0, f'Code {result[i]}'),
+            'bank': bank,
+            'lane_in_bank': within + 1,
+            # A target outside 1-8 is the module reporting something invalid,
+            # and turning it into an absolute lane would invent a lane number
+            # for it. Left as-is so the row still shows what was read.
+            'redirected_to': bank * 8 + raw if 1 <= raw <= 8 else raw,
+            'redirected_to_raw': raw,
+            'active_target': (bank * 8 + act if act is not None and 1 <= act <= 8
+                              else act),
+            'active_target_raw': act,
+            'commit_result': res,
+            'commit_result_name': MLS_RESULT_NAMES.get(res, f'Code {res}'),
         })
-    targets = [l['redirected_to'] for l in lanes]
+    # The permutation has to hold inside each group, not across the module:
+    # a target is a lane of its own group, so eight lanes redirected to 1-8 in
+    # bank 1 is valid and would fail a check run over the whole list.
+    banks_ok = []
+    enabled_banks = []
+    for bank in range(0, (len(lanes) + 7) // 8):
+        group = [l['redirected_to_raw'] for l in lanes[bank * 8:bank * 8 + 8]]
+        banks_ok.append(sorted(group) == list(range(1, len(group) + 1)))
+        enabled_banks.append(bool((enables[bank] if bank < len(enables)
+                                   else 0) & 1))
     return {
         'commit_duration_code': (advert >> 4) & 0x0F,
-        'enabled': bool(enable & 1),
+        # One checkbox, so it may only read enabled when every group is: a
+        # module with one group enabled and one not is switching half its
+        # lanes, which is neither of the two states the box can draw.
+        'enabled': bool(enabled_banks) and all(enabled_banks),
+        'enabled_banks': enabled_banks,
         'lanes': lanes,
         # Called out rather than corrected: a non-permutation is a module bug
         # or an unfinished commit, and committing it would be the wrong move.
-        'is_permutation': sorted(targets) == list(range(1, len(targets) + 1)),
+        'is_permutation': all(banks_ok),
+        'permutation_banks': banks_ok,
         # True only when every lane's staged target is the one in effect.
         'committed': bool(status) and all(
             l['active_target'] == l['redirected_to'] for l in lanes),

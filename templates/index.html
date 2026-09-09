@@ -415,13 +415,16 @@
           <thead><tr><th>Internal Lane</th><th>Staged</th><th>Active</th><th>Last Commit Result</th></tr></thead>
           <tbody id="tbl-mls"></tbody></table></div>
         <div style="margin-top:10px">
-          <input type="text" id="mls-mapping" placeholder="target order, e.g. 2,1,4,3,5,6,7,8" style="width:230px">
+          <input type="text" id="mls-mapping" placeholder="target order, e.g. 2,1,4,3,5,6,7,8" style="width:280px">
           <label style="margin-left:8px"><input type="checkbox" id="mls-enable"> Enable</label>
           <button class="btn-secondary btn-sm" id="btn-stage-mls">Stage</button>
           <button class="btn-danger btn-sm" id="btn-commit-mls">Commit (disrupts traffic)</button>
         </div>
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           Staged (6Dh:136–143, RW) is what the host has written; Active (6Dh:184–191, RO) is what the switch is doing. Enabling alone does not commit, so the two differ until a commit succeeds. The mapping must be a permutation of the lanes — anything else is refused here, because the module rejects it after reporting the write as successful.
+        </p>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Page 6Dh is banked: each bank switches <b>within its own group of 8 lanes</b>, and every target in the registers is numbered 1–8 inside that group — so a switch cannot move traffic between groups. On a module wider than 8 lanes the columns show the <b>absolute lane</b> and the register value is in the tooltip, the permutation rule applies <b>per group</b>, and Stage, Enable and Commit are written to <b>every</b> group.
         </p>
       </div>
     </div>

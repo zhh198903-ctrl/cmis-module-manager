@@ -4097,9 +4097,11 @@ class TestCmis54Pages(CMISTestCase):
         """The spec requires a permutation; a module validates the command and
         rejects it, but only after the host was told the write went through."""
         self._connect54()
-        rv = self.client.post('/api/module/media_lane_switching',
-                              data=json.dumps({'redirection': [1, 1, 3, 4, 5, 6, 7, 8]}),
-                              content_type='application/json')
+        rv = self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps({'redirection': [1, 1, 3, 4, 5, 6, 7, 8]
+                                            + [1, 2, 3, 4, 5, 6, 7, 8]}),
+            content_type='application/json')
         self.assertErr(rv, 400)
         self.assertIn('permutation', json.loads(rv.data)['message'])
 
@@ -4107,12 +4109,15 @@ class TestCmis54Pages(CMISTestCase):
         self._connect54()
         self.assertOk(self.client.post(
             '/api/module/media_lane_switching',
-            data=json.dumps({'redirection': [2, 1, 4, 3, 5, 6, 7, 8],
+            data=json.dumps({'redirection': [2, 1, 4, 3, 5, 6, 7, 8]
+                                            + [1, 2, 3, 4, 5, 6, 7, 8],
                              'enable': True, 'commit': True}),
             content_type='application/json'))
         m = self.assertOk(self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+        # 6Dh is banked and this module has two groups, so the targets read
+        # back as absolute lanes: the second group's 1-8 is lanes 9-16.
         self.assertEqual([l['redirected_to'] for l in m['lanes']],
-                         [2, 1, 4, 3, 5, 6, 7, 8])
+                         [2, 1, 4, 3, 5, 6, 7, 8] + list(range(9, 17)))
         self.assertTrue(m['enabled'])
         self.assertTrue(m['is_permutation'])
 
@@ -12800,6 +12805,185 @@ class TestSignalIntegrityPastTheFirstBank(CMISTestCase):
                          [1, 2, 3, 4, 1, 2, 3, 4])
         self.assertEqual([e['tx']['fiber'] for e in m],
                          [1, 1, 1, 1, 3, 3, 3, 3])
+
+
+class TestMediaLaneSwitchingPastTheFirstBank(CMISTestCase):
+    """Page 6Dh is banked, and section 8.33 says each Bank "provides space for
+    media lane switching functionality within a group of 8 lanes". Every field
+    in Table 8-196 is numbered {1, ..., 8}, so a target is a lane of its own
+    group and the switch cannot move traffic between groups.
+
+    The tool read bank 0, truncated a redirection request to eight targets,
+    and wrote the redirection, the enable and the commit to bank 0 only - then
+    answered ok. A sixteen lane request left lanes 9-16 untouched, unenabled
+    and uncommitted while the panel reported the module enabled and committed:
+    a switch configuration on screen that the module was never asked for.
+
+    The raw target was printed bare as well, so the register value 3 in the
+    second group was drawn as "lane 3" when it means lane 11."""
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _mls(self, **body):
+        return self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps(body), content_type='application/json')
+
+    def _read(self):
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        return d['media_lane_switching']
+
+    def _bank(self, addr, length, bank):
+        app_module._set_page(0x6D, bank)
+        return list(app_module._state['backend'].read_bytes(addr, length))
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the read ----------------------------------------------------------
+
+    def test_every_group_of_lanes_is_listed(self):
+        self._connect()
+        self.assertEqual(app_module._state['lanes'], 16)
+        self.assertEqual(len(self._read()['lanes']), 16)
+
+    def test_an_eight_lane_module_is_unchanged(self):
+        self._connect('mock_1600g_dr8')
+        m = self._read()
+        self.assertEqual(len(m['lanes']), 8)
+        self.assertEqual([l['redirected_to'] for l in m['lanes']],
+                         list(range(1, 9)))
+
+    # ---- what a target means ------------------------------------------------
+
+    def test_a_target_is_a_lane_of_its_own_group(self):
+        """Register value 2 on lane 9 is lane 10, not lane 2. Printed bare it
+        named a lane in the wrong group."""
+        self._connect()
+        self.assertOk(self._mls(
+            redirection=[1, 2, 3, 4, 5, 6, 7, 8, 2, 1, 3, 4, 5, 6, 7, 8],
+            enable=True, commit=True))
+        lanes = self._read()['lanes']
+        ninth = lanes[8]
+        self.assertEqual(ninth['lane'], 9)
+        self.assertEqual(ninth['redirected_to_raw'], 2)
+        self.assertEqual(ninth['redirected_to'], 10)
+        self.assertEqual(ninth['bank'], 1)
+        self.assertEqual(ninth['lane_in_bank'], 1)
+        self.assertEqual(lanes[9]['redirected_to'], 9)
+
+    def test_the_absolute_lane_and_the_register_value_are_both_reported(self):
+        """The register view needs what the byte holds; the table needs the
+        lane it means."""
+        self._connect()
+        lanes = self._read()['lanes']
+        self.assertEqual([l['redirected_to_raw'] for l in lanes[8:]],
+                         list(range(1, 9)))
+        self.assertEqual([l['redirected_to'] for l in lanes[8:]],
+                         list(range(9, 17)))
+
+    # ---- the write ----------------------------------------------------------
+
+    def test_a_wide_request_reaches_every_group(self):
+        """Truncating at eight wrote half the request and answered ok."""
+        self._connect()
+        self.assertOk(self._mls(
+            redirection=[2, 1, 4, 3, 5, 6, 7, 8, 3, 4, 1, 2, 5, 6, 7, 8]))
+        self.assertEqual(self._bank(0x88, 8, 0), [2, 1, 4, 3, 5, 6, 7, 8])
+        self.assertEqual(self._bank(0x88, 8, 1), [3, 4, 1, 2, 5, 6, 7, 8],
+                         'the second group was never written')
+
+    def test_enable_reaches_every_group(self):
+        """One group enabled and one not is half a switch, and the panel had
+        one checkbox reporting the whole module."""
+        self._connect()
+        self.assertOk(self._mls(enable=True))  # no mapping: enable alone
+        self.assertEqual(self._bank(0x98, 1, 0)[0] & 1, 1)
+        self.assertEqual(self._bank(0x98, 1, 1)[0] & 1, 1,
+                         'the second group was left disabled')
+
+    def test_commit_reaches_every_group(self):
+        self._connect()
+        self.assertOk(self._mls(
+            redirection=[2, 1, 3, 4, 5, 6, 7, 8, 2, 1, 3, 4, 5, 6, 7, 8],
+            enable=True, commit=True))
+        self.assertEqual(self._bank(0xB8, 8, 1), [2, 1, 3, 4, 5, 6, 7, 8],
+                         'the second group was staged but never committed')
+        m = self._read()
+        self.assertTrue(m['committed'])
+        self.assertEqual(m['enabled_banks'], [True, True])
+
+    def test_a_redirection_must_name_every_lane(self):
+        """Silently dropping the tail is what this round was about, and a
+        short list cannot say whether the rest was meant to stay put."""
+        self._connect()
+        for sent in (list(range(1, 9)), list(range(1, 26))):
+            rv = self._mls(redirection=sent)
+            self.assertErr(rv, 400)
+            self.assertIn('16 media lanes', json.loads(rv.data)['message'])
+
+    # ---- validation ---------------------------------------------------------
+
+    def test_the_permutation_rule_is_applied_to_each_group(self):
+        """A second group that is not a permutation passed because only the
+        first eight were checked."""
+        self._connect()
+        rv = self._mls(
+            redirection=[1, 2, 3, 4, 5, 6, 7, 8, 1, 1, 3, 4, 5, 6, 7, 8])
+        self.assertErr(rv, 400)
+        self.assertIn('Lanes 9-16', json.loads(rv.data)['message'])
+
+    def test_each_group_may_use_the_same_targets(self):
+        """Targets are numbered inside a group, so 1-8 twice is valid and a
+        check run over the whole list would call it a duplicate."""
+        self._connect()
+        self.assertOk(self._mls(
+            redirection=[2, 1, 3, 4, 5, 6, 7, 8, 2, 1, 3, 4, 5, 6, 7, 8]))
+
+    def test_a_broken_group_is_named_not_just_flagged(self):
+        import cmis_registers
+        red = bytes([1, 2, 3, 4, 5, 6, 7, 8] + [1, 1, 3, 4, 5, 6, 7, 8])
+        d = cmis_registers.parse_media_lane_switching(
+            0, red, [1, 1], bytes(16), bytes(16), 16)
+        self.assertEqual(d['permutation_banks'], [True, False])
+        self.assertFalse(d['is_permutation'])
+
+    def test_a_half_enabled_module_does_not_read_as_enabled(self):
+        """One checkbox cannot draw "enabled on half the lanes", and drawing
+        it ticked would say a commit moves them all."""
+        import cmis_registers
+        d = cmis_registers.parse_media_lane_switching(
+            0, bytes(range(1, 9)) * 2, [1, 0], bytes(16), bytes(16), 16)
+        self.assertFalse(d['enabled'])
+        self.assertEqual(d['enabled_banks'], [True, False])
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_the_table_shows_which_group_a_lane_is_in(self):
+        js = self._js()
+        self.assertIn('group ${l.bank + 1}, lane ${l.lane_in_bank}', js)
+
+    def test_the_panel_warns_when_only_some_groups_are_enabled(self):
+        """The message on its own proves nothing - what decides whether a
+        half-enabled module says so is the condition in front of it, and a
+        warning that can never fire reads exactly like a module with every
+        group enabled. So the guard is pinned with the text it guards."""
+        js = self._js()
+        msg = 'only, so a commit moves those lanes and leaves the rest'
+        i = js.index(msg)
+        guard = js[js.rindex('+ ((m.enabled_banks', 0, i):i]
+        self.assertIn('new Set(m.enabled_banks).size > 1', guard,
+                      'the warning is emitted without comparing the groups')
+        self.assertIn('.length > 1', guard,
+                      'an eight lane module has one group and nothing to warn '
+                      'about')
 
 
 if __name__ == '__main__':

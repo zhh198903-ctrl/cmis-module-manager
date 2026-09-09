@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.48.0<br>
+      <b>版本</b>　2.49.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.48.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.48.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.49.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.49.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -2996,7 +2996,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p>把内部媒体通道重定向到不同的外部通道。填入目标顺序（如 <code>2,1,4,3,5,6,7,8</code>
      表示内部 1→外部 2、内部 2→外部 1，依此类推），先<b>暂存</b>，确认无误再<b>提交</b>。</p>
   <ul>
-    <li>映射<b>必须是通道的一个置换</b>——每条外部通道恰好被用一次。
+    <li>映射<b>必须是通道的一个置换</b>——每条外部通道恰好被用一次
+        （<b>按组</b>校验，见下方说明）。
         不是置换的映射本工具直接拒绝下发，因为模块校验后也会拒绝，
         而那时你已经被告知"写入成功"了</li>
     <li>当前映射若不是置换，表格下方会以红色标出，<b>本工具不会替你排序修正</b>——
@@ -3010,6 +3011,29 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <span class="callout-icon">⚠</span>
     <span><b>提交会中断业务</b>：重定向发生变化的通道会断流（未变化的通道按规范不受影响）。
     点提交前会弹确认框。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>超过 8 条通道的模块，这个面板以前<u>只管前 8 条</u>，而且没说。</b>
+    Page 6Dh 是<b>按 bank 分组</b>的，规范原文说每个 bank 提供的是
+    <b>一组 8 条通道之内</b>的交换能力——表 8-196 里所有字段的取值都是
+    <code>{1, …, 8}</code>，所以<b>目标通道永远是本组内的通道</b>，
+    交换<b>不能跨组</b>。<br>
+    以前工具只读第一组，下发时把目标列表<b>截断到 8 个</b>，
+    使能和提交也<b>只写第一组</b>——然后回报<b>成功</b>。
+    也就是说：在 16 通道模块上填 16 个目标，
+    <b>后 8 条通道根本没被写、没被使能、也没被提交</b>，
+    而面板上写着「已使能、已提交」。<b>这是界面在替模块说一件它没做的事。</b><br>
+    另外，<b>寄存器里的目标值以前是原样打印的</b>：第二组里的 <code>3</code>
+    指的是<b>本组</b>的第 3 条，也就是<b>第 11 条通道</b>，
+    界面上却写成「3」。<br>
+    现在：表格列出<b>全部通道</b>并标出所属组，目标列显示<b>绝对通道号</b>
+    （原始寄存器值放在悬停提示里）；置换校验<b>逐组</b>做，
+    所以两组各自用 1–8 是<b>合法</b>的；暂存、使能、提交都写到<b>每一组</b>；
+    目标个数超过模块通道数会被直接拒绝，不再默默丢掉多出来的部分。
+    某几组使能、某几组没使能时，表格下方会明确写出是哪几组。<br>
+    8 通道模块只有一组，行为和以前完全一样。</span>
   </div>
 
   <h3>12.5 CMIS 5.4 Optional Pages（<code>0Ch:128–159</code>，Module Info 标签页）</h3>
@@ -3081,7 +3105,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.48.0<br>
+    CMIS Module Manager 操作手册 v2.49.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

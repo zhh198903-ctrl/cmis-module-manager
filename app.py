@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.48.0'
+__version__ = '2.49.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -879,12 +879,19 @@ def api_module_ext54():
             out['available']['62h'] = True
 
         if caps.get('media_lane_switching_supported'):
+            # Section 8.33: each Bank of 6Dh covers a group of 8 lanes, so a
+            # wider module has a switch per group and reading bank 0 governed
+            # the first eight lanes while reporting them as the whole module.
+            def _mls_banks(reg):
+                return b''.join(raw for _b, raw in _read_banks(*reg))
+
             out['media_lane_switching'] = cmis.parse_media_lane_switching(
                 _read_upper(*cmis.REG_MLS_ADVERT)[0],
-                _read_upper(*cmis.REG_MLS_REDIRECTION),
-                _read_upper(*cmis.REG_MLS_ENABLE)[0],
-                _read_upper(*cmis.REG_MLS_RESULT),
-                _read_upper(*cmis.REG_MLS_STATUS))
+                _mls_banks(cmis.REG_MLS_REDIRECTION),
+                [raw[0] for _b, raw in _read_banks(*cmis.REG_MLS_ENABLE)],
+                _mls_banks(cmis.REG_MLS_RESULT),
+                _mls_banks(cmis.REG_MLS_STATUS),
+                _state['lanes'])
             out['available']['6Dh'] = True
         return _ok(out)
     except Exception as e:
@@ -953,24 +960,57 @@ def api_media_lane_switching():
     mapping = body.get('redirection') or []
     enable = body.get('enable')
     commit = bool(body.get('commit', False))
+    banks = (_state['lanes'] + 7) // 8
     try:
         if mapping:
-            targets = [int(v) for v in mapping][:8]
-            if sorted(targets) != list(range(1, len(targets) + 1)):
-                return _err('Redirection must be a permutation of the media '
-                            'lanes; the module would reject anything else', 400)
-            _set_page(0x6D)
-            _state['backend'].write_bytes(cmis.REG_MLS_REDIRECTION[1],
-                                          bytes(targets))
+            # A target is a lane of its own group of eight (section 8.33), so
+            # the request is one permutation per group. Truncating at eight
+            # accepted a sixteen lane request, wrote half of it and answered
+            # ok - the panel then showed a switch configuration for lanes 9
+            # and up that the module had never been asked for.
+            targets = [int(v) for v in mapping]
+            if len(targets) != _state['lanes']:
+                # A short list is ambiguous - it could mean "only the first
+                # group" or "I forgot the rest" - and guessing is what this
+                # was doing when it truncated at eight. Committing after a
+                # partial stage would also commit whatever the untouched
+                # groups already had staged, which nobody asked for in that
+                # action.
+                return _err('This module has %d media lanes and the '
+                            'redirection must name a target for each of them; '
+                            '%d were sent'
+                            % (_state['lanes'], len(targets)), 400)
+            groups = [targets[i * 8:i * 8 + 8]
+                      for i in range((len(targets) + 7) // 8)]
+            for bank, group in enumerate(groups):
+                if sorted(group) != list(range(1, len(group) + 1)):
+                    return _err(
+                        'Redirection must be a permutation of the media lanes '
+                        'within each group of 8 (6Dh is banked, and a target '
+                        'is a lane of its own group). Lanes %d-%d are not one; '
+                        'the module would reject it'
+                        % (bank * 8 + 1, bank * 8 + len(group)), 400)
+            err = _refuse_broadcast_divergence({'The redirection': groups})
+            if err:
+                return err
+            for bank, group in enumerate(groups):
+                _set_page(0x6D, bank)
+                _state['backend'].write_bytes(cmis.REG_MLS_REDIRECTION[1],
+                                              bytes(group))
+        # Enable and commit are per bank too, and doing them in bank 0 alone
+        # left the other groups neither enabled nor committed while the panel
+        # reported the whole module enabled and committed.
         if enable is not None:
-            _set_page(0x6D)
-            _state['backend'].write_bytes(cmis.REG_MLS_ENABLE[1],
-                                          bytes([1 if enable else 0]))
+            for bank in range(banks):
+                _set_page(0x6D, bank)
+                _state['backend'].write_bytes(cmis.REG_MLS_ENABLE[1],
+                                              bytes([1 if enable else 0]))
         if commit:
-            _set_page(0x6D)
-            _state['backend'].write_bytes(cmis.REG_MLS_COMMIT[1], bytes([1]))
+            for bank in range(banks):
+                _set_page(0x6D, bank)
+                _state['backend'].write_bytes(cmis.REG_MLS_COMMIT[1], bytes([1]))
             time.sleep(0.1)
-        return _ok({'committed': commit})
+        return _ok({'committed': commit, 'banks': banks})
     except Exception as e:
         return _err(str(e), 500)
 
