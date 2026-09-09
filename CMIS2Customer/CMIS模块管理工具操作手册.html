@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.43.0<br>
+      <b>版本</b>　2.44.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.43.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.43.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.44.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.44.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,34 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>「Media Interface: 1310 nm EML」<u>不是模块自己报的波长</u>。</b>
+    模块信息页里那一行是 Table 8-40 的<b>技术编码</b>——
+    它说的是<b>一类技术、一个波段</b>，
+    不是<b>这一只模块实际发的波长</b>。<br>
+    <code>01h:138–141</code>（Table 8-46）才是模块自己声明的
+    <b>标称波长</b>和<b>波长容差</b>，工具此前<b>没读过</b>。
+    规范还特意写明：<b>波长可编程的模块，这里报的是「实际值」</b>——
+    所以在可调模块上，技术编码和这个寄存器<b>根本不是同一个说法</b>。<br>
+    这里有个很容易写错的地方：<b>两个字段的刻度不一样</b>——
+    标称波长按 <b>0.05 nm</b> 计，容差按 <b>0.005 nm</b> 计。
+    两个用同一个系数，其中一个就会差<b>十倍</b>。<br>
+    现在模块给了值就在「Media Interface」下面多一行
+    <b>Nominal Wavelength</b>，例如 <code>1310 nm ±6.5 nm</code>；
+    没给（两个字段为 0）就<b>不出现这一行</b>。<br>
+    还有一条按规范办的：Table 8-46 说这两个字段是
+    <b>给单波长模块定义的</b>；多波长模块<b>可以</b>填（填一个波长、
+    或者整个范围的中心波长和总容差），但<b>「解释方式没有唯一定义」</b>。
+    所以工具会先判断这是不是单波长模块——
+    靠的正是 <code>11h:240–255</code> 那份通道-波长映射（见上文）：
+    各通道映射到<b>不止一个波长</b>就说明不是。
+    是多波长的话，这一行会明确标出
+    「several wavelengths on this module」并在悬停里说明
+    规范没有唯一定义这个字段在这种模块上的含义——
+    而不是把它当成「这只模块的波长」直接摆出来。</span>
   </div>
 
   <div class="callout callout-note">
@@ -2942,7 +2970,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.43.0<br>
+    CMIS Module Manager 操作手册 v2.44.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -211,6 +211,11 @@ _DR8_800G = {
     'display':         '800GBASE-DR8 (SMF 500m, EML 1310nm)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-DR8-800GQDD",
+    # Demo values, as with the bias thresholds: no standard sets these
+    # for a simulated part. 1310 nm matches this profile's own media
+    # interface technology, and one wavelength on eight fibres is what
+    # makes the field meaningful here.
+    'wavelength_nm':   (1310.0, 6.5),
     'vendor_sn':       b"DEMO000000002   ",
     'vendor_rev':      b"B1",
     'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
@@ -463,6 +468,8 @@ _SR8_800G = {
     'meas_ctrl_177': 0x08,               # MeasurementTime 100b = 60 s
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
+    # 850 nm VCSEL, matching this profile's media interface technology.
+    'wavelength_nm':   (850.0, 10.0),
     'vendor_sn':       b"DEMO000000003   ",
     'vendor_rev':      b"C1",
     'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
@@ -503,6 +510,11 @@ _FR4X2_800G = {
     'display':         '2× 400GBASE-FR4 (SMF 2km, CWDM4 EML)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-FR4X2-800G ",
+    # Table 8-46 lets a multi-wavelength module fill this in "for the entire
+    # wavelength range (as nominal center wavelength and overall tolerance)"
+    # while saying the interpretation is not uniquely defined - so a profile
+    # that does it is what makes the panel's caveat reachable. Demo values.
+    'wavelength_nm':   (1301.0, 30.0),
     'vendor_sn':       b"DEMO000000004   ",
     'vendor_rev':      b"A2",
     'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
@@ -771,6 +783,18 @@ class MockBackend(I2CInterface):
         # long this module's transient states take, and how much of tBPC it
         # actually needs after a page change. Left at zero these said every
         # state completes in under a millisecond, which no module means.
+        # 138-141 (Table 8-46): the module's own nominal transmitter
+        # wavelength and its tolerance, on two different scales - 0.05 nm and
+        # 0.005 nm. Zero was every profile's answer, which reads as the field
+        # not being provided, so the Media Interface Technology code was all
+        # the panel had and that names a band rather than a wavelength.
+        wl_nm, wl_tol_nm = p.get('wavelength_nm', (0.0, 0.0))
+        wl = int(round(wl_nm / 0.05))
+        wl_tol = int(round(wl_tol_nm / 0.005))
+        p01[0x8A] = (wl >> 8) & 0xFF
+        p01[0x8B] = wl & 0xFF
+        p01[0x8C] = (wl_tol >> 8) & 0xFF
+        p01[0x8D] = wl_tol & 0xFF
         # 146-150 (Table 8-50): the module's own operating limits. Zero is
         # the specification's "not specified" and was every profile's answer,
         # so there was nothing to colour a reading against.

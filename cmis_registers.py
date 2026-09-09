@@ -88,6 +88,11 @@ REG_PAGES_EXT        = (0x01, 0xAD, 2)   # 173-174 Supported pages + extra banks
 # 146-150 (Table 8-50): the temperature range the module is allowed to run in,
 # the supply voltage it needs, and an AOC's cable delay. Each has its own way
 # of saying "not specified", so an absent value is an answer rather than a gap.
+# 138-141 (Table 8-46): the module's own nominal transmitter wavelength and
+# tolerance. The Media Interface Technology code names a band; this is what
+# the module says it actually emits, and on a programmable one it is the
+# actual value rather than the standard's.
+REG_WAVELENGTH       = (0x01, 0x8A, 4)   # 138-141
 REG_MODULE_LIMITS    = (0x01, 0x92, 5)   # 146-150
 REG_DURATIONS        = (0x01, 0x8F, 2)   # 143-144
 REG_DURATIONS_EXT    = (0x01, 0xA7, 3)   # 167-169
@@ -1523,6 +1528,46 @@ def state_duration(code: int) -> dict:
     else:
         limit, label = None, 'Reserved (%d)' % code
     return {'code': code, 'max_seconds': limit, 'label': label}
+
+
+def is_multi_wavelength(media_lane_map) -> bool:
+    """Whether a module carries more than one media wavelength.
+
+    Table 8-46 defines the wavelength fields for single wavelength modules
+    and leaves their meaning undefined otherwise, so this decides whether
+    that advertisement can be read as "the wavelength of this module".
+
+    Counting lanes instead of distinct wavelengths would call a parallel
+    module multi-wavelength: eight lanes on eight fibres all carry the same
+    one.
+    """
+    seen = {lane['tx']['wavelength'] for lane in (media_lane_map or [])
+            if lane.get('tx', {}).get('wavelength')}
+    return len(seen) > 1
+
+
+def parse_wavelength_info(data: bytes) -> dict:
+    """01h:138-141 (Table 8-46), RO and Conditional.
+
+    Two different scales: the nominal wavelength counts 0.05 nm and the
+    tolerance 0.005 nm, so one factor for both is wrong by ten on whichever
+    it is not. Zero is not a wavelength any module emits, so it reads as the
+    field not being provided.
+
+    Defined "for single wavelength modules". A multi-wavelength module may
+    fill it in for one wavelength or for the whole range, and the
+    specification says the interpretation is not uniquely defined and a host
+    may ignore it - so the caller has to know which kind of module it has
+    before showing this as the wavelength.
+    """
+    if len(data) < 4:
+        return {'nominal_nm': None, 'tolerance_nm': None}
+    nominal = (data[0] << 8) | data[1]
+    tolerance = (data[2] << 8) | data[3]
+    return {
+        'nominal_nm': round(nominal * 0.05, 3) if nominal else None,
+        'tolerance_nm': round(tolerance * 0.005, 4) if tolerance else None,
+    }
 
 
 def parse_module_limits(data: bytes) -> dict:

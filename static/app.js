@@ -538,6 +538,25 @@ async function loadInfo() {
     ['Link Length',     linkLengthSummary(d.link_lengths),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
+    // The line above names a technology and therefore a band; 01h:138-141 is
+    // what this module says it actually emits, and on a module with a
+    // programmable wavelength it is the actual value rather than the
+    // standard's. Absent unless the module filled it in.
+    ...((s.wavelength || {}).nominal_nm ? [[
+      'Nominal Wavelength',
+      `${s.wavelength.nominal_nm} nm`
+        + (s.wavelength.tolerance_nm ? ` ±${s.wavelength.tolerance_nm} nm` : '')
+        + (s.wavelength.multi_wavelength
+           ? ' <span class="reg-meta">several wavelengths on this module</span>'
+           : ''),
+      '01h', '0x8A–0x8D',
+      'NominalWavelength and WavelengthTolerance (Table 8-46), in 0.05 nm '
+      + 'and 0.005 nm units'
+      + (s.wavelength.multi_wavelength
+         ? ' — defined for single wavelength modules; this one carries '
+           + 'several, and Table 8-46 does not uniquely define what the '
+           + 'field means then'
+         : '')]] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],

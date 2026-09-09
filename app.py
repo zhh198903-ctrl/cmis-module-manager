@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.43.0'
+__version__ = '2.44.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -378,6 +378,8 @@ def _discover_capabilities() -> dict:
         # by two numbers written into the page instead.
         caps['limits'] = cmis.parse_module_limits(
             _read_upper(*cmis.REG_MODULE_LIMITS))
+        caps['wavelength'] = cmis.parse_wavelength_info(
+            _read_upper(*cmis.REG_WAVELENGTH))
         dur = _read_upper(*cmis.REG_DURATIONS)
         caps['durations'] = cmis.parse_durations(
             dur[0], dur[1], _read_upper(*cmis.REG_DURATIONS_EXT))
@@ -417,6 +419,11 @@ def _discover_capabilities() -> dict:
         # monitoring poll.
         caps['media_lane_map'] = cmis.parse_media_lane_mapping(
             _read_upper(*cmis.REG_MEDIA_LANE_MAP))
+        # Table 8-46 defines the wavelength fields for single wavelength
+        # modules and says the interpretation is not uniquely defined
+        # otherwise. The lane mapping is what knows.
+        caps['wavelength']['multi_wavelength'] = cmis.is_multi_wavelength(
+            caps['media_lane_map'])
     except Exception:
         # A module that cannot answer the capability block is still usable at
         # the default eight lanes; failing the whole connection over an
@@ -729,6 +736,7 @@ def api_module_status():
             # coloured temperature by 60 and 70 written into the page, which
             # is neither this nor the module's own alarm thresholds.
             'limits': _state['caps'].get('limits', {}),
+            'wavelength': _state['caps'].get('wavelength', {}),
             **temp_alarms,
         })
     except Exception as e:

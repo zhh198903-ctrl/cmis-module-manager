@@ -12012,6 +12012,171 @@ class TestTheAuxMonitorsHadNoThresholds(CMISTestCase):
                       'table heads them with')
 
 
+class TestTheWavelengthTheModuleReports(CMISTestCase):
+    """Module Info showed "Media Interface: 1310 nm EML" and nothing else
+    about wavelength. That is a Table 8-40 technology code - it names a band,
+    not what this module emits.
+
+    01h:138-141 (Table 8-46) is the module's own NominalWavelength and
+    WavelengthTolerance, and neither was read. The specification is explicit
+    that a module with a programmable wavelength reports "actual nominal
+    wavelength and actual wavelength tolerance", so on a tunable part the
+    code and the register are not the same claim at all.
+
+    Two scales, which is where this is easy to get wrong: the wavelength
+    counts 0.05 nm and the tolerance 0.005 nm, so one factor for both is out
+    by ten on whichever it is not.
+
+    And the field is defined "for single wavelength modules". A
+    multi-wavelength module may fill it in for one wavelength or for the
+    whole range, and the specification says the interpretation is not
+    uniquely defined then - so the panel has to know which kind of module it
+    is looking at before presenting this as the wavelength."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _wl(self):
+        return self.assertOk(
+            self.client.get('/api/module/status'))['data']['wavelength']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the decode --------------------------------------------------------
+
+    def test_the_specifications_own_example(self):
+        """Table 8-46 works one out: "ITU-T Grid Wavelength = 1534.25 nm with
+        0.236 nm Tolerance". The tolerance quantises to 47 steps of 0.005 nm,
+        so reading it back gives 0.235 - which is what the module actually
+        said, not what the example rounded to."""
+        import cmis_registers as c
+        nominal = int(round(1534.25 / 0.05))
+        tol = int(round(0.236 / 0.005))
+        got = c.parse_wavelength_info(bytes([nominal >> 8, nominal & 0xFF,
+                                             tol >> 8, tol & 0xFF]))
+        self.assertEqual(got['nominal_nm'], 1534.25)
+        self.assertEqual(got['tolerance_nm'], 0.235)
+
+    def test_the_two_fields_are_on_different_scales(self):
+        """0.05 nm for the wavelength and 0.005 nm for the tolerance. One
+        factor for both is wrong by ten on whichever it is not."""
+        import cmis_registers as c
+        got = c.parse_wavelength_info(bytes([0x00, 0x64, 0x00, 0x64]))
+        self.assertEqual(got['nominal_nm'], 5.0)      # 100 * 0.05
+        self.assertEqual(got['tolerance_nm'], 0.5)    # 100 * 0.005
+
+    def test_the_bytes_are_big_endian_pairs(self):
+        import cmis_registers as c
+        got = c.parse_wavelength_info(bytes([0x01, 0x00, 0x00, 0x01]))
+        self.assertEqual(got['nominal_nm'], 12.8)     # 256 * 0.05
+        self.assertEqual(got['tolerance_nm'], 0.005)  # 1 * 0.005
+
+    def test_zero_is_not_a_wavelength(self):
+        import cmis_registers as c
+        got = c.parse_wavelength_info(bytes(4))
+        self.assertIsNone(got['nominal_nm'])
+        self.assertIsNone(got['tolerance_nm'])
+
+    # ---- and what the module says ------------------------------------------
+
+    def test_a_single_wavelength_module_reports_one(self):
+        self._connect()
+        wl = self._wl()
+        self.assertEqual(wl['nominal_nm'], 1310.0)
+        self.assertEqual(wl['tolerance_nm'], 6.5)
+        self.assertFalse(wl['multi_wavelength'])
+
+    def test_each_profile_reports_its_own(self):
+        """A single value shared by every profile would not show that this is
+        the module's own number rather than the technology code's."""
+        self._connect('mock_sr8')
+        self.assertEqual(self._wl()['nominal_nm'], 850.0)
+
+    def test_a_multi_wavelength_module_is_known_to_be_one(self):
+        """Table 8-46 does not uniquely define the field for these, so the
+        panel has to know. 11h:240-255 is what says: more than one distinct
+        media wavelength across the lanes."""
+        self._connect('mock_fr4x2')
+        wl = self._wl()
+        self.assertTrue(wl['multi_wavelength'],
+                        'a module with four CWDM wavelengths is not '
+                        'recognised as carrying several')
+        self.assertEqual(wl['nominal_nm'], 1301.0,
+                         'the centre wavelength such a module may give')
+
+    def test_a_parallel_module_is_not_multi_wavelength(self):
+        """Several fibres carrying one wavelength is a single wavelength
+        module. Counting lanes rather than distinct wavelengths calls it
+        multi-wavelength, and no profile has that shape - a module with no
+        mapping at all gives an empty count either way - so this is the one
+        arrangement that tells the two apart."""
+        import cmis_registers as c
+        parallel = c.parse_media_lane_mapping(
+            bytes([0x11, 0x13, 0x15, 0x17, 0, 0, 0, 0,
+                   0x12, 0x14, 0x16, 0x18, 0, 0, 0, 0]))
+        self.assertEqual(
+            [lane['tx']['wavelength'] for lane in parallel[:4]], [1, 1, 1, 1],
+            'four lanes on four fibres, all one wavelength')
+        self.assertFalse(c.is_multi_wavelength(parallel),
+                         'a parallel module was called multi-wavelength')
+        self._connect()
+        self.assertFalse(self._wl()['multi_wavelength'])
+
+    def test_distinct_wavelengths_are_what_count(self):
+        import cmis_registers as c
+        wdm = c.parse_media_lane_mapping(
+            bytes([0x11, 0x21, 0x31, 0x41, 0, 0, 0, 0] + [0] * 8))
+        self.assertTrue(c.is_multi_wavelength(wdm))
+        self.assertFalse(c.is_multi_wavelength([]),
+                         'a module with no mapping has not said it carries '
+                         'several')
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_row_is_absent_where_the_module_gave_nothing(self):
+        js = self._js()
+        self.assertIn('...((s.wavelength || {}).nominal_nm ? [[', js,
+                      'a module that gave no wavelength still gets a row')
+
+    def test_the_row_names_both_scales(self):
+        js = self._js()
+        self.assertIn('in 0.05 nm ', js)
+        self.assertIn("+ 'and 0.005 nm units'", js,
+                      'the row does not say what units the two fields use')
+        self.assertIn("'01h', '0x8A–0x8D',", js,
+                      'the row does not say where the numbers came from')
+
+    def test_a_multi_wavelength_module_is_flagged_on_the_row(self):
+        js = self._js()
+        self.assertIn('s.wavelength.multi_wavelength', js,
+                      'the row presents the field as the wavelength whatever '
+                      'kind of module it is')
+        self.assertIn('several wavelengths on this module', js)
+        self.assertIn('does not uniquely define what the ', js,
+                      'nothing says why the number is doubtful here')
+        # Both the badge and the note have to be driven by the flag: leaving
+        # the words in the file under a dead branch reads as covered and
+        # shows nothing.
+        self.assertEqual(js.count('+ (s.wavelength.multi_wavelength'), 2,
+                         'the caveat is in the file but not driven by '
+                         'whether the module carries several wavelengths')
+
+    def test_the_tolerance_is_shown_with_the_wavelength(self):
+        """A nominal wavelength without its tolerance is half the
+        advertisement, and the tolerance is the half that says how much the
+        number can be trusted."""
+        js = self._js()
+        self.assertIn('±${s.wavelength.tolerance_nm} nm', js,
+                      'the tolerance never reaches the row')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
