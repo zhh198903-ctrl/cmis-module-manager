@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.44.0'
+__version__ = '2.45.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -347,6 +347,50 @@ def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
     return bytes(out[:per_lane * lanes])
 
 
+def _verify_page_checksums(caps: dict) -> list:
+    """Check each static page against the checksum the module puts on it.
+
+    Section 8.3.11: "The page checksum is a one-byte code that can be used to
+    verify that the read-only static data on Page 00h is valid." Every static
+    page carries one, and this tool exists to drive a two-wire link that goes
+    wrong - a corrupted advertisement read is the failure it is for, and the
+    module hands over a one-byte way to notice.
+
+    A page the module does not serve is not a mismatch, and checking one
+    would be worse than not checking at all: an unserved page reads as
+    whatever the module does with it, and a false alarm about corrupt data is
+    exactly the wrong thing for this to produce. Pages 01h and 02h exist on a
+    paged module (00h:2.7), and Page 04h only where the transmitter is
+    tunable (01h:155.6).
+    """
+    out = []
+    paged = (caps.get('config') or {}).get('memory_model') == 'Paged'
+    tunable = (caps.get('controls') or {}).get('transmitter_tunable', False)
+    for page, at, first, last in cmis.PAGE_CHECKSUMS:
+        if page in (0x01, 0x02) and not paged:
+            continue
+        if page == 0x04 and not tunable:
+            continue
+        try:
+            data = _read_upper(page, 0x80, 128)
+        except Exception:
+            continue
+        try:
+            want = cmis.page_checksum(data, first, last)
+        except ValueError:
+            continue
+        got = data[at - 128]
+        out.append({
+            'page': '%02Xh' % page,
+            'address': at,
+            'covers': '%d-%d' % (first, last),
+            'expected': want,
+            'reported': got,
+            'ok': want == got,
+        })
+    return out
+
+
 def _discover_capabilities() -> dict:
     """Read the advertisements that decide how the rest of the session behaves.
 
@@ -424,6 +468,10 @@ def _discover_capabilities() -> dict:
         # otherwise. The lane mapping is what knows.
         caps['wavelength']['multi_wavelength'] = cmis.is_multi_wavelength(
             caps['media_lane_map'])
+        # Last: which pages exist is decided by advertisements read above, so
+        # checking earlier would gate on a capability block that is not
+        # filled in yet and quietly skip every page but 00h.
+        caps['page_checksums'] = _verify_page_checksums(caps)
     except Exception:
         # A module that cannot answer the capability block is still usable at
         # the default eight lanes; failing the whole connection over an
@@ -737,6 +785,7 @@ def api_module_status():
             # is neither this nor the module's own alarm thresholds.
             'limits': _state['caps'].get('limits', {}),
             'wavelength': _state['caps'].get('wavelength', {}),
+            'page_checksums': _state['caps'].get('page_checksums', []),
             **temp_alarms,
         })
     except Exception as e:

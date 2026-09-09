@@ -5252,6 +5252,13 @@ class TestPageSelection(CMISTestCase):
 
     def test_repeated_reads_of_one_page_select_once(self):
         self.connect()
+        # Move off 02h first. Connect finishes on whichever page the
+        # capability reads ended on, and if that is already 02h the panel
+        # gets a free ride and this observes nothing.
+        self.client.post('/api/register/read',
+                         data=json.dumps({'page': 0x10, 'address': 0x80,
+                                          'length': 1}),
+                         content_type='application/json')
         pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
         self.assertEqual(pages, [0x02],
                          f'thresholds re-selected its page: {pages}')
@@ -5281,6 +5288,12 @@ class TestPageSelection(CMISTestCase):
         self.connect()
         self.client.get('/api/module/thresholds')       # leaves page 02h selected
         self.connect()                                   # fresh module, page unknown
+        # As above: start from a page that is not the one being read, so what
+        # is measured is the reconnect rather than where discovery stopped.
+        self.client.post('/api/register/read',
+                         data=json.dumps({'page': 0x10, 'address': 0x80,
+                                          'length': 1}),
+                         content_type='application/json')
         pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
         self.assertEqual(pages, [0x02], 'reconnect trusted a stale page cache')
 
@@ -12175,6 +12188,140 @@ class TestTheWavelengthTheModuleReports(CMISTestCase):
         js = self._js()
         self.assertIn('±${s.wavelength.tolerance_nm} nm', js,
                       'the tolerance never reaches the row')
+
+
+class TestTheChecksumOnTheModulesOwnData(CMISTestCase):
+    """Section 8.3.11: "The page checksum is a one-byte code that can be used
+    to verify that the read-only static data on Page 00h is valid." Every
+    static page carries one - 00h at byte 222, and 01h, 02h and 04h at 255.
+
+    None of the four was read. This tool exists to drive a two-wire link that
+    goes wrong; a corrupted advertisement read is the failure it is for, and
+    every other row on the module page becomes fiction when it happens. The
+    module hands over a one-byte way to notice and nothing asked.
+
+    Three different ranges, and Page 01h is the odd one: it starts at 130
+    because "the firmware version bytes 128-129 are intentionally excluded
+    from the Page Checksum to avoid requiring a Memory Map update when
+    firmware is updated"."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _sums(self):
+        return self.assertOk(
+            self.client.get('/api/module/status'))['data']['page_checksums']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the arithmetic ----------------------------------------------------
+
+    def test_it_is_the_low_byte_of_the_sum(self):
+        import cmis_registers as c
+        data = bytes([0xFF] * 128)
+        # 94 bytes of 0xFF: 94 * 255 = 23970, low byte 0xA2.
+        self.assertEqual(c.page_checksum(data, 128, 221), 23970 & 0xFF)
+
+    def test_page_01h_excludes_the_firmware_version(self):
+        """The one range that does not start at 128, and the reason is in the
+        specification's own footnote."""
+        import cmis_registers as c
+        data = bytes([7] + [0] * 127)          # only byte 128 is non-zero
+        self.assertEqual(c.page_checksum(data, 128, 254), 7)
+        self.assertEqual(c.page_checksum(data, 130, 254), 0,
+                         'byte 128 was counted into the Page 01h checksum')
+
+    def test_the_ranges_are_the_ones_the_pages_give(self):
+        import cmis_registers as c
+        self.assertEqual(c.PAGE_CHECKSUMS,
+                         ((0x00, 222, 128, 221),
+                          (0x01, 255, 130, 254),
+                          (0x02, 255, 128, 254),
+                          (0x04, 255, 128, 254)))
+
+    def test_a_range_outside_the_data_is_refused(self):
+        """Silently checksumming a short read would report a mismatch that is
+        the tool's own doing."""
+        import cmis_registers as c
+        with self.assertRaises(ValueError):
+            c.page_checksum(bytes(16), 128, 254)
+
+    # ---- and what the module says ------------------------------------------
+
+    def test_every_static_page_is_checked(self):
+        self._connect()
+        pages = [e['page'] for e in self._sums()]
+        self.assertEqual(pages, ['00h', '01h', '02h'])
+        for e in self._sums():
+            self.assertTrue(e['ok'], '%s does not match its own checksum'
+                            % e['page'])
+
+    def test_a_tunable_module_adds_its_laser_page(self):
+        """04h exists only where the transmitter is tunable, so the set of
+        pages checked follows the module rather than a fixed list."""
+        self._connect('mock_coherent_zr')
+        self.assertIn('04h', [e['page'] for e in self._sums()])
+
+    def test_a_page_the_module_does_not_serve_is_not_checked(self):
+        """Checking one would read whatever the module does with an unserved
+        page and call it corrupt - a false alarm is worse here than no
+        alarm."""
+        self._connect()
+        self.assertNotIn('04h', [e['page'] for e in self._sums()],
+                         'a module with no tunable laser was checked against '
+                         'Page 04h')
+
+    def test_a_mismatch_is_reported_with_both_bytes(self):
+        """Without a profile whose data does not match, the check could never
+        be seen failing."""
+        self._connect('mock_fr4x2')
+        bad = [e for e in self._sums() if not e['ok']]
+        self.assertEqual([e['page'] for e in bad], ['01h'])
+        self.assertNotEqual(bad[0]['expected'], bad[0]['reported'])
+        self.assertEqual(bad[0]['covers'], '130-254')
+        self.assertTrue(all(e['ok'] for e in self._sums()
+                            if e['page'] != '01h'),
+                        'one bad page made the others look bad too')
+
+    def test_the_mock_computes_a_real_checksum(self):
+        """Every profile reporting zero made each of them look like a corrupt
+        read the moment anyone checked - which is why nothing checked."""
+        self._connect()
+        self.assertTrue(any(e['reported'] for e in self._sums()),
+                        'the mock still reports no checksum at all')
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_a_mismatch_is_stated_rather_than_filed_away(self):
+        js = self._js()
+        self.assertIn('s.page_checksums.every(c => c.ok)', js,
+                      'the row does not distinguish a verified module from a '
+                      'failing one')
+        self.assertIn('did not match', js)
+        self.assertIn('may be a bad read', js,
+                      'nothing says what a mismatch means for the rest of '
+                      'the page')
+
+    def test_the_row_is_absent_where_nothing_was_checked(self):
+        js = self._js()
+        self.assertIn('...((s.page_checksums || []).length ? [[', js,
+                      'a module with no checked pages still gets a row')
+
+    def test_the_note_gives_both_bytes_and_the_range(self):
+        js = self._js()
+        self.assertIn('c.expected.toString(16)', js)
+        self.assertIn('c.reported.toString(16)', js,
+                      'the note does not say what the module actually '
+                      'reported')
+        self.assertIn('covers ${c.covers}', js,
+                      'the note does not say which bytes were summed')
 
 
 if __name__ == '__main__':

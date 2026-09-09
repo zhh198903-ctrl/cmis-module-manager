@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.44.0<br>
+      <b>版本</b>　2.45.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.44.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.44.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.45.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.45.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,39 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>模块自带的<u>页校验和</u>，工具以前一个都没验过。</b>
+    规范 8.3.11 写得很直白：页校验和是<b>一个字节</b>，
+    「<b>可以用来验证该页上的只读静态数据是否有效</b>」。
+    每个静态页都有：<code>00h:222</code>，以及
+    <code>01h</code> / <code>02h</code> / <code>04h</code> 的第 <code>255</code> 字节。
+    <b>四个，一个都没读过。</b><br>
+    这件事对这个工具尤其要紧：它本来就是用来调
+    <b>会出问题的两线总线</b>的。
+    一次读串了的声明数据，正是它存在的意义所在——
+    而这时模块信息页上<b>其它每一行都是假的</b>。
+    模块递过来一个字节就能发现，工具却从来没问。<br>
+    这里有三个<b>不一样的范围</b>，而 <code>01h</code> 是那个特例：
+    它<b>从 130 开始</b>，因为
+    「固件版本字节 128–129 被<b>特意排除</b>在页校验和之外，
+    以免固件一升级就得改内存映射」。<br>
+    现在连接时会逐页核对：全部对得上，模块信息页会写
+    <b>「N pages verified」</b>；对不上就<b>点名是哪一页</b>，
+    并说明<b>这一页的静态数据可能是读错了</b>，
+    悬停能看到期望值、模块实际报的值，以及这一页校验的是哪段字节。<br>
+    只核对<b>模块确实有的页</b>：<code>01h</code> / <code>02h</code>
+    看内存模型是不是分页的，<code>04h</code> 看发射机是不是可调。
+    <b>模块没有的页不会去核对</b>——那种页读回来是什么全看模块，
+    据此报「数据损坏」是<b>误报</b>，比不报还糟。<br>
+    内置演示模块以前这个字节全是 <b>0</b>，
+    等于每一只模块<b>一验就是坏的</b>——
+    这恰恰就是从来没人去验的原因。
+    现在它们会算出真的校验和，
+    而 <code>mock_fr4x2</code> 的 <code>01h</code> <b>故意对不上</b>，
+    好让「验不过」这条路也有东西走。</span>
   </div>
 
   <div class="callout callout-note">
@@ -2970,7 +3003,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.44.0<br>
+    CMIS Module Manager 操作手册 v2.45.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

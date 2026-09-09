@@ -1546,6 +1546,33 @@ def is_multi_wavelength(media_lane_map) -> bool:
     return len(seen) > 1
 
 
+# The static pages each carry a checksum "that can be used to verify that the
+# read-only static data ... is valid" (section 8.3.11 and the page overviews).
+# Three different ranges, and Page 01h is the odd one: it starts at 130
+# because "the firmware version bytes 128-129 are intentionally excluded from
+# the Page Checksum to avoid requiring a Memory Map update when firmware is
+# updated".
+PAGE_CHECKSUMS = (
+    (0x00, 222, 128, 221),
+    (0x01, 255, 130, 254),
+    (0x02, 255, 128, 254),
+    (0x04, 255, 128, 254),
+)
+
+
+def page_checksum(data: bytes, first: int, last: int, base: int = 128) -> int:
+    """The low order 8 bits of the arithmetic sum of the covered bytes.
+
+    `data` starts at `base`, so the caller can pass a whole upper page.
+    """
+    lo = first - base
+    hi = last - base + 1
+    if lo < 0 or hi > len(data):
+        raise ValueError('checksum range %d-%d not covered by %d bytes'
+                         % (first, last, len(data)))
+    return sum(data[lo:hi]) & 0xFF
+
+
 def parse_wavelength_info(data: bytes) -> dict:
     """01h:138-141 (Table 8-46), RO and Conditional.
 

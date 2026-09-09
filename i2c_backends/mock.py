@@ -557,6 +557,10 @@ _FR4X2_800G = {
     # module that answers a READ of at most 8 bytes. Every other profile
     # advertises full page read, so both read paths are exercised.
     'misc_features_251': 0x55,           # all four: not supported
+    # Page 01h's static data does not match the checksum the module puts on
+    # it. A real module reading like this has been misread or is faulty, and
+    # a tool that never checks shows the wrong advertisements as fact.
+    'corrupt_page_checksum': 0x01,
     # Needs a quarter of tBPC after a page change (10 ms / 2^2), and is
     # quicker into DPInit than the others: without a profile that says so,
     # the tool would always wait the specification's worst case and never
@@ -1223,6 +1227,26 @@ class MockBackend(I2CInterface):
                 if isinstance(page, int):
                     a = 0x80 + page // 8
                     regs[0x0C][a] = regs[0x0C].get(a, 0) | (1 << (page % 8))
+
+        # Page checksums last, for the same reason as the 0Ch map: they have
+        # to describe what was actually built. Three different ranges, and
+        # Page 01h starts at 130 because the firmware version bytes are
+        # deliberately excluded from it. Leaving these at zero made every
+        # module look like a corrupt read the moment anyone checked.
+        for page, at, first, last in ((0x00, 222, 128, 221),
+                                      (0x01, 255, 130, 254),
+                                      (0x02, 255, 128, 254),
+                                      (0x04, 255, 128, 254)):
+            if page not in regs:
+                continue
+            total = sum(regs[page].get(a, 0) for a in range(first, last + 1))
+            regs[page][at] = total & 0xFF
+        # A module whose static data does not match its own checksum is the
+        # case the check exists for, and no profile could produce it.
+        bad = p.get('corrupt_page_checksum')
+        if bad is not None and bad in regs:
+            at = 222 if bad == 0x00 else 255
+            regs[bad][at] = (regs[bad].get(at, 0) + 1) & 0xFF
 
         return regs
 

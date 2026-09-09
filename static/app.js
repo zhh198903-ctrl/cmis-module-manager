@@ -542,6 +542,28 @@ async function loadInfo() {
     // what this module says it actually emits, and on a module with a
     // programmable wavelength it is the actual value rather than the
     // standard's. Absent unless the module filled it in.
+    // Each static page carries a checksum over its own read-only data, so a
+    // corrupt read has a one-byte tell. This tool drives a two-wire link that
+    // goes wrong, which is exactly when every other row on this page becomes
+    // fiction - so a mismatch is stated rather than filed away.
+    ...((s.page_checksums || []).length ? [[
+      'Page Checksums',
+      (s.page_checksums.every(c => c.ok)
+        ? `<span class="flag-ok">●</span> ${s.page_checksums.length} pages verified`
+        : '<span class="flag-active">'
+          + esc(s.page_checksums.filter(c => !c.ok).map(c => c.page).join(', '))
+          + ' did not match</span>'
+          + ' <span class="reg-meta">the static data on '
+          + (s.page_checksums.filter(c => !c.ok).length > 1 ? 'those pages' : 'that page')
+          + ' may be a bad read</span>'),
+      '—',
+      s.page_checksums.map(c => `${c.page}:${c.address}`).join(' '),
+      'Page Checksum: the low order 8 bits of the sum of the static bytes '
+      + 'on each page. ' + s.page_checksums.map(
+          c => `${c.page} covers ${c.covers}, expected 0x`
+             + c.expected.toString(16).toUpperCase().padStart(2, '0')
+             + ', module reported 0x'
+             + c.reported.toString(16).toUpperCase().padStart(2, '0')).join('; ')]] : []),
     ...((s.wavelength || {}).nominal_nm ? [[
       'Nominal Wavelength',
       `${s.wavelength.nominal_nm} nm`
