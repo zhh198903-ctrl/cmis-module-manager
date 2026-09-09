@@ -583,6 +583,11 @@ tr:hover td { background: var(--surface2); }
    than broken, so it must not share the muted style that means "down". */
 .state-holding { color: var(--text); }
 .state-deactivated { color: var(--muted); }
+/* A transient state that has run past the maximum the module advertised for
+   it. Not the same as a transient state in progress, which is normal - this
+   one has stopped being normal, so it takes the danger colour rather than
+   the warning one. */
+.state-overrun { color: var(--danger); font-weight: 600; }
 
 /* ---- Monitoring: all-lanes-activated status dot ---- */
 .monitor-all-dot {

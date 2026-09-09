@@ -80,6 +80,13 @@ REG_PAGES_EXT        = (0x01, 0xAD, 2)   # 173-174 Supported pages + extra banks
 # 251 (Table 8-62), RO and Required. Four two-bit advertisements, of which
 # FullPageReadSupported decides how many bytes a single READ may ask for:
 # section 5.2.2.1 puts Nmax at 8 by default and 128 only when it is supported.
+# 143-144 and 167-169 (Tables 8-48, 8-56), all RO and Required. How long the
+# module says its own transient states may take, "so that hosts can determine
+# when something failed in the module during these states, for example a
+# module firmware hang up" - and how long it actually needs after a page
+# change, which is not always the specification's worst case.
+REG_DURATIONS        = (0x01, 0x8F, 2)   # 143-144
+REG_DURATIONS_EXT    = (0x01, 0xA7, 3)   # 167-169
 REG_MISC_FEATURES    = (0x01, 0xFB, 1)   # 251
 REG_MISC_CAPS        = (0x01, 0xFC, 1)   # 252  bit5 MediaLaneSwitchingSupported (Table 8-62)
 REG_CDB_CAPS         = (0x01, 0xA3, 4)   # 163-166
@@ -380,6 +387,17 @@ DP_STATE_KIND = {
     "Deinit":      'transient',
     "TxTurnOn":    'transient',
     "TxTurnOff":   'transient',
+}
+
+
+# The four transient states each have a MaxDuration advertisement (Tables
+# 8-48 and 8-56). The steady states have none: they last as long as the
+# module is left in them.
+DP_STATE_DURATION_FIELD = {
+    "Init":     'dp_init',
+    "Deinit":   'dp_deinit',
+    "TxTurnOn": 'dp_tx_turn_on',
+    "TxTurnOff": 'dp_tx_turn_off',
 }
 
 
@@ -1449,6 +1467,52 @@ def parse_extended_module_info(subtype_byte: int, heatsink_byte: int) -> dict:
 # Table 8-62 codes every field in this byte the same way, and 00b is not
 # "no": it means the module predates CMIS 5.3 and has not been asked.
 _TRISTATE = {0: 'unknown', 1: 'not supported', 2: 'supported', 3: 'reserved'}
+
+
+# Table 8-49. Each code is a range rather than a number, and the upper bound
+# is what a host waits on - a state that has run past it has gone wrong.
+_STATE_DURATIONS = [
+    (0.001, 'under 1 ms'), (0.005, '1-5 ms'), (0.010, '5-10 ms'),
+    (0.050, '10-50 ms'), (0.100, '50-100 ms'), (0.500, '100-500 ms'),
+    (1.0, '500 ms - 1 s'), (5.0, '1-5 s'), (10.0, '5-10 s'),
+    (60.0, '10 s - 1 min'), (300.0, '1-5 min'), (600.0, '5-10 min'),
+    (3000.0, '10-50 min'), (None, '50 min or more'),
+]
+
+
+def state_duration(code: int) -> dict:
+    """Table 8-49, the encoding shared by every MaxDuration* field."""
+    if 0 <= code < len(_STATE_DURATIONS):
+        limit, label = _STATE_DURATIONS[code]
+    else:
+        limit, label = None, 'Reserved (%d)' % code
+    return {'code': code, 'max_seconds': limit, 'label': label}
+
+
+def parse_durations(b143: int, b144: int, ext: bytes = b'') -> dict:
+    """01h:143-144 and 167-169 (Tables 8-48 and 8-56).
+
+    ModSelWaitTime is a small floating point value in microseconds, m*2^e,
+    with 00h meaning no data available. The MaxDuration fields all share the
+    Table 8-49 encoding.
+    """
+    mantissa = b143 & 0x1F
+    exponent = (b143 >> 5) & 0x07
+    out = {
+        'modsel_wait_us': (mantissa << exponent) if b143 else None,
+        'dp_init': state_duration(b144 & 0x0F),
+        'dp_deinit': state_duration((b144 >> 4) & 0x0F),
+    }
+    if len(ext) >= 3:
+        out['module_pwr_up'] = state_duration(ext[0] & 0x0F)
+        out['module_pwr_dn'] = state_duration((ext[0] >> 4) & 0x0F)
+        out['dp_tx_turn_on'] = state_duration(ext[1] & 0x0F)
+        out['dp_tx_turn_off'] = state_duration((ext[1] >> 4) & 0x0F)
+        # tBPC is 10 ms; the module may need only tBPC / 2^i of it.
+        bpc = ext[2] & 0x0F
+        out['bpc_shift'] = bpc
+        out['bpc_seconds'] = 0.010 / (2 ** bpc)
+    return out
 
 
 def parse_misc_features(byte_251: int) -> dict:

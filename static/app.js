@@ -1296,7 +1296,9 @@ async function _loadMonitoringOnce() {
       <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
       <td>${lane.tx_bias_ma.toFixed(3)} mA</td>
       <td class="${rxCls}">${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
-      <td class="${stateClass}" title="${esc(dpStateNote(lane))}">${lane.datapath_state}</td>
+      <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
+          title="${esc(dpStateNote(lane))}">${lane.datapath_state}${
+        lane.state_overrun ? '<sup>!</sup>' : ''}</td>
       <td>${outputCell(lane)}</td>
       <td class="${cfgClass}" title="${esc(configStatusNote(lane))}">${cfgStatus}</td>
     </tr>`;
@@ -1369,10 +1371,25 @@ function configStatusNote(lane) {
 // has no other way to see that it took effect.
 // The name alone does not say whether a lane is in trouble; the kind does.
 function dpStateNote(lane) {
+  // "not stuck" was a claim this panel had no way to make. 01h:144 and
+  // 01h:168 give the maximum duration of each transient state precisely so a
+  // host can tell a slow module from one that has stopped, and until they
+  // were read a lane could sit in DPInit forever under a tooltip saying it
+  // was fine.
+  if (lane.datapath_state_kind === 'transient') {
+    const held = lane.state_seconds != null ? ` It has been in this state for ${lane.state_seconds} s.` : '';
+    if (lane.state_overrun) {
+      return 'Transient state, and it has taken longer than this module said '
+           + `it can take (at most ${lane.state_max_label}, 01h:144/168): `
+           + 'something in the module may have stopped.' + held;
+    }
+    return 'Transient state: the Data Path is moving between steady states'
+         + (lane.state_max_label
+            ? `, and this module allows up to ${lane.state_max_label} for it`
+            : '') + '.' + held;
+  }
   return {
     up: 'Steady state: the Data Path is up',
-    transient: 'Transient state: the Data Path is moving between steady '
-             + 'states, not stuck',
     holding: 'Steady state: initialised, with the Tx output not turned on - '
            + 'not a fault',
     down: 'Steady state: the Data Path is down',

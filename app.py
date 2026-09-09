@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.40.0'
+__version__ = '2.41.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -55,6 +55,11 @@ _state = {
     # 128." Eight until 01h:251 says otherwise, so the reads made while
     # discovering that are legal on a module that does not support more.
     'max_read': 8,
+    # tBPC is the specification's worst case for a bank or page change. A
+    # module may need only tBPC / 2^i of it and says so in 01h:169.3-0; ten
+    # milliseconds until it does, since this hold-off is paid before that
+    # byte can be read.
+    'bpc_sleep': 0.010,
     # CMIS Flags are latched with clear-on-read: reading the byte that
     # holds one clears it. Polling therefore consumes them, and an event
     # that came and went between two refreshes exists only in whichever
@@ -62,6 +67,11 @@ _state = {
     # keeps what has fired since the operator last cleared it.
     'flag_history': {},
     'flag_history_since': None,
+    # When each lane was first seen in the DataPath state it is in now. A
+    # transient state is bounded by the module's own advertisement, so how
+    # long it has been in one is the only way to tell a slow commissioning
+    # from a module that has stopped.
+    'dp_state_since': {},
 }
 
 
@@ -176,6 +186,11 @@ def _set_page(page: int, bank: int = 0):
     same page repeatedly - a thresholds refresh alone re-selected page 02h
     twenty times - so skip the write when both are already known.
 
+    Ten milliseconds is the worst case, not this module's case:
+    MaxDurationBPC (01h:169.3-0) scales it down by 2^i, so a module that
+    advertises 3 is held off for 1.25 ms and the tool was waiting eight times
+    longer than it said it needed on every page change.
+
     Bank first, then page, always both: the module holds off acting on
     BankSelect until PageSelect is written (CMIS 8.2.15), so writing only the
     bank would leave the change pending and the next read would come from the
@@ -186,7 +201,7 @@ def _set_page(page: int, bank: int = 0):
     _state['page'] = None  # unknown while the writes are in flight
     _state['bank'] = None
     _state['backend'].write_bytes(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
-    time.sleep(0.010)
+    time.sleep(_state.get('bpc_sleep') or 0.010)
     _state['page'] = page
     _state['bank'] = bank
 
@@ -345,6 +360,7 @@ def _discover_capabilities() -> dict:
     """
     caps = {'max_lanes': 8, 'banks_supported': 1, 'cmis_revision': ''}
     _state['max_read'] = 8
+    _state['bpc_sleep'] = 0.010
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
@@ -355,6 +371,12 @@ def _discover_capabilities() -> dict:
         caps['features'] = cmis.parse_misc_features(b251)
         _state['max_read'] = cmis.max_read_bytes(b251)
         caps['max_read'] = _state['max_read']
+        # How long the module says its own transient states take, and how
+        # long it actually needs after a page change.
+        dur = _read_upper(*cmis.REG_DURATIONS)
+        caps['durations'] = cmis.parse_durations(
+            dur[0], dur[1], _read_upper(*cmis.REG_DURATIONS_EXT))
+        _state['bpc_sleep'] = caps['durations'].get('bpc_seconds') or 0.010
         caps['config'] = cmis.parse_config_capabilities(
             _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         b142 = _read_upper(*cmis.REG_BANKS_SUPPORTED)[0]
@@ -487,6 +509,8 @@ def api_connect():
     _state['backend'] = backend
     _state['connected'] = True
     _state['max_read'] = 8
+    _state['bpc_sleep'] = 0.010
+    _state['dp_state_since'] = {}
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()
@@ -864,6 +888,36 @@ def api_module_capabilities():
     return _ok(caps)
 
 
+def _dp_state_overruns(lanes) -> None:
+    """Mark lanes stuck in a transient state past what the module advertised.
+
+    Tables 8-48 and 8-56 say these fields exist "so that hosts can determine
+    when something failed in the module during these states, for example a
+    module firmware hang up". Watching a lane sit in DPInit with no idea
+    whether that is normal is the situation they were written for.
+    """
+    seen = _state['dp_state_since']
+    durations = _state['caps'].get('durations') or {}
+    now = time.time()
+    for lane in lanes:
+        num = lane['lane']
+        state = lane.get('datapath_state')
+        was = seen.get(num)
+        if not was or was[0] != state:
+            seen[num] = (state, now)
+            was = seen[num]
+        field = cmis.DP_STATE_DURATION_FIELD.get(state)
+        limit = (durations.get(field) or {}).get('max_seconds') if field else None
+        elapsed = now - was[1]
+        lane['state_seconds'] = round(elapsed, 1)
+        lane['state_max_seconds'] = limit
+        lane['state_max_label'] = (
+            (durations.get(field) or {}).get('label') if field else None)
+        # Only a transient state can overrun: the steady ones last as long as
+        # the module is left in them.
+        lane['state_overrun'] = bool(limit and elapsed > limit)
+
+
 @app.route('/api/module/monitoring', methods=['GET'])
 def api_module_monitoring():
     err = _require_connected()
@@ -942,11 +996,13 @@ def api_module_monitoring():
                     'tx_power_low_warn_dbm':   t['lo_warn_dbm'],
                 })
 
+        _dp_state_overruns(lanes)
         return _ok({'lanes': lanes,
                     # Which wavelength and fibre each media lane is, where
                     # the module says. Read at connect, so it costs nothing
                     # per poll.
-                    'media_lane_map': _state['caps'].get('media_lane_map', [])})
+                    'media_lane_map': _state['caps'].get('media_lane_map', []),
+                    'durations': _state['caps'].get('durations', {})})
     except Exception as e:
         return _err(str(e), 500)
 

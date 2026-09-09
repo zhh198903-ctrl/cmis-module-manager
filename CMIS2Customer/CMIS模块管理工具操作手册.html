@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.40.0<br>
+      <b>版本</b>　2.41.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.40.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.40.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.41.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.41.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,44 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>「这条通道没卡住」——这句话工具以前<u>没有资格说</u>。</b>
+    DataPath State 那一格悬停时，瞬态（DPInit / DPDeinit /
+    DPTxTurnOn / DPTxTurnOff）写的是「正在状态之间迁移，<b>没有卡住</b>」。
+    可工具<b>凭什么知道</b>没卡住？<br>
+    规范里有专门为此存在的字段：<code>01h:144</code> 和
+    <code>01h:168</code>（Table 8-48 / 8-56，<b>只读、必需</b>）
+    逐个给出这四个瞬态状态的<b>最长时间</b>，
+    原文写得很清楚——这些字段的用途就是让主机
+    「<b>判断模块在这些状态里是不是出了问题，比如固件卡死</b>」。
+    这些字节工具<b>一个都没读过</b>，
+    于是某条通道可以永远停在 DPInit，而提示语还在说它没事。<br>
+    现在：瞬态提示会写明<b>这个模块允许这个状态用多久</b>、
+    以及<b>已经用了多久</b>；一旦超过模块自己声明的上限，
+    那一格会变成<b>危险色并带一个「!」</b>，
+    提示语改成「已经超过模块声明的时间，模块里可能有什么停住了」。
+    稳态（Activated / Deactivated / Initialized）<b>没有上限可超</b>——
+    模块被放在那儿多久就是多久，不会被误报。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>翻页等待时间现在按模块声明来，不再一律等满 10 ms。</b>
+    切页（写 <code>0x7F</code>）之后必须等 <b>tBPC</b> 才能读，
+    否则会读到上一页的内容——规范给的 tBPC 是 <b>10 ms</b>。
+    但那是<b>最坏情况</b>，不是每个模块的情况：
+    <code>01h:169.3-0</code>（MaxDurationBPC）声明这个模块
+    实际只需要 <b>tBPC / 2<sup>i</sup></b>。
+    这个字节工具此前没读，于是每一次切页都按最坏情况等满 10 ms——
+    而界面刷新一轮要切很多次页。<br>
+    现在按模块声明来：声明 i=2 的模块只等 2.5 ms。
+    实测同样三轮完整刷新，从 <b>0.44 秒降到 0.18 秒</b>。
+    模块没声明（或声明 0）时仍然等满 10 ms，
+    连接过程中读到这个字节之前也一律按 10 ms 算——
+    毕竟这段等待本身就发生在读到它之前。</span>
   </div>
 
   <div class="callout callout-note">
@@ -2850,7 +2888,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.40.0<br>
+    CMIS Module Manager 操作手册 v2.41.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

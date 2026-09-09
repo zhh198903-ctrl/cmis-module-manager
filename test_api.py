@@ -5228,17 +5228,27 @@ class TestPageSelection(CMISTestCase):
         return seen
 
     def test_page_change_waits_the_spec_hold_off(self):
-        """CMIS 5.3 gives tBPC, max Bank/Page Change time, as 10 ms.
+        """CMIS gives tBPC, max Bank/Page Change time, as 10 ms.
 
         Reading sooner can return the previous page's contents on a slow
-        module - an intermittent fault that looks like corrupt data.
+        module - an intermittent fault that looks like corrupt data. Ten
+        milliseconds is the worst case rather than every module's case:
+        MaxDurationBPC (01h:169.3-0) scales it down by 2^i, so what has to
+        hold is that the hold-off is tBPC unless the module itself asked for
+        less, and never a shorter constant.
         """
         import io
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
         src = io.open(path, encoding='utf-8').read()
         body = src.split('def _set_page(')[1].split('\ndef ')[0]
-        self.assertIn('time.sleep(0.010)', body,
-                      'page-change hold-off is shorter than tBPC = 10 ms')
+        self.assertIn("time.sleep(_state.get('bpc_sleep') or 0.010)", body,
+                      'page-change hold-off is not the advertised one, '
+                      'falling back to tBPC = 10 ms')
+        self.connect()
+        self.assertLessEqual(app_module._state['bpc_sleep'], 0.010,
+                             'the hold-off exceeds tBPC')
+        self.assertGreater(app_module._state['bpc_sleep'], 0,
+                           'no hold-off at all reads the previous page')
 
     def test_repeated_reads_of_one_page_select_once(self):
         self.connect()
@@ -8536,10 +8546,16 @@ class TestATransientDataPathIsNotAFault(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             js = f.read()
         body = js[js.index('function dpStateNote('):]
-        body = body[:body.index(chr(10) + '}')]
-        for kind in ('up', 'transient', 'holding', 'down'):
+        body = body[:body.index('function outputCell')]
+        # The transient wording moved out of the lookup when it grew a
+        # condition - a transient state is described by how long it has
+        # lasted against what the module allows - so what is pinned here is
+        # that each kind is still spoken for, not where it is written.
+        for kind in ('up', 'holding', 'down'):
             self.assertRegex(body, r'\b%s:' % kind,
                              'no wording for a %s Data Path' % kind)
+        self.assertIn("lane.datapath_state_kind === 'transient'", body,
+                      'no wording for a transient Data Path')
         self.assertIn('not a fault', body,
                       'nothing tells the operator a held path is deliberate')
 
@@ -11501,6 +11517,217 @@ class TestWhichFibreAMediaLaneIs(CMISTestCase):
                       'the renderer never receives the mapping')
         self.assertIn('${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}',
                       js, 'the lane cell never shows it')
+
+
+class TestHowLongTheModuleSaidItNeeds(CMISTestCase):
+    """01h:143-144 and 01h:167-169 (Tables 8-48 and 8-56) are all RO and
+    Required, and none of them was read. They say how long each of the
+    module's transient states may take and how much of tBPC it needs after a
+    page change, and the specification is explicit about why: "The
+    MaxDuration* fields allow hosts to determine when something has gone
+    wrong in the module during transient states, for example when a module
+    firmware is hung up."
+
+    Two things followed from not reading them. The page hold-off was a flat
+    10 ms - the specification's worst case - on every page change, when
+    MaxDurationBPC says the module may need only tBPC / 2^i of that. And the
+    DataPath state tooltip told the operator a transient state was "not
+    stuck", which is a claim the panel had no way to make: a lane could sit
+    in DPInit indefinitely under a note saying it was fine."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _durations(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['durations']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the encoding ------------------------------------------------------
+
+    def test_the_state_duration_codes_are_the_table(self):
+        """Table 8-49. Every MaxDuration field shares it, so one wrong row is
+        wrong everywhere."""
+        import cmis_registers as c
+        expected = [0.001, 0.005, 0.010, 0.050, 0.100, 0.500, 1.0, 5.0,
+                    10.0, 60.0, 300.0, 600.0, 3000.0, None]
+        for code, limit in enumerate(expected):
+            self.assertEqual(c.state_duration(code)['max_seconds'], limit,
+                             'code %d decodes to the wrong bound' % code)
+        for code in (14, 15):
+            self.assertIsNone(c.state_duration(code)['max_seconds'])
+            self.assertIn('Reserved', c.state_duration(code)['label'])
+
+    def test_the_modsel_wait_is_the_worked_example(self):
+        """The specification works this one out itself: "if the module wait
+        time is 1.6 ms, the mantissa field (bits 4-0) value will be 11001b
+        (25) and the exponent field (bits 7-5) value will be 110b (6)"."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_durations(0xD9, 0)['modsel_wait_us'], 1600)
+        self.assertIsNone(c.parse_durations(0x00, 0)['modsel_wait_us'],
+                          '00h is "no data available", not zero microseconds')
+
+    def test_each_duration_reads_its_own_nibble(self):
+        import cmis_registers as c
+        got = c.parse_durations(0, 0x37, bytes([0x75, 0x63, 0x03]))
+        self.assertEqual(got['dp_init']['code'], 7)
+        self.assertEqual(got['dp_deinit']['code'], 3)
+        self.assertEqual(got['module_pwr_up']['code'], 5)
+        self.assertEqual(got['module_pwr_dn']['code'], 7)
+        self.assertEqual(got['dp_tx_turn_on']['code'], 3)
+        self.assertEqual(got['dp_tx_turn_off']['code'], 6)
+        self.assertEqual(got['bpc_shift'], 3)
+
+    def test_the_page_hold_off_scales_by_powers_of_two(self):
+        """tBPC / 2^i, so 0 leaves the specification's 10 ms alone."""
+        import cmis_registers as c
+        for shift, seconds in ((0, 0.010), (1, 0.005), (2, 0.0025),
+                               (3, 0.00125)):
+            got = c.parse_durations(0, 0, bytes([0, 0, shift]))
+            self.assertAlmostEqual(got['bpc_seconds'], seconds)
+
+    # ---- and what the tool does with it ------------------------------------
+
+    def test_a_module_that_says_nothing_gets_the_worst_case(self):
+        self._connect()
+        self.assertAlmostEqual(app_module._state['bpc_sleep'], 0.010,
+                               msg='a module with no advertisement should '
+                                   'still get the full tBPC')
+
+    def test_a_module_that_needs_less_waits_less(self):
+        """Without a profile that says so, the tool would always wait the
+        worst case and never find out it did not have to."""
+        self._connect('mock_fr4x2')
+        self.assertAlmostEqual(app_module._state['bpc_sleep'], 0.0025)
+
+    def test_the_hold_off_is_the_worst_case_until_it_is_read(self):
+        """The hold-off is paid before the byte that shortens it can be read,
+        so discovery has to start at the full tBPC."""
+        src = self._src_app()
+        body = src[src.index('def _discover_capabilities('):]
+        body = body[:body.index('\ndef ', 10)]
+        self.assertIn("_state['bpc_sleep'] = 0.010", body)
+        self.assertLess(body.index("_state['bpc_sleep'] = 0.010"),
+                        body.index('REG_DURATIONS'),
+                        'the shortened hold-off is used before it is read')
+        self.assertIn("time.sleep(_state.get('bpc_sleep') or 0.010)", src,
+                      'the page hold-off is still a fixed 10 ms')
+
+    def _src_app(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'app.py')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_durations_reach_the_panel(self):
+        self._connect('mock_fr4x2')
+        d = self._durations()
+        self.assertEqual(d['dp_init']['label'], '100-500 ms')
+        self.assertEqual(d['dp_deinit']['label'], '5-10 ms')
+        self.assertEqual(d['modsel_wait_us'], 1600)
+
+    def test_the_endpoint_actually_runs_the_overrun_check(self):
+        """Testing the function directly says the arithmetic is right and
+        nothing about whether anyone calls it. The panel reads its lanes from
+        this endpoint and nowhere else, so the fields have to arrive on them."""
+        self._connect('mock_fr4x2')
+        lanes = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertTrue(lanes)
+        for lane in lanes:
+            self.assertIn('state_overrun', lane,
+                          'the monitoring endpoint never computes the overrun')
+            self.assertIn('state_seconds', lane)
+
+    # ---- a transient state that has overrun --------------------------------
+
+    def test_a_steady_state_has_no_maximum_to_overrun(self):
+        """Only the four transient states are bounded; a module left in
+        DPDeactivated stays there for as long as it is left."""
+        self._connect('mock_fr4x2')
+        lanes = [{'lane': 1, 'datapath_state': 'Activated'}]
+        app_module._state['dp_state_since'] = {1: ('Activated', time.time() - 3600)}
+        app_module._dp_state_overruns(lanes)
+        self.assertIsNone(lanes[0]['state_max_seconds'])
+        self.assertFalse(lanes[0]['state_overrun'],
+                         'an hour in a steady state is not an overrun')
+
+    def test_a_transient_state_within_its_budget_is_not_flagged(self):
+        self._connect('mock_fr4x2')
+        lanes = [{'lane': 1, 'datapath_state': 'Init'}]
+        app_module._state['dp_state_since'] = {}
+        app_module._dp_state_overruns(lanes)
+        self.assertEqual(lanes[0]['state_max_seconds'], 0.5)
+        self.assertEqual(lanes[0]['state_max_label'], '100-500 ms')
+        self.assertFalse(lanes[0]['state_overrun'])
+
+    def test_a_transient_state_past_its_budget_is_flagged(self):
+        self._connect('mock_fr4x2')
+        lanes = [{'lane': 1, 'datapath_state': 'Init'}]
+        app_module._state['dp_state_since'] = {1: ('Init', time.time() - 2.0)}
+        app_module._dp_state_overruns(lanes)
+        self.assertTrue(lanes[0]['state_overrun'],
+                        'two seconds in a state the module bounds at 500 ms')
+        self.assertGreaterEqual(lanes[0]['state_seconds'], 2.0)
+
+    def test_the_clock_restarts_when_the_state_changes(self):
+        """Otherwise a lane that has just moved on inherits the age of the
+        state it left, and reads as stuck the moment it recovers."""
+        self._connect('mock_fr4x2')
+        app_module._state['dp_state_since'] = {1: ('Init', time.time() - 60)}
+        lanes = [{'lane': 1, 'datapath_state': 'TxTurnOn'}]
+        app_module._dp_state_overruns(lanes)
+        self.assertFalse(lanes[0]['state_overrun'])
+        self.assertLess(lanes[0]['state_seconds'], 1.0)
+
+    def test_each_transient_state_is_judged_by_its_own_field(self):
+        import cmis_registers as c
+        self.assertEqual(sorted(c.DP_STATE_DURATION_FIELD),
+                         ['Deinit', 'Init', 'TxTurnOff', 'TxTurnOn'])
+        self.assertEqual(c.DP_STATE_DURATION_FIELD['Init'], 'dp_init')
+        self.assertEqual(c.DP_STATE_DURATION_FIELD['TxTurnOn'],
+                         'dp_tx_turn_on')
+        for steady in ('Activated', 'Deactivated', 'Initialized'):
+            self.assertNotIn(steady, c.DP_STATE_DURATION_FIELD)
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_panel_no_longer_promises_a_lane_is_not_stuck(self):
+        js = self._js()
+        self.assertNotIn('states, not stuck', js,
+                         'the tooltip still claims a transient state is fine '
+                         'without checking how long it has lasted')
+        body = js[js.index('function dpStateNote('):]
+        body = body[:body.index('function outputCell')]
+        self.assertIn('lane.state_overrun', body,
+                      'the note does not read the overrun')
+        self.assertIn('something in the module may have stopped', body)
+        self.assertIn('01h:144/168', body,
+                      'the note never names what it is going by')
+
+    def test_a_normal_transient_state_says_what_it_is_allowed(self):
+        js = self._js()
+        body = js[js.index('function dpStateNote('):]
+        body = body[:body.index('function outputCell')]
+        self.assertIn('this module allows up to ${lane.state_max_label}', body)
+
+    def test_an_overrun_lane_is_not_coloured_as_a_normal_transition(self):
+        js = self._js()
+        self.assertIn("lane.state_overrun ? 'state-overrun' : stateClass", js,
+                      'an overrunning lane looks like one in progress')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'style.css')
+        with open(path, encoding='utf-8') as f:
+            css = f.read()
+        self.assertIn('.state-overrun', css, 'the class has no style')
 
 
 if __name__ == '__main__':

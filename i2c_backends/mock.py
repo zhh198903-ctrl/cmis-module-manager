@@ -527,6 +527,12 @@ _FR4X2_800G = {
     # module that answers a READ of at most 8 bytes. Every other profile
     # advertises full page read, so both read paths are exercised.
     'misc_features_251': 0x55,           # all four: not supported
+    # Needs a quarter of tBPC after a page change (10 ms / 2^2), and is
+    # quicker into DPInit than the others: without a profile that says so,
+    # the tool would always wait the specification's worst case and never
+    # find out.
+    'durations_169': 0x02,               # MaxDurationBPC = 2 -> 2.5 ms
+    'durations_144': 0x25,               # DPDeinit 5-10 ms, DPInit 100-500 ms
     # 2x 400G-FR4: each half is four CWDM wavelengths sharing one duplex
     # fibre pair, so media lanes 1-4 are one fibre and differ only by
     # wavelength - which a column of per-lane Rx powers does not show.
@@ -740,6 +746,17 @@ class MockBackend(I2CInterface):
         # 142.5 DiagnosticPagesSupported: every profile builds and serves
         # Pages 13h and 14h, so every profile has to say so.
         p01[0x8E] |= 0x20
+        # 143-144 and 167-169 (Tables 8-48, 8-56), all RO and Required: how
+        # long this module's transient states take, and how much of tBPC it
+        # actually needs after a page change. Left at zero these said every
+        # state completes in under a millisecond, which no module means.
+        p01[0x8F] = p.get('durations_143', 0xD9)   # ModSelWaitTime 1.6 ms
+        p01[0x90] = p.get('durations_144', 0x37)   # DPDeinit 10-50 ms,
+                                                   # DPInit 1-5 s
+        p01[0xA7] = p.get('durations_167', 0x75)   # PwrDn 500ms-1s,
+                                                   # PwrUp 100-500 ms
+        p01[0xA8] = p.get('durations_168', 0x33)   # TxTurnOff/On 10-50 ms
+        p01[0xA9] = p.get('durations_169', 0x00)   # MaxDurationBPC
         # MediaLaneAssignmentOptions (01h:176-183, Table 8-60) is stored apart
         # from the first four descriptor bytes and is required on a paged
         # module. An Application that uses m of the eight media lanes can start
