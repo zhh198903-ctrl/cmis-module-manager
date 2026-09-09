@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.49.0'
+__version__ = '2.50.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1141,7 +1141,18 @@ def api_module_monitoring():
                 })
 
         _dp_state_overruns(lanes)
+        # Section 6.3.2.4: monitoring results "shall be within the relevant
+        # accuracy requirements when the module is in the ModuleReady state",
+        # and alarm and warning Flag semantics are "only assured in the
+        # ModuleReady MSM state". Outside it the module still answers, so the
+        # table drew a low power module's -40 dBm in alarm red - a fault the
+        # module never claimed. The state travels with the readings because
+        # it is the readings it qualifies; it lives one byte into lower
+        # memory, so this costs no page change.
+        module_state = cmis.parse_module_state(_read_lower(0x03, 1)[0])
         return _ok({'lanes': lanes,
+                    'module_state': module_state,
+                    'monitors_assured': module_state == 'ModuleReady',
                     # Which wavelength and fibre each media lane is, where
                     # the module says. Read at connect, so it costs nothing
                     # per poll.

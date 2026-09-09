@@ -1140,3 +1140,10 @@ input[type="checkbox"] {
   letter-spacing: .04em;
   margin-left: 4px;
 }
+
+/* A reading the module is not required to have got right. Not an alarm and
+   not a clean value either, so it must not borrow the styling of either. */
+td.unassured {
+  opacity: .55;
+  font-style: italic;
+}

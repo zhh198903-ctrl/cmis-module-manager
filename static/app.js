@@ -1195,6 +1195,23 @@ function markMonitoringStale(reason) {
     ?.classList.add('stale-data');
 }
 
+// 6.3.2.4 requires monitoring accuracy only in ModuleReady, and says alarm
+// and warning Flag semantics are "only assured in the ModuleReady MSM state".
+// Outside it the module still answers, so a low power module reported -40 dBm
+// and the table drew it in alarm red - a fault the module never claimed. The
+// numbers stay on screen because they are what was read; what stops is the
+// colour, because the colour is the part that asserts something.
+function markMonitorsUnassured(state) {
+  const el = document.getElementById('monitor-unassured');
+  if (!el) return;
+  if (!state) { el.style.display = 'none'; return; }
+  el.innerHTML = `⚠ This module is in <b>${esc(state)}</b>, not ModuleReady. `
+    + `CMIS requires monitoring accuracy, and assures alarm and warning Flag `
+    + `semantics, only in ModuleReady — so the readings below are shown as `
+    + `read, without alarm colouring.`;
+  el.style.display = '';
+}
+
 function clearMonitoringStale() {
   const el = document.getElementById('monitor-stale');
   if (el) el.style.display = 'none';
@@ -1311,7 +1328,16 @@ async function _loadMonitoringOnce() {
     const lim = s.limits || {};
     const tMax = lim.temp_max_c, tMin = lim.temp_min_c;
     let tempClass = '', tempWhy = 'Module temperature (Lower 0x0E-0x0F)';
-    if (tMax != null) {
+    // Temperature is a module level monitor, so the same rule applies to it
+    // as to the per-lane powers: outside ModuleReady its accuracy is not
+    // required, and painting it green said the module was comfortably inside
+    // a range it was not being held to.
+    if (s.module_state && s.module_state !== 'ModuleReady') {
+      tempWhy = `Module temperature (Lower 0x0E-0x0F), read while the module `
+              + `is in ${s.module_state}. CMIS requires monitoring accuracy `
+              + `only in ModuleReady, so this is shown as read and not `
+              + `judged against the rated range.`;
+    } else if (tMax != null) {
       // Within 5 C of the limit is close enough to say so; the module gives a
       // limit rather than a warning level, so the margin is the tool's and is
       // named as such.
@@ -1359,14 +1385,24 @@ async function _loadMonitoringOnce() {
   if (dotEl) dotEl.style.display = allActivated ? 'inline-block' : 'none';
 
   const laneMap = monRes.data.media_lane_map || [];
+  // Absent for a module that predates this field being sent; treat that as
+  // assured so an older answer does not grey every reading out.
+  const assured = monRes.data.monitors_assured !== false;
+  markMonitorsUnassured(assured ? null : monRes.data.module_state);
+  const unassuredTip = ' Not assured: the module is in '
+    + (monRes.data.module_state || 'a state other than ModuleReady')
+    + ', and CMIS requires monitoring accuracy only in ModuleReady.';
   tbody.innerHTML = lanes.map(lane => {
     const txDbm = lane.tx_power_dbm;
     const rxDbm = lane.rx_power_dbm;
     const lim = _powerLimits(lane);
-    const txCls = txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
-    const rxCls = rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
+    const txCls = !assured ? 'unassured'
+                : txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
+    const rxCls = !assured ? 'unassured'
+                : rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
     const txTip = `${_TX_SRC_NOTE[lim.TX_SRC]}: `
-                + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`;
+                + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`
+                + (assured ? '' : unassuredTip);
     // Figure 6-5: four of the seven states are transients. Colouring by name
     // caught two of them and dropped the rest into the same style as a lane
     // that is down, so a Data Path on its way up read as a fault, and

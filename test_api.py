@@ -12986,6 +12986,136 @@ class TestMediaLaneSwitchingPastTheFirstBank(CMISTestCase):
                       'about')
 
 
+class TestReadingsTakenOutsideModuleReady(CMISTestCase):
+    """CMIS requires monitoring accuracy only in ModuleReady: "The reported
+    monitoring results of supported module level monitors shall be within the
+    relevant accuracy requirements when the module is in the ModuleReady
+    state", and setting alarm and warning Flags "is only assured in the
+    ModuleReady MSM state".
+
+    Outside it the module still answers, and the monitoring endpoint returned
+    those answers with no indication of the state they came from - the state
+    lived on a different endpoint the table never consulted. So a module put
+    into ModuleLowPwr reported -40 dBm and the table drew it in alarm red: a
+    fault the module never claimed, on a module that was merely asleep.
+
+    The numbers stay on screen, because they are what was read. What stops is
+    the colour, because the colour is the part that asserts something."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _control(self, action):
+        return self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'action': action}),
+            content_type='application/json'))
+
+    def _mon(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the readings carry the state they were taken in -------------------
+
+    def test_a_ready_module_says_its_readings_are_assured(self):
+        self._connect()
+        d = self._mon()
+        self.assertEqual(d['module_state'], 'ModuleReady')
+        self.assertTrue(d['monitors_assured'])
+
+    def test_a_low_power_module_says_they_are_not(self):
+        self._connect()
+        self._control('low_power')
+        d = self._mon()
+        self.assertEqual(d['module_state'], 'ModuleLowPwr')
+        self.assertFalse(d['monitors_assured'],
+                         'the readings were reported without saying the '
+                         'module had left ModuleReady')
+
+    def test_the_readings_are_still_reported(self):
+        """Hiding them would be its own lie: the module did answer, and an
+        operator watching a module go down needs to see what it said."""
+        self._connect()
+        self._control('low_power')
+        d = self._mon()
+        self.assertTrue(d['lanes'])
+        self.assertIn('tx_power_dbm', d['lanes'][0])
+
+    def test_coming_back_to_ready_restores_the_assurance(self):
+        """A latch here would leave every later reading greyed out."""
+        self._connect()
+        self._control('low_power')
+        self.assertFalse(self._mon()['monitors_assured'])
+        self._control('high_power')
+        d = self._mon()
+        self.assertEqual(d['module_state'], 'ModuleReady')
+        self.assertTrue(d['monitors_assured'])
+
+    def test_the_state_comes_from_this_poll_not_from_connect(self):
+        """Reading it once at connect would report the state the module was
+        in minutes ago, which is exactly the case this is meant to catch."""
+        self._connect()
+        self.assertTrue(self._mon()['monitors_assured'])
+        self._control('low_power')
+        self.assertFalse(self._mon()['monitors_assured'],
+                         'the state was cached rather than re-read')
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_the_table_drops_the_alarm_colour_when_not_assured(self):
+        """The message alone proves nothing - what matters is that the class
+        deciding the colour is the one that changes.
+
+        Tx and Rx are checked over their own lines and not over one slice
+        holding both: a slice that reaches from the Tx line to the tooltip
+        still contains the Rx line, so either one keeping the guard covered
+        for the other losing it."""
+        js = self._js()
+        tx = js[js.index('const txCls = '):js.index('const rxCls = ')]
+        rx = js[js.index('const rxCls = '):js.index('const txTip')]
+        for side, block in (('Tx', tx), ('Rx', rx)):
+            self.assertIn('!assured', block,
+                          'the %s alarm class is chosen without consulting '
+                          'the module state' % side)
+            self.assertIn("'unassured'", block,
+                          'the %s cell has no unasserted styling to fall back '
+                          'on' % side)
+            self.assertIn("'alarm-low'", block,
+                          'the %s cell no longer colours a real alarm' % side)
+
+    def test_an_absent_flag_is_treated_as_assured(self):
+        """Greying every reading out because a field was missing would be a
+        worse failure than the one being fixed."""
+        js = self._js()
+        self.assertIn("monRes.data.monitors_assured !== false", js)
+
+    def test_the_banner_names_the_state_it_is_talking_about(self):
+        js = self._js()
+        i = js.index('function markMonitorsUnassured(')
+        body = js[i:js.index('\nfunction ', i + 1)]
+        self.assertIn('${esc(state)}', body,
+                      'the banner does not say which state the module is in')
+        self.assertIn("el.style.display = 'none'", body,
+                      'the banner never goes away again')
+
+    def test_the_summary_temperature_is_judged_only_in_module_ready(self):
+        """Temperature is a module level monitor too, and painting it green
+        said the module was comfortably inside a range it was not being held
+        to."""
+        js = self._js()
+        i = js.index("let tempClass = '', tempWhy")
+        block = js[i:js.index('tempWhy = `This module is rated', i)]
+        self.assertIn("s.module_state !== 'ModuleReady'", block,
+                      'the rated-range colouring ignores the module state')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
