@@ -218,6 +218,11 @@ REG_MEDIA_LANE_MAP     = (0x11, 0xF0, 16)  # 240-255 Tx1-8 then Rx1-8
 # clear these "were determined by the module according to the selected
 # Application", so they are not the staged values at all.
 REG_ADDITIONAL_APPS    = (0x01, 0xDF, 28)  # 223-250 App 9-15, Table 8-61
+# 175 (Table 8-59): how many banks of Normalized Application Descriptors the
+# module has on Page 1Ch. Applications beyond the basic fifteen live there,
+# and a host that never reads this "may even fall back to seeing only the
+# first 15 Applications advertised in the Basic Application Descriptors".
+REG_NAD_BANKS          = (0x01, 0xAF, 1)   # 175 NADBanksSupported
 REG_MEDIA_LANE_ASSIGN  = (0x01, 0xB0, 15)  # 176-190 App 1-15, Table 8-60
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
@@ -1571,6 +1576,27 @@ def page_checksum(data: bytes, first: int, last: int, base: int = 128) -> int:
         raise ValueError('checksum range %d-%d not covered by %d bytes'
                          % (first, last, len(data)))
     return sum(data[lo:hi]) & 0xFF
+
+
+def parse_nad_support(byte_175: int) -> dict:
+    """01h:175 (Table 8-59), the Normalized Application Descriptor banks.
+
+    Zero means the module advertises its Applications the classical way and
+    the basic descriptors are all there is. A non-zero n means up to n*15
+    Applications live on n banks of Page 1Ch, and the fifteen a host can see
+    without reading them are a prefix rather than the set.
+
+    The field widened in CMIS 5.4, and the specification says why that
+    matters: an older host reads n > 15 as n mod 16 and "may even fall back
+    to seeing only the first 15 Applications". Reading the whole byte is the
+    difference between knowing there are more and not.
+    """
+    banks = byte_175 & 0xFF
+    return {
+        'banks': banks,
+        'supported': banks > 0,
+        'max_applications': banks * 15,
+    }
 
 
 def parse_wavelength_info(data: bytes) -> dict:

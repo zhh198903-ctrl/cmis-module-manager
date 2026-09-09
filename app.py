@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.45.0'
+__version__ = '2.46.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -424,6 +424,10 @@ def _discover_capabilities() -> dict:
             _read_upper(*cmis.REG_MODULE_LIMITS))
         caps['wavelength'] = cmis.parse_wavelength_info(
             _read_upper(*cmis.REG_WAVELENGTH))
+        # Whether the fifteen Applications a host can read the classical way
+        # are all of them.
+        caps['nad'] = cmis.parse_nad_support(
+            _read_upper(*cmis.REG_NAD_BANKS)[0])
         dur = _read_upper(*cmis.REG_DURATIONS)
         caps['durations'] = cmis.parse_durations(
             dur[0], dur[1], _read_upper(*cmis.REG_DURATIONS_EXT))
@@ -1232,7 +1236,12 @@ def api_applications():
         apps = cmis.parse_application_descriptors(
             data, media_type, _additional_app_descriptors(),
             _media_lane_assignments())
-        return _ok({'applications': apps})
+        # 01h:175: a module with Normalized Application Descriptors keeps
+        # the rest of its Applications on Page 1Ch, so this list is a prefix
+        # rather than the set. Saying so beats showing fifteen of hundreds
+        # as though that were all of them.
+        return _ok({'applications': apps,
+                    'nad': _state['caps'].get('nad', {})})
     except Exception as e:
         return _err(str(e), 500)
 

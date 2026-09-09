@@ -394,6 +394,11 @@ _XD16_1600G = {
 # has no legacy spelling, which is exactly what the escape exists for.
 _XD24 = {
     'display':         '24 host lanes, three banks (CMIS 5.4 bank escape)',
+    # This profile already exists to exercise a CMIS 5.4 escape past a legacy
+    # limit; Normalized Application Descriptors are the other one. Four banks
+    # of 15 is sixty Applications, of which a host reading only the basic
+    # descriptors sees the first fifteen and has no way to know that.
+    'nad_banks_175':   4,
     'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-XD24-3BANK ",
@@ -795,6 +800,10 @@ class MockBackend(I2CInterface):
         wl_nm, wl_tol_nm = p.get('wavelength_nm', (0.0, 0.0))
         wl = int(round(wl_nm / 0.05))
         wl_tol = int(round(wl_tol_nm / 0.005))
+        # 175 (Table 8-59): banks of Normalized Application Descriptors on
+        # Page 1Ch. Zero means the basic descriptors are all there is, which
+        # is what every profile said and what the panel assumed.
+        p01[0xAF] = p.get('nad_banks_175', 0x00)
         p01[0x8A] = (wl >> 8) & 0xFF
         p01[0x8B] = wl & 0xFF
         p01[0x8C] = (wl_tol >> 8) & 0xFF

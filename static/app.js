@@ -2008,6 +2008,24 @@ async function loadApplications() {
   const apps = res.data.applications;
   // The DataPath AppSelect dropdown offers exactly these.
   _advertisedApps = Array.isArray(apps) ? apps : [];
+  // 01h:175: where a module keeps Normalized Application Descriptors, the
+  // Applications here are the first fifteen of up to n*15 and the rest live
+  // on Page 1Ch. This tool reads the basic descriptors only, and selecting
+  // one of the others would also need its NAD block number in the Staged
+  // Control Set (18h:128-143) - so the honest thing is to say the list is
+  // partial rather than to present it as the module's Applications.
+  const nadEl = document.getElementById('apps-nad');
+  if (nadEl) {
+    const nad = res.data.nad || {};
+    nadEl.innerHTML = nad.supported
+      ? `<span class="flag-warn">▲</span> This module advertises <b>${nad.banks}`
+        + ` bank${nad.banks === 1 ? '' : 's'}</b> of Normalized Application `
+        + `Descriptors on Page 1Ch <span class="reg-meta">01h:175</span> — up `
+        + `to <b>${nad.max_applications} Applications</b>. The table above is `
+        + 'the basic descriptors only; this tool does not read Page 1Ch, and '
+        + 'cannot provision an Application that lives there.'
+      : '';
+  }
   if (!apps || apps.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="placeholder-text">No applications advertised.</td></tr>';
     return;

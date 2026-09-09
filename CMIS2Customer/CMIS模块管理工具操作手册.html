@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.45.0<br>
+      <b>版本</b>　2.46.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.45.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.45.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.46.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.46.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1637,6 +1637,32 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>awaiting DPInit</b>，悬停写明寄存器位置、含义，以及怎么把它落实。
     内置演示模块以前不管 Lower 02h 说什么都会重启通道，
     所以 Table 6-4 那一类模块<b>从来没被模拟过</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>Applications 表里那几条，可能<u>不是这只模块的全部</u>。</b>
+    这张表列的是<b>基本 Application 描述符</b>里的内容——<b>最多 15 条</b>，
+    DataPath 那个 AppSel 下拉框给的也正是这些。<br>
+    但 <code>01h:175</code>（Table 8-59）说的是：这 15 条<b>是不是全部</b>。
+    支持 <b>Normalized Application Descriptors（NAD）</b> 的模块，
+    把其余的 Application 放在 <b>Page 1Ch 的若干个 bank</b> 里，
+    最多能到 <b>n×15</b> 条。<br>
+    规范里有一句几乎是照着这个毛病写的：
+    把这个字段读错的主机「<b>甚至可能退化成只看到基本描述符里的前 15 条
+    Application</b>」。而工具<b>连这个字段都没读过</b>——
+    于是把 15 条当成全部摆出来，<b>一个字都没说</b>。
+    （这个字段在 CMIS 5.4 <b>加宽成了整字节</b>；
+    按 4 位读的话，16 个 bank 会变成 0，看着就像根本没有 NAD。）<br>
+    现在：模块声明了 NAD，Applications 表下面会明确写出
+    <b>有几个 bank、最多可能有多少条 Application、它们在 Page 1Ch</b>，
+    并且直说<b>这张表只是基本描述符</b>。<br>
+    有一点特意<b>没有</b>做：工具<b>不读 Page 1Ch</b>，
+    也<b>不能</b>去投运一条放在那里的 Application——
+    选中那样一条还需要把它的 <b>NAD 块号</b>写进暂存控制集
+    （<code>18h:128–143</code>）。
+    <b>假装能用比原来的沉默更糟</b>，所以这里只把话说清楚，
+    不做「支持了」的样子。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -3003,7 +3029,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.45.0<br>
+    CMIS Module Manager 操作手册 v2.46.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

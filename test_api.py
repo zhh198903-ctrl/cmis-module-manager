@@ -12324,6 +12324,124 @@ class TestTheChecksumOnTheModulesOwnData(CMISTestCase):
                       'the note does not say which bytes were summed')
 
 
+class TestTheApplicationsBeyondTheFirstFifteen(CMISTestCase):
+    """The Applications table shows what the basic descriptors hold - at most
+    fifteen - and the AppSelect dropdown offers exactly those.
+
+    01h:175 (Table 8-59) says whether that is the whole set. A module with
+    Normalized Application Descriptors keeps the rest on banks of Page 1Ch,
+    up to n*15 of them, and the specification warns about precisely the
+    failure this leaves: a host that misreads the field "may even fall back
+    to seeing only the first 15 Applications advertised in the Basic
+    Application Descriptors". This tool did not read the field at all, so it
+    showed fifteen of up to sixty with nothing to say they were a prefix.
+
+    Reading Page 1Ch is a feature rather than a fix, and selecting one of
+    those Applications also needs its NAD block number in the Staged Control
+    Set (18h:128-143). So what this round adds is the truth about the list,
+    not a claim to support it."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apps(self):
+        return self.assertOk(self.client.get('/api/module/applications'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the advertisement -------------------------------------------------
+
+    def test_zero_means_the_basic_descriptors_are_all_there_is(self):
+        import cmis_registers as c
+        got = c.parse_nad_support(0)
+        self.assertFalse(got['supported'])
+        self.assertEqual(got['banks'], 0)
+        self.assertEqual(got['max_applications'], 0)
+
+    def test_each_bank_holds_fifteen(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_nad_support(1)['max_applications'], 15)
+        self.assertEqual(c.parse_nad_support(4)['max_applications'], 60)
+
+    def test_the_field_is_a_whole_byte(self):
+        """It widened in CMIS 5.4, and the specification says what reading it
+        as four bits costs: n > 15 becomes n mod 16, so 16 banks reads as
+        none and the module looks like it has no NADs at all."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_nad_support(16)['banks'], 16)
+        self.assertTrue(c.parse_nad_support(16)['supported'])
+        self.assertEqual(c.parse_nad_support(255)['max_applications'],
+                         255 * 15)
+
+    # ---- and what the module says ------------------------------------------
+
+    def test_a_classical_module_says_nothing(self):
+        self._connect()
+        self.assertFalse(self._apps()['nad']['supported'])
+
+    def test_a_module_with_more_applications_says_so(self):
+        """Without a profile that has them, the note could never be seen and
+        the truncation could not be told from a module that really has two
+        Applications."""
+        self._connect('mock_24lane')
+        nad = self._apps()['nad']
+        self.assertTrue(nad['supported'])
+        self.assertEqual(nad['banks'], 4)
+        self.assertEqual(nad['max_applications'], 60)
+
+    def test_the_table_is_still_the_basic_descriptors(self):
+        """This round does not claim to read Page 1Ch. The list stays what it
+        was; what changes is that it no longer passes for the whole set."""
+        self._connect('mock_24lane')
+        self.assertLessEqual(len(self._apps()['applications']), 15)
+
+    # ---- and the panel -----------------------------------------------------
+
+    def test_the_note_has_somewhere_to_appear(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="apps-nad"', html)
+
+    def test_the_note_is_absent_on_a_classical_module(self):
+        js = self._js()
+        body = js[js.index("const nadEl = document.getElementById('apps-nad');"):]
+        body = body[:body.index('tbody.innerHTML')]
+        self.assertIn('nad.supported', body,
+                      'the note does not depend on whether the module has '
+                      'any')
+        self.assertIn(": ''", body,
+                      'a classical module still gets a note')
+
+    def test_the_note_says_how_many_and_where(self):
+        js = self._js()
+        self.assertIn('${nad.banks}', js)
+        self.assertIn('${nad.max_applications} Applications', js,
+                      'the note does not say how many there could be')
+        # Pinned where the badge says it, not anywhere in the file: the
+        # sentence below it also names Page 1Ch, so matching loosely passes
+        # while the line the operator reads has lost the location.
+        self.assertIn('Descriptors on Page 1Ch <span', js,
+                      'the note does not say where the others live')
+        self.assertIn('01h:175', js,
+                      'the note does not say what it is going by')
+
+    def test_the_note_does_not_claim_support(self):
+        """Saying the list is partial is the point; implying the rest are
+        reachable would be a worse lie than the silence it replaces."""
+        js = self._js()
+        self.assertIn('this tool does not read Page 1Ch', js)
+        self.assertIn('cannot provision an Application that lives there', js)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
