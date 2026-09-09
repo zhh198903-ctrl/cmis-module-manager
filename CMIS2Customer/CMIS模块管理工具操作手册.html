@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.47.0<br>
+      <b>版本</b>　2.48.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.47.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.47.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.48.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.48.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1195,6 +1195,24 @@
     <code>ConfigRejectedInvalidSI</code>（5h）本就是一个合法的拒绝理由，
     工具也会把它显示出来——但它指向的值在界面上<b>无处可查</b>。</span>
   </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>超过 8 条通道的模块，这张表以前<u>只有前 8 行</u>。</b>
+    Page 10h（暂存区）和 Page 11h（生效区）都是<b>按 bank 分组</b>的，
+    每个 bank 8 条通道；表里这六项<b>全是逐通道的字段</b>——
+    自适应 Tx 均衡和 Rx CDR 是<b>每条通道 1 个 bit</b>，
+    另外四项是<b>每条通道 4 个 bit</b>（4 个字节装 8 条通道）。
+    也就是说，<b>第 9 条通道起的设置在下一个 bank 的同一批地址上</b>，
+    而工具这<b>十二处读取全都停在 bank 0</b>。<br>
+    表格的行数是按读回来的长度铺的，所以结果不是报错，而是
+    <b>DataPath 页列着 16 条通道、Signal Integrity 表却只有 8 行</b>——
+    正好在通道多到需要逐条看均衡设置的模块上，
+    <code>ConfigRejectedInvalidSI</code>（<code>5h</code>）指向的那半边
+    <b>后 8 条通道无处可查</b>。<br>
+    现在十二处都<b>逐 bank 读</b>。8 通道模块只有一个 bank，
+    行为和以前完全一样。</span>
+  </div>
+
   <p>DataPath Config 页现在多了一张 <b>Signal Integrity</b> 表，逐通道列出这些值。
      <b>列是动态的</b>——只列出 <code>01h:161–162</code>（Table 8-54）声明支持的那几项，
      表尾写出模块声明的上限（<code>01h:153–154</code>）。
@@ -1861,6 +1879,21 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <code>mock_fr4x2</code>（2× 400G-FR4）会如实声明：
     通道 1–4 是<b>同一对光纤上的四个 CWDM 波长</b>，
     通道 5–8 走第二对——这正是原先那一列<b>没法表达</b>的情况。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>这份映射同样是<u>按 bank</u> 存的。</b>
+    <code>11h:240–255</code> 这 16 个字节描述的是
+    <b>本 bank 的 8 条媒体通道</b>（先 Tx1–8、再 Rx1–8），
+    所以 16 通道模块的第 9–16 条在<b>下一个 bank 的同一批地址</b>上。
+    工具以前<b>只读一个 bank，也只解析 8 条通道</b>，
+    于是<b>第 9 条通道起没有任何映射</b>——
+    而「没有映射」在表里的画法，跟模块自己说
+    <b>「未知或未定义」</b>（<code>0000b</code>）是<b>一模一样</b>的。
+    波分模块明明报了波长，界面上却什么都不写。<br>
+    现在逐 bank 读、按实际通道数解析。8 通道模块只有一个 bank，
+    行为和以前完全一样。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -3048,7 +3081,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.47.0<br>
+    CMIS Module Manager 操作手册 v2.48.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

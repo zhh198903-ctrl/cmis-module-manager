@@ -623,7 +623,7 @@ _FIBER_SHORT = {0: None, 1: 'TR1', 2: 'RT1', 3: 'TR2', 4: 'RT2',
                 5: 'TR3', 6: 'RT3', 7: 'TR4', 8: 'RT4'}
 
 
-def parse_media_lane_mapping(data: bytes) -> list:
+def parse_media_lane_mapping(data: bytes, lanes: int = 8) -> list:
     """11h:240-255 (Table 8-107), RO and Conditional.
 
     Sixteen bytes: media lanes 1-8 for Tx, then the same for Rx. The high
@@ -631,12 +631,21 @@ def parse_media_lane_mapping(data: bytes) -> list:
     0000b in either means "Mapping unknown or undefined" - which is what a
     module that does not multiplex says, so an absent mapping is an answer
     rather than a gap.
+
+    Page 11h is banked in groups of eight lanes, so a wider module repeats
+    those sixteen bytes per bank and `data` is the banks concatenated. Reading
+    one bank and describing eight lanes left the mapping of lanes 9 and up
+    blank - which the table draws exactly like "unknown or undefined", so a
+    WDM module reported no wavelength for its upper lanes rather than the one
+    it had named.
     """
     out = []
-    for lane in range(8):
+    for lane in range(lanes):
+        bank, within = divmod(lane, 8)
         entry = {}
         for side, off in (('tx', 0), ('rx', 8)):
-            byte = data[off + lane] if off + lane < len(data) else 0
+            i = bank * 16 + off + within
+            byte = data[i] if i < len(data) else 0
             wl = (byte >> 4) & 0x0F
             fiber = byte & 0x0F
             entry[side] = {

@@ -1227,6 +1227,43 @@ class MockBackend(I2CInterface):
                                     v = max(0, min(0xFFFF, v + bank * step))
                                     copy[a] = (v >> 8) & 0xFF
                                     copy[a + 1] = v & 0xFF
+                    # The Staged and Active Control Sets carry a signal
+                    # integrity setting per lane, so those bytes repeat per
+                    # bank as well. Every lane of bank 0 is provisioned the
+                    # same, so a plain copy would let a reader that only ever
+                    # selects bank 0 produce exactly the right answer. Move
+                    # them, staying inside what this profile advertises in
+                    # 01h:153-154 so the nudge cannot itself look invalid.
+                    if page in (0x10, 0x11):
+                        b153 = regs[0x01].get(0x99, 0xF7)
+                        b154 = regs[0x01].get(0x9A, 0x77)
+                        levels = [i for i in range(4)
+                                  if (b153 >> (4 + i)) & 1] or [0]
+                        caps = ((b153 & 0x0F), (b154 & 0x0F),
+                                ((b154 >> 4) & 0x0F))
+                        flags, blocks = ((0x99, 0xA1),
+                                         ((0x9C, caps[0]), (0xA2, caps[1]),
+                                          (0xA6, caps[2]), (0xAA, None)))                             if page == 0x10 else                                 ((0xD6, 0xDE),
+                                 ((0xD9, caps[0]), (0xDF, caps[1]),
+                                  (0xE3, caps[2]), (0xE7, None)))
+                        for a in flags:
+                            if a in copy:
+                                copy[a] &= ~(1 << ((bank - 1) % 8)) & 0xFF
+                        for base, cap in blocks:
+                            for off in range(4):
+                                a = base + off
+                                if a not in copy:
+                                    continue
+                                lo, hi = copy[a] & 0x0F, (copy[a] >> 4) & 0x0F
+                                if cap is None:
+                                    lo = levels[(levels.index(lo) + bank)
+                                                % len(levels)] if lo in levels                                         else levels[bank % len(levels)]
+                                    hi = levels[(levels.index(hi) + bank)
+                                                % len(levels)] if hi in levels                                         else levels[bank % len(levels)]
+                                else:
+                                    lo = min(lo + bank, cap)
+                                    hi = min(hi + bank, cap)
+                                copy[a] = (hi << 4) | lo
                     regs[(page, bank)] = copy
 
         # Page 0Ch's map, filled in last so it describes what was actually

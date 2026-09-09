@@ -12553,6 +12553,255 @@ class TestLaneFlagsPastTheFirstBank(CMISTestCase):
         self.assertIn('(lolByte >> bit) & 1', body)
 
 
+class TestSignalIntegrityPastTheFirstBank(CMISTestCase):
+    """Pages 10h and 11h are banked in groups of eight lanes, and every
+    signal integrity field on them is per lane: one bit per lane for adaptive
+    Tx equalization and the Rx CDR, one nibble per lane for the three targets
+    and the output amplitude. All twelve were read from bank 0.
+
+    The DataPath panel listed all sixteen lanes of a wide module and then
+    printed a signal integrity table eight rows long, because it sizes the
+    table from the length of the answer. So the half of the Staged Control
+    Set that ConfigRejectedInvalidSI names had nothing on screen for lanes 9
+    and up - on exactly the modules wide enough to need it.
+
+    Page 11h:240-255 is on the same page and had the same fault twice over:
+    read from bank 0, and parsed as eight lanes however wide the module was.
+    """
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _poke(self, page, addr, per_bank):
+        """Put different bytes in each bank of one control set register."""
+        for bank, val in enumerate(per_bank):
+            app_module._set_page(page, bank)
+            app_module._state['backend'].write_bytes(
+                addr, bytes(val if isinstance(val, (list, tuple)) else [val]))
+
+    def _si(self, key=None):
+        d = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        return d['signal_integrity'] if key is None else d[key]
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the width of the answer -------------------------------------------
+
+    def test_every_signal_integrity_field_covers_every_lane(self):
+        """Twelve reads, and one left at eight leaves a column of blanks in a
+        table the other eleven filled."""
+        self._connect()
+        self.assertEqual(app_module._state['lanes'], 16)
+        for key in ('signal_integrity', 'signal_integrity_active'):
+            block = self._si(key)
+            self.assertTrue(block, '%s came back empty' % key)
+            for field, values in block.items():
+                self.assertEqual(
+                    len(values), 16,
+                    '%s.%s covers %d of 16 lanes' % (key, field, len(values)))
+
+    def test_a_twenty_four_lane_module_reads_three_banks(self):
+        self._connect('mock_24lane')
+        self.assertEqual(app_module._state['lanes'], 24)
+        self.assertEqual(len(self._si()['rx_output_amplitude']), 24)
+
+    def test_an_eight_lane_module_is_unchanged(self):
+        """One bank is the case every profile had, and it must stay exact."""
+        self._connect('mock_dr8')
+        for values in self._si().values():
+            self.assertEqual(len(values), 8)
+
+    # ---- whose bank the values came from -----------------------------------
+
+    def test_a_nibble_field_reads_each_banks_own_four_bytes(self):
+        """Four bytes hold eight lanes; the next eight are the same four
+        addresses one bank along, not the same four bytes again."""
+        self._connect()
+        self._poke(0x10, 0x9C, [[0x54, 0x32, 0x10, 0x76],
+                                [0x01, 0x23, 0x45, 0x67]])
+        self.assertEqual(self._si()['tx_input_eq_target'],
+                         [4, 5, 2, 3, 0, 1, 6, 7, 1, 0, 3, 2, 5, 4, 7, 6])
+
+    def test_a_lane_flag_field_reads_each_banks_own_byte(self):
+        """One bit per lane, so bank 1 carries lanes 9-16 and nothing else."""
+        self._connect()
+        self._poke(0x10, 0xA1, [0x0F, 0xF0])
+        self.assertEqual(self._si()['rx_cdr_enable'],
+                         [True] * 4 + [False] * 8 + [True] * 4)
+
+    def test_the_active_control_set_is_banked_as_well(self):
+        """Page 11h is a different page with the same shape, and reporting
+        the staged half per bank while the value in force still came from
+        bank 0 would put a wrong "in force" line under eight lanes."""
+        self._connect()
+        self._poke(0x11, 0xD9, [[0x11, 0x22, 0x33, 0x44],
+                                [0x55, 0x66, 0x77, 0x00]])
+        self.assertEqual(self._si('signal_integrity_active')
+                         ['tx_input_eq_target'],
+                         [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 0, 0])
+
+    def test_all_six_staged_fields_moved_off_bank_zero(self):
+        """Fixing one and leaving five is the same bug with fewer columns."""
+        self._connect()
+        for addr, key, poke, want in (
+                (0x99, 'tx_adaptive_eq', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0xA1, 'rx_cdr_enable', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0x9C, 'tx_input_eq_target', [[0] * 4, [0x11] * 4],
+                 [0] * 8 + [1] * 8),
+                (0xA2, 'rx_eq_pre_cursor', [[0] * 4, [0x22] * 4],
+                 [0] * 8 + [2] * 8),
+                (0xA6, 'rx_eq_post_cursor', [[0] * 4, [0x33] * 4],
+                 [0] * 8 + [3] * 8),
+                (0xAA, 'rx_output_amplitude', [[0] * 4, [0x11] * 4],
+                 [0] * 8 + [1] * 8)):
+            self._poke(0x10, addr, poke)
+            self.assertEqual(self._si()[key], want,
+                             '%s still reads bank 0 for lanes 9-16' % key)
+
+    def test_all_six_active_fields_moved_off_bank_zero(self):
+        self._connect()
+        for addr, key, poke, want in (
+                (0xD6, 'tx_adaptive_eq', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0xDE, 'rx_cdr_enable', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0xD9, 'tx_input_eq_target', [[0] * 4, [0x11] * 4],
+                 [0] * 8 + [1] * 8),
+                (0xDF, 'rx_eq_pre_cursor', [[0] * 4, [0x22] * 4],
+                 [0] * 8 + [2] * 8),
+                (0xE3, 'rx_eq_post_cursor', [[0] * 4, [0x33] * 4],
+                 [0] * 8 + [3] * 8),
+                (0xE7, 'rx_output_amplitude', [[0] * 4, [0x11] * 4],
+                 [0] * 8 + [1] * 8)):
+            self._poke(0x11, addr, poke)
+            self.assertEqual(self._si('signal_integrity_active')[key], want,
+                             '%s still reads bank 0 for lanes 9-16' % key)
+
+    def test_the_wide_profiles_do_not_answer_the_same_in_every_bank(self):
+        """A fixture whose banks are identical copies cannot tell a reader
+        that walks them from one that selects bank 0 twice."""
+        self._connect()
+        for values in self._si().values():
+            if len(set(values)) > 1:
+                return
+        self.fail('every signal integrity field is uniform across all 16 '
+                  'lanes, so reading bank 0 twice would look correct')
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_table_takes_its_row_count_from_the_answer(self):
+        """The panel does not know the lane count itself, so a short answer
+        silently becomes a short table rather than a visible gap."""
+        self.assertIn("const lanes = (si[cols[0][0]] || []).length;",
+                      self._js())
+
+    # ---- the media lane map ------------------------------------------------
+
+    def test_the_media_lane_map_covers_every_lane(self):
+        """11h:240-255 is sixteen bytes per bank, not sixteen bytes."""
+        for backend, lanes in (('mock_1600g_16lane', 16),
+                               ('mock_24lane', 24), ('mock_dr8', 8)):
+            self._connect(backend)
+            mon = self.assertOk(self.client.get('/api/module/monitoring'))
+            self.assertEqual(len(mon['data']['media_lane_map']), lanes,
+                             '%s maps %d lanes' % (backend, lanes))
+
+    def test_the_map_reads_each_banks_own_sixteen_bytes(self):
+        """Tx1-8 then Rx1-8 within a bank, so lane 9 is byte 0 of bank 1 and
+        not byte 8 of bank 0 - which is Rx lane 1."""
+        import cmis_registers
+        bank0 = bytes([0x11, 0x21, 0x31, 0x41, 0x51, 0x61, 0x71, 0x81,
+                       0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x82])
+        bank1 = bytes([0x13] * 8 + [0x14] * 8)
+        m = cmis_registers.parse_media_lane_mapping(bank0 + bank1, 16)
+        self.assertEqual(len(m), 16)
+        self.assertEqual((m[0]['tx']['wavelength'], m[0]['rx']['fiber']),
+                         (1, 2))
+        self.assertEqual((m[7]['tx']['wavelength'], m[7]['rx']['fiber']),
+                         (8, 2))
+        self.assertEqual((m[8]['tx']['wavelength'], m[8]['tx']['fiber']),
+                         (1, 3), 'lane 9 did not come from bank 1')
+        self.assertEqual((m[15]['rx']['wavelength'], m[15]['rx']['fiber']),
+                         (1, 4))
+
+    def test_the_map_still_describes_eight_lanes_by_default(self):
+        """Everything that reads one bank keeps its old answer."""
+        import cmis_registers
+        one = bytes([0x11, 0x21, 0x31, 0x41, 0x13, 0x23, 0x33, 0x43,
+                     0x12, 0x22, 0x32, 0x42, 0x14, 0x24, 0x34, 0x44])
+        self.assertEqual(len(cmis_registers.parse_media_lane_mapping(one)), 8)
+
+    def test_the_map_is_asked_for_from_every_bank(self):
+        """Neither wide profile carries a mapping - both are parallel modules
+        whose media lanes have no wavelength to name, and "unknown" is the
+        honest answer for them. So no fixture can tell a one-bank read from a
+        two-bank one by its content, and inventing optics for a demo module to
+        make the test easier would put a wavelength on screen that no such
+        module has.
+
+        What the fault actually was is that the other bank never got selected,
+        and _set_page is the one place a bank is chosen."""
+        seen = []
+        real = app_module._set_page
+
+        def spy(page, bank=0):
+            seen.append((page, bank))
+            return real(page, bank)
+
+        app_module._set_page = spy
+        try:
+            self._connect()
+        finally:
+            app_module._set_page = real
+        self.assertIn((0x11, 1), seen,
+                      'Page 11h bank 1 was never selected, so the mapping of '
+                      'lanes 9-16 was never read')
+
+    def test_an_eight_lane_module_selects_no_second_bank(self):
+        """One bank is all there is, and selecting a bank that does not exist
+        is a wasted page change on every connect."""
+        seen = []
+        real = app_module._set_page
+
+        def spy(page, bank=0):
+            seen.append((page, bank))
+            return real(page, bank)
+
+        app_module._set_page = spy
+        try:
+            self._connect('mock_dr8')
+        finally:
+            app_module._set_page = real
+        self.assertEqual([s for s in seen if s[1] != 0], [])
+
+    def test_the_map_is_sized_from_this_module_not_the_last(self):
+        """_state["lanes"] is assigned from the capability block only after
+        discovery returns, so a banked read inside it that trusts _state
+        walks the previous module's banks."""
+        self._connect('mock_24lane')
+        self._connect('mock_dr8')
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))
+        self.assertEqual(len(mon['data']['media_lane_map']), 8)
+        self._connect('mock_1600g_16lane')
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))
+        self.assertEqual(len(mon['data']['media_lane_map']), 16)
+
+    def test_a_wdm_module_still_names_its_wavelengths(self):
+        """The eight-lane WDM profile is what the mapping was built for."""
+        self._connect('mock_fr4x2')
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))
+        m = mon['data']['media_lane_map']
+        self.assertEqual([e['tx']['wavelength'] for e in m],
+                         [1, 2, 3, 4, 1, 2, 3, 4])
+        self.assertEqual([e['tx']['fiber'] for e in m],
+                         [1, 1, 1, 1, 3, 3, 3, 3])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

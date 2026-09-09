@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.47.0'
+__version__ = '2.48.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -331,6 +331,34 @@ def _read_grid_ranges(with_300: bool) -> bytes:
     return _read_upper(page, addr, length + (4 if with_300 else 0))
 
 
+def _si_nibbles(reg) -> list:
+    """A 4-bit signal integrity value per lane, across every bank.
+
+    Four bytes hold eight lanes, and the next eight lanes are those same four
+    addresses in the next bank. Unpacking bank 0 alone returned eight values
+    however wide the module was, and the panel sizes its table from the length
+    of the answer - so a sixteen lane module got an eight row table under a
+    DataPath list of sixteen.
+    """
+    out = []
+    for _bank, raw in _read_banks(*reg):
+        out += cmis.unpack_nibbles(raw)
+    return out[:_state['lanes']]
+
+
+def _si_lane_flags(reg) -> list:
+    """One signal integrity bit per lane, across every bank.
+
+    _read_banked concatenates the banks, so indexing [0] took the first byte
+    and threw the rest away - the same eight-lane answer by a different
+    route.
+    """
+    out = []
+    for _bank, raw in _read_banks(reg[0], reg[1], 1):
+        out += cmis.parse_lane_flags(raw[0])
+    return out[:_state['lanes']]
+
+
 def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
     """Read a lane-banked register for every lane the module has.
 
@@ -464,9 +492,15 @@ def _discover_capabilities() -> dict:
         caps.update(ext)
         # 11h:240-255 (Table 8-107) is an advertisement rather than live
         # state, so it is read once here with the rest rather than on every
-        # monitoring poll.
+        # monitoring poll. The width comes from caps and not from
+        # _state['lanes']: that is assigned from this dict only after
+        # discovery returns, so reading it here would size this module's
+        # banks from the one connected before it.
+        lane_count = caps.get('max_lanes', 8)
         caps['media_lane_map'] = cmis.parse_media_lane_mapping(
-            _read_upper(*cmis.REG_MEDIA_LANE_MAP))
+            b''.join(raw for _b, raw in
+                     _read_banks(*cmis.REG_MEDIA_LANE_MAP, lane_count)),
+            lane_count)
         # Table 8-46 defines the wavelength fields for single wavelength
         # modules and says the interpretation is not uniquely defined
         # otherwise. The lane mapping is what knows.
@@ -1150,29 +1184,28 @@ def api_datapath_get():
         si_adv = ((_state.get('caps') or {}).get('si')) or {}
         si = {}
         try:
-            n = _state['lanes']
             if si_adv.get('tx_adaptive_input_eq'):
-                si['tx_adaptive_eq'] = cmis.parse_lane_flags(
-                    _read_banked(*cmis.REG_SCS_TX_ADAPT_EQ[:2], 1)[0])[:n]
+                si['tx_adaptive_eq'] = _si_lane_flags(
+                    cmis.REG_SCS_TX_ADAPT_EQ)
             if si_adv.get('tx_input_eq_host_control'):
-                si['tx_input_eq_target'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_SCS_TX_EQ_TARGET))[:n]
+                si['tx_input_eq_target'] = _si_nibbles(
+                    cmis.REG_SCS_TX_EQ_TARGET)
             if si_adv.get('rx_cdr_bypass_control'):
-                si['rx_cdr_enable'] = cmis.parse_lane_flags(
-                    _read_banked(*cmis.REG_SCS_RX_CDR[:2], 1)[0])[:n]
+                si['rx_cdr_enable'] = _si_lane_flags(
+                    cmis.REG_SCS_RX_CDR)
             eq = si_adv.get('rx_output_eq_control', 0)
             if eq in (1, 3):
-                si['rx_eq_pre_cursor'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_SCS_RX_EQ_PRE))[:n]
+                si['rx_eq_pre_cursor'] = _si_nibbles(
+                    cmis.REG_SCS_RX_EQ_PRE)
             if eq in (2, 3):
                 # With only pre-cursor advertised the post-cursor bytes carry
                 # the pre-cursor target instead (Table 8-84), so the label has
                 # to follow the advertisement rather than the address.
-                si['rx_eq_post_cursor'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_SCS_RX_EQ_POST))[:n]
+                si['rx_eq_post_cursor'] = _si_nibbles(
+                    cmis.REG_SCS_RX_EQ_POST)
             if si_adv.get('rx_output_amplitude_control'):
-                si['rx_output_amplitude'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_SCS_RX_AMPLITUDE))[:n]
+                si['rx_output_amplitude'] = _si_nibbles(
+                    cmis.REG_SCS_RX_AMPLITUDE)
         except Exception:
             # An optional control area a module does not implement is not a
             # reason to fail the whole page.
@@ -1185,26 +1218,25 @@ def api_datapath_get():
         # staged numbers above are a request and these are the answer.
         si_active = {}
         try:
-            n = _state['lanes']
             if si_adv.get('tx_adaptive_input_eq'):
-                si_active['tx_adaptive_eq'] = cmis.parse_lane_flags(
-                    _read_banked(*cmis.REG_ACS_TX_ADAPT_EQ[:2], 1)[0])[:n]
+                si_active['tx_adaptive_eq'] = _si_lane_flags(
+                    cmis.REG_ACS_TX_ADAPT_EQ)
             if si_adv.get('tx_input_eq_host_control'):
-                si_active['tx_input_eq_target'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_ACS_TX_EQ_TARGET))[:n]
+                si_active['tx_input_eq_target'] = _si_nibbles(
+                    cmis.REG_ACS_TX_EQ_TARGET)
             if si_adv.get('rx_cdr_bypass_control'):
-                si_active['rx_cdr_enable'] = cmis.parse_lane_flags(
-                    _read_banked(*cmis.REG_ACS_RX_CDR[:2], 1)[0])[:n]
+                si_active['rx_cdr_enable'] = _si_lane_flags(
+                    cmis.REG_ACS_RX_CDR)
             eq = si_adv.get('rx_output_eq_control', 0)
             if eq in (1, 3):
-                si_active['rx_eq_pre_cursor'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_ACS_RX_EQ_PRE))[:n]
+                si_active['rx_eq_pre_cursor'] = _si_nibbles(
+                    cmis.REG_ACS_RX_EQ_PRE)
             if eq in (2, 3):
-                si_active['rx_eq_post_cursor'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_ACS_RX_EQ_POST))[:n]
+                si_active['rx_eq_post_cursor'] = _si_nibbles(
+                    cmis.REG_ACS_RX_EQ_POST)
             if si_adv.get('rx_output_amplitude_control'):
-                si_active['rx_output_amplitude'] = cmis.unpack_nibbles(
-                    _read_upper(*cmis.REG_ACS_RX_AMPLITUDE))[:n]
+                si_active['rx_output_amplitude'] = _si_nibbles(
+                    cmis.REG_ACS_RX_AMPLITUDE)
         except Exception:
             si_active = {}
 
