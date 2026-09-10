@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.55.0<br>
+      <b>版本</b>　2.56.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.55.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.55.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.56.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.56.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1304,6 +1304,22 @@
     <span class="reg-meta">■ 暂存的映射尚未生效 —— 请点提交</span><br>
     另外，<b>被拒绝</b>（结果码 3–6）<b>不会</b>被当成「正在执行」——
     否则你会一直等一件早就失败了的事。</span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>演示模块现在会像真模块一样「换页要等」。</b>
+    规范规定：写完选页寄存器之后，模块最多要 <b>10 ms</b>
+    （或它在 <code>01h:169</code> 里声明的那一小部分）才会用<b>新页</b>回答；
+    等不够就会读回<b>上一页的内容</b>——这正是本工具最看重的一条时序规则，
+    漏了它的表现是<b>时有时无的数据错乱</b>，很难查。<br>
+    以前演示模块是<b>立刻换页</b>的，所以它<b>分辨不出</b>「守规矩的上位机」和
+    「不守规矩的上位机」：真把那个等待删掉，演示里也一切正常。
+    现在演示模块<b>换页后会先继续回答上一页</b>，直到它声明的时间到了为止。<br>
+    这不改变你使用工具的方式（工具一直是按规矩等的），
+    但它让这条规则<b>真正被验证</b>了：把等待去掉，测试会立刻大面积失败。
+    <b>下位内存不受影响</b>（它本来就不分页），
+    <b>重复选中同一页也不会重新计时</b>。</span>
   </div>
 
   <h3>Signal Integrity：Apply 一并提交的另一半</h3>
@@ -3229,7 +3245,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.55.0<br>
+    CMIS Module Manager 操作手册 v2.56.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

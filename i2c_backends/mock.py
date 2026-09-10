@@ -611,6 +611,8 @@ class MockBackend(I2CInterface):
             (self.PROFILE.get('misc_features_251', 0xAA) & 0x03) == 2) else 8
         self._current_page = 0x00
         self._current_bank = 0x00
+        self._prev_selected = None
+        self._page_changed_at = 0.0
         self._last_module_state = None
         self._start_time = time.time()
         # State machine tracking
@@ -2316,6 +2318,16 @@ class MockBackend(I2CInterface):
             'current_page': self._current_page,
         }
 
+    def _bpc_hold(self) -> float:
+        """How long this profile says it needs after a Bank/Page change.
+
+        01h:169.3-0 is how much of tBPC the module actually needs, as
+        tBPC / 2^i, so a module advertising a smaller number is held to the
+        smaller number and not to the 10 ms ceiling.
+        """
+        p01 = self._registers.get(0x01, {})
+        return 0.010 / (2 ** (p01.get(0xA9, 0x00) & 0x0F))
+
     def read_bytes(self, register: int, length: int) -> bytes:
         if not self._connected:
             raise IOError("Not connected")
@@ -2331,11 +2343,25 @@ class MockBackend(I2CInterface):
         if register < 0x80:
             page_dict = self._registers.get(None, {})
         else:
+            # Table 8-49 / 8-56: after a write to the Bank and Page Select
+            # bytes the module needs up to tBPC - 10 ms, or the fraction it
+            # advertises in 01h:169 - before upper memory answers from the
+            # new page. Read sooner and a real module hands back the page
+            # that was selected before, which is the "intermittent garbage"
+            # failure the hold exists to prevent.
+            #
+            # A mock that switched instantly could not tell a host that
+            # honours tBPC from one that does not, so the one timing rule
+            # this tool most needs to get right was the one nothing checked.
+            page, bank = self._current_page, self._current_bank
+            if (self._prev_selected is not None
+                    and time.monotonic() - self._page_changed_at
+                    < self._bpc_hold()):
+                page, bank = self._prev_selected
             # Bank-specific data when the profile supplies it, otherwise the
             # page as-is: an 8-lane module has only bank 0 and never notices.
             page_dict = self._registers.get(
-                (self._current_page, self._current_bank),
-                self._registers.get(self._current_page, {}))
+                (page, bank), self._registers.get(page, {}))
         result = bytearray(length)
         for i in range(length):
             result[i] = page_dict.get(register + i, 0x00)
@@ -2375,10 +2401,18 @@ class MockBackend(I2CInterface):
             page_dict = self._registers.setdefault(None, {})
             for i, b in enumerate(data):
                 page_dict[register + i] = b
+            was = (self._current_page, self._current_bank)
             if register <= 0x7E <= register + len(data) - 1:
                 self._current_bank = data[0x7E - register]
             if register <= 0x7F <= register + len(data) - 1:
                 self._current_page = data[0x7F - register]
+            if (self._current_page, self._current_bank) != was:
+                # tBPC runs from an actual change. Re-selecting what is
+                # already selected changes nothing, so it owes nothing: a
+                # mock that started a hold anyway would punish the page
+                # cache for doing its job.
+                self._prev_selected = was
+                self._page_changed_at = time.monotonic()
         else:
             for page_dict in self._write_targets():
                 for i, b in enumerate(data):

@@ -13790,6 +13790,125 @@ class TestACommitThatIsStillRunning(CMISTestCase):
                       'the note does not say where the duration came from')
 
 
+class TestTheMockHoldsThePageChangeOff(CMISTestCase):
+    """After a write to the Bank and Page Select bytes a module needs up to
+    tBPC - 10 ms, or the fraction it advertises in 01h:169 - before upper
+    memory answers from the new page. Read sooner and a real module hands
+    back the page that was selected before, which is the intermittent
+    garbage the hold exists to prevent.
+
+    The mock switched instantly, so it could not tell a host that honours
+    tBPC from one that does not: the single timing rule this tool most needs
+    to get right was the one nothing checked. The sleep in _set_page was
+    guarded only by a test that pinned it as source text, and the rule that
+    every page-mapping change must invalidate the cache had nothing behind
+    it at all - a missed one reads the wrong page in silence."""
+
+    def _backend(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    @staticmethod
+    def _select(b, page, bank=0):
+        b.write_bytes(0x7E, bytes([bank, page]))
+
+    # ---- what a read too soon gets -----------------------------------------
+
+    def test_a_read_before_the_hold_gets_the_previous_page(self):
+        b = self._backend()
+        self._select(b, 0x01)
+        time.sleep(0.02)
+        before = b.read_bytes(0x80, 4)
+        self._select(b, 0x11)
+        self.assertEqual(b.read_bytes(0x80, 4), before,
+                         'the mock switched pages with no hold, so a host '
+                         'that skips tBPC looks correct')
+
+    def test_a_read_after_the_hold_gets_the_new_page(self):
+        b = self._backend()
+        self._select(b, 0x01)
+        time.sleep(0.02)
+        before = b.read_bytes(0x80, 4)
+        self._select(b, 0x11)
+        time.sleep(0.012)
+        self.assertNotEqual(b.read_bytes(0x80, 4), before)
+
+    def test_lower_memory_is_never_held(self):
+        """The hold is on the paged half. Lower memory is always there, and
+        holding it would break reads that have nothing to do with the page."""
+        b = self._backend()
+        time.sleep(0.012)
+        settled = b.read_bytes(0x00, 4)
+        self._select(b, 0x11)
+        self.assertEqual(b.read_bytes(0x00, 4), settled,
+                         'a page change changed what lower memory answers')
+
+    def test_reselecting_the_same_page_owes_nothing(self):
+        """_set_page skips a redundant write; a mock that started a hold for
+        one anyway would punish the cache for working."""
+        b = self._backend()
+        self._select(b, 0x11)
+        time.sleep(0.012)
+        now = b.read_bytes(0x80, 4)
+        self._select(b, 0x11)
+        self.assertEqual(b.read_bytes(0x80, 4), now)
+
+    def test_reselecting_during_a_hold_does_not_clear_it(self):
+        """Re-selecting the page already selected leaves previous and current
+        the same, so the test above cannot see whether a hold was started -
+        both answers are identical. What it can see is a hold being *reset*:
+        write the same page again while one is running and a mock that treats
+        it as a change starts measuring from the previous page being the one
+        just selected, which lets the read escape the hold early."""
+        b = self._backend()
+        self._select(b, 0x01)
+        time.sleep(0.012)
+        first = b.read_bytes(0x80, 4)
+        self._select(b, 0x11)          # hold starts, previous page is 01h
+        self._select(b, 0x11)          # redundant: must change nothing
+        self.assertEqual(b.read_bytes(0x80, 4), first,
+                         'writing the selected page again cleared the hold '
+                         'that was still running')
+
+    # ---- the length of the hold comes from the module ----------------------
+
+    def test_the_hold_follows_what_the_module_advertises(self):
+        """01h:169.3-0 is tBPC / 2^i. A module asking for less is held to
+        less, not to the ceiling."""
+        b = self._backend()
+        b._registers[0x01][0xA9] = 0x04          # tBPC / 16 = 625 us
+        self.assertAlmostEqual(b._bpc_hold(), 0.010 / 16, places=6)
+        self._select(b, 0x01)
+        time.sleep(0.02)
+        before = b.read_bytes(0x80, 4)
+        self._select(b, 0x11)
+        time.sleep(0.002)                         # past 625 us, well short of 10 ms
+        self.assertNotEqual(b.read_bytes(0x80, 4), before,
+                            'the mock held for longer than this module asked')
+
+    def test_the_default_is_the_full_ten_milliseconds(self):
+        b = self._backend()
+        self.assertAlmostEqual(b._bpc_hold(), 0.010, places=6)
+
+    # ---- the hold is load bearing ------------------------------------------
+
+    def test_the_tool_waits_long_enough_to_read_the_page_it_asked_for(self):
+        """The point of the whole change: _set_page's wait is now checked by
+        what comes back, not by a test reading the source."""
+        b = self._backend()
+        app_module._invalidate_page()
+        app_module._set_page(0x01)
+        first = b.read_bytes(0x80, 4)
+        app_module._invalidate_page()
+        app_module._set_page(0x11)
+        self.assertNotEqual(b.read_bytes(0x80, 4), first,
+                            '_set_page returned before the module could '
+                            'answer from the new page')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
