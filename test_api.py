@@ -13393,6 +13393,108 @@ class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
                       'the Apply refusal is shown for the default 3 seconds')
 
 
+class TestDataPathWritesWhileTheModuleIsAsleep(CMISTestCase):
+    """8.13.1 says of the DPDeinit byte that "the module evaluates this Byte
+    only in Module State ModuleReady", and 6.3.3 that a DPSM "remains in the
+    DPDeactivated State until the Module State Machine is in the ModuleReady
+    state and an exit condition from the DPDeactivated state is met".
+
+    So outside ModuleReady a deinit is never read and no Apply can move a
+    Data Path anywhere. Both were written and answered ok, which says the
+    module reconfigured itself while it was asleep.
+
+    The refusal has to be selective. Table 8-77 puts the lane controls on
+    10h:129-142 - polarity, output disable, squelch - "independent of the Data
+    Path State machine or control sets", and they take effect on the write,
+    so low power is no reason to refuse them. Staging an AppSelect is a write
+    to memory that the DPSM does not see until an Apply arrives."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _low_power(self):
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'action': 'low_power'}),
+            content_type='application/json'))
+        self.assertEqual(
+            self.assertOk(self.client.get('/api/module/status'))
+            ['data']['module_state'], 'ModuleLowPwr')
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    # ---- what the state machines have to be awake for ----------------------
+
+    def test_a_deinit_is_refused(self):
+        self._connect()
+        self._low_power()
+        rv = self._post(dp_deinit_mask=0xFF)
+        self.assertErr(rv, 409)
+        self.assertIn('DPDeinit', json.loads(rv.data)['message'])
+
+    def test_both_apply_triggers_are_refused(self):
+        self._connect()
+        self._low_power()
+        for key, name in (('apply', 'Apply'),
+                          ('apply_immediate', 'ApplyImmediate')):
+            rv = self._post(**{key: True})
+            self.assertErr(rv, 409)
+            self.assertIn(name, json.loads(rv.data)['message'])
+
+    def test_the_refusal_names_the_state_the_module_is_in(self):
+        """"Not now" leaves the operator with nothing to act on."""
+        self._connect()
+        self._low_power()
+        self.assertIn('ModuleLowPwr',
+                      json.loads(self._post(apply=True).data)['message'])
+
+    # ---- what stays writable ------------------------------------------------
+
+    def test_the_lane_controls_still_work(self):
+        """Table 8-77 calls these independent of the Data Path state machine
+        and says they take effect on the write, so refusing them would take
+        away a control that does work."""
+        self._connect()
+        self._low_power()
+        self.assertOk(self._post(tx_disable_mask=0x01))
+        self.assertOk(self._post(tx_polarity_flip_mask=0x03))
+        self.assertOk(self._post(rx_polarity_flip_mask=0x02))
+
+    def test_staging_an_application_still_works(self):
+        """Staging is a write to memory; the state machines do not see it
+        until an Apply arrives, and that is what gets refused."""
+        self._connect()
+        self._low_power()
+        self.assertOk(self._post(app_select=[1] * 8))
+
+    def test_a_ready_module_is_unaffected(self):
+        self._connect()
+        self.assertOk(self._post(dp_deinit_mask=0x00))
+        self.assertOk(self._post(apply=True))
+
+    def test_coming_back_to_high_power_restores_it(self):
+        """A guard that latched would leave the Data Path unmanageable."""
+        self._connect()
+        self._low_power()
+        self.assertErr(self._post(dp_deinit_mask=0xFF), 409)
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'action': 'high_power'}),
+            content_type='application/json'))
+        self.assertOk(self._post(dp_deinit_mask=0x00))
+
+    def test_a_request_that_does_not_name_a_deinit_is_not_refused_for_one(self):
+        """The endpoint rewrites the current DPDeinit when the caller does not
+        send one. Refusing on that would block the lane controls, which is
+        exactly what this round set out not to do."""
+        self._connect()
+        self._low_power()
+        self.assertOk(self._post(tx_disable_mask=0x00))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

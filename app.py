@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.52.0'
+__version__ = '2.53.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1543,6 +1543,34 @@ def api_datapath_set():
                           _mask_now(cmis.REG_DP_DEINIT), banks)
         apply = bool(body.get('apply', False))
         apply_now = bool(body.get('apply_immediate', False))
+
+        # 8.13.1 says of the DPDeinit byte that "the module evaluates this
+        # Byte only in Module State ModuleReady", and 6.3.3 that a DPSM
+        # "remains in the DPDeactivated State until the Module State Machine
+        # is in the ModuleReady state". So outside ModuleReady a deinit is not
+        # read and no Apply can move a Data Path anywhere - both are discarded
+        # in silence, and answering ok to them says the module reconfigured
+        # itself while it was asleep.
+        #
+        # Only the parts the DPSM has to act on. Table 8-77 puts the lane
+        # controls on 10h:129-142 - polarity, output disable, squelch -
+        # "independent of the Data Path State machine or control sets", and
+        # they take effect on the write, so they keep working here. Staging an
+        # AppSelect is a write to memory and is likewise none of the DPSM's
+        # business until an Apply arrives.
+        wants_dpsm = [name for name, on in
+                      (('DPDeinit', 'dp_deinit_mask' in body),
+                       ('Apply', apply), ('ApplyImmediate', apply_now)) if on]
+        if wants_dpsm:
+            module_state = cmis.parse_module_state(_read_lower(0x03, 1)[0])
+            if module_state != 'ModuleReady':
+                return _err(
+                    '%s needs the Data Path state machines, and this module '
+                    'is in %s: a deinit is not evaluated and no Data Path can '
+                    'leave DPDeactivated outside ModuleReady, so this would '
+                    'report success and change nothing. Bring the module to '
+                    'high power first'
+                    % (' and '.join(wants_dpsm), module_state), 409)
 
         # The state each Data Path was in when the host decided to Apply, read
         # before this request writes anything. Reading it afterwards would see
