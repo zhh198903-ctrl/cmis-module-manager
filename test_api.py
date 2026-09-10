@@ -64,7 +64,39 @@ def deactivated(client, lanes=0xFF):
                      data=json.dumps({'dp_deinit_mask': lanes, 'apply': True}),
                      content_type='application/json')
     assert rv.status_code == 200, rv.data
-    time.sleep(0.5)
+    settled(client)
+
+
+def settled(client, timeout=5.0):
+    """Wait until no lane is still in a transient DPSM state.
+
+    A fixed sleep guaranteed neither of the two things that have to be true,
+    and it failed differently depending on which one was still pending.
+
+    6.2.4 says the module "silently ignores requests received while still
+    being in a transient state". A sleep does not read, and the model only
+    advances when read, so half a second of sleeping left the coherent
+    profiles in DPTxTurnOff - and the reconfiguration that followed would
+    have been discarded on real hardware while the mock applied it anyway.
+
+    8.13.3 then runs an Apply as acceptance, validation, execution and result
+    feedback, and the DPSM reaches DPDeactivated well before that finishes.
+    Polling makes ConfigStatus the later of the two every time: measured
+    across dr8, both coherent profiles and 1600g_dr8, the transient states
+    clear at 0.06-0.10 s and ConfigInProgress at 0.42-0.47 s. So waiting on
+    ConfigStatus subsumes the transient wait here, and a second condition
+    that can never be the binding one would only look like it was doing
+    something. The spec rule itself is enforced by the endpoint, not by this.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        rv = client.get('/api/module/monitoring')
+        if rv.status_code == 200:
+            lanes = json.loads(rv.data)['data']['lanes']
+            if all(l.get('config_status_code') != 0xC for l in lanes):
+                return
+        time.sleep(0.1)
+
 
 
 def reconfigure(client, app_select, **body):
@@ -13232,6 +13264,133 @@ class TestLaneReadingsWhileTheDataPathIsDown(CMISTestCase):
         block = js[i:js.index('const txTip', i)]
         self.assertIn('lane.datapath_state', block,
                       'the note does not say which state the lane is in')
+
+
+class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
+    """Section 6.2.4 names two ways an Apply is discarded without a word.
+
+    "hosts are advised not to invoke an Apply trigger on the lanes of a Data
+    Path in a transient state (DPInit, DPDeinit, DPTxTurnOn, or DPTxTurnOff),
+    as the module silently ignores requests received while still being in a
+    transient state" - and separately, "the module silently ignores
+    ApplyImmediate in all other cases" than DPInitialized and DPActivated.
+
+    The tool guarded the advertisement half of the second rule and neither
+    state condition, so it wrote the trigger, answered ok, and listed exactly
+    which lanes it had applied. A silent discard is the one outcome an
+    operator cannot tell from success: they walk away believing the Data Path
+    is carrying the new configuration."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _states(self):
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        return [l['datapath_state'] for l in d['lanes']]
+
+    def _make_transient(self):
+        """The release sequence itself starts a transient, which is why this
+        is the shape the guard has to allow and then refuse a second time."""
+        import cmis_registers
+        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+        self.assertTrue(any(s in cmis_registers.DP_STATES_TRANSIENT
+                            for s in self._states()),
+                        'the paths settled before the test could look')
+
+    # ---- the two sets ------------------------------------------------------
+
+    def test_the_transient_states_are_the_four_the_spec_names(self):
+        import cmis_registers
+        self.assertEqual(sorted(cmis_registers.DP_STATES_TRANSIENT),
+                         ['Deinit', 'Init', 'TxTurnOff', 'TxTurnOn'])
+
+    def test_apply_immediate_is_for_the_two_initialized_states(self):
+        import cmis_registers
+        self.assertEqual(sorted(cmis_registers.DP_STATES_APPLY_IMMEDIATE),
+                         ['Activated', 'Initialized'])
+
+    # ---- what is refused ----------------------------------------------------
+
+    def test_an_apply_at_a_transient_lane_is_refused(self):
+        self._connect()
+        self._make_transient()
+        rv = self._post(apply=True)
+        self.assertErr(rv, 409)
+        self.assertIn('transient', json.loads(rv.data)['message'])
+
+    def test_the_refusal_names_the_lane_and_its_state(self):
+        """"Try again later" sends the operator back to guessing."""
+        self._connect()
+        self._make_transient()
+        msg = json.loads(self._post(apply=True).data)['message']
+        self.assertIn('1 (', msg)
+        self.assertTrue(any(s in msg for s in
+                            ('Deinit', 'TxTurnOff', 'Init', 'TxTurnOn')),
+                        'the refusal does not say which state: %s' % msg)
+
+    def test_apply_immediate_outside_the_initialized_states_is_refused(self):
+        """Deactivated is not transient, so only the ApplyImmediate rule
+        catches it."""
+        self._connect()
+        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+        settled(self.client)
+        self.assertEqual(set(self._states()), {'Deactivated'})
+        rv = self._post(apply_immediate=True)
+        self.assertErr(rv, 409)
+        self.assertIn('ApplyImmediate', json.loads(rv.data)['message'])
+
+    # ---- what is still allowed ----------------------------------------------
+
+    def test_the_release_sequence_does_not_refuse_itself(self):
+        """6.2.4.3 mandates writing DPDeinit and the Apply together. Reading
+        the states after this request's own writes made that request refuse
+        the transient it had just started."""
+        self._connect()
+        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+
+    def test_apply_is_still_allowed_on_a_stopped_data_path(self):
+        """ApplyDPInit on a DPDeactivated path is what the spec recommends,
+        so the ApplyImmediate rule must not be applied to it."""
+        self._connect()
+        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+        settled(self.client)
+        self.assertOk(self._post(app_select=[1] * 8, dp_deinit_mask=0x00,
+                                 apply=True))
+
+    def test_a_stepped_only_module_keeps_its_behaviour(self):
+        """The transient rule is stated for modules that support
+        intervention-free reconfiguration; inventing it elsewhere would
+        refuse writes the spec does not say are discarded."""
+        self._connect('mock_1600g_dr8')
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        self.assertFalse(caps['config']['hot_reconfig'])
+        self._make_transient()
+        self.assertOk(self._post(apply=True))
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_the_refusal_stays_on_screen_long_enough_to_read(self):
+        """It names lanes and states, and the default toast is three
+        seconds."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        # Three panels share this message; the one that matters is the
+        # DataPath apply, so the search starts at its request body.
+        start = js.index('...(immediate ? { apply_immediate: true }')
+        i = js.index('`Apply failed: ${res.message}`', start)
+        line = js[i:js.index('\n', i)]
+        self.assertIn('12000', line,
+                      'the Apply refusal is shown for the default 3 seconds')
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.51.0'
+__version__ = '2.52.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1544,6 +1544,16 @@ def api_datapath_set():
         apply = bool(body.get('apply', False))
         apply_now = bool(body.get('apply_immediate', False))
 
+        # The state each Data Path was in when the host decided to Apply, read
+        # before this request writes anything. Reading it afterwards would see
+        # the transient this very request had just started - a DPDeinit and an
+        # Apply in one write is the release sequence 6.2.4.3 mandates, and it
+        # would have refused itself.
+        dp_states_before = []
+        if apply or apply_now:
+            for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+                dp_states_before += cmis.parse_dp_states(raw)
+
         # What is staged right now, and how wide each Application is - both
         # are needed to work out which Data Paths this write actually touches.
         prev_app_select = []
@@ -1641,6 +1651,40 @@ def api_datapath_set():
                                         host_lanes_by_app)
             if not need:
                 need = set(range(_state['lanes']))
+            # Section 6.2.4 names two ways an Apply is thrown away without a
+            # word. Reporting which lanes were applied while the module
+            # discarded the write is worse than refusing: the operator moves
+            # on believing the Data Path is carrying the new configuration.
+            hot = (_state.get('caps') or {}).get('config', {}).get(
+                'hot_reconfig', False)
+
+            def _named(idxs):
+                return ', '.join('%d (%s)' % (i + 1, dp_states_before[i])
+                                 for i in idxs)
+
+            if hot:
+                stuck = sorted(i for i in need
+                               if i < len(dp_states_before)
+                               and cmis.dp_state_is_transient(
+                                   dp_states_before[i]))
+                if stuck:
+                    return _err(
+                        'The module silently ignores an Apply aimed at a Data '
+                        'Path still in a transient state, so this would '
+                        'report success and change nothing. Wait for lane %s '
+                        'to settle' % _named(stuck), 409)
+            if apply_now:
+                unready = sorted(
+                    i for i in need
+                    if i < len(dp_states_before)
+                    and not cmis.dp_state_takes_apply_immediate(
+                        dp_states_before[i]))
+                if unready:
+                    return _err(
+                        'ApplyImmediate is ignored outside DPInitialized and '
+                        'DPActivated, so this would report success and change '
+                        'nothing. Lane %s is not in either; use Apply to '
+                        'bring the Data Path up' % _named(unready), 409)
             if need:
                 for bank in range(banks):
                     mask = 0

@@ -1935,7 +1935,11 @@ async function applyDatapath(immediate) {
   });
 
   if (res.status !== 'ok') {
-    toast(`Apply failed: ${res.message}`, 'error');
+    // A refusal that names which lane is in which state is the whole answer,
+    // and three seconds is not long enough to read it. The refusals worth
+    // reading are the ones that stopped a write the module would have thrown
+    // away without a word.
+    toast(`Apply failed: ${res.message}`, 'error', 12000);
     return;
   }
   // Either trigger needs a moment before reading back what the module settled

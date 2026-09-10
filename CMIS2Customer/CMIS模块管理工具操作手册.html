@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.51.0<br>
+      <b>版本</b>　2.52.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.51.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.51.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.52.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.52.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1220,6 +1220,30 @@
     <b>极性翻转、Tx 关断、静默写下去就生效</b>。
     以前只翻一下极性再点 Apply，会为一个本来不需要 Apply 的改动
     重启全部数据通道。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>有两种情况，模块会把 Apply <u>悄悄丢掉</u>——工具以前照样回报「成功」。</b>
+    规范写得很清楚：<br>
+    一、数据通道正处在<b>过渡状态</b>（<code>DPInit</code> / <code>DPDeinit</code> /
+    <code>DPTxTurnOn</code> / <code>DPTxTurnOff</code>）时收到的 Apply，
+    模块<b>直接忽略</b>（这条针对支持免中断重配置的模块）；<br>
+    二、<b>ApplyImmediate</b> 在 <code>DPInitialized</code> /
+    <code>DPActivated</code> <b>之外的任何状态</b>都会被忽略。<br>
+    以前工具只挡住了第二条里「模块根本不支持免中断重配置」那半边，
+    <b>两个状态条件都没查</b>：把通道停掉之后马上点 Apply，
+    工具会返回<b>成功</b>，还会列出<b>它「已经配置好」的是哪几条通道</b>——
+    而模块其实什么都没做。
+    <b>「悄悄丢掉」是操作员唯一分辨不出来的失败</b>：
+    你会以为这条链路已经在跑新配置了。<br>
+    现在这两种情况都会被<b>拒绝</b>，并明确写出<b>是哪条通道、当前在哪个状态</b>，
+    例如「Lane 1 (Deactivated) 不在这两个状态里，请改用 Apply」。
+    仍然允许的是：<b>停通道和 Apply 写在同一次请求里</b>
+    （这正是规范规定的释放序列），以及在
+    <code>DPDeactivated</code> 上用 <b>Apply</b>（规范推荐的正是这个用法）。
+    只支持分步重配置的模块行为不变。<br>
+    这类拒绝信息现在会在界面上<b>停留 12 秒</b>——原来的 3 秒不够把通道号读完。</span>
   </div>
 
   <h3>Signal Integrity：Apply 一并提交的另一半</h3>
@@ -3145,7 +3169,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.51.0<br>
+    CMIS Module Manager 操作手册 v2.52.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

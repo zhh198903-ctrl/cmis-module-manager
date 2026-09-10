@@ -408,6 +408,24 @@ DP_STATE_KIND = {
 }
 
 
+# Section 6.2.4: an Apply trigger aimed at a Data Path in one of the four
+# transient states is discarded - "the module silently ignores requests
+# received while still being in a transient state" - and ApplyImmediate is
+# ignored anywhere but the two initialized states. A silent discard is the
+# one outcome the operator cannot tell from success, so the host has to know
+# these two sets rather than write and hope.
+DP_STATES_TRANSIENT = ("Init", "Deinit", "TxTurnOn", "TxTurnOff")
+DP_STATES_APPLY_IMMEDIATE = ("Initialized", "Activated")
+
+
+def dp_state_is_transient(state: str) -> bool:
+    return state in DP_STATES_TRANSIENT
+
+
+def dp_state_takes_apply_immediate(state: str) -> bool:
+    return state in DP_STATES_APPLY_IMMEDIATE
+
+
 # Section 6.3.3: setting the permitted alarm and warning Flags of Data Path
 # related monitors, and the interrupts that go with them, "is only assured in
 # the DPInitialized and DPActivated states". Everywhere else the module still
