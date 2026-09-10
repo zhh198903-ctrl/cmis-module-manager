@@ -1846,6 +1846,18 @@ class MockBackend(I2CInterface):
                     self._module_state = 0b001
                     self._dp_lane_states = [0x1] * 8
                     self._lp_request_time = 0
+                    # A reset restarts the module, so its Bank and Page
+                    # selection goes back to the default. Leaving the mock on
+                    # whatever page was selected meant a host that forgot to
+                    # invalidate its page cache still read the page it thought
+                    # was selected - and "读错页" is silent, which is why the
+                    # cache is required to be invalidated here at all. With
+                    # the mock following the module, a missed invalidation
+                    # reads Page 00h and shows it.
+                    self._current_page = 0x00
+                    self._current_bank = 0x00
+                    self._prev_selected = None
+                    self._page_changed_at = 0.0
                     # SoftwareReset is self-clearing (Table 8-10): a real module
                     # never reads it back as 1, so neither may the mock, or the
                     # UI shows "reset in progress" forever.

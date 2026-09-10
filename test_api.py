@@ -14032,6 +14032,76 @@ class TestEveryLatchedDiagnosticsFlagIsLatched(CMISTestCase):
         self.assertIn('not a live reading', branch)
 
 
+class TestAResetTakesThePageSelectionWithIt(CMISTestCase):
+    """A reset restarts the module, so its Bank and Page selection returns to
+    the default. The mock kept whatever page was selected, which is not what
+    a module does.
+
+    This does not close a gap - test_module_reset_forgets_the_cached_page
+    already watches for the re-select and catches a missing
+    _invalidate_page() on its own. It makes the model match the module, so
+    reading a stale page after a reset now produces Page 00h rather than the
+    page the host still believed was selected."""
+
+    def _backend(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _reset(self):
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'action': 'reset'}),
+            content_type='application/json'))
+
+    def test_a_reset_returns_the_selection_to_the_default(self):
+        b = self._backend()
+        app_module._set_page(0x11, 0)
+        self.assertEqual(b._current_page, 0x11)
+        self._reset()
+        self.assertEqual(b._current_page, 0x00,
+                         'the module kept the page selected across a reset')
+        self.assertEqual(b._current_bank, 0x00)
+
+    def test_a_read_after_a_reset_without_reselecting_gets_the_default_page(self):
+        """The point of the change: a host that forgets to invalidate its
+        cache now reads Page 00h and can see that it did."""
+        b = self._backend()
+        app_module._set_page(0x11, 0)
+        time.sleep(0.012)
+        paged = b.read_bytes(0x80, 4)
+        self._reset()
+        time.sleep(0.012)
+        self.assertNotEqual(b.read_bytes(0x80, 4), paged,
+                            'upper memory still answered from the page '
+                            'selected before the reset')
+
+    def test_the_tool_reselects_and_reads_the_right_page(self):
+        # Page 01h, whose advertisements a reset does not change. Page 11h
+        # would compare the Data Path states, and those legitimately come
+        # back deactivated - a difference that says nothing about paging.
+        b = self._backend()
+        app_module._set_page(0x01, 0)
+        time.sleep(0.012)
+        before = b.read_bytes(0x80, 4)
+        self._reset()
+        app_module._set_page(0x01, 0)
+        time.sleep(0.012)
+        self.assertEqual(b.read_bytes(0x80, 4), before,
+                         're-selecting after a reset did not get back to the '
+                         'page it asked for')
+
+    def test_a_reset_does_not_leave_a_page_hold_running(self):
+        """The hold belongs to a page change the host made. Carrying one
+        across a reset would make the first read after it answer from a page
+        that no longer means anything."""
+        b = self._backend()
+        app_module._set_page(0x11, 0)
+        self._reset()
+        self.assertIsNone(b._prev_selected)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
