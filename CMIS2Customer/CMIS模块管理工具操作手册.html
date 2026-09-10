@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.53.0<br>
+      <b>版本</b>　2.54.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.53.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.53.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.54.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.54.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1263,6 +1263,28 @@
     所以它们在低功耗下<b>照常可用</b>，不会被这条拦下。
     暂存 AppSelect 也一样：那只是写内存，状态机要等到 Apply 才会看它。<br>
     模块回到高功耗后，一切照旧。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>点「进入低功耗」之后，面板以前显示的是<u>按下之前</u>那个状态。</b>
+    模块在 <code>01h:167</code> 里<b>自己声明</b>了两个上电 / 下电过渡最长要多久，
+    本工具内置的 8 种演示模块，<b>全都声明「下电最长 1–5 秒」</b>。
+    可工具写完控制字节只等了 <b>50 毫秒</b>，页面再过 <b>200 毫秒</b> 就去读状态——
+    对任何真按自己声明的时间来走的模块，这时读回来的<b>还是按下之前的状态</b>，
+    却被当作这次操作的结果显示出来。
+    于是：<b>提示条是绿的（「已请求低功耗」），状态栏还写着 <code>ModuleReady</code></b>，
+    操作员自然会再点一次。<br>
+    现在<b>按模块自己声明的时间等</b>，不再用工具里写死的数字：
+    <b>状态一到就立刻返回</b>（不会白等满 5 秒），
+    真等满了还没到，会明确提示<b>模块现在在哪个状态</b>、
+    以及这是按<b>哪个声明</b>（<code>01h:167</code>）等的。<br>
+    <b>软复位不宣称目标状态</b>：它要先走 MgmtInit，
+    最后停在低功耗还是 <code>ModuleReady</code>，取决于它回来时那两个低功耗请求位——
+    所以只等到「状态不再变化」为止。<br>
+    模块没声明这个时间时，退回到原来的等待时长。<br>
+    <b>演示模块是瞬间切换的</b>，所以这个问题在演示里看不出来——
+    它只在按自己声明的时间走的真实模块上出现。</span>
   </div>
 
   <h3>Signal Integrity：Apply 一并提交的另一半</h3>
@@ -3188,7 +3210,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.53.0<br>
+    CMIS Module Manager 操作手册 v2.54.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

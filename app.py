@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.53.0'
+__version__ = '2.54.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1427,9 +1427,42 @@ def api_module_control_set():
         # A reset restarts the module, which restores PageMapping to its
         # default, so the page we think is selected no longer applies.
         _invalidate_page()
-        return _ok({'message': f'Module control written (0x{val:02X})', 'value': val})
+        # 01h:167 (Table 8-56) advertises how long this module may take over
+        # ModulePwrUp and ModulePwrDn, and every shipped profile says up to
+        # five seconds to power down. Fifty milliseconds here and a fixed
+        # refresh in the page meant the state was read back long before the
+        # module had moved, so the panel showed the state it had *before* the
+        # request as the result of it. What the module said it needs travels
+        # with the answer instead of being guessed at.
+        return _ok({'message': f'Module control written (0x{val:02X})',
+                    'value': val,
+                    'transition': _control_transition(action, body)})
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _control_transition(action, body) -> dict:
+    """What the module said it may need for the state change just requested.
+
+    Only the two power transitions have an advertised budget. A reset ends by
+    powering up, so that is the one it is measured against, but it passes
+    through MgmtInit first and no target state is claimed for it: whether the
+    module lands in ModuleLowPwr or ModuleReady depends on the low power
+    request bits it comes back with.
+    """
+    dur = (_state.get('caps') or {}).get('durations') or {}
+    if action == 'low_power' or body.get('low_pwr') is True:
+        which, target = 'module_pwr_dn', 'ModuleLowPwr'
+    elif action == 'high_power' or body.get('low_pwr') is False:
+        which, target = 'module_pwr_up', 'ModuleReady'
+    elif action == 'reset' or body.get('software_reset'):
+        which, target = 'module_pwr_up', None
+    else:
+        return {}
+    d = dur.get(which) or {}
+    return {'requested': action or 'fields', 'target_state': target,
+            'max_seconds': d.get('max_seconds'), 'label': d.get('label'),
+            'advertisement': '01h:167 %s' % which}
 
 
 def _media_lane_assignments():

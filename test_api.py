@@ -13495,6 +13495,150 @@ class TestDataPathWritesWhileTheModuleIsAsleep(CMISTestCase):
         self.assertOk(self._post(tx_disable_mask=0x00))
 
 
+class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):
+    """01h:167 (Table 8-56) advertises MaxDurationModulePwrUp and
+    MaxDurationModulePwrDn, and every profile here says up to five seconds to
+    power down.
+
+    The endpoint waited 50 ms after writing the control byte and the page
+    refreshed 200 ms later. On any module that takes the time it advertises,
+    that reads the state back from before the request and shows it as the
+    result: press LowPwr, get a green toast, and watch the panel report
+    ModuleReady. The natural response is to press it again.
+
+    The mocks change state at once, which is exactly why this stayed
+    invisible - so these tests pin where the number comes from rather than a
+    symptom the fixtures cannot show."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _control(self, **body):
+        return self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the budget comes from the module ----------------------------------
+
+    def test_powering_down_carries_the_advertised_budget(self):
+        self._connect()
+        t = self._control(action='low_power')['transition']
+        self.assertEqual(t['target_state'], 'ModuleLowPwr')
+        self.assertEqual(t['max_seconds'],
+                         app_module._state['caps']['durations']
+                         ['module_pwr_dn']['max_seconds'])
+
+    def test_powering_up_carries_the_other_one(self):
+        self._connect()
+        t = self._control(action='high_power')['transition']
+        self.assertEqual(t['target_state'], 'ModuleReady')
+        self.assertEqual(t['max_seconds'],
+                         app_module._state['caps']['durations']
+                         ['module_pwr_up']['max_seconds'])
+
+    def test_the_budget_is_read_and_not_a_constant(self):
+        """A hardcoded five seconds would pass every other test here."""
+        self._connect()
+        app_module._state['caps']['durations']['module_pwr_dn'] = {
+            'code': 9, 'max_seconds': 60.0, 'label': '10 s - 1 min'}
+        t = self._control(action='low_power')['transition']
+        self.assertEqual(t['max_seconds'], 60.0)
+        self.assertEqual(t['label'], '10 s - 1 min')
+
+    def test_a_reset_claims_no_target_state(self):
+        """It passes through MgmtInit and where it lands depends on the low
+        power request bits it comes back with, so naming a target would be
+        inventing one."""
+        self._connect()
+        t = self._control(action='reset')['transition']
+        self.assertIsNone(t['target_state'])
+        self.assertEqual(t['max_seconds'],
+                         app_module._state['caps']['durations']
+                         ['module_pwr_up']['max_seconds'])
+
+    def test_the_direct_field_form_is_covered_too(self):
+        """The buttons send an action; the field form is the same request."""
+        self._connect()
+        self.assertEqual(self._control(low_pwr=True)['transition']
+                         ['target_state'], 'ModuleLowPwr')
+        self.assertEqual(self._control(low_pwr=False)['transition']
+                         ['target_state'], 'ModuleReady')
+
+    def test_a_write_that_changes_no_state_carries_no_budget(self):
+        """Claiming a transition for a write that starts none would leave the
+        page waiting on nothing."""
+        self._connect()
+        self.assertEqual(self._control(allow_lp_hw=True)['transition'], {})
+
+    def test_the_refusal_names_the_register(self):
+        self._connect()
+        self.assertIn('01h:167',
+                      self._control(action='low_power')['transition']
+                      ['advertisement'])
+
+    # ---- the panel waits on it ---------------------------------------------
+
+    def test_the_page_waits_on_the_advertised_budget(self):
+        js = self._js()
+        i = js.index('const budgetMs = ')
+        line = js[i:js.index('const target', i)]
+        self.assertIn('transition.max_seconds', line,
+                      'the wait is still a number chosen in the page')
+        self.assertIn('400', line,
+                      'a module that advertises nothing has no fallback')
+
+    def test_the_wait_stops_as_soon_as_the_module_arrives(self):
+        """Sitting out the full five seconds on a module that took 50 ms
+        would be its own defect."""
+        js = self._js()
+        i = js.index('async function awaitModuleTransition(')
+        body = js[i:js.index('\nasync function ', i + 1)]
+        self.assertIn('return last', body)
+        self.assertIn('last === target', body,
+                      'nothing ends the wait early')
+
+    def test_every_button_waits_before_it_reports(self):
+        """One left on a fixed timeout is the same bug with one fewer
+        button."""
+        js = self._js()
+        for btn in ('btn-mod-lp', 'btn-mod-hp', 'btn-mod-reset'):
+            i = js.index("'%s'" % btn)
+            # To the end of this handler and no further. A fixed-size window
+            # runs into the next one, and then a button that stopped waiting
+            # is covered by its neighbour still doing it.
+            handler = js[i:js.index('\n  });', i)]
+            self.assertIn('awaitModuleTransition', handler,
+                          '%s still refreshes on a fixed delay' % btn)
+
+    def test_a_module_that_never_arrives_is_reported(self):
+        """Falling silent after the budget would leave the operator with a
+        green toast and a panel that never changed."""
+        js = self._js()
+        i = js.index('async function awaitModuleTransition(')
+        body = js[i:js.index('\nasync function ', i + 1)]
+        self.assertIn('is still in', body)
+        self.assertIn('transition.advertisement', body,
+                      'the timeout message does not say what it waited on')
+        # The message alone proves nothing: leaving the text and blanking the
+        # condition in front of it gives a warning that can never fire, which
+        # looks exactly like a module that always arrives. So the guard is
+        # pinned with the text it guards, taken from just before it.
+        guard = body[body.rindex('if (', 0, body.index('is still in')):
+                     body.index('is still in')]
+        self.assertIn('last !== target', guard,
+                      'the timeout warning is not conditional on the module '
+                      'having failed to arrive')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

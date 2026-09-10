@@ -1994,6 +1994,41 @@ async function applyDatapath(immediate) {
 // ---------------------------------------------------------------------------
 // Module Control panel (DataPath tab)
 // ---------------------------------------------------------------------------
+// 01h:167 (Table 8-56) says how long this module may take over ModulePwrUp
+// and ModulePwrDn, and every profile shipped here says up to five seconds to
+// power down. The page used to refresh 200 ms after asking, which on any
+// module that takes the time it advertises reads back the state from *before*
+// the request and shows it as the result - so the operator sees ModuleReady
+// after asking for low power and presses the button again.
+//
+// So wait on the module's own budget rather than a number chosen here, and
+// stop as soon as it arrives. Where the module advertises nothing, fall back
+// to what the old code did rather than waiting forever.
+async function awaitModuleTransition(transition, onTick) {
+  const budgetMs = transition && typeof transition.max_seconds === 'number'
+    ? Math.min(transition.max_seconds * 1000, 30000) : 400;
+  const target = (transition || {}).target_state;
+  const deadline = Date.now() + budgetMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 150));
+    const res = await apiGet('/api/module/status');
+    if (res.status !== 'ok') continue;
+    last = res.data.module_state;
+    if (onTick) onTick(last);
+    // No target for a reset: it passes through MgmtInit and where it lands
+    // depends on the low power request bits it comes back with, so the only
+    // honest end condition is that it stopped changing state.
+    if (target ? last === target : !res.data.module_state_changed) return last;
+  }
+  if (target && last && last !== target) {
+    toast(`The module is still in ${last} after the `
+        + `${transition.label || 'advertised'} it advertises for this `
+        + `transition (${transition.advertisement})`, 'error', 12000);
+  }
+  return last;
+}
+
 async function loadModuleControl() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/control');
@@ -2045,21 +2080,24 @@ async function loadModuleControl() {
     if (r.status !== 'ok') return;
     // A reset reinitialises every Data Path, so refresh the whole tab rather
     // than leaving stale values and tooltips behind.
-    setTimeout(() => {
-      loadModuleControl(); loadDatapath(); loadSquelch(); loadApplications();
-    }, 400);
+    await awaitModuleTransition(r.data && r.data.transition);
+    loadModuleControl(); loadDatapath(); loadSquelch(); loadApplications();
   });
   document.getElementById('btn-mod-lp')?.addEventListener('click', async () => {
     const r = await apiPost('/api/module/control', { action: 'low_power' });
     toast(r.status === 'ok' ? 'LowPwr requested' : `Failed: ${r.message}`,
           r.status === 'ok' ? 'success' : 'error');
-    setTimeout(loadModuleControl, 200);
+    if (r.status !== 'ok') return;
+    await awaitModuleTransition(r.data && r.data.transition);
+    loadModuleControl();
   });
   document.getElementById('btn-mod-hp')?.addEventListener('click', async () => {
     const r = await apiPost('/api/module/control', { action: 'high_power' });
     toast(r.status === 'ok' ? 'High power requested' : `Failed: ${r.message}`,
           r.status === 'ok' ? 'success' : 'error');
-    setTimeout(loadModuleControl, 200);
+    if (r.status !== 'ok') return;
+    await awaitModuleTransition(r.data && r.data.transition);
+    loadModuleControl();
   });
 }
 
