@@ -2976,7 +2976,19 @@ async function loadPrbs() {
   const refNote = document.getElementById('prbs-ref-clock');
   if (refNote) {
     const onRef = Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference);
-    refNote.innerHTML = !d.reference_clock_lost ? ''
+    // The Flag is clear-on-read, so the poll that reports it is the poll that
+    // erases it. Showing it only while live meant the warning appeared once
+    // and was gone next refresh - which reads as "the reference came back",
+    // something the module never said. What it warns about outlives the Flag.
+    const refEver = d.reference_clock_lost || d.reference_clock_lost_seen;
+    refNote.innerHTML = !refEver ? ''
+      : !d.reference_clock_lost
+      ? '<span class="flag-was">Loss of reference clock — seen since the '
+        + 'last Clear flag history</span> '
+        + '<span class="reg-meta">14h:132.7 is latched and clear-on-read, so '
+        + 'this is a record of it having happened, not a live reading. '
+        + 'Anything generated or checked on the reference clock while it was '
+        + 'gone is suspect.</span>'
       : onRef.length
       ? '<span class="flag-active">Loss of reference clock</span> '
         + '<span class="reg-meta">14h:132.7 — '

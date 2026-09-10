@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.56.0'
+__version__ = '2.57.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2359,6 +2359,16 @@ def api_prbs_get():
                         # which lane had actually slipped.
                         history.setdefault(bank * 8 + bit + 1,
                                            set()).add(name)
+        # 14h:132.7 is RO/COR like the four above it, and it is the one that
+        # was read and thrown away. The note it drives says what the checkers
+        # and generators produce "cannot be relied on until it returns" - and
+        # that stays true after the read that cleared the Flag, so showing it
+        # for a single poll and then dropping it tells the operator the
+        # reference came back when nothing said so. It is module-wide rather
+        # than per lane, so it is remembered under its own key.
+        if ref_clock_lost:
+            history.setdefault('module', set()).add('reference_clock_lost')
+        ref_clock_seen = 'reference_clock_lost' in history.get('module', ())
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
 
@@ -2404,6 +2414,7 @@ def api_prbs_get():
             # 132.7 is module-wide, but it only invalidates a pattern run
             # for the engines actually clocked from the reference clock.
             'reference_clock_lost': ref_clock_lost,
+            'reference_clock_lost_seen': ref_clock_seen,
             'clock_sources': clock_sources,
         })
     except Exception as e:

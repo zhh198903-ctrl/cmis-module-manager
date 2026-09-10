@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.56.0<br>
+      <b>版本</b>　2.57.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -622,8 +622,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.56.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.56.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.57.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.57.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1320,6 +1320,28 @@
     但它让这条规则<b>真正被验证</b>了：把等待去掉，测试会立刻大面积失败。
     <b>下位内存不受影响</b>（它本来就不分页），
     <b>重复选中同一页也不会重新计时</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>修复：参考时钟丢失的提示，以前只出现一次就消失了。</b>
+    <code>14h:132.7</code> 是<b>锁存 + 读后自清</b>的标志：
+    读一次就没了。它带出来的那句提示说的是——
+    用参考时钟的发生器 / 检测器<b>「在它恢复之前都不能当真」</b>。
+    可这条提示以前<b>只看当前这次读到没读到</b>，
+    于是<b>刷新一次就不见了</b>，
+    看上去像是<b>参考时钟已经回来了</b>——而模块从没这么说过。
+    丢失期间产出和校验的数据，<b>在标志被清掉之后依然是可疑的</b>。<br>
+    现在它和这一页上另外四个锁存标志一样<b>被记住</b>：
+    当前正丢失时还是原来那句警告；
+    只是<b>历史上出现过</b>时，改用<b>淡色</b>显示并写明
+    <b>「这是发生过的记录，不是实时读数」</b>，
+    点<b>清除标志历史</b>后消失。<br>
+    <span class="reg-meta">顺带把演示模块也修对了：规范里
+    <code>14h:132–139</code> 整段都是「锁存 + 读后自清」，
+    而演示模块只对其中两个字节这么做——
+    另外五个（参考时钟、两个发生器失锁、两个门控完成）读完还在。
+    这意味着「工具有没有把这些标志记住」以前<b>根本没被验证过</b>。</span></span>
   </div>
 
   <h3>Signal Integrity：Apply 一并提交的另一半</h3>
@@ -3245,7 +3267,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.56.0<br>
+    CMIS Module Manager 操作手册 v2.57.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

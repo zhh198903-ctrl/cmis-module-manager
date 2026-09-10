@@ -10317,8 +10317,15 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         # Pin the condition, not the identifier: leaving the text in place
         # while the render no longer depends on the flag would satisfy every
         # assertion above and show nothing.
+        # Pin the chain rather than one spelling of it: the note is
+        # conditional, and the condition is built from the flag. The flag is
+        # clear-on-read, so the condition now also carries the record of it
+        # having fired - which is still "driven by the flag" and was not when
+        # this asserted the literal expression.
+        self.assertRegex(js, r"refNote\.innerHTML = !refEver \? ''",
+                         'the note is no longer conditional')
         self.assertRegex(js,
-                         r"refNote\.innerHTML = !d\.reference_clock_lost \? ''",
+                         r"const refEver = d\.reference_clock_lost\b",
                          'the note is no longer driven by the flag')
 
     def test_the_generator_tables_have_the_column_header(self):
@@ -10836,13 +10843,17 @@ class TestWhetherALostReferenceClockMatters(CMISTestCase):
         self.assertIn('patterns below are unaffected', js)
         note = js[js.index('const refNote'):]
         note = note[:note.index('async function applyPrbs')]
-        self.assertIn("refNote.innerHTML = !d.reference_clock_lost ? ''", note,
-                      'the note is no longer driven by the flag')
+        self.assertIn("refNote.innerHTML = !refEver ? ''", note,
+                      'the note is no longer conditional')
         self.assertIn(": onRef.length\n      ? '<span class=\"flag-active\">",
                       note,
                       'the choice between warning and stand-down no longer '
                       'depends on which engines use the reference clock')
-        self.assertLess(note.index('flag-active'), note.index('flag-was'),
+        # Scoped to the branch taken while the flag is live. The record of a
+        # past loss is drawn quietly too, and it sits ahead of both - so
+        # comparing over the whole note now compares the wrong pair.
+        live = note[note.index(': onRef.length'):]
+        self.assertLess(live.index('flag-active'), live.index('flag-was'),
                         'the stand-down branch should not be the loud one')
 
     def test_the_warning_does_not_recite_four_names_when_it_means_all(self):
@@ -13907,6 +13918,118 @@ class TestTheMockHoldsThePageChangeOff(CMISTestCase):
         self.assertNotEqual(b.read_bytes(0x80, 4), first,
                             '_set_page returned before the module could '
                             'answer from the new page')
+
+
+class TestEveryLatchedDiagnosticsFlagIsLatched(CMISTestCase):
+    """Table 8-138 is titled "Latched Diagnostics Flags" and marks the whole
+    of Page 14h:132-139 RO/COR. The mock latched only 138-139, the two
+    checker Flags, so five of the seven survived every read.
+
+    That mattered because of what rests on it. A clear-on-read Flag is gone
+    one read later, which is why the tool keeps a history: read it once and
+    remember it. With the mock treating those five as live values, the
+    history looked right whether or not it remembered anything, and a
+    regression turning any of them back into a live reading would have
+    passed.
+
+    Latching them surfaced a real gap. 14h:132.7 drives a note saying what
+    the generators and checkers produce "cannot be relied on until it
+    returns" - and it had no history, so it appeared for one poll and
+    vanished, which reads as the reference having come back."""
+
+    def _backend(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    # ---- the mock latches what the spec says is latched --------------------
+
+    def test_every_flag_byte_on_the_page_is_clear_on_read(self):
+        b = self._backend()
+        app_module._set_page(0x14, 0)
+        for addr in range(0x84, 0x8C):
+            byte = 128 + addr - 0x80          # 132 through 139
+            b._registers[0x14][addr] = 0xFF
+            self.assertEqual(b.read_bytes(addr, 1)[0], 0xFF,
+                             '14h:%d did not report the Flag' % byte)
+            self.assertEqual(b.read_bytes(addr, 1)[0], 0x00,
+                             '14h:%d survived the read that reported it, so '
+                             'nothing checks that the tool remembers it'
+                             % byte)
+
+    def test_a_byte_outside_the_table_is_not_cleared(self):
+        """The range is what Table 8-138 defines. Clearing further would make
+        an ordinary register vanish when read."""
+        b = self._backend()
+        app_module._set_page(0x14, 0)
+        b._registers[0x14][0x8C] = 0xFF
+        b.read_bytes(0x8C, 1)
+        self.assertEqual(b.read_bytes(0x8C, 1)[0], 0xFF)
+
+    # ---- the reference clock Flag is remembered ----------------------------
+
+    def test_a_lost_reference_clock_is_remembered_after_the_read(self):
+        b = self._backend()
+        b._registers[0x14][0x84] = 0x80
+        first = self._prbs()
+        self.assertTrue(first['reference_clock_lost'])
+        self.assertTrue(first['reference_clock_lost_seen'])
+        later = self._prbs()
+        self.assertFalse(later['reference_clock_lost'],
+                         'the Flag was not clear-on-read')
+        self.assertTrue(later['reference_clock_lost_seen'],
+                        'the reference clock dropped and one poll later '
+                        'nothing said so')
+
+    def test_a_clock_that_never_dropped_is_not_remembered(self):
+        """A record that is always set says nothing."""
+        self._backend()
+        d = self._prbs()
+        self.assertFalse(d['reference_clock_lost'])
+        self.assertFalse(d['reference_clock_lost_seen'])
+
+    def test_clearing_the_flag_history_clears_it(self):
+        b = self._backend()
+        b._registers[0x14][0x84] = 0x80
+        self._prbs()
+        self.assertTrue(self._prbs()['reference_clock_lost_seen'])
+        self.assertOk(self.client.post(
+            '/api/module/flags/clear', data=json.dumps({}),
+            content_type='application/json'))
+        self.assertFalse(self._prbs()['reference_clock_lost_seen'],
+                         'Clear flag history left the record behind')
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_the_panel_shows_the_record_and_not_only_the_live_flag(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        i = js.index('const refEver = ')
+        line = js[i:js.index('\n', i)]
+        self.assertIn('reference_clock_lost_seen', line,
+                      'the note is driven by the live Flag alone, so it '
+                      'disappears one poll after it appears')
+        self.assertIn('d.reference_clock_lost', line)
+
+    def test_the_remembered_note_says_it_is_a_record(self):
+        """Drawn like a live warning it would say the reference is down now,
+        which is not what a latched Flag reports."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        i = js.index('const refEver = ')
+        branch = js[i:js.index('onRef.length', i)]
+        self.assertIn('flag-was', branch,
+                      'the record borrows the live warning styling')
+        self.assertIn('not a live reading', branch)
 
 
 if __name__ == '__main__':

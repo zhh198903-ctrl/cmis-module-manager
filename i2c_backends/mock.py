@@ -2377,10 +2377,19 @@ class MockBackend(I2CInterface):
     _COR_BYTES = {
         None: range(0x08, 0x0A),
         0x11: range(0x86, 0x9A),   # 134-153, DPStateChanged..RxOutputChanged
-        # Table 8-138: the Page 14h diagnostic flags are RO/COR too. A pattern
-        # checker that lost lock for a moment during a long run is exactly the
-        # thing a long run is for, and it is gone one read later.
-        0x14: range(0x8A, 0x8C),
+        # Table 8-138 is titled "Latched Diagnostics Flags" and marks the
+        # whole of 132-139 RO/COR. A pattern checker that lost lock for a
+        # moment during a long run is exactly the thing a long run is for,
+        # and it is gone one read later.
+        #
+        # Only the two checker bytes were latched here, so the reference
+        # clock Flag, both generator Flags and both gating-complete Flags
+        # survived every read - and the flag history built to remember them
+        # looked correct whether or not it remembered anything. The gating
+        # Flags are the plainest case: "when gating is complete, this bit
+        # will be set" is a moment, and a mock that never clears it cannot
+        # tell a gate that just finished from one that finished an hour ago.
+        0x14: range(0x84, 0x8C),
         0x12: range(0xE6, 0xEF),
     }
 
