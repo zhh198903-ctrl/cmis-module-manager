@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.54.0'
+__version__ = '2.55.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -942,6 +942,43 @@ def api_reset_acq_counters():
         return _err(str(e), 500)
 
 
+def _await_mls_commit(banks: int) -> dict:
+    """Wait for a redirection commit, for as long as the module asked.
+
+    6Dh:128.7-4 is MaxRedirectionCommitDuration, "maximum duration of the
+    execution of a CommitMediaLaneRedirection command being in progress",
+    in the Table 8-49 encoding. The tool already decoded and displayed it and
+    then waited a hundred milliseconds of its own, so on a module that
+    advertises longer the result was read back mid-execution: every lane
+    reporting RedirectionCommitResult 2, "Command execution in progress",
+    under a panel line telling the operator to press Commit.
+
+    Polls rather than sleeping the whole budget: a module that finishes in a
+    millisecond should not cost the advertised maximum.
+    """
+    code = (_read_upper(*cmis.REG_MLS_ADVERT)[0] >> 4) & 0x0F
+    budget = cmis.state_duration(code).get('max_seconds')
+    # An unbounded advertisement (Table 8-49 runs to "50 min or more") must
+    # not hold the request open; the panel is told what was waited on.
+    budget = min(budget if budget is not None else 0.1, 5.0)
+    deadline = time.time() + budget
+    running = True
+    while True:
+        running = False
+        for bank in range(banks):
+            _set_page(0x6D, bank)
+            if 2 in _state['backend'].read_bytes(cmis.REG_MLS_RESULT[1],
+                                                 cmis.REG_MLS_RESULT[2]):
+                running = True
+                break
+        if not running or time.time() >= deadline:
+            break
+        time.sleep(0.01)
+    return {'commit_complete': not running,
+            'commit_max_seconds': budget,
+            'commit_duration_label': cmis.state_duration(code).get('label')}
+
+
 @app.route('/api/module/media_lane_switching', methods=['POST'])
 def api_media_lane_switching():
     """Stage a media lane redirection, and optionally commit it.
@@ -1005,12 +1042,13 @@ def api_media_lane_switching():
                 _set_page(0x6D, bank)
                 _state['backend'].write_bytes(cmis.REG_MLS_ENABLE[1],
                                               bytes([1 if enable else 0]))
+        out = {'committed': commit, 'banks': banks}
         if commit:
             for bank in range(banks):
                 _set_page(0x6D, bank)
                 _state['backend'].write_bytes(cmis.REG_MLS_COMMIT[1], bytes([1]))
-            time.sleep(0.1)
-        return _ok({'committed': commit, 'banks': banks})
+            out.update(_await_mls_commit(banks))
+        return _ok(out)
     except Exception as e:
         return _err(str(e), 500)
 

@@ -13639,6 +13639,157 @@ class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):
                       'having failed to arrive')
 
 
+class TestACommitThatIsStillRunning(CMISTestCase):
+    """6Dh:128.7-4 is MaxRedirectionCommitDuration, "maximum duration of the
+    execution of a CommitMediaLaneRedirection command being in progress", in
+    the Table 8-49 encoding. The tool decoded it, displayed it, and then
+    waited a hundred milliseconds of its own.
+
+    On a module that advertises longer, the result is read back mid-execution
+    and every lane reports RedirectionCommitResult 2 - which CMIS names
+    "Command execution in progress" and the tool decodes correctly - under a
+    panel line reading "press Commit". Telling the operator to repeat a
+    command the module is executing is worse than showing a stale value."""
+
+    def _connect(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _mls(self, **body):
+        return self.assertOk(self.client.post(
+            '/api/module/media_lane_switching', data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    def _read(self):
+        return self.assertOk(
+            self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- running is not the same as never happened -------------------------
+
+    def test_in_progress_is_reported_apart_from_committed(self):
+        """Both are false while a commit runs, and they need opposite
+        advice."""
+        import cmis_registers
+        d = cmis_registers.parse_media_lane_switching(
+            0x30, bytes([2, 1, 3, 4, 5, 6, 7, 8]), 1, bytes([2] * 8),
+            bytes(range(1, 9)), 8)
+        self.assertTrue(d['commit_in_progress'])
+        self.assertFalse(d['committed'])
+
+    def test_a_finished_commit_is_not_in_progress(self):
+        import cmis_registers
+        d = cmis_registers.parse_media_lane_switching(
+            0x30, bytes([2, 1, 3, 4, 5, 6, 7, 8]), 1, bytes([1] * 8),
+            bytes([2, 1, 3, 4, 5, 6, 7, 8]), 8)
+        self.assertFalse(d['commit_in_progress'])
+        self.assertTrue(d['committed'])
+
+    def test_one_lane_still_running_means_the_commit_is_running(self):
+        """Lanes do not finish together, and a commit with any lane still
+        executing is still executing. Every test above uses one result for
+        all eight lanes, where "any lane" and "every lane" agree - so the
+        mixed case is the only one that says which was meant."""
+        import cmis_registers
+        d = cmis_registers.parse_media_lane_switching(
+            0x30, bytes([2, 1, 3, 4, 5, 6, 7, 8]), 1,
+            bytes([1, 1, 1, 1, 2, 2, 2, 2]), bytes(range(1, 9)), 8)
+        self.assertTrue(d['commit_in_progress'],
+                        'four lanes were still executing and the commit was '
+                        'reported as finished')
+
+    def test_a_rejection_is_not_in_progress(self):
+        """Codes 3 to 6 are refusals, and calling them "still running" would
+        leave the operator waiting for something that already failed."""
+        import cmis_registers
+        for code in (3, 4, 5, 6):
+            d = cmis_registers.parse_media_lane_switching(
+                0x30, bytes(range(1, 9)), 1, bytes([code] * 8),
+                bytes(range(1, 9)), 8)
+            self.assertFalse(d['commit_in_progress'],
+                             'result %d was called in progress' % code)
+
+    # ---- the wait comes from the module ------------------------------------
+
+    def test_the_commit_waits_on_the_advertised_duration(self):
+        self._connect()
+        d = self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], enable=True,
+                      commit=True)
+        self.assertEqual(d['commit_max_seconds'], 0.05)
+        self.assertEqual(d['commit_duration_label'], '10-50 ms')
+
+    def test_the_budget_is_read_and_not_a_constant(self):
+        """A hardcoded tenth of a second passes every other test here."""
+        self._connect()
+        app_module._set_page(0x6D, 0)
+        # 6Dh:128.7-4 = 6 is "500 ms - 1 s" in Table 8-49. Deliberately not a
+        # code whose ceiling equals the cap, or the cap would satisfy this.
+        app_module._state['backend'].write_bytes(0x80, bytes([0x60]))
+        d = self._mls(commit=True)
+        self.assertEqual(d['commit_max_seconds'], 1.0,
+                         'the wait ignores what the module advertises')
+        self.assertEqual(d['commit_duration_label'], '500 ms - 1 s')
+
+    def test_a_commit_that_finishes_early_does_not_cost_the_budget(self):
+        """Sitting out the advertised maximum on a module that finished in a
+        millisecond would be its own defect."""
+        self._connect()
+        started = time.time()
+        self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], commit=True)
+        self.assertLess(time.time() - started, 0.05)
+
+    def test_the_answer_says_whether_it_finished(self):
+        self._connect()
+        self.assertTrue(self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8],
+                                  enable=True, commit=True)['commit_complete'])
+
+    def test_a_commit_that_runs_past_its_budget_says_so(self):
+        """Asserting only that a finished commit reports finished is
+        satisfied by never reporting anything else, and then a module still
+        working when the budget expired would be called done."""
+        self._connect()
+        app_module._set_page(0x6D, 0)
+        # 6Dh:128.7-4 = 0 is "under 1 ms", so the budget expires at once.
+        app_module._state['backend'].write_bytes(0x80, bytes([0x00]))
+        # Every lane reporting 2, "Command execution in progress", still.
+        app_module._state['backend'].write_bytes(0xA8, bytes([2] * 8))
+        self.assertFalse(app_module._await_mls_commit(1)['commit_complete'],
+                         'a commit still executing at the deadline was '
+                         'reported as finished')
+
+    def test_a_write_without_a_commit_carries_no_budget(self):
+        self._connect()
+        self.assertNotIn('commit_max_seconds', self._mls(enable=True))
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_a_running_commit_does_not_say_press_commit(self):
+        """The two lines have to be mutually exclusive, and the running one
+        has to be chosen first."""
+        js = self._js()
+        i = js.index('m.commit_in_progress')
+        branch = js[i:js.index('press Commit', i)]
+        self.assertIn('Commit is still executing', branch,
+                      'a running commit falls through to the press Commit '
+                      'line')
+        self.assertIn('?', branch)
+
+    def test_the_running_line_says_how_long_the_module_asked_for(self):
+        js = self._js()
+        i = js.index('Commit is still executing')
+        branch = js[i:js.index('press Commit', i)]
+        self.assertIn('commit_duration_label', branch)
+        self.assertIn('6Dh:128', branch,
+                      'the note does not say where the duration came from')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

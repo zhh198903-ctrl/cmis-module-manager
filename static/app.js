@@ -821,7 +821,18 @@ async function loadExt54() {
              + m.enabled_banks.map((e, b) => e ? b + 1 : 0).filter(Boolean).join(', ')
              + ' only, so a commit moves those lanes and leaves the rest')
            }</span></td></tr>` : '')
-      + (m.committed === false && m.is_permutation
+      // Result code 2 is the module saying "Command execution in progress".
+      // Telling the operator to press Commit while the commit they pressed is
+      // still running is advice to repeat a command the module is executing -
+      // so a commit that is running and one that never happened must not
+      // share a line.
+      + (m.commit_in_progress
+         ? `<tr><td colspan="4"><span class="state-init">${esc(
+             '\u25a0 Commit is still executing'
+             + (m.commit_duration_label
+                ? '; this module advertises up to ' + m.commit_duration_label
+                  + ' for it (6Dh:128)' : ''))}</span></td></tr>`
+         : m.committed === false && m.is_permutation
          ? '<tr><td colspan="4"><span class="flag-active">■ Staged mapping is not in effect yet — press Commit</span></td></tr>' : '');
     // Eight numbers on a sixteen lane module is half a request, and the old
     // endpoint took it silently.

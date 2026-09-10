@@ -1952,6 +1952,8 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
                                    else 0) & 1))
     return {
         'commit_duration_code': (advert >> 4) & 0x0F,
+        'commit_duration_label': state_duration(
+            (advert >> 4) & 0x0F).get('label'),
         # One checkbox, so it may only read enabled when every group is: a
         # module with one group enabled and one not is switching half its
         # lanes, which is neither of the two states the box can draw.
@@ -1965,6 +1967,11 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
         # True only when every lane's staged target is the one in effect.
         'committed': bool(status) and all(
             l['active_target'] == l['redirected_to'] for l in lanes),
+        # Result code 2 is "Command execution in progress", and a commit that
+        # is still running is not a commit that failed to happen. Reported
+        # apart from `committed` because the two need opposite advice: one
+        # says wait, the other says press the button.
+        'commit_in_progress': any(l['commit_result'] == 2 for l in lanes),
     }
 
 
