@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.58.0<br>
+      <b>版本</b>　2.59.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -604,6 +604,21 @@
 
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
+    <span><b>还支持这几种适配器</b>（v2.59.0 起）：<br>
+    <b>CP2112</b>（Silicon Labs）和 <b>MCP2221 / MCP2221A</b>（Microchip）——
+    这两种是 <b>HID 设备</b>，Windows 用系统自带的驱动接管，
+    <b>连驱动都不用装</b>，插上就能在「适配器」里选到。<br>
+    <b>FTDI</b>（FT232H / FT2232H）现在多了一条 <code>ftd2xx</code> 通道，
+    用 FTDI 官方驱动即可，<b>不再需要 Zadig 替换驱动</b>
+    （替换驱动会让机器上其它 FTDI 软件用不了，这也是原来那条 <code>ftdi</code>
+    通道的代价）。<br>
+    <span class="reg-meta">顺带一提：<b>只有 CH341 看不到「模块没应答」</b>，
+    所以接 CH341 时连接会额外探一次总线（见下一条）。
+    CP2112 / MCP2221 / FTDI 能直接拿到应答位，没插模块时会当场报错。</span></span>
+  </div>
+
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
     <span><b>CH341</b>：安装驱动后 <code>CH341DLL.dll</code> 会自动注册到系统，EXE 无需额外配置，
     <b>开箱即用</b>。<br>
     <span class="reg-meta">为什么本工具的 EXE 是 <b>32 位</b>：WCH 驱动包装进系统的
@@ -641,8 +656,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.58.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.58.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.59.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.59.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3286,7 +3301,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.58.0<br>
+    CMIS Module Manager 操作手册 v2.59.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -38,8 +38,16 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 |---|---|
 | `ch341` | WCH CH341 USB-I2C — works with the driver's own 32-bit DLL; the shipped EXE is 32-bit for this reason |
 | `ch347` | WCH CH347 USB-I2C |
-| `ftdi`  | FTDI FT232H / FT2232H (via pyftdi) |
+| `cp2112` | Silicon Labs CP2112 — a HID device, so Windows drives it with its own driver and nothing is installed |
+| `mcp2221` | Microchip MCP2221 / MCP2221A — likewise driverless on Windows |
+| `ftd2xx` | FTDI FT232H / FT2232H through FTDI's own D2XX driver (no Zadig) |
+| `ftdi`  | FTDI FT232H / FT2232H via pyftdi — needs the driver replaced with WinUSB first |
 | `mock_*` | No hardware needed — simulated modules |
+
+`GET /api/backends` reports which of these are usable right now and, for the
+ones that are not, says why. The CH341 cannot report a missing acknowledgement,
+so connecting through it also probes the bus; the other four adapters report
+it directly.
 
 ## Quick start / 快速开始
 
@@ -58,7 +66,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-968 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+1043 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 
@@ -80,7 +88,8 @@ Prebuilt Windows binaries are attached to each
 app.py                  Flask REST API + static hosting entry point
 cmis_registers.py       CMIS 5.4 register map / field decoding
 i2c_interface.py        Backend factory (list_backends / create_backend)
-i2c_backends/           I2C adapter backends (ch341 / ch347 / ftdi / mock)
+i2c_backends/           I2C adapter backends (ch341 / ch347 / cp2112 /
+                        mcp2221 / ftd2xx / ftdi / mock)
 templates/index.html    Single-page UI
 static/                 app.js / style.css
 test_api.py             End-to-end API tests

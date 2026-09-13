@@ -24,8 +24,13 @@ dist/
 CMIS_Module_Manager.spec
 
 # ═══════════════════════════════════════════════════
-#  CMIS spec (OIF copyrighted, not for redistribution)
+#  Reference documents — none of it is ours to redistribute
 # ═══════════════════════════════════════════════════
+# The whole tree, not the two subdirectories that happened to exist when this
+# was written: docs/vendor/ was added later for adapter datasheets (Silicon
+# Labs, Microchip, FTDI) and would otherwise have been committed to the public
+# repository on the next `git add -A`.
+docs/
 docs/standards/
 
 # ═══════════════════════════════════════════════════

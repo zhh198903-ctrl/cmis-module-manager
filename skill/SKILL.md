@@ -146,11 +146,18 @@ curl -s $B/module/capabilities | python -c \
 
 先 `curl -s $B/backends` 看 `available`，它会把不可用的原因一并说清楚。
 
-| 适配器 | 开箱即用？ | 说明 |
-|---|---|---|
-| **CH341** | 是 | 装 WCH 驱动即可，用驱动自带的 DLL |
-| **CH347** | 装了驱动就行 | 若显示不可用，多半是驱动包没带 `CH347DLL.dll`，从 WCH 的 CH347EVT 包里取一个放到 EXE 同目录 |
-| **FTDI** | 否 | 走 pyftdi + libusb，Windows 上需要用 Zadig 把 FTDI 驱动换成 WinUSB，会影响机器上其它 FTDI 软件 |
+| 适配器 | backend | 开箱即用？ | 说明 |
+|---|---|---|---|
+| **CH341** | `ch341` | 是 | 装 WCH 驱动即可，用驱动自带的 DLL |
+| **CP2112** | `cp2112` | 是，且**连驱动都不用装** | HID 设备，Windows 用自带的 hidclass 驱动 |
+| **MCP2221 / MCP2221A** | `mcp2221` | 是，且**连驱动都不用装** | 同上 |
+| **CH347** | `ch347` | 装了驱动就行 | 若显示不可用，多半是驱动包没带 `CH347DLL.dll`，从 WCH 的 CH347EVT 包里取一个放到 EXE 同目录 |
+| **FTDI** | `ftd2xx` | 装 FTDI 官方驱动即可 | 走 D2XX，用 FTDI 自己的驱动，**不需要 Zadig** |
+| **FTDI** | `ftdi` | 否 | 走 pyftdi + libusb，Windows 上需要用 Zadig 把 FTDI 驱动换成 WinUSB，会影响机器上其它 FTDI 软件 |
+
+**能报「没模块应答」的是哪几个**：CP2112 / MCP2221 / FTDI 直接拿得到 ACK 位，
+读不到模块会直接报错。**只有 CH341 拿不到**（它的接口看不到缺失的 ACK），
+所以 `connect` 才要额外探一次总线，见下。
 
 **客户版 EXE 是 32 位的，这是有意的**：WCH 驱动装进系统的 `CH341DLL.dll` 是
 32 位的，而 64 位进程加载不了 32 位 DLL（Windows 的限制）。32 位 EXE 才能直接

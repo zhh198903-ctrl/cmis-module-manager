@@ -19,3 +19,23 @@ try:
     from i2c_backends.ftdi_backend import FTDIBackend  # noqa: F401
 except Exception:
     pass
+
+# The D2XX path works with the stock FTDI driver, where the pyftdi/libusb one
+# above needs the driver swapped for WinUSB first.
+try:
+    from i2c_backends.ftd2xx_mpsse import FTD2XXBackend  # noqa: F401
+except Exception:
+    pass
+
+# Both of these are plain HID devices: Windows binds its own driver, so they
+# work with nothing installed. Unlike the CH341 they can report a missing
+# acknowledgement, which is what turns an empty bus into an error.
+try:
+    from i2c_backends.cp2112 import CP2112Backend  # noqa: F401
+except Exception:
+    pass
+
+try:
+    from i2c_backends.mcp2221 import MCP2221Backend  # noqa: F401
+except Exception:
+    pass

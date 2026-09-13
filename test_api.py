@@ -14200,6 +14200,858 @@ class TestConnectingToAnAdapterWithNoModule(CMISTestCase):
         self.assertIn('did not answer', json.loads(rv.data)['message'])
 
 
+class TestTheFtdiD2xxMpsseProgram(CMISTestCase):
+    """The D2XX path exists because pyftdi cannot be used on Windows without
+    replacing the FTDI driver with WinUSB, which stops every other FTDI
+    application on the machine from working. FTDI's own driver installs
+    ftd2xx.dll and keeps the device, and D2XX drives the same MPSSE engine.
+
+    No FTDI hardware was available when this was written, so what is tested
+    here is the part that does not need any: the MPSSE byte sequence. The
+    waveform follows AN_113 - AD0 is SCL, AD1 drives SDA, AD2 reads it back,
+    and 0x9E puts both into drive-low-only mode so a written 1 tri-states the
+    pin and the bus pull-ups take it high, which is what open-drain means."""
+
+    def _m(self):
+        from i2c_backends import ftd2xx_mpsse as m
+        return m
+
+    # ---- the bus conditions -------------------------------------------------
+
+    def test_start_drops_sda_while_the_clock_is_high(self):
+        m = self._m()
+        states = self._low_states(m.start_condition())
+        # (value, direction) pairs; SCL is bit 0 and SDA bit 1.
+        self.assertEqual(states[0][0] & 0x03, 0x03, 'the bus does not start idle')
+        fell = next(i for i, (v, _) in enumerate(states) if not v & 0x02)
+        self.assertTrue(states[fell][0] & 0x01,
+                        'SDA fell while SCL was already low, which is a data '
+                        'bit and not a START')
+        self.assertEqual(states[-1][0] & 0x01, 0,
+                        'START left SCL high, so the first bit would be lost')
+
+    def test_stop_raises_sda_while_the_clock_is_high(self):
+        m = self._m()
+        states = self._low_states(m.stop_condition())
+        rose = next(i for i, (v, _) in enumerate(states) if v & 0x02)
+        self.assertTrue(states[rose][0] & 0x01,
+                        'SDA rose while SCL was low, which is a data bit and '
+                        'not a STOP')
+
+    def test_the_bus_is_released_after_a_stop(self):
+        """Leaving SDA driven would hold the bus against the next master, and
+        against the module's own clock stretching."""
+        m = self._m()
+        value, direction = self._low_states(m.stop_condition())[-1]
+        self.assertEqual(direction & 0x02, 0, 'SDA was left driven')
+
+    # ---- bytes and acknowledgement -----------------------------------------
+
+    def test_a_written_byte_is_followed_by_reading_one_ack_bit(self):
+        m = self._m()
+        prog = m.write_byte_with_ack(0xA0)
+        self.assertEqual(prog[0], 0x11, 'not a clock-bytes-out command')
+        self.assertEqual(prog[1:3], b'\x00\x00', 'length is not one byte')
+        self.assertEqual(prog[3], 0xA0)
+        self.assertIn(0x22, prog, 'the ACK bit is never clocked in')
+        self.assertEqual(m.expected_reply_len(prog), 1,
+                         'exactly one ACK bit should come back')
+
+    def test_the_last_byte_of_a_read_is_nacked(self):
+        """NACK is how the host tells the module to let go of SDA; without it
+        the module keeps driving and the STOP never happens."""
+        m = self._m()
+        self.assertIn(b'\x13\x00\x80', m.read_byte_with_ack(ack=False),
+                      'the final byte was ACKed')
+        self.assertIn(b'\x13\x00\x00', m.read_byte_with_ack(ack=True),
+                      'a mid-stream byte was NACKed')
+
+    def test_sda_is_released_before_reading_and_driven_before_acking(self):
+        m = self._m()
+        states = self._low_states(m.read_byte_with_ack(ack=True))
+        self.assertEqual(states[0][1] & 0x02, 0,
+                         'SDA was still driven while the module was sending')
+        self.assertEqual(states[-1][1] & 0x02, 0x02,
+                         'SDA was not taken back to send the ACK')
+
+    # ---- a whole register read ---------------------------------------------
+
+    def test_a_read_is_a_combined_transaction(self):
+        m = self._m()
+        prog = m.combined_read(0x50, 0x7F, 4)
+        writes = [prog[i + 3] for i in range(len(prog) - 3)
+                  if prog[i] == 0x11 and prog[i + 1] == 0 and prog[i + 2] == 0]
+        self.assertEqual(writes[:3], [0xA0, 0x7F, 0xA1],
+                         'expected address+W, the register, then address+R '
+                         'after a repeated START')
+
+    def test_the_reply_length_matches_the_program(self):
+        """Three ACK bits and then one byte per byte asked for. Getting this
+        wrong silently shifts every register value by one."""
+        m = self._m()
+        for n in (1, 4, 8, 128):
+            self.assertEqual(m.expected_reply_len(m.combined_read(0x50, 0, n)),
+                             n + 3, 'reply length is wrong for %d bytes' % n)
+
+    def test_a_write_needs_no_repeated_start(self):
+        m = self._m()
+        prog = m.combined_write(0x50, 0x7F, b'\x11\x22')
+        writes = [prog[i + 3] for i in range(len(prog) - 3)
+                  if prog[i] == 0x11 and prog[i + 1] == 0 and prog[i + 2] == 0]
+        self.assertEqual(writes, [0xA0, 0x7F, 0x11, 0x22])
+        self.assertEqual(m.expected_reply_len(prog), 4,
+                         'one ACK per byte sent, and nothing else')
+
+    # ---- the engine setup ---------------------------------------------------
+
+    def test_the_setup_asks_for_three_phase_clocking_and_open_drain(self):
+        """Without 3-phase the data changes on the same edge it is sampled on,
+        and without drive-low-only the adapter fights the pull-ups."""
+        m = self._m()
+        setup = m.configure_mpsse()
+        self.assertIn(0x8C, setup, '3-phase clocking is not enabled')
+        self.assertIn(b'\x9e\x03\x00', setup.lower(),
+                      'SCL and SDA are not set to drive low only')
+        self.assertIn(0x8A, setup, 'the clock is still divided by five')
+
+    def test_the_divisor_gives_a_hundred_kilohertz(self):
+        """Every CMIS module must support 100 kHz; faster is optional."""
+        m = self._m()
+        setup = m.configure_mpsse()
+        i = setup.index(0x86)
+        divisor = setup[i + 1] | (setup[i + 2] << 8)
+        scl = 60e6 / ((1 + divisor) * 2) * (2.0 / 3.0)
+        self.assertAlmostEqual(scl, 100000.0, delta=1.0)
+
+    # ---- the read path, with the driver faked out --------------------------
+
+    def test_the_data_bytes_are_taken_from_after_the_ack_bits(self):
+        """The reply carries the three address/register ACKs first. Slicing
+        from zero would return ACK bits as register values."""
+        m = self._m()
+        b = m.FTD2XXBackend()
+        sent = {}
+
+        class FakeDLL:
+            def FT_Write(self, h, payload, n, written):
+                sent['program'] = bytes(payload[:n]); written._obj.value = n
+                return 0
+            def FT_Read(self, h, buf, n, got):
+                buf.raw = bytes([0x00, 0x00, 0x00]) + bytes(range(1, n - 2))
+                got._obj.value = n
+                return 0
+
+        b._dll = FakeDLL()
+        b._connected = True
+        b._address = 0x50
+        self.assertEqual(b.read_bytes(0x00, 4), bytes([1, 2, 3, 4]))
+
+    def test_a_module_that_does_not_acknowledge_is_reported(self):
+        """This adapter hands the ACK bit back, so unlike the CH341 - whose
+        API cannot report a missing ACK at all - it can tell an absent module
+        from a real one instead of returning a page of 0xFF."""
+        m = self._m()
+        b = m.FTD2XXBackend()
+
+        class NackingDLL:
+            def FT_Write(self, h, payload, n, written):
+                written._obj.value = n; return 0
+            def FT_Read(self, h, buf, n, got):
+                # bit 7 set means the module never pulled SDA low
+                buf.raw = bytes([0x80]) * n
+                got._obj.value = n; return 0
+
+        b._dll = NackingDLL(); b._connected = True; b._address = 0x50
+        with self.assertRaises(IOError) as cm:
+            b.read_bytes(0x00, 4)
+        self.assertIn('No acknowledgement', str(cm.exception))
+        self.assertIn('0x50', str(cm.exception), 'the address is not named')
+
+    def test_reading_while_disconnected_is_refused(self):
+        m = self._m()
+        with self.assertRaises(IOError):
+            m.FTD2XXBackend().read_bytes(0, 1)
+
+    # ---- how it presents itself --------------------------------------------
+
+    def test_it_says_when_the_driver_is_there_but_no_device_is(self):
+        """"Unavailable" alone sends the user hunting for a driver they have
+        already installed."""
+        m = self._m()
+        info = m.FTD2XXBackend.probe_availability()
+        self.assertIn('description', info)
+        if not info['available']:
+            self.assertGreater(len(info['description']), 10)
+
+    @staticmethod
+    def _low_states(program):
+        """Every Set-Data-Bits-Low in a program, as (value, direction)."""
+        out = []
+        i = 0
+        while i < len(program):
+            if program[i] == 0x80:
+                out.append((program[i + 1], program[i + 2])); i += 3
+            elif program[i] in (0x11,):
+                i += 4
+            elif program[i] in (0x13, 0x20):
+                i += 3
+            elif program[i] == 0x22:
+                i += 2
+            else:
+                i += 1
+        return out
+
+
+class _FakeHID(object):
+    """A HID device that records what it was told and replays canned answers.
+
+    Neither adapter was available when these were written, so the reports are
+    scripted from the vendor documents: Silicon Labs AN495 for the CP2112 and
+    Microchip DS20005565B for the MCP2221A.
+    """
+
+    def __init__(self, replies=None, output_len=64, input_len=64):
+        self.sent = []
+        self.replies = list(replies or [])
+        self.closed = False
+        self.drained = 0
+        self._info = {'product': 'fake', 'output_len': output_len,
+                      'input_len': input_len}
+
+    @property
+    def info(self):
+        return dict(self._info)
+
+    def write_report(self, report_id, payload=b'', timeout_ms=1000):
+        self.sent.append((report_id, bytes(payload)))
+
+    def read_report(self, timeout_ms=1000):
+        if not self.replies:
+            raise IOError('the fake ran out of replies')
+        return self.replies.pop(0)
+
+    def drain(self, timeout_ms=20):
+        self.drained += 1
+
+    def close(self):
+        self.closed = True
+
+
+class TestTheCp2112Protocol(CMISTestCase):
+    """Silicon Labs CP2112, per AN495 Rev. 0.3 sections 5.2 and 6.1-6.8.
+
+    It earns its place next to the CH341: both are driverless on Windows, but
+    the CP2112 reports whether the module acknowledged its address, so an
+    empty bus fails here instead of being decoded into a module that is not
+    there."""
+
+    def _m(self):
+        from i2c_backends import cp2112 as m
+        return m
+
+    def _backend(self, replies, address=0x50):
+        m = self._m()
+        b = m.CP2112Backend()
+        b._device = _FakeHID(replies)
+        b._connected = True
+        b._address = address
+        return m, b
+
+    @staticmethod
+    def _status_reply(status0, status1=0x00, retries=0, read=0):
+        return (0x16, bytes([status0, status1, retries >> 8, retries & 0xFF,
+                             read >> 8, read & 0xFF]) + bytes(58))
+
+    @staticmethod
+    def _read_reply(data, status=0x02):
+        data = bytes(data)
+        return (0x13, bytes([status, len(data)]) + data
+                + bytes(61 - len(data)))
+
+    # ---- addressing ---------------------------------------------------------
+
+    def test_the_address_is_shifted_up_with_the_direction_bit_clear(self):
+        """AN495 requires bit 0 to be zero; the CP2112 supplies it itself."""
+        m = self._m()
+        self.assertEqual(m.slave_address_byte(0x50), 0xA0)
+        self.assertEqual(m.slave_address_byte(0x51), 0xA2)
+
+    # ---- the configuration report ------------------------------------------
+
+    def test_the_clock_speed_is_four_big_endian_bytes(self):
+        """Sending it little-endian asks for 2.7 GHz and is ignored, leaving
+        whatever rate the last program to touch the adapter chose."""
+        m = self._m()
+        cfg = m.smbus_config(clock_hz=100000)
+        self.assertEqual(cfg[0:4], b'\x00\x01\x86\xa0')
+        self.assertEqual(m.smbus_config(clock_hz=400000)[0:4],
+                         b'\x00\x06\x1a\x80')
+
+    def test_the_configuration_payload_is_thirteen_bytes(self):
+        """Offsets 1-13 of report 0x06. A short payload silently shifts every
+        field after it."""
+        self.assertEqual(len(self._m().smbus_config()), 13)
+
+    def test_auto_send_read_is_off_by_default(self):
+        """With it on the adapter streams read responses unprompted, and one
+        left over from an earlier transfer reads as the answer to this one."""
+        m = self._m()
+        self.assertEqual(m.smbus_config()[5], 0x00)
+        self.assertEqual(m.smbus_config(auto_send_read=True)[5], 0x01)
+
+    def test_the_adapters_own_address_never_has_the_read_bit_set(self):
+        m = self._m()
+        self.assertEqual(m.smbus_config(device_address=0x03)[4] & 0x01, 0)
+
+    # ---- the combined read request -----------------------------------------
+
+    def test_a_read_request_carries_the_register_as_the_target_address(self):
+        m = self._m()
+        p = m.data_write_read_request(0x50, bytes([0x7F]), 128)
+        self.assertEqual(p[0], 0xA0)
+        self.assertEqual(p[1:3], b'\x00\x80', 'the length is not big-endian')
+        self.assertEqual(p[3], 1, 'the target address length is wrong')
+        self.assertEqual(p[4], 0x7F)
+
+    def test_a_read_request_is_padded_to_the_full_target_address_field(self):
+        """Offsets 5-20 are the target address field whatever is used of it."""
+        self.assertEqual(len(self._m().data_write_read_request(
+            0x50, bytes([0]), 1)), 20)
+
+    def test_a_read_outside_the_adapters_range_is_refused(self):
+        m = self._m()
+        for bad in (0, 513):
+            with self.assertRaises(ValueError):
+                m.data_write_read_request(0x50, bytes([0]), bad)
+        with self.assertRaises(ValueError):
+            m.data_write_read_request(0x50, b'', 4)
+        with self.assertRaises(ValueError):
+            m.data_write_read_request(0x50, bytes(17), 4)
+
+    # ---- the write report ---------------------------------------------------
+
+    def test_a_write_states_its_own_length(self):
+        m = self._m()
+        p = m.data_write(0x50, b'\x7f\x11')
+        self.assertEqual(p[0], 0xA0)
+        self.assertEqual(p[1], 2)
+        self.assertEqual(p[2:], b'\x7f\x11')
+
+    def test_a_write_longer_than_one_report_is_refused(self):
+        """AN495 6.5 caps the data field at 61 bytes and ignores anything
+        larger, so an unchecked write would be dropped without a word."""
+        m = self._m()
+        m.data_write(0x50, bytes(61))
+        with self.assertRaises(ValueError):
+            m.data_write(0x50, bytes(62))
+        with self.assertRaises(ValueError):
+            m.data_write(0x50, b'')
+
+    # ---- transfer status ----------------------------------------------------
+
+    def test_the_status_request_value_must_be_one(self):
+        """Any other value is ignored by the adapter, and the poll loop would
+        then wait for a reply that is never sent."""
+        self.assertEqual(self._m().transfer_status_request(), b'\x01')
+
+    def test_the_status_counters_are_sixteen_bit(self):
+        m = self._m()
+        s = m.parse_transfer_status(bytes([0x02, 0x05, 0x01, 0x02, 0x03, 0x04]))
+        self.assertEqual(s['retries'], 0x0102)
+        self.assertEqual(s['bytes_read'], 0x0304)
+
+    def test_a_truncated_status_reply_is_rejected(self):
+        with self.assertRaises(IOError):
+            self._m().parse_transfer_status(bytes(5))
+
+    def test_only_complete_with_error_counts_as_a_failure(self):
+        """0x02 means the transfer finished; 0x03 means it finished badly.
+        Treating 0x03 as success is how an unanswered address becomes data."""
+        m = self._m()
+        self.assertFalse(m.transfer_failed({'status0': 0x02, 'status1': 0x05}))
+        self.assertTrue(m.transfer_failed({'status0': 0x03, 'status1': 0x00}))
+
+    def test_a_missing_acknowledgement_is_named_in_words(self):
+        m = self._m()
+        self.assertIn('not acknowledged', m.describe_transfer_status(
+            {'status0': 0x03, 'status1': 0x00, 'retries': 0, 'bytes_read': 0}))
+        self.assertIn('rbitration', m.describe_transfer_status(
+            {'status0': 0x03, 'status1': 0x02, 'retries': 0, 'bytes_read': 0}))
+        self.assertIn('busy', m.describe_transfer_status(
+            {'status0': 0x01, 'status1': 0x00, 'retries': 0, 'bytes_read': 0}))
+
+    # ---- the read response --------------------------------------------------
+
+    def test_only_the_bytes_the_reply_declares_are_returned(self):
+        """The data field is always 61 bytes; past Length it holds whatever
+        was left in the adapter's buffer from an earlier transfer."""
+        m = self._m()
+        payload = bytes([0x02, 3]) + b'\x01\x02\x03' + b'\xff' * 58
+        status, data = m.parse_read_response(payload)
+        self.assertEqual(status, 0x02)
+        self.assertEqual(data, b'\x01\x02\x03')
+
+    def test_a_reply_claiming_more_than_one_report_holds_is_rejected(self):
+        m = self._m()
+        with self.assertRaises(IOError):
+            m.parse_read_response(bytes([0x02, 62]) + bytes(61))
+        with self.assertRaises(IOError):
+            m.parse_read_response(bytes([0x02]))
+
+    # ---- the backend read path ---------------------------------------------
+
+    def test_a_register_read_is_one_combined_transaction(self):
+        """Separate write and read reports would put a STOP between the two
+        halves and let another master move the module's address pointer."""
+        m, b = self._backend([self._status_reply(0x02, 0x05),
+                              self._read_reply(b'\x18\x00\x50\x04')])
+        self.assertEqual(b.read_bytes(0x00, 4), b'\x18\x00\x50\x04')
+        ids = [r for r, _ in b._device.sent]
+        self.assertIn(m.REPORT_DATA_WRITE_READ_REQUEST, ids)
+        self.assertNotIn(m.REPORT_DATA_READ_REQUEST, ids,
+                         'a plain read request breaks the repeated START')
+
+    def test_a_read_nobody_acknowledges_says_so_with_the_address(self):
+        """This is exactly what the CH341 cannot do."""
+        m, b = self._backend([self._status_reply(0x03, 0x00)], address=0x50)
+        with self.assertRaises(IOError) as cm:
+            b.read_bytes(0x00, 4)
+        self.assertIn('0x50', str(cm.exception))
+        self.assertIn('acknowledge', str(cm.exception))
+
+    def test_an_engine_that_goes_idle_without_finishing_is_an_error(self):
+        """Idle without ever reporting completion means the transfer was
+        dropped. Waiting for a completion that is never coming would spend the
+        whole timeout and then blame the clock instead of the bus."""
+        m, b = self._backend([self._status_reply(0x00)])
+        with self.assertRaises(IOError) as cm:
+            b.read_bytes(0x00, 4)
+        self.assertIn('went idle without completing', str(cm.exception))
+
+    def test_a_read_longer_than_one_report_is_collected_across_replies(self):
+        """A page is 128 bytes and one report carries 61, so a page read that
+        stops at the first reply would return a third of the page."""
+        first, second, third = bytes(range(61)), bytes(range(61, 122)), \
+            bytes(range(122, 128))
+        m, b = self._backend([self._status_reply(0x02, 0x05),
+                              self._read_reply(first),
+                              self._read_reply(second),
+                              self._read_reply(third)])
+        self.assertEqual(b.read_bytes(0x80, 128), bytes(range(128)))
+
+    def test_a_status_reply_arriving_first_is_not_decoded_as_data(self):
+        """The adapter interleaves the two report types; taking whatever
+        arrives next would turn a status byte into a register value."""
+        m, b = self._backend([
+            self._status_reply(0x02, 0x05),
+            # Decoded as a read response this one claims five bytes of data,
+            # which is the shape of the damage: a status byte and a retry
+            # count handed back as register values.
+            self._status_reply(0x02, 0x05, retries=0x0102, read=0x0304),
+            self._read_reply(b'\xAA\xBB')])
+        self.assertEqual(b.read_bytes(0x00, 2), b'\xAA\xBB')
+
+    def test_an_adapter_that_never_sends_the_right_report_gives_up(self):
+        m, b = self._backend([self._status_reply(0x02, 0x05)]
+                             + [self._status_reply(0x00)] * 20)
+        with self.assertRaises(IOError):
+            b.read_bytes(0x00, 2)
+
+    # ---- the backend write path --------------------------------------------
+
+    def test_a_write_puts_the_register_in_front_of_the_data(self):
+        m, b = self._backend([self._status_reply(0x02, 0x05)])
+        b.write_bytes(0x7F, b'\x11')
+        report_id, payload = b._device.sent[0]
+        self.assertEqual(report_id, m.REPORT_DATA_WRITE)
+        self.assertEqual(payload, b'\xa0\x02\x7f\x11')
+
+    def test_a_long_write_restates_where_each_chunk_starts(self):
+        """Each report ends its own bus transaction with a STOP, so a chunk
+        that did not carry its own register address would land back at the
+        start of the page."""
+        m, b = self._backend([self._status_reply(0x02, 0x05)] * 4)
+        b.write_bytes(0x80, bytes(130))
+        starts = [p[2] for r, p in b._device.sent
+                  if r == m.REPORT_DATA_WRITE]
+        self.assertEqual(starts, [0x80, 0x80 + 60, 0x80 + 120])
+
+    def test_a_write_nobody_acknowledges_is_reported(self):
+        m, b = self._backend([self._status_reply(0x03, 0x00)])
+        with self.assertRaises(IOError):
+            b.write_bytes(0x7F, b'\x11')
+
+    def test_reading_or_writing_while_disconnected_is_refused(self):
+        m = self._m()
+        with self.assertRaises(IOError):
+            m.CP2112Backend().read_bytes(0, 1)
+        with self.assertRaises(IOError):
+            m.CP2112Backend().write_bytes(0, b'\x00')
+
+    def test_it_is_registered_and_describes_itself_without_hardware(self):
+        from i2c_interface import list_backends
+        names = {b['name']: b for b in list_backends()}
+        self.assertIn('cp2112', names)
+        self.assertGreater(len(names['cp2112']['description']), 10)
+
+
+class TestTheMcp2221Protocol(CMISTestCase):
+    """Microchip MCP2221A, per data sheet DS20005565B sections 3.1.1 and
+    3.1.5-3.1.10.
+
+    Every packet is 64 bytes and the reports are unnumbered, so report ID 0
+    carries the command code as its first byte - the opposite of the CP2112,
+    where the command code is the report ID."""
+
+    def _m(self):
+        from i2c_backends import mcp2221 as m
+        return m
+
+    def _backend(self, replies, address=0x50):
+        m = self._m()
+        b = m.MCP2221Backend()
+        b._device = _FakeHID([(0x00, r) for r in replies])
+        b._connected = True
+        b._address = address
+        return m, b
+
+    @staticmethod
+    def _reply(command, *rest):
+        packet = bytearray(64)
+        packet[0] = command
+        packet[1:1 + len(rest)] = bytes(rest)
+        return bytes(packet)
+
+    @classmethod
+    def _status(cls, requested, transferred, engine_state=1):
+        packet = bytearray(64)
+        packet[0] = 0x10
+        packet[8] = engine_state
+        packet[9] = requested & 0xFF
+        packet[10] = (requested >> 8) & 0xFF
+        packet[11] = transferred & 0xFF
+        packet[12] = (transferred >> 8) & 0xFF
+        return bytes(packet)
+
+    @staticmethod
+    def _data(chunk):
+        packet = bytearray(64)
+        packet[0] = 0x40
+        packet[3] = len(chunk)
+        packet[4:4 + len(chunk)] = bytes(chunk)
+        return bytes(packet)
+
+    # ---- addressing and clocking -------------------------------------------
+
+    def test_the_direction_bit_rides_in_the_address_byte(self):
+        """DS20005565B: even values write, odd values read."""
+        m = self._m()
+        self.assertEqual(m.slave_address_byte(0x50, read=False), 0xA0)
+        self.assertEqual(m.slave_address_byte(0x50, read=True), 0xA1)
+
+    def test_the_hundred_kilohertz_divider(self):
+        """Every CMIS module must support 100 kHz; faster is optional."""
+        m = self._m()
+        d = m.speed_divider(100000)
+        self.assertEqual(m.INTERNAL_CLOCK_HZ / float(d + 3), 100000.0)
+
+    def test_a_rate_the_adapter_cannot_divide_down_to_is_refused(self):
+        m = self._m()
+        with self.assertRaises(ValueError):
+            m.speed_divider(0)
+        with self.assertRaises(ValueError):
+            m.speed_divider(20)
+
+    # ---- packet shape -------------------------------------------------------
+
+    def test_every_command_is_a_full_sixty_four_byte_packet(self):
+        """A short packet is not a short command - the adapter reads the
+        fields it wants by index whatever was sent."""
+        m = self._m()
+        for packet in (m.status_request(), m.cancel_transfer(),
+                       m.set_speed(117), m.get_i2c_data(),
+                       m.read_data(0x50, 4),
+                       m.write_data(0x50, b'\x00')):
+            self.assertEqual(len(packet), 64)
+
+    def test_a_plain_status_read_changes_nothing(self):
+        """Byte 2 of 0x10 cancels the transfer and byte 3 of 0x20 changes the
+        bus rate. A status poll that carried either would do it on every
+        iteration of the wait loop."""
+        m = self._m()
+        packet = m.status_request()
+        self.assertNotEqual(packet[2], m.SUBCMD_CANCEL_TRANSFER)
+        self.assertNotEqual(packet[3], m.SUBCMD_SET_SPEED)
+
+    def test_the_cancel_and_speed_sub_commands_sit_in_their_own_bytes(self):
+        m = self._m()
+        self.assertEqual(m.cancel_transfer()[2], m.SUBCMD_CANCEL_TRANSFER)
+        self.assertEqual(m.cancel_transfer()[3], 0x00)
+        self.assertEqual(m.set_speed(117)[3], m.SUBCMD_SET_SPEED)
+        self.assertEqual(m.set_speed(117)[4], 117)
+        self.assertEqual(m.set_speed(117)[2], 0x00)
+
+    def test_the_transfer_length_is_little_endian(self):
+        """The opposite of the CP2112, whose lengths are big-endian. Copying
+        one adapter's order to the other asks for a 256-times-too-long
+        transfer."""
+        m = self._m()
+        packet = m.read_data(0x50, 0x0180)
+        self.assertEqual(packet[1], 0x80)
+        self.assertEqual(packet[2], 0x01)
+
+    def test_a_read_turns_the_bus_around_without_releasing_it(self):
+        m = self._m()
+        self.assertEqual(m.read_data(0x50, 4, repeated_start=True)[0],
+                         m.CMD_I2C_READ_DATA_REPEATED_START)
+        self.assertEqual(m.read_data(0x50, 4)[0], m.CMD_I2C_READ_DATA)
+
+    def test_a_write_longer_than_one_packet_is_refused(self):
+        """Indices 4-63 hold the data: 60 bytes, not 64."""
+        m = self._m()
+        m.write_data(0x50, bytes(60))
+        with self.assertRaises(ValueError):
+            m.write_data(0x50, bytes(61))
+        with self.assertRaises(ValueError):
+            m.write_data(0x50, b'')
+
+    # ---- the replies --------------------------------------------------------
+
+    def test_the_status_reply_counters_are_little_endian(self):
+        m = self._m()
+        s = m.parse_status(self._status(0x0180, 0x0102))
+        self.assertEqual(s['requested'], 0x0180)
+        self.assertEqual(s['transferred'], 0x0102)
+
+    def test_a_failed_read_is_flagged_not_returned_as_data(self):
+        """Byte 3 of 127 means the read failed. Taken as a length it would
+        return 127 bytes of stale buffer as register values."""
+        m = self._m()
+        packet = bytearray(self._data(b''))
+        packet[3] = 127
+        with self.assertRaises(IOError) as cm:
+            m.parse_get_i2c_data(bytes(packet))
+        self.assertIn('acknowledge', str(cm.exception),
+                      'a failed read was reported as an oversized one')
+
+    def test_an_engine_read_error_is_flagged(self):
+        m = self._m()
+        packet = bytearray(self._data(b'\x01'))
+        packet[1] = m.RESPONSE_READ_ERROR
+        with self.assertRaises(IOError):
+            m.parse_get_i2c_data(bytes(packet))
+
+    def test_an_empty_chunk_means_not_ready_rather_than_failed(self):
+        """The read is still in flight; treating it as the end of the data
+        returns a short buffer."""
+        m = self._m()
+        ready, data = m.parse_get_i2c_data(self._data(b''))
+        self.assertFalse(ready)
+        self.assertEqual(data, b'')
+        ready, data = m.parse_get_i2c_data(self._data(b'\x01\x02'))
+        self.assertTrue(ready)
+        self.assertEqual(data, b'\x01\x02')
+
+    def test_a_chunk_larger_than_a_packet_can_hold_is_rejected(self):
+        m = self._m()
+        packet = bytearray(self._data(b''))
+        packet[3] = 61
+        with self.assertRaises(IOError):
+            m.parse_get_i2c_data(bytes(packet))
+
+    # ---- the backend read path ---------------------------------------------
+
+    def test_a_register_read_holds_the_bus_between_the_two_halves(self):
+        """Write-with-STOP then read would let the module's address pointer
+        move between them."""
+        m, b = self._backend([self._reply(0x94), self._reply(0x93),
+                              self._data(b'\x18\x00')])
+        self.assertEqual(b.read_bytes(0x00, 2), b'\x18\x00')
+        codes = [p[0] for _, p in b._device.sent]
+        self.assertEqual(codes[:3], [m.CMD_I2C_WRITE_DATA_NO_STOP,
+                                     m.CMD_I2C_READ_DATA_REPEATED_START,
+                                     m.CMD_I2C_GET_DATA])
+
+    def test_a_reply_for_another_command_is_not_accepted(self):
+        """The adapter answers out of order after a timeout; reading the
+        previous command's reply shifts every value that follows."""
+        m, b = self._backend([self._reply(0x40)])
+        with self.assertRaises(IOError) as cm:
+            b.read_bytes(0x00, 2)
+        self.assertIn('0x94', str(cm.exception))
+
+    def test_a_busy_engine_is_reported_rather_than_ignored(self):
+        m, b = self._backend([self._reply(0x94, 0x01)])
+        with self.assertRaises(IOError) as cm:
+            b.read_bytes(0x00, 2)
+        self.assertIn('busy', str(cm.exception))
+
+    def test_the_read_keeps_polling_until_the_data_arrives(self):
+        m, b = self._backend([self._reply(0x94), self._reply(0x93),
+                              self._data(b''), self._data(b''),
+                              self._data(b'\xAB\xCD')])
+        self.assertEqual(b.read_bytes(0x00, 2), b'\xAB\xCD')
+
+    def test_a_read_longer_than_one_packet_is_collected_across_replies(self):
+        chunks = [bytes(range(60)), bytes(range(60, 120)),
+                  bytes(range(120, 128))]
+        m, b = self._backend([self._reply(0x94), self._reply(0x93)]
+                             + [self._data(c) for c in chunks])
+        self.assertEqual(b.read_bytes(0x80, 128), bytes(range(128)))
+
+    # ---- the backend write path --------------------------------------------
+
+    def test_a_write_puts_the_register_in_front_of_the_data(self):
+        m, b = self._backend([self._reply(0x90), self._status(2, 2)])
+        b.write_bytes(0x7F, b'\x11')
+        _, packet = b._device.sent[0]
+        self.assertEqual(packet[0], m.CMD_I2C_WRITE_DATA)
+        self.assertEqual(packet[1], 2)
+        self.assertEqual(packet[3], 0xA0)
+        self.assertEqual(packet[4:6], b'\x7f\x11')
+
+    def test_a_long_write_restates_where_each_chunk_starts(self):
+        m, b = self._backend([self._reply(0x90), self._status(60, 60),
+                              self._reply(0x90), self._status(60, 60),
+                              self._reply(0x90), self._status(12, 12)])
+        b.write_bytes(0x80, bytes(128))
+        starts = [p[4] for _, p in b._device.sent
+                  if p[0] == m.CMD_I2C_WRITE_DATA]
+        self.assertEqual(starts, [0x80, 0x80 + 59, 0x80 + 118])
+
+    def test_an_engine_that_stops_short_is_reported_as_no_acknowledgement(self):
+        """Idle with fewer bytes moved than asked for means the module never
+        answered; the documented counters are the only evidence, since the
+        data sheet does not enumerate the engine's internal states."""
+        m, b = self._backend([self._reply(0x90),
+                              self._status(2, 0, engine_state=0),
+                              self._reply(0x10)])
+        with self.assertRaises(IOError) as cm:
+            b.write_bytes(0x7F, b'\x11')
+        self.assertIn('0x50', str(cm.exception))
+        self.assertIn('acknowledge', str(cm.exception))
+
+    def test_a_write_that_completes_is_not_mistaken_for_a_failure(self):
+        m, b = self._backend([self._reply(0x90),
+                              self._status(2, 2, engine_state=0)])
+        b.write_bytes(0x7F, b'\x11')
+
+    def test_reading_or_writing_while_disconnected_is_refused(self):
+        m = self._m()
+        with self.assertRaises(IOError):
+            m.MCP2221Backend().read_bytes(0, 1)
+        with self.assertRaises(IOError):
+            m.MCP2221Backend().write_bytes(0, b'\x00')
+
+    def test_it_is_registered_and_describes_itself_without_hardware(self):
+        from i2c_interface import list_backends
+        names = {b['name']: b for b in list_backends()}
+        self.assertIn('mcp2221', names)
+        self.assertGreater(len(names['mcp2221']['description']), 10)
+
+
+class TestTheWindowsHidTransport(CMISTestCase):
+    """The transport the CP2112 and MCP2221A share.
+
+    Both are driverless because Windows binds its own hidclass driver to
+    them; all this needs is setupapi.dll and hid.dll, which are part of the
+    operating system."""
+
+    def _m(self):
+        from i2c_backends import _hid as m
+        return m
+
+    def test_an_input_only_collection_is_never_chosen(self):
+        """One USB device often publishes several HID collections. Opening an
+        input-only one succeeds and then every command fails, which reads as a
+        broken adapter rather than as the wrong interface."""
+        m = self._m()
+        devices = [{'input_len': 21, 'output_len': 0},
+                   {'input_len': 64, 'output_len': 64}]
+        self.assertEqual(m.usable_interfaces(devices), [devices[1]])
+
+    def test_the_interface_detail_size_follows_the_build_not_the_machine(self):
+        """SetupAPI compares this against the size a C compiler would have
+        produced: 8 where pointers are 8 bytes, 6 where they are 4. The
+        released EXE is 32-bit, so the second case is the shipped one."""
+        import ctypes
+        m = self._m()
+        self.assertEqual(m.detail_struct_size(4), 6,
+                         'the 32-bit EXE would find no adapter at all')
+        self.assertEqual(m.detail_struct_size(8), 8)
+        self.assertEqual(m._DETAIL_CB_SIZE,
+                         m.detail_struct_size(ctypes.sizeof(ctypes.c_void_p)))
+
+    def test_a_report_is_padded_to_the_size_the_device_declares(self):
+        """Windows rejects a short write outright, so a command shorter than
+        the report length never reaches the adapter at all."""
+        import ctypes
+        m = self._m()
+        if not m._IS_WINDOWS:
+            self.skipTest('Windows only')
+        seen = {}
+
+        class FakeKernel32:
+            def CreateEventW(self, *a):
+                return 1
+
+            def CloseHandle(self, *a):
+                return 1
+
+            def WriteFile(self, h, buf, n, transferred, ov):
+                seen['bytes'] = bytes(buf.raw[:n])
+                transferred._obj.value = n
+                return 1
+
+        dev = object.__new__(m.HIDDevice)
+        dev._k = FakeKernel32()
+        dev._handle = 1
+        dev._output_len = 64
+        dev._input_len = 64
+        dev.write_report(0x14, b'\xa0\x02\x7f\x11')
+        self.assertEqual(len(seen['bytes']), 64)
+        self.assertEqual(seen['bytes'][:5], b'\x14\xa0\x02\x7f\x11')
+        self.assertEqual(seen['bytes'][5:], bytes(59),
+                         'the tail of an earlier command was left in the '
+                         'buffer')
+
+    def test_a_report_that_does_not_fit_is_refused_before_it_is_sent(self):
+        m = self._m()
+        dev = object.__new__(m.HIDDevice)
+        dev._output_len = 64
+        with self.assertRaises(m.HIDError):
+            dev.write_report(0x14, bytes(64))
+
+    def test_the_two_adapters_are_looked_for_by_their_published_ids(self):
+        """MCP2221A DS20005565B registers 1-5 to 1-8; CP2112 AN495 section 8."""
+        from i2c_backends import cp2112, mcp2221
+        self.assertEqual((cp2112.VENDOR_ID, cp2112.PRODUCT_ID),
+                         (0x10C4, 0xEA90))
+        self.assertEqual((mcp2221.VENDOR_ID, mcp2221.PRODUCT_ID),
+                         (0x04D8, 0x00DD))
+
+    def test_enumeration_works_on_this_machine(self):
+        """Not a mock: this walks the real SetupAPI device tree. It is the
+        only part of the transport that can be exercised without one of the
+        two adapters, and it is where the structure packing would show up."""
+        m = self._m()
+        if not m._IS_WINDOWS:
+            self.skipTest('Windows only')
+        for d in m.enumerate_devices():
+            self.assertTrue(d['path'].startswith('\\\\'),
+                            'a device path should be a kernel object name')
+            self.assertLessEqual(d['vendor_id'], 0xFFFF)
+
+    def test_a_missing_adapter_says_no_driver_is_needed(self):
+        """"Unavailable" alone sends the user hunting for a driver that does
+        not exist for these two."""
+        m = self._m()
+        info = m.availability(0x10C4, 0xEA90, 'CP2112 adapter')
+        self.assertIn('description', info)
+        if not info['available']:
+            self.assertIn('driver', info['description'])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
