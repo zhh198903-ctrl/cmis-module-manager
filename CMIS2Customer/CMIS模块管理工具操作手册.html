@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.57.1<br>
+      <b>版本</b>　2.58.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -604,8 +604,27 @@
 
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span><b>CH341</b>：安装驱动后 <code>CH341DLL.dll</code> 会自动注册到 System32，EXE 无需额外配置。</span>
+    <span><b>CH341</b>：安装驱动后 <code>CH341DLL.dll</code> 会自动注册到系统，EXE 无需额外配置，
+    <b>开箱即用</b>。<br>
+    <span class="reg-meta">为什么本工具的 EXE 是 <b>32 位</b>：WCH 驱动包装进系统的
+    <code>CH341DLL.dll</code> 是 <b>32 位</b>的，而 <b>64 位程序无法加载 32 位 DLL</b>
+    —— 这是 Windows 的限制，不是驱动或工具的问题。所以从 v2.58.0 起客户版 EXE 改为 32 位，
+    直接用驱动自带的那个 DLL，不需要你额外下载或放置任何文件。
+    （顺带：32 位包体积也小了约四成。）</span></span>
   </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>没插模块（或模块没插到位）时，工具会明确告诉你，而不是编一只出来。</b>
+    空的 I2C 总线被上拉电阻拉高，<b>每个字节都读回 <code>0xFF</code></b>；
+    而 CH341 的接口<b>看不到缺失的 ACK</b>，会把这次读当成成功返回。<br>
+    v2.58.0 之前，工具就把这一串 <code>FF</code> 当数据解析了，界面上会出现一只
+    <b>根本不存在的模块</b>：<code>CMIS 15.15</code>、<b>256 通道</b>、
+    模块状态 <code>Reserved</code>、厂商名一串乱码、温度 <code>-0.0039 °C</code>。<br>
+    现在连接时会先读低位内存前 3 个字节：<b>全 <code>FF</code> 或全 <code>00</code></b>
+    就判定总线上没有模块应答，<b>直接拒绝连接</b>并说明读到了什么、该检查哪几项
+    （模块是否插到位、适配器的 I2C 线是否接对、地址是否为 <code>0x50</code>）。</span>
+  </div>
+
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span><b>CH347 注意</b>：<code>CH347SER.EXE</code> 安装的是串口驱动（设备管理器可识别设备），但 I2C 通信所需的 <code>CH347DLL.dll</code> 可能不会自动安装到系统。若工具显示 CH347 <code>unavailable</code>，请从 WCH 官网下载 <b>CH347EVT</b> 开发资料包，找到 <code>CH347DLL.dll</code>，复制到 EXE 同目录或 <code>System32</code> 下。</span>
@@ -622,8 +641,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.57.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.57.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.58.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.58.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3267,7 +3286,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.57.1<br>
+    CMIS Module Manager 操作手册 v2.58.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

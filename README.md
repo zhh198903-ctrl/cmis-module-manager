@@ -36,7 +36,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 
 | Backend | Adapter |
 |---|---|
-| `ch341` | WCH CH341 USB-I2C |
+| `ch341` | WCH CH341 USB-I2C — works with the driver's own 32-bit DLL; the shipped EXE is 32-bit for this reason |
 | `ch347` | WCH CH347 USB-I2C |
 | `ftdi`  | FTDI FT232H / FT2232H (via pyftdi) |
 | `mock_*` | No hardware needed — simulated modules |
@@ -58,7 +58,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-960 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+968 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

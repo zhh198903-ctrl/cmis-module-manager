@@ -14102,6 +14102,104 @@ class TestAResetTakesThePageSelectionWithIt(CMISTestCase):
         self.assertIsNone(b._prev_selected)
 
 
+class TestConnectingToAnAdapterWithNoModule(CMISTestCase):
+    """An I2C bus with nothing on it is held high by its pull-ups, so every
+    read comes back 0xFF - and CH341StreamI2C reports success for it, because
+    the adapter cannot see the missing ACK. The backend checks that return
+    code and has nothing to complain about.
+
+    So the tool connected to an empty adapter and presented what those bytes
+    decode to: CMIS 15.15, 256 lanes, module state "Reserved", vendor strings
+    of 0xFF and -0.0039 degrees. A whole module the interface invented, on the
+    one path where a real operator finds out by trusting it.
+
+    Measured on a real CH341A with no module seated."""
+
+    class _Bus:
+        """A backend whose bus reads a fixed byte, like an absent module."""
+        def __init__(self, fill=0xFF):
+            self.fill = fill
+            self.closed = False
+        def connect(self, bus, address):
+            pass
+        def disconnect(self):
+            self.closed = True
+        def read_bytes(self, register, length):
+            return bytes([self.fill] * length)
+        def write_bytes(self, register, data):
+            pass
+
+    def _connect_with(self, backend):
+        import i2c_interface
+        real = i2c_interface.create_backend
+        app_module.create_backend = lambda name: backend
+        try:
+            return self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': 'ch341', 'bus': 0, 'address': 80}),
+                content_type='application/json')
+        finally:
+            app_module.create_backend = real
+
+    def test_an_all_ones_bus_is_refused(self):
+        rv = self._connect_with(self._Bus(0xFF))
+        self.assertErr(rv, 502)
+        self.assertIn('nothing is answering', json.loads(rv.data)['message'])
+
+    def test_an_all_zero_bus_is_refused(self):
+        """The same situation with the lines held low."""
+        rv = self._connect_with(self._Bus(0x00))
+        self.assertErr(rv, 502)
+
+    def test_the_refusal_says_what_it_read_and_where(self):
+        """"Failed to connect" sends the operator looking at the adapter when
+        the module is what is missing."""
+        msg = json.loads(self._connect_with(self._Bus(0xFF)).data)['message']
+        self.assertIn('0x50', msg, 'the address is not named')
+        self.assertIn('FF FF FF', msg, 'what was read is not shown')
+        self.assertIn('seated', msg, 'nothing suggests what to check')
+
+    def test_the_adapter_is_released_again(self):
+        """Leaving it open would keep the device claimed against the next
+        attempt."""
+        bus = self._Bus(0xFF)
+        self._connect_with(bus)
+        self.assertTrue(bus.closed, 'the adapter was left open')
+
+    def test_nothing_is_left_connected(self):
+        self._connect_with(self._Bus(0xFF))
+        self.assertFalse(app_module._state['connected'])
+        self.assertIsNone(app_module._state['backend'])
+        self.assertErr(self.client.get('/api/module/info'), 503)
+
+    def test_a_module_that_answers_still_connects(self):
+        """A guard that refused everything would pass all of the above."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_every_mock_still_connects(self):
+        """The probe reads real bytes, so a profile whose first three happened
+        to be 00 or FF would be locked out by it."""
+        for name in ('mock_dr8', 'mock_sr8', 'mock_fr4x2', 'mock_coherent',
+                     'mock_coherent_zr', 'mock_1600g_dr8',
+                     'mock_1600g_16lane', 'mock_24lane'):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+                content_type='application/json'), 200)
+
+    def test_a_bus_that_raises_is_reported_as_the_module_not_answering(self):
+        """An adapter that does surface the NACK must not look like a crash."""
+        class Raising(self._Bus.__mro__[0]):
+            def read_bytes(self, register, length):
+                raise IOError('CH341StreamI2C read failed at register 0x00')
+        rv = self._connect_with(Raising())
+        self.assertErr(rv, 400)
+        self.assertIn('did not answer', json.loads(rv.data)['message'])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

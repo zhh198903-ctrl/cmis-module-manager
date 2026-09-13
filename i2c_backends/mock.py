@@ -2366,8 +2366,13 @@ class MockBackend(I2CInterface):
             # honours tBPC from one that does not, so the one timing rule
             # this tool most needs to get right was the one nothing checked.
             page, bank = self._current_page, self._current_bank
+            # perf_counter, not monotonic: on Windows before Python 3.13
+            # time.monotonic() is GetTickCount64, which ticks every 15.6 ms.
+            # Measuring a 10 ms hold with it reports zero elapsed about a
+            # third of the time, so a host that waited correctly still got
+            # the previous page and every read after it was garbage.
             if (self._prev_selected is not None
-                    and time.monotonic() - self._page_changed_at
+                    and time.perf_counter() - self._page_changed_at
                     < self._bpc_hold()):
                 page, bank = self._prev_selected
             # Bank-specific data when the profile supplies it, otherwise the
@@ -2433,7 +2438,7 @@ class MockBackend(I2CInterface):
                 # mock that started a hold anyway would punish the page
                 # cache for doing its job.
                 self._prev_selected = was
-                self._page_changed_at = time.monotonic()
+                self._page_changed_at = time.perf_counter()
         else:
             for page_dict in self._write_targets():
                 for i, b in enumerate(data):

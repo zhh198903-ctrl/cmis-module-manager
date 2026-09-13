@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.57.1'
+__version__ = '2.58.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -603,6 +603,38 @@ def api_connect():
         _state['backend'] = None
         _state['connected'] = False
         return _err(str(e))
+
+    # Nothing on the bus answers as 0xFF: an I2C line with no module on it is
+    # held high by its pull-ups, and CH341StreamI2C reports success for that
+    # read because the adapter cannot see the missing ACK. Without this the
+    # tool "connected" to an empty adapter and presented what those bytes
+    # decode to - CMIS 15.15, 256 lanes, a Reserved module state and vendor
+    # strings of 0xFF - which is a whole module the interface invented.
+    # All-zero is the same situation with the bus held low.
+    try:
+        probe = backend.read_bytes(0x00, 3)
+    except Exception as e:
+        try:
+            backend.disconnect()
+        except Exception:
+            pass
+        _state['backend'] = None
+        _state['connected'] = False
+        return _err('Opened %s but the module did not answer: %s'
+                    % (backend_name, e))
+    if not probe or all(b == 0xFF for b in probe) or all(b == 0 for b in probe):
+        try:
+            backend.disconnect()
+        except Exception:
+            pass
+        _state['backend'] = None
+        _state['connected'] = False
+        return _err(
+            'The adapter opened, but nothing is answering at I2C address '
+            '0x%02X: bytes 0-2 of lower memory read %s. Check that a module '
+            'is seated, that the adapter is wired to its I2C lines, and that '
+            'the address is right - a bus with no module on it reads as all '
+            'ones.' % (address, ' '.join('%02X' % b for b in probe)), 502)
 
     _state['backend'] = backend
     _state['connected'] = True

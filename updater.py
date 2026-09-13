@@ -239,13 +239,19 @@ def probe_source(url: str, seconds: float = 4.0, timeout: int = 15,
     got = 0
     try:
         with _open(req, timeout) as resp:
-            started = time.monotonic()
-            while time.monotonic() - started < seconds:
+            # perf_counter, not monotonic: on Windows before Python 3.13
+            # time.monotonic() is GetTickCount64 and ticks every 15.6 ms, so a
+            # short window is measured in whole ticks - two sources can score
+            # identically or at zero, and the ranking silently degrades to
+            # "keep the order they were passed in", which is what this
+            # function exists to avoid.
+            started = time.perf_counter()
+            while time.perf_counter() - started < seconds:
                 buf = resp.read(1 << 15)
                 if not buf:
                     break
                 got += len(buf)
-            elapsed = time.monotonic() - started
+            elapsed = time.perf_counter() - started
     except Exception:
         return 0.0
     return got / elapsed if elapsed > 0 and got else 0.0
