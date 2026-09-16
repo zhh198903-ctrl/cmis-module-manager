@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.63.1<br>
+      <b>版本</b>　2.63.2<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -610,6 +610,21 @@
     <li>若未出现，点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
   </ol>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>升级中途如果程序挂了，界面不会再说「已更新完成」</b>（v2.63.2 修复）。<br>
+    升级到最后，旧版本会<b>主动退出</b>让新文件顶上，所以页面那一刻<b>连不上服务</b>是
+    <b>正常且预期</b>的结束方式。<br>
+    问题是：<b>连不上</b>也可能是程序在下载途中崩了。
+    此前这两种情况被当成同一种，于是下载到一半挂掉，页面照样显示
+    <b>「已更新到 vX —— 新版本已经装好了」</b>，
+    可实际上<b>一个文件都没动</b>；用户重新打开，还是原来那个版本，
+    而且屏幕上没有任何地方说明发生过什么。<br>
+    现在会区分：只有<b>走到「安装中」之后</b>断开才算成功；
+    在「下载中」「校验中」断开会<b>明确报错</b>，
+    并说明<b>当前版本原封未动、可以重试</b>。</span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>换一块模块时，标志「历史」会重新开始计</b>（v2.63.1 修复）。<br>
@@ -761,8 +776,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.63.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.63.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.63.2 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.63.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3406,7 +3421,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.63.1<br>
+    CMIS Module Manager 操作手册 v2.63.2<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

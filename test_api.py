@@ -16111,6 +16111,62 @@ class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
         self.assertIn('vcc_low_alarm', self._raise_module_flag()['seen'])
 
 
+class TestADroppedUpdatePollIsNotAutomaticallySuccess(CMISTestCase):
+    """The updated build exits about a second and a half after it reports
+    'ready', so the progress poll failing is the normal end of a successful
+    update - the page is talking to a process that has deliberately gone away.
+
+    It is also what a crash looks like. Treating every dropped poll as success
+    meant a process that died while the bytes were still arriving produced
+    "Updated to vX - the new version is already installed" over an install
+    nothing had touched, and the user restarted into the same old version with
+    nothing on screen saying why."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _follow(self):
+        js = self._js()
+        i = js.index('async function _followUpdateProgress(btn)')
+        return js[i:js.index('\n}\n', i)]
+
+    def test_a_dropped_poll_is_judged_by_what_was_happening(self):
+        block = self._follow()
+        self.assertIn("last === 'installing'", block)
+        self.assertIn("last === 'ready'", block)
+
+    def test_the_states_before_the_swap_are_not_success(self):
+        """Downloading and verifying both precede the hand-over: a process
+        that disappears during either installed nothing."""
+        block = self._follow()
+        for state in ("'downloading'", "'verifying'", "'probing'"):
+            self.assertNotIn('last === %s' % state, block,
+                             '%s must not count as a finished update' % state)
+
+    def test_the_last_state_is_recorded_as_it_goes(self):
+        """Judging the drop needs the state from before it; nothing else has
+        it once the connection is gone."""
+        block = self._follow()
+        self.assertIn('last = p.state;', block)
+
+    def test_the_failure_message_says_what_it_was_doing_and_what_survived(self):
+        """"The update did not complete" alone leaves the operator wondering
+        whether the exe on disk is now half-written."""
+        block = self._follow()
+        self.assertIn('stopped responding while', block)
+        self.assertIn('Nothing was installed', block)
+
+    def test_the_success_branch_still_exists(self):
+        """The drop *is* the expected ending once the swap is handed over -
+        turning every drop into an error would report a failure on every
+        successful update instead."""
+        block = self._follow()
+        self.assertIn("return { state: 'ready' };", block)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

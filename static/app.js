@@ -1079,6 +1079,10 @@ async function checkForUpdate() {
  */
 async function _followUpdateProgress(btn) {
   let announced = '';
+  // What the server last said it was doing. A dropped poll means different
+  // things at different points, and the only way to tell them apart is to
+  // have been watching.
+  let last = 'starting';
   for (;;) {
     await new Promise(r => setTimeout(r, 1000));
     let p;
@@ -1086,11 +1090,22 @@ async function _followUpdateProgress(btn) {
       const r = await fetch('/api/update/progress', { cache: 'no-store' });
       p = (await r.json()).data;
     } catch (e) {
-      // The old build exits as soon as the swap is handed over, so the poll
-      // failing is the expected end of a successful update, not a fault.
-      return { state: 'ready' };
+      // The old build exits about a second and a half after it reports
+      // 'ready', so a poll that fails once the swap has been handed over is
+      // the expected end of a successful update.
+      //
+      // A poll that fails while the bytes were still arriving is the process
+      // dying, and this treated that as success too: the page then announced
+      // "Updated to vX - the new version is already installed" over an
+      // install that had not been touched, and the user restarted into the
+      // same old version with nothing saying why.
+      if (last === 'installing' || last === 'ready') return { state: 'ready' };
+      return { state: 'error', message:
+        `The tool stopped responding while ${last}. Nothing was installed and `
+        + 'the version you are running is untouched — try the update again.' };
     }
     if (p.state === 'ready' || p.state === 'error') return p;
+    last = p.state;
 
     if (p.state === 'downloading' && p.total) {
       const pct = Math.floor(p.done / p.total * 100);
@@ -1111,9 +1126,13 @@ async function _followUpdateProgress(btn) {
 /**
  * Hold the page while the install is swapped, then reload into the new build.
  *
- * The updated instance is started with the browser suppressed, so this tab is
- * the one the user keeps looking at - it has to come back on its own rather
- * than ask them to relaunch anything.
+ * The helper relaunches the exe itself and the updated instance is started
+ * with the browser suppressed, so this tab is the one the user keeps looking
+ * at and it reloads on its own once the new version answers. The manual step
+ * is still printed first rather than after a minute of spinning: when the
+ * relaunch does not work, a page that sat there saying nothing looks like a
+ * hang, and the files are already swapped by this point so one double-click
+ * finishes it either way.
  */
 async function _waitForNewVersion(expected) {
   // Say what to do straight away. Spinning for a minute first, on the chance
