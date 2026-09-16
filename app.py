@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.63.2'
+__version__ = '2.64.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1452,6 +1452,25 @@ def api_datapath_get():
         except Exception:
             si_active = {}
 
+        # Which lanes make up each Data Path, as lane numbers. The panel used
+        # to work this out for itself from the Application width, assuming a
+        # Data Path is an aligned block of that many lanes - which is not the
+        # rule this server applies when it rounds a mask up to whole Data
+        # Paths, and the two disagreed on most lane assignments. Publishing
+        # the one the writes actually use leaves a single answer to the
+        # question.
+        host_lanes_by_app = {}
+        try:
+            for a in cmis.parse_application_descriptors(
+                    _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
+                    _additional_app_descriptors()):
+                host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
+        except Exception:
+            pass
+        groups = [[i + 1 for i in g]
+                  for g in _datapath_groups(app_select[:_state['lanes']],
+                                            host_lanes_by_app)]
+
         return _ok({
             'signal_integrity': si,
             'signal_integrity_active': si_active,
@@ -1462,6 +1481,7 @@ def api_datapath_get():
             'rx_polarity_flip_mask': rx_pol_mask,
             'app_select': app_select,
             'active_app_select': active_app_select,
+            'datapath_groups': groups,
             'lanes': lanes,
         })
     except Exception as e:

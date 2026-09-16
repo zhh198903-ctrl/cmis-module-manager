@@ -1766,11 +1766,22 @@ class TestADataPathCanBeTakenOutOfService(CMISTestCase):
                          'Apply never sends what the boxes say')
 
     def test_the_boxes_move_as_a_data_path(self):
+        """Which lanes make up a Data Path is the server's answer now, and
+        TestOneAnswerToWhatADataPathIs covers that. What this still pins is
+        the half that has not changed: ticking one box has to carry the rest
+        of its Data Path with it, or the operator can ask for one that is only
+        partly torn down.
+
+        It used to pin the name of the function that worked the grouping out
+        in the browser, which is how it came to fail when that second copy of
+        the rule was removed - the behaviour was intact, the identifier was
+        not."""
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
-        self.assertIn('_appHostLanes(lane.app_select)', js,
+        handler = js[js.index("el.addEventListener('change'"):][:700]
+        self.assertIn('other.checked = el.checked', handler,
                       'the boxes can be ticked one at a time, asking for a '
                       'half-torn-down Data Path')
 
@@ -16165,6 +16176,154 @@ class TestADroppedUpdatePollIsNotAutomaticallySuccess(CMISTestCase):
         successful update instead."""
         block = self._follow()
         self.assertIn("return { state: 'ready' };", block)
+
+
+class TestOneAnswerToWhatADataPathIs(CMISTestCase):
+    """CMIS requires a Data Path to be applied and deinitialised as a whole
+    (Table 8-78), so ticking one lane's box ticks the rest of its Data Path.
+    Which lanes those are was worked out twice: the server groups them when it
+    rounds a mask up to whole Data Paths, and the panel worked it out again
+    from the Application width, assuming a Data Path is an aligned block of
+    that many lanes.
+
+    The two are different algorithms and disagreed on most lane assignments,
+    so the boxes could show one set of lanes selected while another set went
+    down. The server's is the one the writes obey, so it is now the only one."""
+
+    MIXED = [2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2]
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _datapath(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def _post(self, body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+
+    # ---- the grouping itself ----------------------------------------------
+
+    def test_the_grouping_is_published(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._datapath()['datapath_groups'],
+                         [[1, 2, 3, 4, 5, 6, 7, 8]])
+
+    def test_every_lane_is_in_exactly_one_group(self):
+        """A lane in two groups would be deinitialised by either; a lane in
+        none would never be ticked with its neighbours."""
+        for backend in ('mock_dr8', 'mock_1600g_16lane', 'mock_24lane'):
+            self.client.post('/api/disconnect')
+            self._connect(backend)
+            d = self._datapath()
+            seen = [lane for g in d['datapath_groups'] for lane in g]
+            self.assertEqual(sorted(seen), list(range(1, len(d['lanes']) + 1)),
+                             backend)
+
+    def test_a_wide_module_is_split_per_data_path_not_per_bank(self):
+        self._connect('mock_1600g_16lane')
+        self.assertEqual(self._datapath()['datapath_groups'],
+                         [[1, 2, 3, 4, 5, 6, 7, 8],
+                          [9, 10, 11, 12, 13, 14, 15, 16]])
+
+    def test_a_mixed_configuration_groups_by_application(self):
+        """Four lanes of a 4-lane Application, eight of an 8-lane one, four
+        more of the 4-lane one - which the panel's aligned-block rule could
+        not express at all."""
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': self.MIXED})
+        self.assertEqual(self._datapath()['datapath_groups'],
+                         [[1, 2, 3, 4],
+                          [5, 6, 7, 8, 9, 10, 11, 12],
+                          [13, 14, 15, 16]])
+
+    def test_a_run_stops_where_the_application_changes(self):
+        """The 8-lane Application is staged on four lanes only, with a 4-lane
+        one on the next four. A Data Path is the lanes that actually share an
+        Application, so the first group is those four - not the eight the
+        width alone would claim. Without that check the two groups merge and
+        deinitialising lane 1 takes down lane 8 as well."""
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': [1, 1, 1, 1, 2, 2, 2, 2,
+                                   1, 1, 1, 1, 1, 1, 1, 1]})
+        self.assertEqual(self._datapath()['datapath_groups'],
+                         [[1, 2, 3, 4],
+                          [5, 6, 7, 8],
+                          [9, 10, 11, 12, 13, 14, 15, 16]])
+
+    def test_an_overrunning_run_does_not_drag_in_the_next_data_path(self):
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': [1, 1, 1, 1, 2, 2, 2, 2,
+                                   1, 1, 1, 1, 1, 1, 1, 1]})
+        self._post({'dp_deinit_mask': [1 << 0, 0]})      # lane 1 alone
+        self.assertEqual(self._deinited(), [1, 2, 3, 4],
+                         'the Application change did not stop the run')
+
+    # ---- the grouping matches what the writes do ---------------------------
+
+    def _deinited(self):
+        return [l['lane'] for l in self._datapath()['lanes'] if l['dp_deinit']]
+
+    def test_deinitialising_one_lane_takes_down_exactly_its_group(self):
+        """The point of publishing it: what the boxes show has to be what the
+        module is told. Lane 5 is in the middle group here, and the panel's
+        old rule would have ticked lanes 1-8."""
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': self.MIXED})
+        groups = self._datapath()['datapath_groups']
+        self._post({'dp_deinit_mask': [1 << 4, 0]})      # lane 5 alone
+        self.assertEqual(self._deinited(), groups[1])
+
+    def test_a_lane_in_the_first_group_takes_down_only_that_group(self):
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': self.MIXED})
+        groups = self._datapath()['datapath_groups']
+        self._post({'dp_deinit_mask': [1 << 1, 0]})      # lane 2 alone
+        self.assertEqual(self._deinited(), groups[0])
+
+    def test_a_lane_in_the_last_group_takes_down_only_that_group(self):
+        """Lane 13 starts the last group. The old rule put it in a block
+        beginning at lane 13 only by coincidence of the widths involved."""
+        self._connect('mock_1600g_16lane')
+        self._post({'app_select': self.MIXED})
+        groups = self._datapath()['datapath_groups']
+        self._post({'dp_deinit_mask': [0, 1 << 4]})      # lane 13 alone
+        self.assertEqual(self._deinited(), groups[2])
+
+
+class TestThePanelDoesNotRegroupLanesItself(CMISTestCase):
+    """Two implementations of one rule is the defect; the panel having its own
+    copy is what has to stay gone."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_panel_uses_the_published_grouping(self):
+        self.assertIn('_datapathGroupOf(d.datapath_groups, lane.lane)',
+                      self._js())
+
+    def test_the_panel_no_longer_derives_a_width(self):
+        """`_appHostLanes` was the aligned-block rule. Anything that computes
+        a width here is a second answer to the same question."""
+        js = self._js()
+        self.assertNotIn('_appHostLanes', js)
+        i = js.index('dp-deinit-${lane.lane}')
+        block = js[i:i + 700]
+        self.assertNotIn('host_lanes', block)
+
+    def test_an_unknown_lane_is_ticked_on_its_own(self):
+        """With no grouping to go on, ticking neighbours would be a guess -
+        and a guess here selects lanes the operator did not."""
+        js = self._js()
+        i = js.index('function _datapathGroupOf')
+        self.assertIn('return [lane];', js[i:i + 320])
 
 
 if __name__ == '__main__':

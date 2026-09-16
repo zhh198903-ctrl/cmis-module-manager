@@ -1752,10 +1752,12 @@ async function loadDatapath() {
     const el = document.getElementById(`dp-deinit-${lane.lane}`);
     if (!el) continue;
     el.addEventListener('change', () => {
-      const width = _appHostLanes(lane.app_select) || 1;
-      const first = Math.floor((lane.lane - 1) / width) * width;
-      for (let j = first; j < first + width && j < d.lanes.length; j++) {
-        const other = document.getElementById(`dp-deinit-${j + 1}`);
+      // Which lanes those are comes from the server, because the server is
+      // what rounds the mask up to whole Data Paths when the request
+      // arrives. Working it out here as well meant the boxes could show one
+      // set of lanes while another set went down.
+      for (const l of _datapathGroupOf(d.datapath_groups, lane.lane)) {
+        const other = document.getElementById(`dp-deinit-${l}`);
         if (other) other.checked = el.checked;
       }
     });
@@ -1950,11 +1952,15 @@ function renderSignalIntegrity(d) {
   }
 }
 
-// How many host lanes the Application on this lane occupies, from the
-// descriptors the module advertised.
-function _appHostLanes(appSel) {
-  const a = (_advertisedApps || []).find(x => x.app_sel === appSel);
-  return a ? a.host_lanes : 1;
+// The lanes sharing a Data Path with this one, as the server grouped them.
+// Falling back to the lane on its own is deliberate: with no grouping to go
+// on, ticking neighbours would be a guess, and a guess here selects lanes the
+// operator did not.
+function _datapathGroupOf(groups, lane) {
+  for (const g of groups || []) {
+    if (g.includes(lane)) return g;
+  }
+  return [lane];
 }
 
 // 8.13.3.1 defines two Apply triggers. ApplyDPInit walks the Data Path back

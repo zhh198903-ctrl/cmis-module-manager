@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.63.2<br>
+      <b>版本</b>　2.64.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -612,6 +612,22 @@
 
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
+    <span><b>「数据通道」页勾选 DP Deinit 时，勾中的通道和实际生效的通道可能对不上</b>（v2.64.0 修复）。<br>
+    CMIS 要求<b>一条数据通道的所有通道必须整体操作</b>（Table 8-78），
+    所以勾一个格子会把同一条数据通道的其余格子一起勾上。<br>
+    问题在于「哪几条通道算同一条数据通道」<b>被算了两遍</b>：
+    服务端在收到请求时按<b>「相邻且应用相同」</b>归组，
+    而界面自己按<b>「应用宽度的整块对齐」</b>又算了一遍——
+    这是两套不同的算法，在<b>大多数通道配置下结果并不一致</b>。<br>
+    后果是：<b>界面上勾中的格子，和模块实际停掉的通道，可以是两批不同的通道</b>。
+    举个本工具自带模块就能复现的例子：
+    通道 1–4 配 4 通道应用、5–12 配 8 通道应用、13–16 再配 4 通道应用，
+    这时点通道 5 的格子，<b>界面勾的是 1–8，模块停的却是 5–12</b>。<br>
+    现在归组只由服务端算一次，界面直接用它——<b>勾中的就是会停的</b>。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
     <span><b>升级中途如果程序挂了，界面不会再说「已更新完成」</b>（v2.63.2 修复）。<br>
     升级到最后，旧版本会<b>主动退出</b>让新文件顶上，所以页面那一刻<b>连不上服务</b>是
     <b>正常且预期</b>的结束方式。<br>
@@ -776,8 +792,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.63.2 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.63.2</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.64.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.64.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3421,7 +3437,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.63.2<br>
+    CMIS Module Manager 操作手册 v2.64.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
