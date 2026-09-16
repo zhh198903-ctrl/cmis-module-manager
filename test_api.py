@@ -3847,6 +3847,21 @@ class TestFlagsFollowTheReadings(CMISTestCase):
         d = self.assertOk(self.client.get('/api/module/flags'))['data']
         return {k for lane in d['lanes'] for k, v in lane.items() if v is True}
 
+    def test_a_healthy_module_stays_quiet_however_long_it_runs(self):
+        """Two lane Flags used to flip on a timer - lane 8's Tx CDR LOL every
+        60 seconds and its Rx one every 75 - on a module whose every reading
+        was healthy. Every test connects to a module that has just started, so
+        the clock never got far enough for any of them to see it; only someone
+        watching the panel for a minute did."""
+        import app as app_module
+        self._fixture('fx_runs_a_while')
+        backend = app_module._state['backend']
+        for seconds in (70, 90, 200, 400):
+            backend._start_time = time.time() - seconds
+            self.assertEqual(
+                self._lane_flags(), set(),
+                'a healthy module raised a flag after %d seconds' % seconds)
+
     def test_every_shipped_profile_is_quiet_when_healthy(self):
         """Three profiles had their Rx nominal sitting exactly on the generic
         high warning, so a healthy module flickered a warning. The earlier
@@ -15487,6 +15502,313 @@ class TestWhichPagesCmisDefinesAsBanked(CMISTestCase):
                              c.is_banked_page(page),
                              'panel and server disagree about page 0x%02X'
                              % page)
+
+
+class TestAMonitorTheModuleDoesNotHave(CMISTestCase):
+    """CMIS Table 8-53 makes every module and lane monitor optional, and
+    01h:159-160 is where a module says which it implements. The register
+    exists either way, so an unimplemented monitor reads zero - and zero is
+    not a blank here: 0.0000 V is an unpowered module, 0.000 mA is a dark
+    laser, and zero microwatts converts to the bottom of the dBm scale, which
+    the panel paints in alarm red."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _monitoring(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    # ---- the module advertises what this class is about --------------------
+
+    def test_the_demo_module_really_leaves_those_monitors_out(self):
+        """Read from 01h:159-160 rather than trusted: a profile that quietly
+        started advertising everything would make every test below vacuous."""
+        self._connect('mock_fewmon')
+        b = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 1, 'address': 0x9F, 'length': 2}),
+            content_type='application/json'))['data']['data']
+        self.assertEqual(b[0] & 0x02, 0, 'VccMonSupported should be clear')
+        self.assertEqual(b[0] & 0x01, 0x01, 'TempMonSupported should be set')
+        self.assertEqual(b[1] & 0x01, 0, 'TxBiasMonSupported should be clear')
+        self.assertEqual(b[1] & 0x02, 0, 'TxOpticalPower should be clear')
+        self.assertEqual(b[1] & 0x04, 0x04, 'RxOpticalPower should be set')
+
+    def test_the_module_reads_zero_where_it_has_no_monitor(self):
+        """The mock has to model this or the host's guard is untestable: a
+        mock that keeps filling the register in cannot tell a host that reads
+        the advertisement from one that ignores it."""
+        self._connect('mock_fewmon')
+        def raw(page, addr):
+            return self.assertOk(self.client.post(
+                '/api/register/read',
+                data=json.dumps({'page': page, 'address': addr, 'length': 2}),
+                content_type='application/json'))['data']['data']
+        self.assertEqual(raw(0, 0x10), [0, 0],
+                         'the Vcc register should hold nothing')
+        self.assertEqual(raw(0x11, 0x9A), [0, 0],
+                         'the Tx power register should hold nothing')
+        self.assertEqual(raw(0x11, 0xAA), [0, 0],
+                         'the Tx bias register should hold nothing')
+        self.assertNotEqual(raw(0x11, 0xBA), [0, 0],
+                            'Rx power is implemented and should still read')
+
+    # ---- what the tool does with it ----------------------------------------
+
+    def test_an_absent_module_monitor_is_not_reported_as_a_reading(self):
+        self._connect('mock_fewmon')
+        s = self._status()
+        self.assertIsNone(s['voltage_v'],
+                          '0.0000 V is an unpowered module, not a blank')
+        self.assertIsNotNone(s['temperature_c'],
+                             'this module does implement the temperature monitor')
+
+    def test_an_absent_lane_monitor_is_not_reported_as_a_reading(self):
+        self._connect('mock_fewmon')
+        lane = self._monitoring()['lanes'][0]
+        self.assertIsNone(lane['tx_power_dbm'])
+        self.assertIsNone(lane['tx_power_uw'])
+        self.assertIsNone(lane['tx_bias_ma'])
+
+    def test_the_monitors_it_does_have_still_read(self):
+        """Gating all three together would trade one wrong answer for
+        another - this module measures received power and says so."""
+        self._connect('mock_fewmon')
+        lane = self._monitoring()['lanes'][0]
+        self.assertIsNotNone(lane['rx_power_dbm'])
+        self.assertIsNotNone(lane['rx_power_uw'])
+
+    def test_every_lane_is_gated_not_just_the_first(self):
+        self._connect('mock_fewmon')
+        for lane in self._monitoring()['lanes']:
+            self.assertIsNone(lane['tx_bias_ma'], 'lane %d' % lane['lane'])
+            self.assertIsNotNone(lane['rx_power_dbm'], 'lane %d' % lane['lane'])
+
+    def test_the_answer_says_which_monitors_exist(self):
+        """The panel needs to tell "not implemented" apart from "the poll
+        failed", and only the module can say which."""
+        self._connect('mock_fewmon')
+        self.assertEqual(self._status()['monitors_present'],
+                         {'temperature': True, 'vcc': False})
+        self.assertEqual(self._monitoring()['monitors_present'],
+                         {'tx_optical_power': False, 'rx_optical_power': True,
+                          'tx_bias': False})
+
+    # ---- a module that has them all is untouched ---------------------------
+
+    def test_a_module_with_every_monitor_reads_exactly_as_before(self):
+        self._connect('mock_dr8')
+        s = self._status()
+        self.assertIsInstance(s['temperature_c'], float)
+        self.assertIsInstance(s['voltage_v'], float)
+        lane = self._monitoring()['lanes'][0]
+        for key in ('tx_power_dbm', 'tx_power_uw', 'tx_bias_ma',
+                    'rx_power_dbm', 'rx_power_uw'):
+            self.assertIsInstance(lane[key], float, key)
+
+    def test_every_other_demo_module_still_reports_all_three(self):
+        """One profile deliberately omits monitors; the rest must not have
+        picked the behaviour up by accident."""
+        import i2c_interface
+        for name in sorted(n for n in i2c_interface._BACKENDS
+                           if n.startswith('mock') and n != 'mock_fewmon'):
+            self.client.post('/api/disconnect')
+            self._connect(name)
+            lane = self._monitoring()['lanes'][0]
+            self.assertIsNotNone(lane['tx_bias_ma'], name)
+            self.assertIsNotNone(lane['tx_power_dbm'], name)
+
+    def test_nothing_is_hidden_when_the_advertisement_was_never_read(self):
+        """With no capabilities at all, hiding every reading would be the
+        worse error - the tool would report a module with no monitors."""
+        import app as app_module
+        saved = app_module._state.get('caps')
+        self._connect('mock_dr8')
+        try:
+            app_module._state['caps'] = {}
+            self.assertIsNotNone(self._status()['voltage_v'])
+            self.assertIsNotNone(self._monitoring()['lanes'][0]['tx_bias_ma'])
+        finally:
+            app_module._state['caps'] = saved
+
+
+class TestEachMonitorIsGatedOnItsOwnBit(CMISTestCase):
+    """Nine monitors, nine bits. Sharing one decision between them trades one
+    wrong answer for another: a module that measures its bias but not its Tx
+    power would lose the reading it does have."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'address': 0x50}),
+            content_type='application/json'))
+        import app as app_module
+        self.app_module = app_module
+        self.saved = dict(app_module._state['caps']['monitors'])
+
+    def tearDown(self):
+        self.app_module._state['caps']['monitors'] = self.saved
+        super().tearDown()
+
+    def _say(self, **flags):
+        mons = dict(self.saved)
+        mons.update(flags)
+        self.app_module._state['caps']['monitors'] = mons
+
+    def test_temperature_alone_can_be_absent(self):
+        """mock_fewmon implements its temperature monitor, so the branch that
+        hides one is reached only here."""
+        self._say(temperature=False)
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertIsNone(s['temperature_c'])
+        self.assertIsNotNone(s['voltage_v'], 'Vcc was hidden along with it')
+
+    def test_bias_can_be_present_while_tx_power_is_not(self):
+        self._say(tx_optical_power=False, tx_bias=True)
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertIsNone(lane['tx_power_dbm'])
+        self.assertIsNotNone(lane['tx_bias_ma'],
+                             'the bias reading went with the Tx power one')
+
+    def test_tx_power_can_be_present_while_bias_is_not(self):
+        self._say(tx_optical_power=True, tx_bias=False)
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertIsNotNone(lane['tx_power_dbm'])
+        self.assertIsNone(lane['tx_bias_ma'])
+
+    def test_rx_power_can_be_absent_on_its_own(self):
+        self._say(rx_optical_power=False)
+        lane = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes'][0]
+        self.assertIsNone(lane['rx_power_dbm'])
+        self.assertIsNotNone(lane['tx_power_dbm'])
+
+
+class TestTheMockRaisesNoFlagForAMonitorItLacks(CMISTestCase):
+    """A Flag belongs to a monitor. The register of one the module does not
+    implement reads zero, which is under every low threshold - so without this
+    the mock raised a low alarm, and a loss of signal, about measurements it
+    had just said it does not make. Sticky Flags, so they never cleared.
+
+    Driven against the backend rather than the API: the host's own guard hides
+    the readings, and a mock that invents the Flags underneath would still be
+    contradicting itself."""
+
+    def _backend(self, **profile_overrides):
+        from i2c_backends.mock import MockFewMonitorsBackend
+        klass = type('PatchedMock', (MockFewMonitorsBackend,),
+                     {'PROFILE': dict(MockFewMonitorsBackend.PROFILE,
+                                      **profile_overrides)})
+        b = klass()
+        b.connect(0, 0x50)
+        b.read_bytes(0x0E, 2)          # a read drives the dynamic model
+        return b
+
+    def _module_flags(self, b):
+        return b.read_bytes(0x09, 1)[0]
+
+    def _lane_flags(self, b):
+        b.write_bytes(0x7E, bytes([0]))
+        b.write_bytes(0x7F, bytes([0x11]))
+        time.sleep(0.012)
+        return b.read_bytes(0x8B, 14)
+
+    def test_no_module_flag_for_a_monitor_that_is_not_there(self):
+        # Neither temperature nor Vcc implemented: 01h:159 bits 0 and 1 clear.
+        b = self._backend(monitors_159=0x1C)
+        self.assertEqual(self._module_flags(b) & 0xFF, 0,
+                         'the module flagged temperature or Vcc it does not '
+                         'measure')
+
+    def test_a_monitor_that_is_there_still_flags(self):
+        """The gate must not be a blanket "never flag" - a real excursion on
+        an implemented monitor is the thing the panel exists to show."""
+        b = self._backend(monitors_159=0x1F, temperature_c_nom=200.0)
+        self.assertTrue(self._module_flags(b) & 0x01,
+                        'a temperature far over the high alarm raised nothing')
+
+    def test_no_lane_flag_for_a_monitor_that_is_not_there(self):
+        # No Tx power, no Tx bias, no Rx power: 01h:160 bits 0-2 all clear.
+        b = self._backend(monitors_160=0x00)
+        self.assertEqual(sum(self._lane_flags(b)), 0,
+                         'the module raised lane flags for monitors it does '
+                         'not have')
+
+    def test_no_loss_of_signal_without_a_receiver(self):
+        """11h:147-148 are tied to the Rx power low threshold, so zero looked
+        like a lost signal on every lane."""
+        b = self._backend(monitors_160=0x03)     # Tx power and bias, no Rx
+        flags = self._lane_flags(b)
+        self.assertEqual(flags[0x93 - 0x8B], 0, 'LOL raised with no Rx monitor')
+        self.assertEqual(flags[0x94 - 0x8B], 0, 'LOS raised with no Rx monitor')
+
+    def test_a_receiver_that_is_there_still_reports_loss_of_signal(self):
+        b = self._backend(monitors_160=0x07, rx_power_uw_nom=1)
+        flags = self._lane_flags(b)
+        self.assertTrue(flags[0x94 - 0x8B],
+                        'a receiver far under its low alarm reported nothing')
+
+
+class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
+    """The three lane cells used to call toFixed on the value directly. With
+    no reading that throws, and one absent monitor would take the whole
+    monitoring table down with it."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_each_lane_cell_checks_for_a_missing_reading_first(self):
+        js = self._js()
+        i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
+        row = js[i:i + 900]
+        for guard in ('txDbm == null', 'lane.tx_bias_ma == null',
+                      'rxDbm == null'):
+            self.assertIn(guard, row, guard)
+
+    def test_the_cell_names_the_register_that_says_so(self):
+        """"not implemented" with nothing else sends the operator looking for
+        a fault; the advertising bit is what settles it. Checked in the helper
+        that renders the cell, not at the call sites - the bit numbers appear
+        there whether or not anything prints them."""
+        js = self._js()
+        i = js.index('const noMon =')
+        body = js[i:i + 420]
+        self.assertIn('${reg}', body,
+                      'the cell does not print the register it was given')
+        i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
+        row = js[i:i + 900]
+        for reg in ('01h:160.0', '01h:160.1', '01h:160.2'):
+            self.assertIn(reg, row, reg)
+
+    def test_the_summary_line_checks_both_module_monitors(self):
+        js = self._js()
+        i = js.index('const present = s.monitors_present')
+        block = js[i:i + 1400]
+        self.assertIn('present.temperature !== false', block)
+        self.assertIn('present.vcc !== false', block)
+        self.assertIn('01h:159.0', block)
+        self.assertIn('01h:159.1', block)
+
+    def test_an_absent_reading_is_never_coloured_as_an_alarm(self):
+        """Zero microwatts sits below every sane low threshold, so the old
+        comparison painted a monitor that does not exist in alarm red."""
+        js = self._js()
+        i = js.index('const txCls =')
+        block = js[i:i + 420]
+        self.assertIn("txDbm == null ? 'unassured'", block)
+        self.assertIn("rxDbm == null ? 'unassured'", block)
 
 
 if __name__ == '__main__':

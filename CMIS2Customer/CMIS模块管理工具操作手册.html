@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.61.0<br>
+      <b>版本</b>　2.62.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -511,6 +511,10 @@
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_1600g_dr8</code></td><td class="label">模拟 <b>1.6TBASE-DR8</b>（8 × 106.25 GBd PAM4, SMF 500m, 功率等级 8 / 26 W），光参数按 <b>IEEE P802.3dj/D3.1 第 180 章</b>建模，自报 <b>CMIS 5.4</b> 并广告全部 5.4 可选页</td></tr>
         <tr><td><code>mock_1600g_16lane</code></td><td class="label">模拟 <b>1.6T 16×100G</b>（主机侧即 <b>1.6TAUI-16 C2M</b>，<b>16 通道 / 双 Bank</b>, 功率等级 8 / 28 W），用于演示跨 Bank 读写与 5.4 新增字段</td></tr>
+        <tr><td><code>mock_fewmon</code></td><td class="label">模拟一块<b>只实现了部分监控项</b>的 800G DR8。
+            CMIS 把<b>每一项监控都定义为可选</b>，由 <code>01h:159-160</code> 广告自己有哪些；
+            这块模块<b>没有电源电压监控、没有发送光功率监控、也没有偏置电流监控</b>，
+            只保留温度和接收光功率。用来演示「模块没有这一项」和「这一项读数为 0」是两回事。</td></tr>
         <tr><td><code>mock_zr16</code></td><td class="label">模拟一块 <b>16 通道的可调谐</b>模块
             （C-band，功率等级 5 / 16 W）。它存在的理由只有一个：<b>Page 12h 是按介质通道分 Bank 的</b>
             （每 Bank 8 条），而其余可调谐 profile 都正好 8 条、一个 Bank 装得下，
@@ -527,7 +531,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>9 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），以及一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），可用于不同场景演示与培训。</span>
+    <span>10 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），以及一块只实现了部分监控项的模块，可用于不同场景演示与培训。</span>
   </div>
 </div>
 
@@ -605,6 +609,34 @@
     <li>在左侧 <b>Backend</b> 下拉菜单中，应出现 <code>ch341</code> 或 <code>ch347</code> 选项（状态 <code>available</code>）。</li>
     <li>若未出现，点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
   </ol>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>模块没有的监控项，不再当成读数显示</b>（v2.62.0 修复）。<br>
+    CMIS 把<b>每一项监控都定义为可选</b>——温度、电源电压、发送光功率、偏置电流、接收光功率——
+    模块在 <code>01h:159-160</code> 里广告自己到底有哪几项。
+    <b>没有的那一项，寄存器仍然存在，只是读出来是 0。</b><br>
+    此前工具照单全收地把这个 0 显示出来，而 <b>0 在这里不是「空白」，是很吓人的读数</b>：
+    <code>0.0000 V</code> 是模块没通电，<code>0.000 mA</code> 是激光器灭了，
+    0 微瓦换算成 dBm 是量程底部——<b>而且会被标成红色告警</b>。
+    也就是说，工具在替一块根本没有这项监控的模块<b>报一个它从没说过的故障</b>。<br>
+    现在这些位置显示<b>「not implemented」并注明是哪一位广告的</b>（如 <code>01h:160.0</code>），
+    不参与告警配色。模块实现了的那些监控<b>照常显示</b>——这是<b>逐项</b>判断的，
+    不会因为缺一项就把整行藏掉。</span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>演示模块不会再自己「定时」报失锁了</b>（v2.62.0 修复）。<br>
+    此前第 8 条通道的 <b>Tx CDR 失锁</b>每 60 秒、<b>Rx CDR 失锁</b>每 75 秒自己亮一次再灭掉，
+    而那块模块的所有读数都是健康的。
+    <b>一个按秒表闪的告警，会让人学会所有告警都不用看</b>——
+    这和之前修掉的「温度告警每 30 秒闪一次」是同一个毛病，只是漏了通道级的这两处。<br>
+    更糟的是那一行是<b>直接赋值</b>而不是置位，所以它还会<b>把真实读数刚刚触发的
+    Rx 失锁/丢失信号标志抹掉</b>。<br>
+    现在 Rx 的失锁与丢失信号<b>只由接收光功率决定</b>，健康的模块跑多久都是安静的。
+    <span class="reg-meta">（这两处只影响 Mock 演示，接真实模块时标志一直是模块自己给的。）</span></span>
+  </div>
 
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
@@ -693,8 +725,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.61.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.61.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.62.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.62.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1340,7 +1372,7 @@
     <span class="callout-icon">⚠</span>
     <span><b>点「进入低功耗」之后，面板以前显示的是<u>按下之前</u>那个状态。</b>
     模块在 <code>01h:167</code> 里<b>自己声明</b>了两个上电 / 下电过渡最长要多久，
-    本工具内置的 9 种演示模块，<b>全都声明「下电最长 1–5 秒」</b>。
+    本工具内置的 10 种演示模块，<b>全都声明「下电最长 1–5 秒」</b>。
     可工具写完控制字节只等了 <b>50 毫秒</b>，页面再过 <b>200 毫秒</b> 就去读状态——
     对任何真按自己声明的时间来走的模块，这时读回来的<b>还是按下之前的状态</b>，
     却被当作这次操作的结果显示出来。
@@ -3158,7 +3190,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 9 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），以及 <code>mock_zr16</code>（16 通道可调谐 / 两 Bank）。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 10 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），以及 <code>mock_fewmon</code>（只实现部分监控项）。</div>
   </div>
 
   <div class="faq-item">
@@ -3338,7 +3370,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.61.0<br>
+    CMIS Module Manager 操作手册 v2.62.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

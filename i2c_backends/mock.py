@@ -24,6 +24,36 @@ from i2c_interface import I2CInterface, register_backend
 import cmis_registers as cmis
 
 
+# Table 8-53: every one of these monitors is optional, and 01h:159-160 is
+# where a module says which it implements. A module that implements none of
+# them still has the registers - they just hold nothing meaningful - so a mock
+# that keeps filling them in cannot tell a host that reads the advertisement
+# from one that does not.
+_MON_BITS = {
+    'custom': (159, 0x20), 'aux3': (159, 0x10), 'aux2': (159, 0x08),
+    'aux1': (159, 0x04), 'vcc': (159, 0x02), 'temperature': (159, 0x01),
+    'rx_optical_power': (160, 0x04), 'tx_optical_power': (160, 0x02),
+    'tx_bias': (160, 0x01),
+}
+
+
+def _mon_advert(profile, byte):
+    """The byte this profile publishes at 01h:159 or 01h:160.
+
+    The register write and the value generation both go through here. They
+    used to carry their own defaults - 0x03 and 0x1F for byte 159 - so a
+    profile that set neither advertised one thing and behaved like another,
+    and the two could be changed apart without anything noticing.
+    """
+    return profile.get('monitors_%d' % byte, 0x03 if byte == 159 else 0x07)
+
+
+def _mon_supported(profile, key):
+    """Whether this profile advertises the named monitor (01h:159-160)."""
+    byte, mask = _MON_BITS[key]
+    return bool(_mon_advert(profile, byte) & mask)
+
+
 def _bias_scale(profile):
     """01h:160.4-3 as a multiplier. 65535 increments of 2 uA stop at 131 mA,
     so a laser biased above that has to advertise x2 or x4."""
@@ -399,6 +429,23 @@ _ZR_16LANE = dict(
     lanes=16,
 )
 
+# Table 8-53 makes all six module monitors and all three lane monitors
+# optional, and 01h:159-160 is where a module says which it has. Every other
+# profile here implements the lot, so nothing exercised the other branch: an
+# absent monitor reads as zero, and zero is a plausible reading. This one
+# leaves out the supply voltage, the Tx optical power and the Tx bias - one
+# module-level monitor and two lane ones - so a host that ignores the
+# advertisement shows 0.0000 V, -40 dBm and 0.000 mA as if it had measured
+# them.
+_FEW_MONITORS = dict(
+    _DR8_800G,
+    display='800G DR8 implementing only some monitors (01h:159-160)',
+    vendor_pn=b"DEMO-DR8-FEWMON ",
+    vendor_sn=b"DEMO000000010   ",
+    monitors_159=0x1D,        # temp + aux1-3; no Vcc monitor
+    monitors_160=0x04,        # Rx optical power only; no Tx power, no bias
+)
+
 # CMIS 5.4 raised the lane ceiling from 32 to 256 by giving 01h:142.1-0 an
 # escape value: 11b means the real bank count is in 01h:174.4-0. Every other
 # profile here has a lane count the legacy field can spell (8, 16 or 32), so
@@ -681,7 +728,12 @@ class MockBackend(I2CInterface):
         lower[0x0E] = (temp_raw >> 8) & 0xFF
         lower[0x0F] = temp_raw & 0xFF
         # Voltage 3.3 V
-        lower[0x10] = 0x80; lower[0x11] = 0xE8
+        # 3.3 V, or nothing at all when the module says it has no supply
+        # voltage monitor - the register exists either way.
+        if _mon_supported(p, 'vcc'):
+            lower[0x10] = 0x80; lower[0x11] = 0xE8
+        else:
+            lower[0x10] = 0x00; lower[0x11] = 0x00
         # Aux monitors (generic)
         # Aux1-3 (Lower 18-23, Table 8-10). An uncooled module advertises no
         # Aux monitor at all (01h:159.4-2 clear) and these read zero; a cooled
@@ -901,10 +953,10 @@ class MockBackend(I2CInterface):
         p01[0x9D] = p.get('flags_157', 0x0F)         # Tx adaptive EQ fail,
                                                      # CDR LOL, LOS, fault
         p01[0x9E] = p.get('flags_158', 0x06)         # Rx CDR LOL, Rx LOS
-        p01[0x9F] = p.get('monitors_159', 0x03)      # Vcc and temperature
+        p01[0x9F] = _mon_advert(p, 159)             # Vcc and temperature
         # 160.4-3 is the Tx bias scaling factor: 65535 increments of 2 uA stop
         # at 131 mA, so a module biased above that has to scale.
-        p01[0xA0] = p.get('monitors_160', 0x07)      # Rx and Tx optical power,
+        p01[0xA0] = _mon_advert(p, 160)             # Rx and Tx optical power,
                                                      # Tx bias, x1 scaling
 
         if p.get('cmis_rev', 0x53) >= 0x54:
@@ -1702,7 +1754,13 @@ class MockBackend(I2CInterface):
         t = time.time() - self._start_time
 
         # Temperature: nominal ± 3°C, 90s period
+        # An unimplemented monitor publishes nothing, and the Flags are
+        # judged against what is published - otherwise the mock holds two
+        # views of the same lane at once: a register reading zero and a Flag
+        # decision made on a healthy value the host can never see.
         temp_c = p['temperature_c_nom'] + 3.0 * math.sin(2 * math.pi * t / 90.0)
+        if not _mon_supported(p, 'temperature'):
+            temp_c = 0.0
         raw = int(temp_c * 256) & 0xFFFF
         self._registers[None][0x0E] = (raw >> 8) & 0xFF
         self._registers[None][0x0F] = raw & 0xFF
@@ -1734,6 +1792,8 @@ class MockBackend(I2CInterface):
                 tx_uw = 0.0
             else:
                 tx_uw = p['tx_power_uw_nom'] * (1.0 + 0.03 * math.sin(2 * math.pi * t / 60.0 + phase))
+            if not _mon_supported(p, 'tx_optical_power'):
+                tx_uw = 0.0
             tx_val = int(tx_uw * 10) & 0xFFFF
             a = 0x9A + lane * 2
             self._registers[0x11][a] = (tx_val >> 8) & 0xFF
@@ -1750,6 +1810,8 @@ class MockBackend(I2CInterface):
                 bias_ma = p['tx_bias_ma_nom'] * (1.0 + 0.033 * math.sin(2 * math.pi * t / 120.0 + phase))
             else:
                 bias_ma = 0.0
+            if not _mon_supported(p, 'tx_bias'):
+                bias_ma = 0.0
             bias_val = int(bias_ma / (0.002 * _bias_scale(p))) & 0xFFFF
             a = 0xAA + lane * 2
             self._registers[0x11][a] = (bias_val >> 8) & 0xFF
@@ -1757,6 +1819,8 @@ class MockBackend(I2CInterface):
 
             # Rx Power
             rx_uw = p['rx_power_uw_nom'] * (1.0 + 0.05 * math.sin(2 * math.pi * t / 45.0 + phase))
+            if not _mon_supported(p, 'rx_optical_power'):
+                rx_uw = 0.0
             rx_val = int(rx_uw * 10) & 0xFFFF
             a = 0xBA + lane * 2
             self._registers[0x11][a] = (rx_val >> 8) & 0xFF
@@ -1778,9 +1842,14 @@ class MockBackend(I2CInterface):
         self._refresh_lane_thresholds()
         self._set_module_flags(temp_c)
 
-        # CDR-LOL simulation on lane 8
-        self._registers[0x11][0x89] = 0x80 if (int(t / 60) % 2) else 0x00
-        self._registers[0x11][0x94] = 0x80 if (int(t / 75) % 2) else 0x00
+        # There used to be a CDR-LOL "simulation" here: lane 8's Tx flag
+        # (11h:137) flipped on a 60 second timer and its Rx one (11h:148) on a
+        # 75 second timer, on a module whose readings were all healthy. That is
+        # the same fault the module-level Flag byte had - a Flag that fires on
+        # a clock teaches that none of them are worth reading - and it also
+        # assigned rather than latched, so it erased the Rx loss of lock that a
+        # genuinely low received power had just raised. Rx LOS and CDR LOL now
+        # come from the received power alone, in _set_lane_flags.
 
         # Diagnostic selector-dependent updates
         sel = self._registers[0x14].get(0x80, 0)
@@ -2004,12 +2073,23 @@ class MockBackend(I2CInterface):
             return ((p02.get(addr, 0) << 8) | p02.get(addr + 1, 0)) * 1e-4
 
         vcc_v = (((lower.get(0x10, 0) << 8) | lower.get(0x11, 0)) * 1e-4)
+        # A Flag belongs to a monitor. Where 01h:159 says the module has no
+        # such monitor the register reads zero, and zero is below every low
+        # threshold - so a module that does not measure its supply voltage
+        # announced an under-voltage alarm about itself, for ever, because
+        # these bits are sticky.
+        has_temp = _mon_supported(self._profile, 'temperature')
+        has_vcc = _mon_supported(self._profile, 'vcc')
         bits = 0
         for shift, hit in enumerate((
-                temp_c > s16(0x80), temp_c < s16(0x82),      # alarms
-                temp_c > s16(0x84), temp_c < s16(0x86),      # warnings
-                vcc_v > u16(0x88), vcc_v < u16(0x8A),
-                vcc_v > u16(0x8C), vcc_v < u16(0x8E))):
+                has_temp and temp_c > s16(0x80),
+                has_temp and temp_c < s16(0x82),      # alarms
+                has_temp and temp_c > s16(0x84),
+                has_temp and temp_c < s16(0x86),      # warnings
+                has_vcc and vcc_v > u16(0x88),
+                has_vcc and vcc_v < u16(0x8A),
+                has_vcc and vcc_v > u16(0x8C),
+                has_vcc and vcc_v < u16(0x8E))):
             if hit:
                 bits |= 1 << shift
         # Sticky, like every other Flag: a temperature excursion that has ended
@@ -2037,8 +2117,19 @@ class MockBackend(I2CInterface):
             'tx_bias': int(bias_ma / (0.002 * _bias_scale(self._profile))),
             'rx_power': int(rx_uw * 10),
         }
+        # Same rule as the module-level Flags: no monitor, no Flag. An
+        # unimplemented one reads zero, which is under every low threshold, so
+        # the mock used to raise a low alarm and a loss of signal on every
+        # lane of a module that had said it does not measure them.
+        implemented = {
+            'tx_power': _mon_supported(self._profile, 'tx_optical_power'),
+            'tx_bias': _mon_supported(self._profile, 'tx_bias'),
+            'rx_power': _mon_supported(self._profile, 'rx_optical_power'),
+        }
         bit = 1 << lane
         for hi_flag, lo_flag, hi_thr, lo_thr, key in self._FLAG_MAP:
+            if not implemented[key]:
+                continue
             value = measured[key]
             for addr, over in ((hi_flag, value > thr(hi_thr)),
                                (lo_flag, value < thr(lo_thr))):
@@ -2047,7 +2138,7 @@ class MockBackend(I2CInterface):
 
         # Losing the signal is what a receiver reports when there is nothing
         # to lock to, so tie it to the same limit rather than inventing one.
-        if measured['rx_power'] < thr(0xC2):
+        if implemented['rx_power'] and measured['rx_power'] < thr(0xC2):
             p11[0x93] = p11.get(0x93, 0) | bit
             p11[0x94] = p11.get(0x94, 0) | bit
 
@@ -2534,6 +2625,11 @@ class MockCoherentZRBackend(MockBackend):
 @register_backend("mock_zr16")
 class MockZR16LaneBackend(MockBackend):
     PROFILE = _ZR_16LANE
+
+
+@register_backend("mock_fewmon")
+class MockFewMonitorsBackend(MockBackend):
+    PROFILE = _FEW_MONITORS
 
 
 @register_backend("mock_fr4x2")

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.61.0'
+__version__ = '2.62.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -96,6 +96,23 @@ def _ok(data=None):
 
 def _err(message, code=400):
     return jsonify({'status': 'error', 'message': message}), code
+
+
+def _monitor_present(key: str) -> bool:
+    """Whether the module advertises the named monitor (01h:159-160).
+
+    Table 8-53 makes every one of these optional. The register exists either
+    way, so an unimplemented monitor reads as zero - and zero is a plausible
+    reading: 0.0000 V is an unpowered module, 0.000 mA is a dark laser and the
+    dBm conversion of zero microwatts is the floor the panel paints in alarm
+    red. Reporting them was the tool inventing a fault the module never
+    claimed, which is the same mistake the Aux monitors already avoid.
+
+    Unknown until the advertisement has been read: with no capabilities at all
+    nothing is hidden, because hiding every reading would be the worse error.
+    """
+    mons = (_state.get('caps') or {}).get('monitors') or {}
+    return mons.get(key, True) if mons else True
 
 
 def _require_connected():
@@ -841,8 +858,16 @@ def api_module_status():
         return _ok({
             'module_state': cmis.parse_module_state(state_raw[0]),
             'interrupt_asserted': cmis.parse_interrupt_asserted(state_raw[0]),
-            'temperature_c': round(cmis.parse_temperature(temp_raw), 4),
-            'voltage_v': round(cmis.parse_voltage(volt_raw), 4),
+            'temperature_c': (round(cmis.parse_temperature(temp_raw), 4)
+                              if _monitor_present('temperature') else None),
+            'voltage_v': (round(cmis.parse_voltage(volt_raw), 4)
+                          if _monitor_present('vcc') else None),
+            # So the panel can say which reading is missing and why, rather
+            # than leaving a blank cell that reads as a failed poll.
+            'monitors_present': {
+                'temperature': _monitor_present('temperature'),
+                'vcc': _monitor_present('vcc'),
+            },
             'aux1_raw': struct.unpack(">h", aux1_raw[:2])[0] if len(aux1_raw) >= 2 else 0,
             'aux2_raw': struct.unpack(">h", aux2_raw[:2])[0] if len(aux2_raw) >= 2 else 0,
             'aux3_raw': struct.unpack(">h", aux3_raw[:2])[0] if len(aux3_raw) >= 2 else 0,
@@ -1175,6 +1200,14 @@ def api_module_monitoring():
         tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
         rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
 
+        # 01h:160.0-2 (Table 8-53): each of these three lane monitors is
+        # optional. An unimplemented one reads zero, and zero is not a
+        # non-answer here - it is a dark laser and an unpowered module. The
+        # readings are left out rather than reported as measurements.
+        has_tx_pwr = _monitor_present('tx_optical_power')
+        has_rx_pwr = _monitor_present('rx_optical_power')
+        has_bias = _monitor_present('tx_bias')
+
         lanes = []
         for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
@@ -1182,11 +1215,13 @@ def api_module_monitoring():
             bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2], bias_scale)
             lanes.append({
                 'lane': i + 1,
-                'tx_power_uw': round(tx_uw, 2),
-                'tx_power_dbm': round(cmis.uw_to_dbm(tx_uw), 2),
-                'rx_power_uw': round(rx_uw, 2),
-                'rx_power_dbm': round(cmis.uw_to_dbm(rx_uw), 2),
-                'tx_bias_ma': round(bias_ma, 3),
+                'tx_power_uw': round(tx_uw, 2) if has_tx_pwr else None,
+                'tx_power_dbm': (round(cmis.uw_to_dbm(tx_uw), 2)
+                                 if has_tx_pwr else None),
+                'rx_power_uw': round(rx_uw, 2) if has_rx_pwr else None,
+                'rx_power_dbm': (round(cmis.uw_to_dbm(rx_uw), 2)
+                                 if has_rx_pwr else None),
+                'tx_bias_ma': round(bias_ma, 3) if has_bias else None,
                 'datapath_state': dp_states[i],
                 'datapath_state_kind': cmis.dp_state_kind(dp_states[i]),
                 # 6.3.3: the Flags of this lane's monitors are assured only in
@@ -1217,6 +1252,9 @@ def api_module_monitoring():
                 })
 
         _dp_state_overruns(lanes)
+        monitors_present = {'tx_optical_power': has_tx_pwr,
+                            'rx_optical_power': has_rx_pwr,
+                            'tx_bias': has_bias}
         # Section 6.3.2.4: monitoring results "shall be within the relevant
         # accuracy requirements when the module is in the ModuleReady state",
         # and alarm and warning Flag semantics are "only assured in the
@@ -1229,6 +1267,10 @@ def api_module_monitoring():
         return _ok({'lanes': lanes,
                     'module_state': module_state,
                     'monitors_assured': module_state == 'ModuleReady',
+                    # Which of the three lane monitors this module has at all,
+                    # so a missing column reads as "not implemented" rather
+                    # than as a poll that came back empty.
+                    'monitors_present': monitors_present,
                     # Which wavelength and fibre each media lane is, where
                     # the module says. Read at connect, so it costs nothing
                     # per poll.

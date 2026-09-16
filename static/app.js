@@ -1363,11 +1363,29 @@ async function _loadMonitoringOnce() {
     const vWhy = vMin != null
       ? `This module needs at least ${vMin} V (01h:150).`
       : 'Module supply voltage (Lower 0x10-0x11)';
+    // 01h:159.0-1 (Table 8-53) say whether the module has these two monitors
+    // at all. An absent one reads zero, and zero is not a blank: 0.0000 V is
+    // an unpowered module, which is what the panel used to show - in red,
+    // because it is below the minimum operating voltage the module
+    // advertises.
+    const present = s.monitors_present || {};
+    const tempHas = present.temperature !== false;
+    const vccHas = present.vcc !== false;
+    const absent = (what, reg) =>
+      `<span class="reg-meta" title="${esc('This module does not implement the '
+        + what + ' monitor (' + reg + '), so there is no reading to show')}">`
+      + `${what}: not implemented <span class="reg-meta">${reg}</span></span>`;
+
     summaryEl.innerHTML =
-      `<span class="${tempClass}" title="${esc(tempWhy)}">Temp: ${s.temperature_c?.toFixed(2)} °C</span>` +
-      (tMax != null ? `<span class="reg-meta"> rated ${tMin}…${tMax} °C</span>` : '') +
-      `&ensp;|&ensp;<span class="${vClass}" title="${esc(vWhy)}">Voltage: ${s.voltage_v?.toFixed(4)} V</span>` +
-      (vMin != null ? `<span class="reg-meta"> min ${vMin} V</span>` : '') +
+      (tempHas
+        ? `<span class="${tempClass}" title="${esc(tempWhy)}">Temp: ${s.temperature_c?.toFixed(2)} °C</span>`
+          + (tMax != null ? `<span class="reg-meta"> rated ${tMin}…${tMax} °C</span>` : '')
+        : absent('Temp', '01h:159.0')) +
+      `&ensp;|&ensp;` +
+      (vccHas
+        ? `<span class="${vClass}" title="${esc(vWhy)}">Voltage: ${s.voltage_v?.toFixed(4)} V</span>`
+          + (vMin != null ? `<span class="reg-meta"> min ${vMin} V</span>` : '')
+        : absent('Voltage', '01h:159.1')) +
       (s.alarm_active ? `&ensp;|&ensp;<span class="text-danger">⚠ Alarm Active</span>` : '');
   }
 
@@ -1415,9 +1433,22 @@ async function _loadMonitoringOnce() {
     // off. Both conditions have to hold: the module in ModuleReady, and this
     // lane's Data Path up.
     const laneAssured = assured && lane.dp_monitors_assured !== false;
-    const txCls = !laneAssured ? 'unassured'
+    // 01h:160.0-2 (Table 8-53). A monitor the module does not implement has
+    // no value, so the cell says so instead of formatting a null - and
+    // instead of the zero the register actually holds, which the old code
+    // printed as 0.0 µW / -40.00 dBm / 0.000 mA.
+    const noMon = reg =>
+      `<span class="reg-meta" title="${esc('This module does not implement '
+        + 'this monitor (' + reg + '), so there is no reading to show')}">`
+      + `not implemented<br><small>${reg}</small></span>`;
+    // A monitor the module does not implement has no reading to colour. It
+    // read zero, which the threshold comparison called an alarm - the tool
+    // announcing a dark laser on a module that never claimed to measure one.
+    const txCls = txDbm == null ? 'unassured'
+                : !laneAssured ? 'unassured'
                 : txDbm < lim.TX_LOW ? 'alarm-low' : txDbm > lim.TX_HIGH ? 'alarm-high' : '';
-    const rxCls = !laneAssured ? 'unassured'
+    const rxCls = rxDbm == null ? 'unassured'
+                : !laneAssured ? 'unassured'
                 : rxDbm < lim.RX_LOW ? 'alarm-low' : rxDbm > lim.RX_HIGH ? 'alarm-high' : '';
     const laneTip = assured
       ? ' Not assured: this lane\u2019s Data Path is in ' + lane.datapath_state
@@ -1449,9 +1480,15 @@ async function _loadMonitoringOnce() {
                    : 'state-deactivated';
     return `<tr>
       <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
-      <td class="${txCls}" title="${esc(txTip)}">${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small></td>
-      <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${lane.tx_bias_ma.toFixed(3)} mA</td>
-      <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small></td>
+      <td class="${txCls}" title="${esc(txTip)}">${txDbm == null
+        ? noMon('01h:160.1')
+        : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small>`}</td>
+      <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${
+        lane.tx_bias_ma == null ? noMon('01h:160.0')
+                                : `${lane.tx_bias_ma.toFixed(3)} mA`}</td>
+      <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${rxDbm == null
+        ? noMon('01h:160.2')
+        : `${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
           title="${esc(dpStateNote(lane))}">${lane.datapath_state}${
         lane.state_overrun ? '<sup>!</sup>' : ''}</td>

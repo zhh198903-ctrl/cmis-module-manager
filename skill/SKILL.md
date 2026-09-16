@@ -142,6 +142,20 @@ curl -s $B/module/capabilities | python -c \
 4. **阈值和读数必须同源** —— 两者都在 Page 02h/12h，工具用同一个刻度换算；
    自己拿裸寄存器算的时候容易只换算一边。
 
+## 读数可能是 `null`，那不是出错
+
+CMIS 的每一项监控都是可选的，模块在 `01h:159-160` 广告自己有哪些。
+**没有的那一项寄存器读出来是 0**，而 0 在这里是很吓人的读数（0 V / 0 mA / 量程底部的 dBm）。
+
+所以这几个字段在模块没有该监控时返回 **`null`**，不是 0：
+
+- `/api/module/status` → `temperature_c`、`voltage_v`，外加 `monitors_present`
+- `/api/module/monitoring` → 每条通道的 `tx_power_dbm` / `tx_power_uw` /
+  `tx_bias_ma` / `rx_power_dbm` / `rx_power_uw`，外加顶层 `monitors_present`
+
+`monitors_present` 告诉你哪几项存在，用它把「没有这项监控」和「这次读失败」区分开。
+拿 `mock_fewmon` 试。
+
 ## 直读直写寄存器要带 Bank
 
 `POST /api/register/read` / `write` 除了 `page` / `address`，还收一个 `bank`（默认 0）。
@@ -196,7 +210,7 @@ curl -s -X POST $B/api/register/read -H 'Content-Type: application/json' \
 
 ## 没有硬件时
 
-内置 9 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
+内置 10 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
 
 | backend | 模拟的模块 |
 |---|---|
@@ -209,8 +223,9 @@ curl -s -X POST $B/api/register/read -H 'Content-Type: application/json' \
 | `mock_1600g_16lane` | 1.6T 16×100G 主机侧（1.6TAUI-16 C2M，两个 bank） |
 | `mock_24lane` | 24 通道 / 三个 bank —— 走 CMIS 5.4 的通道数逃逸路径 |
 | `mock_zr16` | 16 通道可调谐 —— Page 12h 有第二个 bank（调谐页按介质通道分 bank，每 bank 8 条）|
+| `mock_fewmon` | 只实现部分监控项（`01h:159-160`）—— 没有电压/发送光功率/偏置电流 |
 
-后五个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
+后六个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
 **主机软件该处理的分支，用这几个 mock 就能全部走到。**
 
 ## 裸寄存器读写的两条注意
