@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.62.0'
+__version__ = '2.63.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -113,6 +113,34 @@ def _monitor_present(key: str) -> bool:
     """
     mons = (_state.get('caps') or {}).get('monitors') or {}
     return mons.get(key, True) if mons else True
+
+
+# 8.14.1: "Monitors with associated alarm and/or warning thresholds have
+# associated alarm Flags, warning Flags", and those Flags are typed Adv. while
+# the ones that always exist are Rqd. So the threshold Flags are advertised by
+# 01h:159-160 (Table 8-53, the monitors) rather than by 01h:157-158
+# (Table 8-52, which covers only Tx fault, LOS, CDR LOL and adaptive eq fail).
+_THRESHOLD_FLAG_MONITOR = {
+    'tx_power_high_alarm': 'tx_optical_power',
+    'tx_power_low_alarm': 'tx_optical_power',
+    'tx_power_high_warn': 'tx_optical_power',
+    'tx_power_low_warn': 'tx_optical_power',
+    'tx_bias_high_alarm': 'tx_bias',
+    'tx_bias_low_alarm': 'tx_bias',
+    'tx_bias_high_warn': 'tx_bias',
+    'tx_bias_low_warn': 'tx_bias',
+    'rx_power_high_alarm': 'rx_optical_power',
+    'rx_power_low_alarm': 'rx_optical_power',
+    'rx_power_high_warn': 'rx_optical_power',
+    'rx_power_low_warn': 'rx_optical_power',
+}
+
+_MODULE_FLAG_MONITOR = {
+    'temp_high_alarm': 'temperature', 'temp_low_alarm': 'temperature',
+    'temp_high_warn': 'temperature', 'temp_low_warn': 'temperature',
+    'vcc_high_alarm': 'vcc', 'vcc_low_alarm': 'vcc',
+    'vcc_high_warn': 'vcc', 'vcc_low_warn': 'vcc',
+}
 
 
 def _require_connected():
@@ -838,11 +866,17 @@ def api_module_status():
             'vcc_high_warn':   bool((f_byte9 >> 6) & 1),
             'vcc_low_warn':    bool((f_byte9 >> 7) & 1),
         }
+        # Same rule one level up: Lower 9 holds the temperature and Vcc
+        # threshold Flags, both typed Adv., and a module without the monitor
+        # has neither.
+        for name in list(temp_alarms):
+            if not _monitor_present(_MODULE_FLAG_MONITOR[name]):
+                temp_alarms[name] = None
         state_changed = bool(mod_flags_raw[0] & 0x01)
         # A state change is an event, not a fault. Folding it in here lit the
         # alarm indicator every time somebody reset the module on purpose, and
         # an indicator that cries wolf is one people stop reading.
-        any_alarm = any(temp_alarms.values())
+        any_alarm = any(v is True for v in temp_alarms.values())
 
         # Module-level Flags are latched and clear-on-read like the lane ones,
         # so the read that reports them is the read that destroys them.
@@ -850,7 +884,7 @@ def api_module_status():
         if state_changed:
             module_seen.add('module_state_changed')
         for name, value in temp_alarms.items():
-            if value:
+            if value is True:
                 module_seen.add(name)
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
@@ -1927,8 +1961,14 @@ def api_module_flags():
 
         # A Flag the module does not implement reads 0, the same as a healthy
         # lane. Say which ones mean anything rather than colouring them green.
-        supported_flags = ((_state.get('caps') or {}).get('flags_supported')
-                           or {})
+        supported_flags = dict(
+            ((_state.get('caps') or {}).get('flags_supported') or {}))
+        # The threshold Flags are not in Table 8-52 at all; they exist only
+        # where their monitor does. Without this the panel drew a green dot
+        # against the Tx bias of a module that had said it does not measure
+        # bias - the same "nothing wrong here" the readings used to claim.
+        for flag, monitor in _THRESHOLD_FLAG_MONITOR.items():
+            supported_flags[flag] = _monitor_present(monitor)
 
         lanes = []
         history = _state['flag_history']

@@ -156,6 +156,19 @@ CMIS 的每一项监控都是可选的，模块在 `01h:159-160` 广告自己有
 `monitors_present` 告诉你哪几项存在，用它把「没有这项监控」和「这次读失败」区分开。
 拿 `mock_fewmon` 试。
 
+## 标志位也分「没有」和「正常」
+
+`GET /api/module/flags` 的 `supported` 现在除了 `01h:157-158` 那六个
+（Tx 故障 / 丢失信号 / CDR 失锁 / 自适应均衡失败），
+还包含**跟着监控项走的 12 个门限标志**——
+`tx_power_*` / `tx_bias_*` / `rx_power_*` 的高低告警与警告，
+它们由 `01h:159-160`（监控项广告）决定，模块没有那项监控就没有那些标志。
+
+`GET /api/module/status` 的 `temp_*` / `vcc_*` 八个门限标志同理：
+**模块没有对应监控项时返回 `null`，不是 `false`**。`false` 表示「测了，正常」。
+
+判断顺序：先看 `supported[flag]` / 值是不是 `null`，再看真假。
+
 ## 直读直写寄存器要带 Bank
 
 `POST /api/register/read` / `write` 除了 `page` / `address`，还收一个 `bank`（默认 0）。

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.62.0<br>
+      <b>版本</b>　2.63.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -612,6 +612,28 @@
 
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
+    <span><b>监控项没有，对应的告警标志也不该显示成「正常」</b>（v2.63.0 修复）。<br>
+    上一条修的是<b>读数</b>，这一条修的是<b>标志位</b>。
+    规范里写得很直接：<b>「有门限的监控项才有对应的告警标志、警告标志」</b>，
+    而且这些标志的类型标的是 <b>Adv.（需广告）</b>，
+    不像模块状态变化那种标 <b>Rqd.（必有）</b>。<br>
+    所以发送光功率、偏置电流、接收光功率这三项的<b>共 12 个门限标志</b>，
+    以及温度、电源电压的<b>共 8 个模块级门限标志</b>，
+    <b>都是跟着监控项走的</b>（<code>01h:159-160</code>），
+    而不是跟着 <code>01h:157-158</code>——后者只管 Tx 故障、丢失信号、
+    CDR 失锁、自适应均衡失败这四类。<br>
+    此前工具只用 <code>01h:157-158</code> 判断，于是那 20 个门限标志
+    <b>在没有对应监控项的模块上被画成绿点</b>——
+    「这里一切正常」，可根本就没有在测。
+    现在它们显示 <b>n/a</b>，「监控」汇总列在三项全无时也显示 n/a；
+    <b>模块有的那几项照常显示</b>，是逐项判断的。<br>
+    <span class="reg-meta">顺带：这类标志<b>不会再进入「历史」记录</b>，
+    也不会点亮顶部的告警提示——历史是会一直留在屏幕上的，
+    记错一次就要人工清一次。</span></span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
     <span><b>模块没有的监控项，不再当成读数显示</b>（v2.62.0 修复）。<br>
     CMIS 把<b>每一项监控都定义为可选</b>——温度、电源电压、发送光功率、偏置电流、接收光功率——
     模块在 <code>01h:159-160</code> 里广告自己到底有哪几项。
@@ -725,8 +747,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.62.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.62.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.63.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.63.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3370,7 +3392,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.62.0<br>
+    CMIS Module Manager 操作手册 v2.63.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

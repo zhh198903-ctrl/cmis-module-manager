@@ -2478,15 +2478,24 @@ function renderFlags(lanes, supported) {
         + 'since the last read">&#9650; CHANGED</span>'
       : flagCell(false, false, 'rx_output_changed');
 
-    const anyAlarm = lane.tx_power_high_alarm || lane.tx_power_low_alarm ||
-                     lane.tx_bias_high_alarm  || lane.tx_bias_low_alarm  ||
-                     lane.rx_power_high_alarm || lane.rx_power_low_alarm;
-    const anyWarn  = lane.tx_power_high_warn  || lane.tx_power_low_warn  ||
-                     lane.tx_bias_high_warn   || lane.tx_bias_low_warn   ||
-                     lane.rx_power_high_warn  || lane.rx_power_low_warn;
-    const wasAlarm = [...seen].some(n => n.endsWith('_alarm'));
-    const wasWarn  = [...seen].some(n => n.endsWith('_warn'));
-    const summary = anyAlarm
+    // These six are threshold Flags, and a threshold Flag exists only where
+    // its monitor does (01h:159-160, not the Table 8-52 list above). A module
+    // that does not measure its bias has no bias alarm, so summarising one is
+    // the same green dot over nothing that the readings used to show.
+    const MONITORED = ['tx_power', 'tx_bias', 'rx_power'];
+    const live = MONITORED.filter(k => has(k + '_high_alarm'));
+    const anyAlarm = live.some(k => lane[k + '_high_alarm']
+                                 || lane[k + '_low_alarm']);
+    const anyWarn  = live.some(k => lane[k + '_high_warn']
+                                 || lane[k + '_low_warn']);
+    const fired = n => live.some(k => n.startsWith(k));
+    const wasAlarm = [...seen].some(n => n.endsWith('_alarm') && fired(n));
+    const wasWarn  = [...seen].some(n => n.endsWith('_warn') && fired(n));
+    const summary = !live.length
+      ? '<span class="flag-none" title="This module implements none of the '
+        + 'monitors these alarms belong to (01h:160.0-2), so there is nothing '
+        + 'here to report">n/a</span>'
+      : anyAlarm
       ? '<span class="flag-active">&#9632; Alarm</span>'
       : anyWarn
       ? '<span class="flag-warn">&#9650; Warn</span>'

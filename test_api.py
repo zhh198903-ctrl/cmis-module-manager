@@ -15811,6 +15811,155 @@ class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
         self.assertIn("rxDbm == null ? 'unassured'", block)
 
 
+class TestAThresholdFlagBelongsToItsMonitor(CMISTestCase):
+    """8.14.1: "Monitors with associated alarm and/or warning thresholds have
+    associated alarm Flags, warning Flags", and those Flags are typed Adv.
+    while the ones that always exist are Rqd. So the twelve threshold Flags
+    are advertised by 01h:159-160 - the monitors - not by 01h:157-158, which
+    covers only Tx fault, LOS, CDR LOL and adaptive eq fail.
+
+    A Flag the module does not implement reads 0, the same as a healthy lane,
+    which the panel drew as a green dot: "nothing wrong with the bias" on a
+    module that had just said it does not measure bias."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    # ---- the lane Flags ----------------------------------------------------
+
+    def test_a_threshold_flag_is_unsupported_when_its_monitor_is(self):
+        self._connect('mock_fewmon')
+        sup = self._flags()['supported']
+        for name in ('tx_power_high_alarm', 'tx_power_low_alarm',
+                     'tx_power_high_warn', 'tx_power_low_warn',
+                     'tx_bias_high_alarm', 'tx_bias_low_alarm',
+                     'tx_bias_high_warn', 'tx_bias_low_warn'):
+            self.assertFalse(sup[name], name)
+
+    def test_the_monitor_it_does_have_keeps_its_flags(self):
+        """Gating all twelve together would hide the receive-side alarms of a
+        module that measures received power and says so."""
+        self._connect('mock_fewmon')
+        sup = self._flags()['supported']
+        for name in ('rx_power_high_alarm', 'rx_power_low_alarm',
+                     'rx_power_high_warn', 'rx_power_low_warn'):
+            self.assertTrue(sup[name], name)
+
+    def test_a_module_with_every_monitor_keeps_every_threshold_flag(self):
+        self._connect('mock_dr8')
+        sup = self._flags()['supported']
+        for name, monitor in [('tx_power_low_alarm', 'tx'),
+                              ('tx_bias_low_alarm', 'bias'),
+                              ('rx_power_low_alarm', 'rx')]:
+            self.assertTrue(sup[name], name)
+
+    def test_the_table_8_52_flags_are_still_gated_on_their_own_bits(self):
+        """Those six have their own advertisement and must not have been
+        folded into the monitor one."""
+        self._connect('mock_sr8')
+        sup = self._flags()['supported']
+        self.assertIn('rx_cdr_lol', sup)
+        self.assertIn('tx_fault', sup)
+        self.assertFalse(sup['rx_cdr_lol'],
+                         'mock_sr8 deliberately does not implement this one')
+
+    # ---- the module Flags --------------------------------------------------
+
+    def test_a_module_flag_without_its_monitor_is_not_reported_as_clear(self):
+        """False here means "measured, and fine". With no Vcc monitor there is
+        no measurement to be fine."""
+        self._connect('mock_fewmon')
+        s = self._status()
+        for name in ('vcc_high_alarm', 'vcc_low_alarm',
+                     'vcc_high_warn', 'vcc_low_warn'):
+            self.assertIsNone(s[name], name)
+        for name in ('temp_high_alarm', 'temp_low_alarm'):
+            self.assertIsInstance(s[name], bool, name)
+
+    def test_a_module_with_both_monitors_reports_both(self):
+        self._connect('mock_dr8')
+        s = self._status()
+        for name in ('vcc_low_alarm', 'temp_low_alarm'):
+            self.assertIsInstance(s[name], bool, name)
+
+    def test_a_flag_of_an_absent_monitor_never_becomes_an_alarm(self):
+        """The register can hold anything where nothing writes it. Counting a
+        leftover bit would light the alarm indicator for a monitor that does
+        not exist - and the indicator is the first thing anyone looks at."""
+        self._connect('mock_fewmon')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0, 'address': 0x09, 'data': [0xF0]}),
+            content_type='application/json'))
+        s = self._status()
+        self.assertIsNone(s['vcc_low_alarm'])
+        self.assertFalse(s['alarm_active'],
+                         'a Vcc alarm was raised on a module with no Vcc '
+                         'monitor')
+
+    def test_such_a_flag_is_not_written_into_the_history_either(self):
+        """The history outlives the read that cleared the Flag, so a bit
+        recorded once is on screen until someone clears it by hand."""
+        self._connect('mock_fewmon')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0, 'address': 0x09, 'data': [0xF0]}),
+            content_type='application/json'))
+        seen = self._status()['seen']
+        self.assertEqual([n for n in seen if n.startswith('vcc')], [],
+                         'a Vcc flag entered the history without a monitor')
+
+
+class TestTheFlagSummaryCountsOnlyLiveMonitors(CMISTestCase):
+    """The Monitors column folds six threshold Flags into one cell. Where none
+    of the three monitors behind it exists there is nothing to fold."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _block(self):
+        js = self._js()
+        i = js.index("const MONITORED = ['tx_power'")
+        return js[i:i + 1400]
+
+    def test_the_summary_asks_which_monitors_are_live(self):
+        block = self._block()
+        self.assertIn("filter(k => has(k + '_high_alarm'))", block)
+
+    def test_an_absent_monitor_is_not_summarised_as_healthy(self):
+        block = self._block()
+        self.assertIn('!live.length', block)
+        self.assertIn('n/a', block)
+        self.assertIn('01h:160.0-2', block)
+
+    def test_the_history_is_filtered_by_the_same_list(self):
+        """A lane that fired a bias alarm before the module was swapped for
+        one without a bias monitor would otherwise still say so.
+
+        Both lines are checked, not the block: there are two of them, and an
+        assertion that the filter appears somewhere passes with one of them
+        still unfiltered."""
+        block = self._block()
+        self.assertIn("live.some(k => n.startsWith(k))", block)
+        for line in ('wasAlarm', 'wasWarn'):
+            m = re.search(r'const %s\s*= \[\.\.\.seen\][^;]*;' % line, block)
+            self.assertIsNotNone(m, line)
+            self.assertIn('fired(n)', m.group(0),
+                          '%s is not filtered by the live monitors' % line)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
