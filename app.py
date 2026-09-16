@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.59.0'
+__version__ = '2.60.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2796,6 +2796,12 @@ def api_laser_set():
         ch_ranges = cmis.parse_grid_channel_ranges(_read_grid_ranges(grid_300))
         _set_page(0x12)
 
+        # Every write is worked out and checked before any of it is sent. A
+        # request that fails half way used to leave the lanes it had already
+        # reached retuned, and the 400 that came back named only the lane that
+        # failed - so the operator had no way to tell which of the others had
+        # moved. Nothing is written unless all of it can be.
+        plan = []
         written = 0
         for ldata in lanes:
             if not isinstance(ldata, dict):
@@ -2804,8 +2810,23 @@ def api_laser_set():
                 lane = _as_int(ldata.get('lane', 1), 'Lane') - 1
             except ValueError as e:
                 return _err(str(e), 400)
-            if not (0 <= lane < 8):
-                continue
+            # Page 12h is banked by media lane: Bank b holds lanes
+            # 8b+1..8b+8 at the same addresses (8.15). The GET side reads
+            # every bank, so the tuning table offers a row per lane on a
+            # module with more than eight - and this loop dropped every one of
+            # them past lane 8 without a word, answering "parameters written".
+            if not (0 <= lane < _state['lanes']):
+                return _err(
+                    'Lane %d does not exist on this module: it has %d lane%s '
+                    '(01h:142.1-0)'
+                    % (lane + 1, _state['lanes'],
+                       '' if _state['lanes'] == 1 else 's'), 400)
+            bank, slot = divmod(lane, 8)
+            # Counted per field, not per entry: {"lane": 3} on its own asks
+            # for nothing, and reporting it as a written lane is the same
+            # "parameters written" having written nothing that the shape check
+            # above exists to stop.
+            fields = 0
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0
@@ -2818,9 +2839,9 @@ def api_laser_set():
                 # applied to that lane.
                 keep = (_read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)[lane]
                         & 0x0E)
-                _set_page(0x12)
-                _state['backend'].write_bytes(cmis.REG_GRID_SPACING_TX[1] + lane,
-                                              bytes([(gc << 4) | keep | fine_en]))
+                plan.append((bank, cmis.REG_GRID_SPACING_TX[1] + slot,
+                             bytes([(gc << 4) | keep | fine_en])))
+                fields += 1
             if 'channel' in ldata:
                 ch = int(ldata['channel'])
                 gc_now = (ldata.get('grid_code') if 'grid_code' in ldata
@@ -2833,8 +2854,9 @@ def api_laser_set():
                         % (lane + 1, ch, cmis.GRID_CODES.get(int(gc_now), gc_now),
                            allowed[0], allowed[1],
                            130 + int(gc_now) * 4, 133 + int(gc_now) * 4), 400)
-                ch_bytes = struct.pack(">h", ch)
-                _state['backend'].write_bytes(cmis.REG_CHANNEL_NUM_TX[1] + lane * 2, ch_bytes)
+                plan.append((bank, cmis.REG_CHANNEL_NUM_TX[1] + slot * 2,
+                             struct.pack(">h", ch)))
+                fields += 1
             if 'fine_offset_ghz' in ldata:
                 off = float(ldata['fine_offset_ghz'])
                 if not (fine_lo <= off <= fine_hi):
@@ -2843,8 +2865,9 @@ def api_laser_set():
                         'advertised range (%g to %g GHz, 04h:192-195)'
                         % (lane + 1, off, fine_lo, fine_hi), 400)
                 ft = int(round(off / 0.001))
-                _state['backend'].write_bytes(cmis.REG_FINE_OFFSET_TX[1] + lane * 2,
-                                              struct.pack(">h", ft))
+                plan.append((bank, cmis.REG_FINE_OFFSET_TX[1] + slot * 2,
+                             struct.pack(">h", ft)))
+                fields += 1
             if 'target_power_dbm' in ldata:
                 tgt = float(ldata['target_power_dbm'])
                 if not (pwr_lo <= tgt <= pwr_hi):
@@ -2853,11 +2876,20 @@ def api_laser_set():
                         'programmable range (%g to %g dBm, 04h:198-201)'
                         % (lane + 1, tgt, pwr_lo, pwr_hi), 400)
                 pwr = int(round(tgt / 0.01))
-                _state['backend'].write_bytes(cmis.REG_TARGET_PWR_TX[1] + lane * 2,
-                                              struct.pack(">h", pwr))
-            written += 1
+                plan.append((bank, cmis.REG_TARGET_PWR_TX[1] + slot * 2,
+                             struct.pack(">h", pwr)))
+                fields += 1
+            written += 1 if fields else 0
         if not written:
-            return _err('No lane in range 1-8 was given', 400)
+            return _err('No lane entry carried anything to write; expected at '
+                        'least one of grid_code, channel, fine_offset_ghz or '
+                        'target_power_dbm', 400)
+        # Bank first, then the byte. Page 12h is banked by media lane, so a
+        # write that names only the page lands in whichever bank the last read
+        # happened to leave selected.
+        for bank, addr, payload in plan:
+            _set_page(0x12, bank)
+            _state['backend'].write_bytes(addr, payload)
         # Writing is not tuning. The module answers in the Page 12h Flags, and
         # reporting success on the strength of the write alone told the
         # operator a refused channel had been applied.

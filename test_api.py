@@ -15052,6 +15052,230 @@ class TestTheWindowsHidTransport(CMISTestCase):
             self.assertIn('driver', info['description'])
 
 
+class TestTuningAModuleWiderThanOneBank(CMISTestCase):
+    """Page 12h is banked by media lane: "Each Bank of Page 12h refers to 8
+    media lanes" (CMIS 5.4, 8.15). The read side already walked every bank, so
+    the tuning table offers a row per lane on a wide module - but the write
+    side addressed bank 0 only, and silently dropped everything past lane 8
+    while answering "Laser tuning parameters written"."""
+
+    BACKEND = 'mock_zr16'
+
+    def setUp(self):
+        super().setUp()
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': self.BACKEND, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        return {l['lane']: l for l in d['lanes']}
+
+    def _apply(self, lanes, expect=200):
+        rv = self.client.post('/api/module/laser',
+                              data=json.dumps({'lanes': lanes}),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, expect, rv.data)
+        return json.loads(rv.data)
+
+    # ---- the module this runs against --------------------------------------
+
+    def test_the_module_is_tunable_and_needs_more_than_one_bank(self):
+        """Without both properties this class proves nothing: eight lanes fit
+        one bank, and a module that is not tunable has no Page 12h at all."""
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        self.assertTrue(d['grids_supported'])
+        self.assertEqual(len(d['lanes']), 16)
+
+    # ---- the defect --------------------------------------------------------
+
+    def test_a_lane_in_the_second_bank_can_be_tuned(self):
+        """The whole point: lane 9 lives at the same address as lane 1, one
+        bank along. A write that names only the page lands on lane 1."""
+        self._apply([{'lane': 9, 'channel': 7}])
+        self.assertEqual(self._lanes()[9]['channel'], 7)
+
+    def test_tuning_a_second_bank_lane_leaves_the_first_bank_alone(self):
+        """This is how the defect showed itself: the operator retunes lane 9
+        and lane 1 moves with it, because both are byte 0x88 of Page 12h."""
+        before = self._lanes()
+        self._apply([{'lane': 9, 'channel': 7, 'target_power_dbm': -1.5}])
+        after = self._lanes()
+        moved = [n for n in before
+                 if (before[n]['channel'], before[n]['target_power_dbm'])
+                 != (after[n]['channel'], after[n]['target_power_dbm'])]
+        self.assertEqual(moved, [9], 'tuning lane 9 disturbed other lanes')
+
+    def test_every_lane_of_every_bank_is_addressable(self):
+        """A bank boundary is exactly where an off-by-one hides, so tune each
+        lane to a channel only it should have."""
+        self._apply([{'lane': n, 'channel': n} for n in range(1, 17)])
+        got = self._lanes()
+        self.assertEqual([got[n]['channel'] for n in range(1, 17)],
+                         list(range(1, 17)))
+
+    def test_the_reported_count_matches_what_was_asked_for(self):
+        """Reporting 8 written out of 16 asked for, with a success status, is
+        how the dropped lanes stayed invisible."""
+        res = self._apply([{'lane': n, 'channel': 1} for n in range(1, 17)])
+        self.assertEqual(res['data']['lanes'], 16)
+
+    def test_each_field_reaches_the_right_bank(self):
+        """Grid, channel, fine offset and target power are four separate
+        writes; each one had to be given the bank of its own accord."""
+        # Grid code 4 (50 GHz), not the 5 this module already sits on: an
+        # assertion that a lane still holds its default passes whether or not
+        # the write ever arrived.
+        self._apply([{'lane': 12, 'grid_code': 4, 'channel': 3,
+                      'fine_tuning_enabled': True, 'fine_offset_ghz': 0.5,
+                      'target_power_dbm': -2.0}])
+        lane = self._lanes()[12]
+        self.assertEqual(lane['grid_code'], 4)
+        self.assertEqual(lane['channel'], 3)
+        self.assertEqual(lane['target_power_dbm'], -2.0)
+        self.assertAlmostEqual(lane['fine_offset_ghz'], 0.5, places=4)
+        untouched = self._lanes()[4]
+        self.assertEqual(untouched['channel'], 0,
+                         'lane 4 is lane 12 minus one bank and must not move')
+        self.assertEqual(untouched['grid_code'], 5,
+                         'lane 4 kept neither its grid nor its bank')
+        self.assertEqual(untouched['fine_offset_ghz'], 0.0)
+
+    def test_the_laser_frequency_of_a_second_bank_lane_follows_its_channel(self):
+        """The module recomputes the frequency it is actually on. Left to the
+        bank-0 model, a tuned lane 9 kept reporting the frequency it had
+        before, which reads as a tuning that never took."""
+        self._apply([{'lane': 9, 'grid_code': 5, 'channel': 4}])
+        # 100 GHz grid, four channels up from 193.1 THz.
+        self.assertAlmostEqual(self._lanes()[9]['frequency_thz'], 193.5,
+                               places=3)
+
+    def test_a_channel_outside_the_advertised_range_is_refused(self):
+        """The range check reads the grid this lane is on. Applied to bank 0's
+        grid instead, it would pass or fail on another lane's settings."""
+        res = self._apply([{'lane': 9, 'grid_code': 4, 'channel': 30000}],
+                          expect=400)
+        self.assertIn('9', res['message'])
+        self.assertIn('outside', res['message'])
+        self.assertEqual(self._lanes()[9]['channel'], 0)
+
+    # ---- what a lane that does not exist gets ------------------------------
+
+    def test_a_lane_beyond_the_module_is_refused_not_ignored(self):
+        res = self._apply([{'lane': 17, 'channel': 1}], expect=400)
+        self.assertIn('17', res['message'])
+        self.assertIn('16', res['message'])
+
+    def test_an_entry_with_nothing_to_write_is_refused(self):
+        """{"lane": 3} asks for nothing. Counting it as a written lane is the
+        same "parameters written" having written nothing that the shape check
+        in this handler already exists to stop."""
+        res = self._apply([{'lane': 3}], expect=400)
+        self.assertIn('grid_code', res['message'])
+
+    def test_a_refusal_writes_nothing_at_all(self):
+        """A bad lane in the list must not leave the earlier ones applied -
+        half-applied tuning is worse than none, because nothing says which
+        half."""
+        before = self._lanes()
+        self._apply([{'lane': 1, 'channel': 5}, {'lane': 99, 'channel': 5}],
+                    expect=400)
+        after = self._lanes()
+        self.assertEqual(before[1]['channel'], after[1]['channel'])
+
+
+class TestTheMockKeepsItsTuningBanksApart(CMISTestCase):
+    """The mock has to model the banking for any of the above to mean
+    anything: a mock that mirrors bank 1 into bank 0 makes a bank-blind host
+    look correct."""
+
+    def _backend(self):
+        from i2c_backends.mock import MockZR16LaneBackend
+        b = MockZR16LaneBackend()
+        b.connect(0, 0x50)
+        return b
+
+    def _select(self, b, page, bank):
+        # The mock holds off for tBPC after a bank or page change, so a read
+        # issued straight away is answered from the previous selection - which
+        # is what the module really does, and why the host sleeps here too.
+        # Without the wait these tests read bank 1 while asking for bank 0 and
+        # called it a leak.
+        b.write_bytes(0x7E, bytes([bank]))
+        b.write_bytes(0x7F, bytes([page]))
+        time.sleep(0.012)
+
+    def test_each_bank_of_page_12h_has_its_own_registers(self):
+        b = self._backend()
+        keys = [k for k in b._registers
+                if k == 0x12 or (isinstance(k, tuple) and k[0] == 0x12)]
+        self.assertEqual(len(keys), 2, 'sixteen lanes is two banks')
+
+    def test_a_write_to_bank_one_does_not_reach_bank_zero(self):
+        b = self._backend()
+        self._select(b, 0x12, 1)
+        b.write_bytes(0x88, bytes([0x00, 0x09]))     # ChannelNumberTx1 = 9
+        self._select(b, 0x12, 0)
+        self.assertEqual(b.read_bytes(0x88, 2), b'\x00\x00',
+                         'the write leaked into bank 0')
+        self._select(b, 0x12, 1)
+        self.assertEqual(b.read_bytes(0x88, 2), b'\x00\x09')
+
+    def test_the_flags_raised_by_a_bad_tuning_stay_in_their_bank(self):
+        """Page 12h:230-238 are per-lane Flags. Judged against the bank-0
+        dict, a lane 9 refusal was reported against lane 1."""
+        b = self._backend()
+        self._select(b, 0x12, 1)
+        # A channel far outside any advertised grid range.
+        b.write_bytes(0x88, bytes([0x7F, 0xFF]))
+        bank1 = b.read_bytes(0xE6, 9)          # Flags are clear-on-read
+        self._select(b, 0x12, 0)
+        bank0 = b.read_bytes(0xE6, 9)
+        self.assertTrue(bank1[0], 'the bank that was written raised no flag')
+        self.assertFalse(bank0[0], 'a flag was raised in a bank nobody wrote')
+
+    def test_a_refused_tuning_leaves_that_banks_frequency_alone(self):
+        """The module refuses a channel it cannot reach and the laser stays
+        where it was, so the frequency it reports must not follow the
+        request. The verdict is recorded per lane: filed against the bank-0
+        lane instead, lane 9 read lane 1's verdict, was told it had been
+        accepted, and reported a frequency it had never tuned to."""
+        b = self._backend()
+        self._select(b, 0x12, 1)
+        before = b.read_bytes(0xA8, 4)                 # CurrentLaserFrequencyTx1
+        b.write_bytes(0x88, bytes([0x7F, 0xFF]))       # far outside any grid
+        self.assertTrue(b.read_bytes(0xE6, 1)[0],
+                        'the module accepted an impossible channel')
+        self.assertEqual(b.read_bytes(0xA8, 4), before,
+                         'a refused tuning moved the frequency anyway')
+
+    def test_a_refusal_in_one_bank_does_not_freeze_another(self):
+        """The same list, read the other way round: lane 1 is still free to
+        tune while lane 9 sits refused."""
+        b = self._backend()
+        self._select(b, 0x12, 1)
+        b.write_bytes(0x88, bytes([0x7F, 0xFF]))       # lane 9 refused
+        self._select(b, 0x12, 0)
+        before = b.read_bytes(0xA8, 4)
+        b.write_bytes(0x88, bytes([0x00, 0x05]))       # lane 1, a real channel
+        self.assertNotEqual(b.read_bytes(0xA8, 4), before,
+                            'lane 1 was frozen by lane 9 being refused')
+
+    def test_the_accepted_state_is_tracked_for_every_lane(self):
+        """One entry per bank-0 lane meant lane 9 read lane 1's verdict."""
+        b = self._backend()
+        self.assertGreaterEqual(len(b._tuning_accepted), 16)
+
+    def test_each_bank_is_listed_against_the_lanes_it_holds(self):
+        """Bank 1 holds lanes 9-16, so its offset is 8. Judging a bank
+        against the wrong offset records lane 9's verdict under lane 1."""
+        b = self._backend()
+        pairs = b._banked_page_dicts(0x12)
+        self.assertEqual([base for base, _d in pairs], [0, 8])
+        self.assertIsNot(pairs[0][1], pairs[1][1])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

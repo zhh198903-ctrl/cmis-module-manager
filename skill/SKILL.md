@@ -178,7 +178,7 @@ curl -s $B/module/capabilities | python -c \
 
 ## 没有硬件时
 
-内置 8 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
+内置 9 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
 
 | backend | 模拟的模块 |
 |---|---|
@@ -190,8 +190,9 @@ curl -s $B/module/capabilities | python -c \
 | `mock_1600g_dr8` | 1.6TBASE-DR8（8 × 106.25 GBd PAM4，SMF 500m，802.3dj） |
 | `mock_1600g_16lane` | 1.6T 16×100G 主机侧（1.6TAUI-16 C2M，两个 bank） |
 | `mock_24lane` | 24 通道 / 三个 bank —— 走 CMIS 5.4 的通道数逃逸路径 |
+| `mock_zr16` | 16 通道可调谐 —— Page 12h 有第二个 bank（调谐页按介质通道分 bank，每 bank 8 条）|
 
-后四个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
+后五个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
 **主机软件该处理的分支，用这几个 mock 就能全部走到。**
 
 ## 裸寄存器读写的两条注意

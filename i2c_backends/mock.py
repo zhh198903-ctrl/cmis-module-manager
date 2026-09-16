@@ -386,6 +386,19 @@ _XD16_1600G = {
     'heatsink_fiber':      0x30,
 }
 
+# Page 12h is banked by media lane - "Each Bank of Page 12h refers to 8 media
+# lanes" (8.15) - but every tunable profile here had exactly eight, so the
+# second bank of a tuning page was never read and never written. This one is
+# the ZR profile made wide enough to need two, which is what separates a write
+# that names its bank from one that quietly lands in bank 0.
+_ZR_16LANE = dict(
+    _ZR_800G,
+    display='16-lane tunable (two banks of Page 12h)',
+    vendor_pn=b"DEMO-DP16L-QDD  ",
+    vendor_sn=b"DEMO000000009   ",
+    lanes=16,
+)
+
 # CMIS 5.4 raised the lane ceiling from 32 to 256 by giving 01h:142.1-0 an
 # escape value: 11b means the real bank count is in 01h:174.4-0. Every other
 # profile here has a lane count the legacy field can spell (8, 16 or 32), so
@@ -626,7 +639,8 @@ class MockBackend(I2CInterface):
         self._apply_hot = False           # ApplyImmediate rather than DPInit
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._apply_provision_only = False
-        self._tuning_accepted = [True] * 8
+        self._tuning_accepted = [True] * max(
+            8, self.PROFILE.get('lanes', 8))
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
         self._deinit_time = 0.0          # walking a path down 6h -> 3h -> 1h
@@ -1662,6 +1676,21 @@ class MockBackend(I2CInterface):
             return False
         return bool((self._registers.get(None, {}).get(0x1A, 0) >> 7) & 1)
 
+    def _banked_page_dicts(self, page: int):
+        """(first lane index, register dict) for every bank of a page.
+
+        Bank b holds lanes 8b+1..8b+8 at the same addresses, so a dynamic
+        model has to run once per bank with the lane numbers shifted. Running
+        it only over the bank-0 dict left every lane past the eighth frozen at
+        whatever it was built with, however the host tuned it.
+        """
+        if page not in self._registers:
+            return []
+        out = [(0, self._registers[page])]
+        out += [(key[1] * 8, d) for key, d in self._registers.items()
+                if isinstance(key, tuple) and key[0] == page]
+        return sorted(out, key=lambda pair: pair[0])
+
     def _page_dicts(self, page: int):
         """Every bank's copy of one page, so banked lanes do not go stale."""
         return [d for key, d in self._registers.items()
@@ -1806,30 +1835,30 @@ class MockBackend(I2CInterface):
 
         # Laser tuning: update CurrentLaserFrequency from Page 12h control values (tunable only)
         if p['tunable'] and 0x12 in self._registers:
-            p12 = self._registers[0x12]
-            for lane in range(8):
-                grid_byte = p12.get(0x80 + lane, 0x50)
-                grid_code = (grid_byte >> 4) & 0x0F
-                grid_steps = {0: 0.003125, 1: 0.00625, 2: 0.0125, 3: 0.025,
-                              4: 0.05, 5: 0.1, 6: 1.0/30, 7: 0.075, 8: 0.15}
-                step_thz = grid_steps.get(grid_code, 0.1)
-                ch_hi = p12.get(0x88 + lane * 2, 0)
-                ch_lo = p12.get(0x89 + lane * 2, 0)
-                ch_n = struct.unpack(">h", bytes([ch_hi, ch_lo]))[0]
-                ft_hi = p12.get(0x98 + lane * 2, 0)
-                ft_lo = p12.get(0x99 + lane * 2, 0)
-                ft_offset = struct.unpack(">h", bytes([ft_hi, ft_lo]))[0]
-                fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
-                if not self._tuning_accepted[lane]:
-                    continue        # refused: the laser has not moved
-                freq_thz = 193.1 + ch_n * step_thz + fine_ghz / 1000.0
-                freq_mhz = int(round(freq_thz * 1e6))
-                a = 0xA8 + lane * 4
-                p12[a] = (freq_mhz >> 24) & 0xFF
-                p12[a + 1] = (freq_mhz >> 16) & 0xFF
-                p12[a + 2] = (freq_mhz >> 8) & 0xFF
-                p12[a + 3] = freq_mhz & 0xFF
-                p12[0xDE + lane] = 0x00
+            for lane_base, p12 in self._banked_page_dicts(0x12):
+                for lane in range(8):
+                    grid_byte = p12.get(0x80 + lane, 0x50)
+                    grid_code = (grid_byte >> 4) & 0x0F
+                    grid_steps = {0: 0.003125, 1: 0.00625, 2: 0.0125, 3: 0.025,
+                                  4: 0.05, 5: 0.1, 6: 1.0/30, 7: 0.075, 8: 0.15}
+                    step_thz = grid_steps.get(grid_code, 0.1)
+                    ch_hi = p12.get(0x88 + lane * 2, 0)
+                    ch_lo = p12.get(0x89 + lane * 2, 0)
+                    ch_n = struct.unpack(">h", bytes([ch_hi, ch_lo]))[0]
+                    ft_hi = p12.get(0x98 + lane * 2, 0)
+                    ft_lo = p12.get(0x99 + lane * 2, 0)
+                    ft_offset = struct.unpack(">h", bytes([ft_hi, ft_lo]))[0]
+                    fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
+                    if not self._tuning_accepted[lane_base + lane]:
+                        continue        # refused: the laser has not moved
+                    freq_thz = 193.1 + ch_n * step_thz + fine_ghz / 1000.0
+                    freq_mhz = int(round(freq_thz * 1e6))
+                    a = 0xA8 + lane * 4
+                    p12[a] = (freq_mhz >> 24) & 0xFF
+                    p12[a + 1] = (freq_mhz >> 16) & 0xFF
+                    p12[a + 2] = (freq_mhz >> 8) & 0xFF
+                    p12[a + 3] = freq_mhz & 0xFF
+                    p12[0xDE + lane] = 0x00
 
     # ------------------------------------------------------------------
     def _intercept_write(self, register, data):
@@ -1898,10 +1927,24 @@ class MockBackend(I2CInterface):
                 # write path uses setdefault for exactly this reason, and
                 # indexing here raised KeyError(18) out of the backend
                 # instead - which reached the caller as a 500 saying "18".
-                p12 = self._registers.setdefault(0x12, {})
-                for a, b in zip(span, data):
-                    p12[a] = b
-                self._judge_tuning(touched)
+                # _write_targets picks the selected bank (and every bank
+                # under bank broadcast). Writing self._registers[0x12] here
+                # instead put a tuning meant for lane 9 into bank 0 too, so
+                # lane 1 moved as well - and the write to the right bank
+                # landed afterwards, leaving both changed.
+                targets = self._write_targets()
+                for p12 in targets:
+                    for a, b in zip(span, data):
+                        p12[a] = b
+                # The selected bank's number is the lane offset - bank 1 holds
+                # lanes 9-16 - so it is taken from the selection rather than
+                # by searching the bank list for the dict that was written.
+                # Under bank broadcast the same bytes land in every bank, and
+                # each one has to be judged against its own lanes.
+                judged = (self._banked_page_dicts(0x12) if self._bank_broadcast()
+                          else [(self._current_bank * 8, targets[0])])
+                for lane_base, p12 in judged:
+                    self._judge_tuning(touched, p12, lane_base)
         elif self._current_page == 0x13:
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
@@ -2011,7 +2054,7 @@ class MockBackend(I2CInterface):
     # Advertised on Page 04h:130-165, an S16 low/high pair per grid code.
     _GRID_RANGE_BASE = 0x82
 
-    def _judge_tuning(self, touched=None):
+    def _judge_tuning(self, touched=None, p12=None, lane_base=0):
         """Answer a tuning request in the Page 12h Flags (Table 8-109).
 
         A module does not silently tune wherever it is told. A channel outside
@@ -2020,7 +2063,8 @@ class MockBackend(I2CInterface):
         each raise their own latched Flag, and the laser stays where it was.
         """
         p04 = self._registers.get(0x04, {})
-        p12 = self._registers[0x12]
+        if p12 is None:
+            p12 = self._registers[0x12]
 
         def s16(page, addr):
             return struct.unpack(">h", bytes([page.get(addr, 0),
@@ -2059,7 +2103,7 @@ class MockBackend(I2CInterface):
 
             if flags == 0:
                 flags |= 1 << 0              # TuningCompleteFlagTx
-            self._tuning_accepted[lane] = (flags & ~1) == 0
+            self._tuning_accepted[lane_base + lane] = (flags & ~1) == 0
 
             p12[0xE7 + lane] = p12.get(0xE7 + lane, 0) | flags
             if p12[0xE7 + lane]:
@@ -2485,6 +2529,11 @@ class Mock24LaneBackend(MockBackend):
 @register_backend("mock_coherent_zr")
 class MockCoherentZRBackend(MockBackend):
     PROFILE = _ZR_800G
+
+
+@register_backend("mock_zr16")
+class MockZR16LaneBackend(MockBackend):
+    PROFILE = _ZR_16LANE
 
 
 @register_backend("mock_fr4x2")

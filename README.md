@@ -30,7 +30,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 - **DataPath control 数据通道配置** — AppSel provisioning, DataPath state machine, output/squelch controls
 - **Diagnostics 诊断** — loopback, PRBS generator/checker, BER, SNR, error counters
 - **Laser tuning 激光器调谐** — grid/channel selection and fine tuning for tunable (coherent) modules
-- **8 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_coherent_zr` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane` / `mock_24lane`, full demo without any hardware. Two profiles are modelled on IEEE P802.3dj/D3.1: `mock_1600g_dr8` on Clause 180 (1.6TBASE-DR8) and `mock_coherent` on Clause 185 (800GBASE-LR1, the datacenter coherent-lite PMD). `mock_coherent_zr` is the tunable C-band module, which is where laser tuning is demonstrated. `mock_24lane` has 24 lanes across three banks - the smallest lane count the legacy field cannot spell, so it is the only profile that exercises the CMIS 5.4 escape at `01h:142.1-0 = 11b`.
+- **9 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_coherent_zr` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane` / `mock_24lane` / `mock_zr16`, full demo without any hardware. Two profiles are modelled on IEEE P802.3dj/D3.1: `mock_1600g_dr8` on Clause 180 (1.6TBASE-DR8) and `mock_coherent` on Clause 185 (800GBASE-LR1, the datacenter coherent-lite PMD). `mock_coherent_zr` is the tunable C-band module, which is where laser tuning is demonstrated. `mock_24lane` has 24 lanes across three banks - the smallest lane count the legacy field cannot spell, so it is the only profile that exercises the CMIS 5.4 escape at `01h:142.1-0 = 11b`. `mock_zr16` is tunable and sixteen lanes wide, so it is the only profile with a second bank of Page 12h - the tuning page is banked by media lane, eight to a bank.
 
 ## Supported hardware / 支持的硬件
 
@@ -66,7 +66,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-1043 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+1061 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 
