@@ -2252,12 +2252,44 @@ function _renderReadLimit(max) {
       + 'longer reads are split into several';
 }
 
+// On a Banked Page the page number alone does not name a register: Bank b
+// holds the next eight lanes at the same addresses. A dump of Bank 0 and a
+// dump of Bank 1 are the same picture, so what was read has to be said in
+// words - and on a module with one bank there is nothing to say.
+const BANKED_PAGE = p =>
+  (p >= 0x10 && p <= 0x5F) || p === 0x60 || p === 0x61 || p === 0x62
+  || p === 0x6D || p === 0x9F || (p >= 0xA0 && p <= 0xAF);
+
+function _rawBankNote() {
+  const el = document.getElementById('raw-bank-note');
+  if (!el) return;
+  const page = parseHexOrDec(document.getElementById('raw-page').value);
+  const banks = Math.ceil(AppState.lanes / 8);
+  if (!BANKED_PAGE(page)) {
+    el.innerHTML = `Page 0x${page.toString(16).toUpperCase().padStart(2, '0')}`
+      + ' is not banked <span class="reg-meta">bank must be 0</span>';
+  } else if (banks <= 1) {
+    el.innerHTML = 'This module has one bank '
+      + '<span class="reg-meta">01h:142.1-0</span>';
+  } else {
+    el.innerHTML = `Banked page · this module has <b>${banks} banks</b> `
+      + `<span class="reg-meta">bank b covers lanes ${'8b+1'} to 8b+8</span>`;
+  }
+}
+
+function _rawWhere(page, bank, banked) {
+  const hex = `0x${page.toString(16).toUpperCase().padStart(2, '0')}`;
+  if (!banked) return `Page ${hex}`;
+  return `Page ${hex} Bank ${bank} · lanes ${bank * 8 + 1}-${bank * 8 + 8}`;
+}
+
 async function rawRead() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
   const length  = parseInt(document.getElementById('raw-length').value, 10) || 1;
+  const bank    = parseInt(document.getElementById('raw-bank').value, 10) || 0;
 
-  const res = await apiPost('/api/register/read', { page, address, length });
+  const res = await apiPost('/api/register/read', { page, address, length, bank });
   const dumpEl = document.getElementById('hex-dump');
 
   if (res.status !== 'ok') {
@@ -2266,13 +2298,17 @@ async function rawRead() {
     return;
   }
 
-  dumpEl.textContent = formatHexDump(res.data.data, address);
+  dumpEl.textContent =
+    _rawWhere(res.data.page, res.data.bank, res.data.banked) + '\n'
+    + formatHexDump(res.data.data, address);
   _renderReadLimit(res.data.max_read);
+  _rawBankNote();
 }
 
 async function rawWrite() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
+  const bank    = parseInt(document.getElementById('raw-bank').value, 10) || 0;
   const dataStr = document.getElementById('raw-data').value.trim();
 
   if (!dataStr) { toast('Enter data bytes (space-separated hex)', 'error'); return; }
@@ -2280,19 +2316,21 @@ async function rawWrite() {
   const data = dataStr.split(/\s+/).map(h => parseInt(h, 16)).filter(v => !isNaN(v));
   if (!data.length) { toast('Invalid hex data', 'error'); return; }
 
-  const res = await apiPost('/api/register/write', { page, address, data });
+  const res = await apiPost('/api/register/write', { page, address, data, bank });
   const dumpEl = document.getElementById('hex-dump');
 
   if (res.status === 'ok') {
     // The write returning ok only means the I2C transfer completed. Read the
     // bytes back so the user sees what the module actually holds - writes to
     // read-only or protected registers are silently discarded.
-    const back = await apiPost('/api/register/read', { page, address, length: data.length });
+    const back = await apiPost('/api/register/read',
+                               { page, address, length: data.length, bank });
     if (back.status === 'ok') {
       const got = back.data.data;
       const same = got.length === data.length && got.every((b, i) => b === data[i]);
       dumpEl.textContent =
-        `Wrote ${data.length} byte(s) to page 0x${page.toString(16).toUpperCase()} `
+        `Wrote ${data.length} byte(s) to `
+        + `${_rawWhere(page, bank, back.data.banked)} `
         + `addr 0x${address.toString(16).toUpperCase().padStart(2,'0')}\n`
         + `read back:\n${formatHexDump(got, address)}`;
       toast(same ? `Written and verified ${data.length} byte(s)`
@@ -3405,6 +3443,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-refresh-apps')?.addEventListener('click', loadApplications);
 
   // Raw register read/write
+  document.getElementById('raw-page')?.addEventListener('input', _rawBankNote);
   document.getElementById('btn-raw-read')?.addEventListener('click', rawRead);
   document.getElementById('btn-raw-write')?.addEventListener('click', rawWrite);
 

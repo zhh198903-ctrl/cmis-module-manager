@@ -142,6 +142,24 @@ curl -s $B/module/capabilities | python -c \
 4. **阈值和读数必须同源** —— 两者都在 Page 02h/12h，工具用同一个刻度换算；
    自己拿裸寄存器算的时候容易只换算一边。
 
+## 直读直写寄存器要带 Bank
+
+`POST /api/register/read` / `write` 除了 `page` / `address`，还收一个 `bank`（默认 0）。
+
+**按 Bank 分组的页**：`10h–5Fh`、`60h–62h`、`6Dh`、`9Fh`、`A0h–AFh`。
+这些页上 **同一个地址在不同 Bank 上是不同通道的寄存器**，
+Bank b = 第 `8b+1` 到 `8b+8` 条通道。通道数超过 8 的模块，不带 `bank` 就只能读到前 8 条。
+
+```bash
+curl -s -X POST $B/api/register/read -H 'Content-Type: application/json' \
+     -d '{"page":18,"address":136,"length":2,"bank":1}'    # 12h:136, 第 9-10 条通道
+```
+
+返回里带 `bank`、`banked`（这一页分不分 Bank）、`banks`（本模块有几个 Bank）。
+
+**这三种会直接报 400，不会默默给 Bank 0**：bank 超出模块的 Bank 数；
+在不分 Bank 的页上给了非 0 的 bank；在下半区（`0x00–0x7F`）给了 bank。
+
 ## 接真适配器
 
 先 `curl -s $B/backends` 看 `available`，它会把不可用的原因一并说清楚。

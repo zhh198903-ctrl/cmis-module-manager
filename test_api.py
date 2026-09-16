@@ -15276,6 +15276,219 @@ class TestTheMockKeepsItsTuningBanksApart(CMISTestCase):
         self.assertIsNot(pairs[0][1], pairs[1][1])
 
 
+class TestReadingAndWritingABankedPageRaw(CMISTestCase):
+    """The raw register panel asks for a page and an address. On a Banked Page
+    that pair does not name a register: Bank b holds the next eight lanes at
+    the same addresses, so everything past lane 8 was unreachable and the dump
+    showed Bank 0 under whatever page number had been typed."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_24lane', 'address': 0x50}),
+            content_type='application/json'))
+
+    def _read(self, page, address, length=4, bank=None, expect=200):
+        body = {'page': page, 'address': address, 'length': length}
+        if bank is not None:
+            body['bank'] = bank
+        rv = self.client.post('/api/register/read', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, expect, rv.data)
+        return json.loads(rv.data)
+
+    def _write(self, page, address, data, bank=None, expect=200):
+        body = {'page': page, 'address': address, 'data': data}
+        if bank is not None:
+            body['bank'] = bank
+        rv = self.client.post('/api/register/write', data=json.dumps(body),
+                              content_type='application/json')
+        self.assertEqual(rv.status_code, expect, rv.data)
+        return json.loads(rv.data)
+
+    # ---- reaching the other banks ------------------------------------------
+
+    # 13h:145, the PRBS invert mask of the host generator: plain per-lane
+    # storage on a Banked Page this module implements. Page 12h would not do -
+    # this module is not tunable, so it has no Page 12h at all.
+    PAGE, ADDR = 0x13, 0x91
+
+    def test_a_write_goes_to_the_bank_it_names(self):
+        """Without this the panel could only ever write lanes 1-8, and a write
+        meant for lane 17 landed on lane 1 instead."""
+        self._write(self.PAGE, self.ADDR, [0x11], bank=2)
+        self.assertEqual(
+            self._read(self.PAGE, self.ADDR, 1, bank=2)['data']['hex'], '11')
+
+    def test_writing_one_bank_leaves_the_others_alone(self):
+        before0 = self._read(self.PAGE, self.ADDR, 1, bank=0)['data']['hex']
+        before1 = self._read(self.PAGE, self.ADDR, 1, bank=1)['data']['hex']
+        self._write(self.PAGE, self.ADDR, [0x11], bank=2)
+        self.assertEqual(
+            self._read(self.PAGE, self.ADDR, 1, bank=0)['data']['hex'], before0)
+        self.assertEqual(
+            self._read(self.PAGE, self.ADDR, 1, bank=1)['data']['hex'], before1)
+
+    def test_each_bank_keeps_its_own_value(self):
+        """A bank that is merely accepted and then ignored passes a test that
+        only ever writes one of them."""
+        for bank in range(3):
+            self._write(self.PAGE, self.ADDR, [0x20 + bank], bank=bank)
+        for bank in range(3):
+            self.assertEqual(
+                self._read(self.PAGE, self.ADDR, 1, bank=bank)['data']['hex'],
+                '%02X' % (0x20 + bank))
+
+    def test_omitting_the_bank_still_means_bank_zero(self):
+        self._write(self.PAGE, self.ADDR, [0x33], bank=0)
+        self.assertEqual(self._read(self.PAGE, self.ADDR, 1)['data']['hex'],
+                         '33')
+
+    # ---- saying which bank is on screen ------------------------------------
+
+    def test_the_answer_says_which_bank_it_came_from(self):
+        """A dump of Bank 0 and a dump of Bank 2 are the same picture, so the
+        only thing that distinguishes them is the label."""
+        d = self._read(0x11, 0x80, 4, bank=2)['data']
+        self.assertEqual(d['bank'], 2)
+        self.assertTrue(d['banked'])
+
+    def test_an_unbanked_page_says_so(self):
+        """Page 01h has one bank, so offering to pick one would invite a
+        question the page cannot answer."""
+        d = self._read(0x01, 0x80, 4)['data']
+        self.assertFalse(d['banked'])
+
+    def test_lower_memory_is_never_banked(self):
+        self.assertFalse(self._read(0x00, 0x00, 4)['data']['banked'])
+
+    def test_the_answer_carries_the_modules_bank_count(self):
+        """The panel sizes its own note from this rather than counting lanes
+        in two places."""
+        self.assertEqual(self._read(0x11, 0x80, 4)['data']['banks'], 3)
+
+    # ---- a bank that names nothing -----------------------------------------
+
+    def test_a_bank_past_the_module_is_refused(self):
+        """Answering with Bank 0 under the operator's own bank number is the
+        failure this whole change exists to stop."""
+        res = self._read(0x11, 0x80, 4, bank=3, expect=400)
+        self.assertIn('3 banks', res['message'])
+
+    def test_a_bank_on_a_page_that_has_none_is_refused(self):
+        res = self._read(0x01, 0x80, 4, bank=1, expect=400)
+        self.assertIn('not a Banked Page', res['message'])
+
+    def test_a_bank_on_lower_memory_is_refused(self):
+        res = self._read(0x00, 0x00, 4, bank=1, expect=400)
+        self.assertIn('Lower Memory', res['message'])
+
+    def test_a_refused_bank_writes_nothing(self):
+        before = self._read(self.PAGE, self.ADDR, 1, bank=0)['data']['hex']
+        self._write(self.PAGE, self.ADDR, [0xAB], bank=9, expect=400)
+        self.assertEqual(
+            self._read(self.PAGE, self.ADDR, 1, bank=0)['data']['hex'], before)
+
+    def test_a_write_reports_the_bank_it_used(self):
+        self.assertEqual(self._write(self.PAGE, self.ADDR, [0x01],
+                                     bank=1)['data']['bank'], 1)
+
+
+class TestThePanelPassesTheBankItCollected(CMISTestCase):
+    """The bank box is only useful if what it holds reaches the request. It is
+    checked against the source because the panel is browser JavaScript and this
+    suite is the server - but a box that is read and then dropped is exactly
+    the failure this change exists to stop, so it is worth a guard."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _body(self, call):
+        """The object literal a given apiPost sends."""
+        m = re.search(re.escape(call) + r"',\s*(\{[^}]*\})", self._js())
+        self.assertIsNotNone(m, 'no call to ' + call)
+        return m.group(1)
+
+    def test_a_raw_read_sends_the_bank(self):
+        self.assertIn('bank', self._body("apiPost('/api/register/read"))
+
+    def test_a_raw_write_sends_the_bank(self):
+        self.assertIn('bank', self._body("apiPost('/api/register/write"))
+
+    def test_the_read_back_after_a_write_uses_the_same_bank(self):
+        """The write is verified by reading it back. Read back from Bank 0
+        after writing Bank 2 and every write to another bank reports itself as
+        clamped or read-only."""
+        js = self._js()
+        i = js.index('const back = await apiPost')
+        self.assertIn('bank', js[i:i + 200])
+
+    def test_the_dump_names_the_lanes_the_bank_covers(self):
+        """Bank b holds lanes 8b+1 to 8b+8. Naming them b+1 to b+8 puts lane 3
+        on screen above Bank 2's registers."""
+        js = self._js()
+        i = js.index('function _rawWhere')
+        body = js[i:i + 400]
+        self.assertIn('bank * 8 + 1', body)
+        self.assertIn('bank * 8 + 8', body)
+
+    def test_the_bank_box_exists_in_the_page(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="raw-bank"', html)
+
+
+class TestWhichPagesCmisDefinesAsBanked(CMISTestCase):
+    """CMIS 5.4 marks its Banked Pages in the section headings themselves:
+    10h-19h, then the ranges 1Ah-1Bh, 1Ch, 1Dh, 1Eh-1Fh, 20h-2Fh, 30h-4Fh and
+    50h-5Fh - contiguous from 10h to 5Fh - and then 60h, 61h, 62h, 6Dh, 9Fh
+    and A0h-AFh."""
+
+    def test_the_banked_pages_are_the_ones_the_spec_names(self):
+        import cmis_registers as c
+        for page in (list(range(0x10, 0x60)) + [0x60, 0x61, 0x62, 0x6D, 0x9F]
+                     + list(range(0xA0, 0xB0))):
+            self.assertTrue(c.is_banked_page(page),
+                            'page 0x%02X is Banked in CMIS 5.4' % page)
+
+    def test_the_pages_that_are_not_banked_are_not_claimed(self):
+        """Offering a bank on Page 02h would invite the operator to pick one
+        of something that has exactly one."""
+        import cmis_registers as c
+        for page in ([0x00, 0x01, 0x02, 0x03, 0x04, 0x0C, 0x0D, 0x0F]
+                     + list(range(0x63, 0x6D)) + [0x6E, 0x6F, 0x9E]
+                     + list(range(0xB0, 0x100))):
+            self.assertFalse(c.is_banked_page(page),
+                             'page 0x%02X is not a Banked Page' % page)
+
+    def test_the_panel_and_the_server_agree_on_which_pages_are_banked(self):
+        """The panel decides whether to offer a bank; the server decides
+        whether to accept one. Two lists that disagree either refuse a bank
+        the page has or offer one it does not."""
+        import cmis_registers as c
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        m = re.search(r'const BANKED_PAGE = p =>\s*(.*?);', js, re.S)
+        self.assertIsNotNone(m, 'the panel has no banked-page rule')
+        expr = m.group(1)
+        # Translate the JS predicate into the same question in Python.
+        py = expr.replace('p ===', 'p ==').replace('||', 'or').replace(
+            '&&', 'and').replace('\n', ' ')
+        for page in range(0x100):
+            self.assertEqual(bool(eval(py, {'p': page})),
+                             c.is_banked_page(page),
+                             'panel and server disagree about page 0x%02X'
+                             % page)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -1482,6 +1482,23 @@ GRID_CODES = {0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz',
               8: '150 GHz', 9: '300 GHz', 15: 'Not available'}
 
 
+# The pages CMIS 5.4 defines under a "Banked Page" heading: 10h-19h (section
+# 8.13 onward), the ranges 1Ah-1Bh, 1Ch, 1Dh, 1Eh-1Fh, 20h-2Fh (VDM),
+# 30h-4Fh (C-CMIS) and 50h-5Fh (CMIS-LT) - contiguous from 10h to 5Fh - then
+# 60h, 61h, 62h, 6Dh, 9Fh and A0h-AFh.
+#
+# On one of these a page number alone does not name a register: Bank b holds
+# the next eight lanes at the same addresses, so a read that names only the
+# page always answers from Bank 0 whatever the host meant.
+_BANKED_PAGES = (tuple(range(0x10, 0x60)) + (0x60, 0x61, 0x62, 0x6D, 0x9F)
+                 + tuple(range(0xA0, 0xB0)))
+
+
+def is_banked_page(page: int) -> bool:
+    """True if this page is one CMIS defines as Banked."""
+    return page in _BANKED_PAGES
+
+
 def is_new_in_5_4(field: str) -> bool:
     return field in NEW_IN_5_4
 

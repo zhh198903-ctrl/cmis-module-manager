@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.60.0'
+__version__ = '2.61.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2984,6 +2984,30 @@ def _as_int(value, what):
         raise ValueError('%s must be a number, got %r' % (what, value))
 
 
+def _check_bank(page: int, address: int, bank: int):
+    """Refuse a bank that names nothing, rather than quietly reading Bank 0.
+
+    Three ways to ask for one that does not exist, and each used to be
+    answered with Bank 0's contents under the operator's own page number:
+    a bank on lower memory, which is neither paged nor banked; a bank on a
+    page CMIS does not define as Banked; and a bank past what this module
+    advertises in 01h:142.1-0.
+    """
+    if bank == 0:
+        return None
+    if address < 0x80:
+        return _err('Lower Memory (0x00-0x7F) is not banked; bank %d names '
+                    'nothing there' % bank, 400)
+    if not cmis.is_banked_page(page):
+        return _err('Page 0x%02X is not a Banked Page, so it has only one '
+                    'bank' % page, 400)
+    banks = (_state.get('caps') or {}).get('banks_supported', 1)
+    if not (0 <= bank < banks):
+        return _err('This module has %d bank%s (01h:142.1-0), so bank %d does '
+                    'not exist' % (banks, '' if banks == 1 else 's', bank), 400)
+    return None
+
+
 @app.route('/api/register/read', methods=['POST'])
 def api_register_read():
     err = _require_connected()
@@ -2995,8 +3019,12 @@ def api_register_read():
             page = _as_int(body.get('page', 0), 'Page')
             address = _as_int(body.get('address', 0), 'Address')
             length = _as_int(body.get('length', 1), 'Length')
+            bank = _as_int(body.get('bank', 0), 'Bank')
         except ValueError as e:
             return _err(str(e))
+        err = _check_bank(page, address, bank)
+        if err:
+            return err
         if length < 1 or length > 128:
             return _err("Length must be 1–128")
         if not (0 <= page <= 0xFF):
@@ -3007,13 +3035,19 @@ def api_register_read():
             return _err(f"Read would cross end of page (address 0x{address:02X} + length {length} > 0x100)")
 
         if address >= 0x80:
-            data = _read_upper(page, address, length)
+            data = _read_upper(page, address, length, bank)
         else:
             data = _read_lower(address, length)
 
         return _ok({
             'page': page,
             'address': address,
+            'bank': bank,
+            # So the dump can say which eight lanes it is showing. Without it
+            # a page of Bank 0 and the same page of Bank 3 are the same
+            # picture on screen.
+            'banked': address >= 0x80 and cmis.is_banked_page(page),
+            'banks': ((_state.get('caps') or {}).get('banks_supported', 1)),
             'length': length,
             'data': list(data),
             'hex': ' '.join(f'{b:02X}' for b in data),
@@ -3036,6 +3070,7 @@ def api_register_write():
         try:
             page = _as_int(body.get('page', 0), 'Page')
             address = _as_int(body.get('address', 0), 'Address')
+            bank = _as_int(body.get('bank', 0), 'Bank')
             data_list = body.get('data', [])
             if not data_list:
                 return _err("No data provided")
@@ -3061,8 +3096,11 @@ def api_register_write():
             return _err(f"Write from 0x{address:02X} would run through the page "
                         f"select register at 0x7F; split it into two writes")
 
+        err = _check_bank(page, address, bank)
+        if err:
+            return err
         if address >= 0x80:
-            _set_page(page)
+            _set_page(page, bank)
         _state['backend'].write_bytes(address, data)
         # A raw write may land on the PageMapping register itself, or on the
         # control byte that resets the module - either moves the selected page
@@ -3073,6 +3111,7 @@ def api_register_write():
         return _ok({
             'page': page,
             'address': address,
+            'bank': bank,
             'bytes_written': len(data),
         })
     except Exception as e:

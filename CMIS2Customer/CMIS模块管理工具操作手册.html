@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.60.0<br>
+      <b>版本</b>　2.61.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -608,6 +608,26 @@
 
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
+    <span><b>「寄存器直读直写」页多了一个 Bank 输入框</b>（v2.61.0）。<br>
+    CMIS 里有一批页是<b>按 Bank 分组</b>的（<code>10h–5Fh</code>、<code>60h–62h</code>、
+    <code>6Dh</code>、<code>9Fh</code>、<code>A0h–AFh</code>）：
+    <b>同一个页号 + 同一个地址，在不同 Bank 上是不同通道的寄存器</b>，
+    Bank b 对应第 <code>8b+1</code> 到 <code>8b+8</code> 条通道。<br>
+    此前这个页面只能填页号和地址，<b>读写永远落在 Bank 0</b>——
+    也就是说，通道数超过 8 的模块，<b>第 9 条以后的寄存器根本够不着</b>，
+    而且屏幕上<b>没有任何地方说明你看的是哪个 Bank</b>；
+    想写第 17 条通道的寄存器，实际会写到第 1 条上。<br>
+    现在：填 Bank 即可读写对应的那一组通道，十六进制转储上方会写明
+    <b>「Page 0x11 Bank 2 · lanes 17-24」</b>；
+    Bank 填超出模块实际 Bank 数、或填在不分 Bank 的页上（比如 <code>01h</code>、
+    <code>02h</code>）、或填在下半区（<code>0x00–0x7F</code>，本来就不分页也不分 Bank），
+    都会<b>直接报错</b>，而不是默默给你 Bank 0 的内容。<br>
+    <span class="reg-meta">只有 8 条通道的模块只有一个 Bank，这个框填 0 即可，
+    输入框下方也会写明当前页分不分 Bank、本模块有几个 Bank。</span></span>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
     <span><b>通道数超过 8 的可调谐模块，调谐第 9 条及以后的通道现在才真正生效</b>（v2.60.0 修复）。<br>
     激光器调谐用的 <b>Page 12h 是按介质通道分 Bank 的</b>，每个 Bank 装 8 条通道，
     第 9 条和第 1 条<b>在同一个地址上</b>，靠 Bank 号区分。
@@ -673,8 +693,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.60.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.60.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.61.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.61.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3318,7 +3338,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.60.0<br>
+    CMIS Module Manager 操作手册 v2.61.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

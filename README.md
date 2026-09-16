@@ -44,6 +44,8 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 | `ftdi`  | FTDI FT232H / FT2232H via pyftdi — needs the driver replaced with WinUSB first |
 | `mock_*` | No hardware needed — simulated modules |
 
+Raw register access takes a **bank** as well as a page: on a Banked Page (`10h`-`5Fh`, `60h`-`62h`, `6Dh`, `9Fh`, `A0h`-`AFh`) the same address in bank *b* is the register of a different lane - lanes `8b+1` to `8b+8` - so a module wider than eight lanes is otherwise unreachable past the eighth.
+
 `GET /api/backends` reports which of these are usable right now and, for the
 ones that are not, says why. The CH341 cannot report a missing acknowledgement,
 so connecting through it also probes the bus; the other four adapters report
@@ -66,7 +68,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-1061 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+1082 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 
