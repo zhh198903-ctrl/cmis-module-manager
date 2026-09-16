@@ -156,6 +156,17 @@ CMIS 的每一项监控都是可选的，模块在 `01h:159-160` 广告自己有
 `monitors_present` 告诉你哪几项存在，用它把「没有这项监控」和「这次读失败」区分开。
 拿 `mock_fewmon` 试。
 
+## 换 mock 时标志历史会清零
+
+标志是读一次就清掉的，所以工具自己记一份「出现过什么」（每条通道的 `seen`、
+模块级的 `seen`、调谐的 `tuning_flags_seen`，外加 `history_since` 起算时间）。
+
+**这份记录属于当时那块模块**：`connect` 到另一个 `backend` 会清空重新计，
+`disconnect` 也会。所以换 mock 对比时不用担心上一块的标志跟过来——
+但也意味着<b>换过去之前想留的记录要先读走</b>。
+
+手动清零：`POST /api/module/flags/clear`（只清工具的记录，不写模块）。
+
 ## 标志位也分「没有」和「正常」
 
 `GET /api/module/flags` 的 `supported` 现在除了 `01h:157-158` 那六个

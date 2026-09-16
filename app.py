@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.63.0'
+__version__ = '2.63.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -686,6 +686,15 @@ def api_connect():
     _state['max_read'] = 8
     _state['bpc_sleep'] = 0.010
     _state['dp_state_since'] = {}
+    # The Flag history is a record of what *this* module has fired. Connecting
+    # kept the previous one's, and history_since with it - so a fresh module
+    # was shown as having raised alarms minutes before it was plugged in, and
+    # the only way to clear them was a button the operator had no reason to
+    # press. Disconnecting already cleared both; connecting straight to
+    # another module did not, which is exactly how the documented way to move
+    # between the demo profiles works.
+    _state['flag_history'] = {}
+    _state['flag_history_since'] = None
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()

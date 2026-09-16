@@ -15960,6 +15960,157 @@ class TestTheFlagSummaryCountsOnlyLiveMonitors(CMISTestCase):
                           '%s is not filtered by the live monitors' % line)
 
 
+class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
+    """CMIS Flags are latched and cleared by the read that reports them, so
+    the tool keeps its own record of what has fired. That record is about the
+    module it was read from. Disconnecting always cleared it; connecting
+    straight to another module did not - and connecting with a different
+    backend is the documented way to move between the demo profiles, so the
+    next module was shown as having raised alarms minutes before it existed,
+    with a history_since to match."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _raise_module_flag(self):
+        """Lower 9 holds the temperature and Vcc threshold Flags."""
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0, 'address': 0x09, 'data': [0xF0]}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']
+
+    # ---- the leak ----------------------------------------------------------
+
+    def test_connecting_to_another_module_forgets_the_first_ones_flags(self):
+        self._connect('mock_dr8')
+        self.assertIn('vcc_low_alarm', self._raise_module_flag()['seen'])
+        self._connect('mock_sr8')
+        self.assertNotIn('vcc_low_alarm', self._status()['seen'],
+                         "the new module inherited the old one's alarms")
+
+    def test_the_lane_history_is_forgotten_too(self):
+        """Keyed by lane number, so lane 1 of the next module would show what
+        lane 1 of the last one did - on a module that may not even have the
+        same number of lanes."""
+        self._connect('mock_dr8')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x11, 'address': 0x8C, 'bank': 0,
+                             'data': [0xFF]}),
+            content_type='application/json'))
+        before = self._flags()['lanes'][0]['seen']
+        self.assertTrue(before, 'the fixture raised no lane flag')
+        self._connect('mock_1600g_16lane')
+        self.assertEqual(self._flags()['lanes'][0]['seen'], [],
+                         "the new module inherited the old one's lane flags")
+
+    def test_the_tuning_history_is_forgotten_too(self):
+        """Page 12h keeps its own latched Flags, recorded under their own
+        keys, and they were left behind by the same gap."""
+        self._connect('mock_coherent_zr')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x12, 'address': 0xE7, 'data': [0x08]}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        self.assertTrue(d['lanes'][0]['tuning_flags_seen'])
+        self._connect('mock_coherent_zr')
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        self.assertEqual(d['lanes'][0]['tuning_flags_seen'], [])
+
+    def test_the_history_starts_counting_from_the_new_connection(self):
+        """history_since is what the panel prints as "since". Carried over, it
+        dated the new module's record to before it was plugged in."""
+        self._connect('mock_dr8')
+        self._raise_module_flag()
+        first = self._flags()['history_since']
+        self.assertIsNotNone(first)
+        self._connect('mock_sr8')
+        second = self._flags()['history_since']
+        self.assertIsNotNone(second)
+        self.assertGreaterEqual(second, first)
+        self.assertNotEqual(second, first,
+                            'the new module kept the old start time')
+
+    # ---- what the history is for ------------------------------------------
+
+    def test_a_lane_flag_survives_the_read_that_cleared_it(self):
+        """This is the whole point of keeping one. CMIS Flags are RO/COR, so
+        the reply that reports a Flag is the one that destroys it - by the
+        second poll the register is clear and only the history knows it ever
+        fired."""
+        self._connect('mock_dr8')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x11, 'address': 0x8C, 'bank': 0,
+                             'data': [0x01]}),
+            content_type='application/json'))
+        first = self._flags()['lanes'][0]
+        self.assertTrue(first['tx_power_low_alarm'],
+                        'the fixture did not raise the flag')
+        second = self._flags()['lanes'][0]
+        self.assertFalse(second['tx_power_low_alarm'],
+                         'the flag was not cleared by the read, so this test '
+                         'proves nothing')
+        self.assertIn('tx_power_low_alarm', second['seen'],
+                      'the event was lost with the read that reported it')
+
+    def test_a_module_flag_survives_the_read_that_cleared_it(self):
+        self._connect('mock_dr8')
+        self._raise_module_flag()
+        second = self._status()
+        self.assertFalse(second['vcc_low_alarm'],
+                         'the flag was not cleared by the read, so this test '
+                         'proves nothing')
+        self.assertIn('vcc_low_alarm', second['seen'])
+
+    def test_disconnecting_empties_the_stored_history(self):
+        """Checked in the state rather than through a reply: after
+        disconnecting there is no module to ask, and connecting again would
+        clear it a second time and hide whether this one worked."""
+        import app as app_module
+        self._connect('mock_dr8')
+        self._raise_module_flag()
+        self.assertTrue(app_module._state['flag_history'])
+        self.assertOk(self.client.post('/api/disconnect'))
+        self.assertEqual(app_module._state['flag_history'], {})
+        self.assertIsNone(app_module._state['flag_history_since'])
+
+    # ---- what must keep working -------------------------------------------
+
+    def test_reconnecting_to_the_same_module_also_starts_clean(self):
+        """Reconnecting is a deliberate act and disconnecting already cleared
+        the record; the two routes should not disagree."""
+        self._connect('mock_dr8')
+        self.assertIn('vcc_low_alarm', self._raise_module_flag()['seen'])
+        self._connect('mock_dr8')
+        self.assertNotIn('vcc_low_alarm', self._status()['seen'])
+
+    def test_disconnecting_still_clears_it(self):
+        self._connect('mock_dr8')
+        self.assertIn('vcc_low_alarm', self._raise_module_flag()['seen'])
+        self.assertOk(self.client.post('/api/disconnect'))
+        self._connect('mock_dr8')
+        self.assertNotIn('vcc_low_alarm', self._status()['seen'])
+
+    def test_a_flag_raised_after_the_new_connection_is_still_recorded(self):
+        """Clearing on connect must not leave the recorder switched off - the
+        history is the only place a cleared-on-read Flag survives."""
+        self._connect('mock_sr8')
+        self._connect('mock_dr8')
+        self.assertIn('vcc_low_alarm', self._raise_module_flag()['seen'])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
