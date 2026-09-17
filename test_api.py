@@ -18421,6 +18421,141 @@ class TestPage62hThresholdsFollowMediaLanes(CMISTestCase):
         self.assertNotIn('lane_power_thresholds', self._ext54())
 
 
+class TestEveryScaleFactorAgainstTheSpecification(CMISTestCase):
+    """One table, one row per quantity the tool converts, each citing the
+    clause that fixes its scale.
+
+    A wrong scale factor is the quietest kind of defect: the number keeps its
+    shape, stays in a plausible range, and is simply wrong by a factor. It
+    cannot be caught by looking at a reading, only by reading the clause - so
+    the clause is written down here next to the assertion.
+
+    Several of these are deliberately unalike and have been got wrong before:
+    the nominal wavelength counts 0.05 nm while its tolerance counts 0.005 nm;
+    Page 02h's power thresholds are 0.1 uW while Page 62h's are 0.01 dBm; and
+    almost everything in CMIS is big-endian except the diagnostics window,
+    where SNR and the error counters are little-endian."""
+
+    def test_the_module_monitors(self):
+        """Table 8-10, Lower Memory 14-17."""
+        import cmis_registers as c
+        # S16 in 1/256 degree Celsius increments.
+        self.assertAlmostEqual(c.parse_temperature(b'\x2d\x00'), 45.0)
+        self.assertAlmostEqual(c.parse_temperature(b'\xff\x00'), -1.0,
+                               msg='the temperature monitor is signed')
+        # U16 in 100 uV increments.
+        self.assertAlmostEqual(c.parse_voltage(b'\x80\xe8'), 3.3000, places=4)
+
+    def test_the_lane_monitors(self):
+        """Table 8-99: optical power in 0.1 uW, bias in 2 uA times the
+        multiplier from Table 8-53."""
+        import cmis_registers as c
+        self.assertAlmostEqual(c.parse_power_uw(b'\x27\x10'), 1000.0)
+        self.assertAlmostEqual(c.parse_tx_bias_ma(b'\x27\x10'), 20.0)
+        self.assertAlmostEqual(c.parse_tx_bias_ma(b'\x27\x10', 4), 80.0,
+                               msg='01h:160.4-3 multiplies the 2 uA count')
+
+    def test_the_aux_monitors_each_have_their_own(self):
+        """Table 8-10, Lower 18-23: three different encodings behind three
+        registers that look identical."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_aux_value(struct.pack('>h', 11520),
+                                           'laser_temperature'),
+                         (45.0, 'degC'))
+        self.assertEqual(c.parse_aux_value(struct.pack('>h', 32767),
+                                           'tec_current'),
+                         (100.0, '%'))
+        self.assertEqual(c.parse_aux_value(struct.pack('>h', -32767),
+                                           'tec_current'),
+                         (-100.0, '%'))
+        self.assertEqual(c.parse_aux_value(struct.pack('>h', 18000), 'vcc2'),
+                         (1.8, 'V'))
+
+    def test_the_wavelength_and_its_tolerance_differ_by_ten(self):
+        """Table 8-46: nominal counts 0.05 nm, tolerance 0.005 nm. One factor
+        for both is wrong by ten on whichever it was not chosen for."""
+        import cmis_registers as c
+        w = c.parse_wavelength_info(struct.pack('>HH', 30620, 600))
+        self.assertAlmostEqual(w['nominal_nm'], 1531.0, places=3)
+        self.assertAlmostEqual(w['tolerance_nm'], 3.0, places=4)
+
+    def test_the_two_threshold_pages_are_in_different_units(self):
+        """8.32.1 says it outright: the Page 02h supervision thresholds are
+        "in units of 0.1uW, whereas the supervision thresholds defined here
+        are in the same units of 0.01dBm as the programmable Tx output
+        power". Table 8-193 makes the Page 62h quad S16."""
+        import cmis_registers as c
+        quad = struct.pack('>4h', 200, -200, 150, -150)
+        t = c.parse_lane_power_thresholds(quad + bytes(56))[0]
+        self.assertAlmostEqual(t['hi_alarm_dbm'], 2.0)
+        self.assertAlmostEqual(t['lo_alarm_dbm'], -2.0,
+                               msg='a dBm threshold is usually negative, so '
+                                   'reading the quad unsigned turns -2 dBm '
+                                   'into +653 dBm')
+        self.assertAlmostEqual(t['hi_warn_dbm'], 1.5)
+        self.assertAlmostEqual(t['lo_warn_dbm'], -1.5)
+        # Page 02h's, for contrast: 0.1 uW into dBm.
+        self.assertAlmostEqual(c.parse_power_uw(b'\x27\x10'), 1000.0)
+        self.assertAlmostEqual(c.uw_to_dbm(1000.0), 0.0)
+
+    def test_the_diagnostics_window_is_little_endian(self):
+        """Table 8-139: selector 06h is "U16 little endian in units of 1/256
+        dB" and the counter selectors are "U64 little endian". Everything
+        else in CMIS is big-endian, so this is the one place to get wrong."""
+        import cmis_registers as c
+        self.assertAlmostEqual(c.parse_snr_db(b'\x00\x14'), 20.0)
+        self.assertNotAlmostEqual(c.parse_snr_db(b'\x14\x00'), 20.0,
+                                  msg='if both byte orders gave the same '
+                                      'answer this would prove nothing')
+
+    def test_the_f16_layout_matches_the_definition(self):
+        """Section 1: "m . 10^(s-24)", mantissa 0-2047 in bits 10-0, scaled
+        exponent 0-31 in bits 15-11, stored big-endian."""
+        import cmis_registers as c
+        word = (17 << 11) | 500          # 500 x 10^(17-24) = 5.0e-5
+        self.assertAlmostEqual(c.parse_f16_ber(struct.pack('>H', word)),
+                               5.0e-5, places=12)
+        self.assertEqual(c.parse_f16_ber(b'\x00\x00'), 0.0,
+                         'zero is below the measurement floor, not a BER')
+        # The smallest and largest the definition allows.
+        self.assertAlmostEqual(c.parse_f16_ber(struct.pack('>H', 1)), 1.0e-24)
+        self.assertAlmostEqual(
+            c.parse_f16_ber(struct.pack('>H', (31 << 11) | 2047)),
+            2047 * 10.0 ** 7)
+
+    def test_a_round_trip_through_f16_keeps_the_value(self):
+        for ber in (1e-3, 5.5e-9, 2.4e-12, 1e-15):
+            import cmis_registers as c
+            word = c.encode_f16_ber(ber)
+            back = c.parse_f16_ber(struct.pack('>H', word))
+            self.assertAlmostEqual(back / ber, 1.0, places=3, msg='%g' % ber)
+
+    def test_the_identification_fields(self):
+        """00h:201-202 and 01h:148-150."""
+        import cmis_registers as c
+        self.assertAlmostEqual(c.parse_max_power_w(40), 10.0,
+                               msg='MaxPower counts 0.25 W')
+        # 00h:202: bits 7-6 pick the multiplier, bits 5-0 carry the base.
+        self.assertAlmostEqual(c.parse_cable_length_m(0x00 | 50), 5.0)
+        self.assertAlmostEqual(c.parse_cable_length_m(0x40 | 50), 50.0)
+        self.assertAlmostEqual(c.parse_cable_length_m(0x80 | 5), 50.0)
+        self.assertAlmostEqual(c.parse_cable_length_m(0xC0 | 2), 200.0)
+
+    def test_the_module_limits(self):
+        """01h:146-150: S8 degrees, U16 in multiples of 10 ns, U8 in 20 mV,
+        with zero meaning "not specified" in each case."""
+        import cmis_registers as c
+        lim = c.parse_module_limits(bytes([70, 0xFB, 0x00, 0x64, 165]))
+        self.assertEqual(lim['temp_max_c'], 70)
+        self.assertEqual(lim['temp_min_c'], -5, 'the limits are signed')
+        self.assertEqual(lim['propagation_delay_ns'], 1000)
+        self.assertAlmostEqual(lim['voltage_min_v'], 3.30, places=2)
+        blank = c.parse_module_limits(bytes(5))
+        self.assertIsNone(blank['temp_max_c'])
+        self.assertIsNone(blank['propagation_delay_ns'])
+        self.assertIsNone(blank['voltage_min_v'])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
