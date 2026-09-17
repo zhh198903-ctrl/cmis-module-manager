@@ -17702,6 +17702,235 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         self.assertIn('def _read_diag_banks(', src)
 
 
+class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
+    """The laser endpoint says it in a comment: "Every write is worked out and
+    checked before any of it is sent. A request that fails half way used to
+    leave the lanes it had already reached retuned."
+
+    PRBS did not follow it. Its loop validated and wrote one engine at a time,
+    so a request naming four engines where the fourth is invalid reconfigured
+    the first three and then answered 400 - and a caller who reads an error
+    reasonably concludes that nothing moved. The panel sends all four engines
+    on every Apply, so picking one unsupported pattern was enough to reach it.
+
+    The shape is what makes it easy to miss: the refusal sits textually
+    *before* the write, and only the loop puts it after one."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return json.loads(self.client.post(
+            path, data=json.dumps(body),
+            content_type='application/json').data)
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _program_all(self):
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({k: {'enable_mask': 0xFF, 'invert_mask': 0xFF,
+                                 'patterns': [11] * 8}
+                             for k in ('host_gen', 'media_gen',
+                                       'host_chk', 'media_chk')}),
+            content_type='application/json'))
+
+    # ---- the defect --------------------------------------------------------
+
+    def test_an_invalid_engine_does_not_let_the_valid_ones_through(self):
+        """host_gen is fine and media_gen asks for a pattern the module never
+        advertised. Before, host_gen was written and the reply said error."""
+        self._connect()
+        self._program_all()
+        before = self._prbs()
+        r = self._post('/api/module/prbs',
+                       {'host_gen': {'enable_mask': 0x0F},
+                        'media_gen': {'enable_mask': 0xFF,
+                                      'patterns': [3] * 8}})
+        self.assertEqual(r['status'], 'error')
+        after = self._prbs()
+        self.assertEqual(
+            after['host_gen'], before['host_gen'],
+            'the request was refused and the host generator was '
+            'reconfigured anyway')
+        self.assertEqual(after, before)
+
+    def test_the_order_of_the_engines_does_not_decide_it(self):
+        """With the bad engine first, nothing was written before the refusal
+        anyway - so a test that only tries that order proves nothing."""
+        self._connect()
+        self._program_all()
+        before = self._prbs()
+        r = self._post('/api/module/prbs',
+                       {'media_chk': {'enable_mask': 0xFF,
+                                      'patterns': [3] * 8},
+                        'host_gen': {'enable_mask': 0x0F}})
+        self.assertEqual(r['status'], 'error')
+        self.assertEqual(self._prbs(), before)
+
+    def test_an_invalid_user_pattern_writes_no_engine(self):
+        """The user pattern is part of the same request and used to be written
+        before the engines were even looked at."""
+        self._connect()
+        self._program_all()
+        before = self._prbs()
+        r = self._post('/api/module/prbs',
+                       {'host_gen': {'enable_mask': 0x0F},
+                        'user_pattern': list(range(200))})
+        self.assertEqual(r['status'], 'error')
+        self.assertEqual(self._prbs(), before)
+
+    def test_a_valid_request_still_writes_every_engine(self):
+        """A handler that refused everything would pass all of the above."""
+        self._connect()
+        self._program_all()
+        r = self._post('/api/module/prbs',
+                       {'host_gen': {'enable_mask': 0x0F},
+                        'media_gen': {'enable_mask': 0x03}})
+        self.assertEqual(r['status'], 'ok')
+        d = self._prbs()
+        self.assertEqual(d['host_gen']['enable_mask'], 0x0F)
+        self.assertEqual(d['media_gen']['enable_mask'], 0x03)
+        self.assertEqual(d['host_gen']['patterns'], [11] * 8)
+
+    def test_the_user_pattern_still_reaches_the_module(self):
+        """It moved after the planning, so it has to still be written."""
+        self._connect()
+        r = self._post('/api/module/prbs', {'user_pattern': [0x5A, 0xA5] * 8})
+        self.assertEqual(r['status'], 'ok', r.get('message'))
+        self.assertEqual(self._prbs()['user_pattern']['pattern'][:4],
+                         [0x5A, 0xA5, 0x5A, 0xA5])
+
+    def test_the_user_pattern_is_written_before_the_engines_that_use_it(self):
+        """A lane switched to Pattern ID 15 in the same request must not run
+        on the previous pattern for the moment in between."""
+        import app as app_module
+        import cmis_registers as c
+        self._connect()
+        order = []
+        backend = app_module._state['backend']
+        original = backend.write_bytes
+
+        def traced(addr, data):
+            if addr == c.REG_USER_PATTERN[1]:
+                order.append('pattern')
+            elif addr in (0x90, 0x98, 0xA0, 0xA8):
+                order.append('engine')
+            return original(addr, data)
+
+        backend.write_bytes = traced
+        try:
+            self._post('/api/module/prbs',
+                       {'user_pattern': [0xAA, 0x55] * 8,
+                        'host_gen': {'enable_mask': 0x01,
+                                     'patterns': [15] + [11] * 7}})
+        finally:
+            backend.write_bytes = original
+        self.assertIn('pattern', order)
+        self.assertIn('engine', order)
+        self.assertLess(order.index('pattern'), order.index('engine'),
+                        'the engine was started before its pattern was loaded')
+
+    def test_a_wide_module_gets_each_banks_own_block(self):
+        """Every test above uses an eight lane module, where bank is always 0
+        and writing the plan into bank 0 is indistinguishable from writing it
+        into the bank it was planned for. On sixteen lanes it is not: lanes
+        9-16 would be programmed with lanes 1-8's block, or lost entirely."""
+        self._connect('mock_zr16')
+        pats = [11] * 8 + [12] * 8
+        r = self._post('/api/module/prbs',
+                       {'host_gen': {'enable_mask': [0x0F, 0xF0],
+                                     'patterns': pats}})
+        self.assertEqual(r['status'], 'ok', r.get('message'))
+        d = self._prbs()['host_gen']
+        self.assertEqual(d['patterns'], pats,
+                         'the upper bank did not get its own pattern block')
+        self.assertEqual(d['enable_mask_banks'], [0x0F, 0xF0],
+                         'the two banks were not given their own masks')
+
+    # ---- the standing guard ------------------------------------------------
+
+    def test_no_handler_validates_and_writes_in_the_same_loop(self):
+        """This is the shape, and it is invisible to reading the code in
+        order: the refusal comes textually before the write, and only the
+        loop puts it after a previous iteration's one.
+
+        Every other write endpoint already worked everything out before
+        sending any of it; this keeps the next one from drifting back."""
+        import ast
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+
+        def calls(node, name):
+            return any(
+                isinstance(n, ast.Call) and
+                ((isinstance(n.func, ast.Attribute) and n.func.attr == name) or
+                 (isinstance(n.func, ast.Name) and n.func.id == name))
+                for n in ast.walk(node))
+
+        def refuses(node):
+            return any(
+                isinstance(n, ast.Return) and isinstance(n.value, ast.Call)
+                and isinstance(n.value.func, ast.Name)
+                and n.value.func.id == '_err'
+                for n in ast.walk(node))
+
+        functions = [n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef)]
+        self.assertGreater(len(functions), 20,
+                           'the scan found almost no functions, so it is not '
+                           'checking anything')
+        checked = 0
+        offenders = []
+        for fn in functions:
+            for loop in [n for n in ast.walk(fn)
+                         if isinstance(n, (ast.For, ast.While))]:
+                checked += 1
+                if calls(loop, 'write_bytes') and refuses(loop):
+                    offenders.append('%s (line %d)' % (fn.name, loop.lineno))
+        self.assertGreater(checked, 20,
+                           'no loops were examined, so this passes by '
+                           'checking nothing')
+        self.assertEqual(
+            offenders, [],
+            'these loops write and can refuse in the same pass, so an early '
+            'iteration is applied and a later one returns an error: %s'
+            % ', '.join(offenders))
+
+    def test_the_guard_notices_the_shape_it_is_looking_for(self):
+        """Prove the scan above catches the pattern rather than always
+        passing."""
+        import ast
+
+        def calls(node, name):
+            return any(
+                isinstance(n, ast.Call) and
+                ((isinstance(n.func, ast.Attribute) and n.func.attr == name) or
+                 (isinstance(n.func, ast.Name) and n.func.id == name))
+                for n in ast.walk(node))
+
+        def refuses(node):
+            return any(
+                isinstance(n, ast.Return) and isinstance(n.value, ast.Call)
+                and isinstance(n.value.func, ast.Name)
+                and n.value.func.id == '_err'
+                for n in ast.walk(node))
+
+        sample = ast.parse(
+            'def handler():\n'
+            '    for thing in things:\n'
+            '        if bad(thing):\n'
+            '            return _err("no", 400)\n'
+            '        backend.write_bytes(addr, data)\n')
+        loop = [n for n in ast.walk(sample) if isinstance(n, ast.For)][0]
+        self.assertTrue(calls(loop, 'write_bytes') and refuses(loop))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

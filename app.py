@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.70.0'
+__version__ = '2.71.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2655,10 +2655,13 @@ def api_prbs_set():
         caps = _diag_caps()
         pattern_caps = caps['patterns']
         locations = caps['pattern_locations']
-        if body.get('user_pattern') is not None:
-            err = _write_user_pattern(body['user_pattern'], caps, banks)
-            if err:
-                return err
+        # Every write is worked out and checked before any of it is sent, the
+        # way the laser endpoint already does it. This loop used to validate
+        # and write one engine at a time, so a request naming four engines
+        # with the fourth invalid left the first three reconfigured and
+        # answered 400 - and a caller who reads an error reasonably concludes
+        # that nothing moved.
+        plan = []
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),
@@ -2747,10 +2750,21 @@ def api_prbs_set():
             patterns = list(section.get('patterns') or current['patterns'])
             patterns += [0] * (banks * 8 - len(patterns))
             for b in range(banks):
-                _set_page(0x13, b)
                 block = (bytes([en[b], inv[b], sw[b], fec[b]])
                          + cmis.pack_prbs_patterns(patterns[b * 8:b * 8 + 8]))
-                _state['backend'].write_bytes(base_addr, block)
+                plan.append((b, base_addr, block))
+
+        # The user pattern is part of the same request, so it waits for the
+        # same all-or-nothing decision rather than going in while an engine
+        # further down the body is still capable of refusing the whole thing.
+        if body.get('user_pattern') is not None:
+            err = _write_user_pattern(body['user_pattern'], caps, banks)
+            if err:
+                return err
+
+        for bank, base_addr, block in plan:
+            _set_page(0x13, bank)
+            _state['backend'].write_bytes(base_addr, block)
         return _ok({'message': 'PRBS configuration written'})
     except Exception as e:
         return _err(str(e), 500)
