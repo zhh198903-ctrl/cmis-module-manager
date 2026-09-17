@@ -18349,6 +18349,78 @@ class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
         self.assertFalse(r['data']['tunable'])
 
 
+class TestPage62hThresholdsFollowMediaLanes(CMISTestCase):
+    """Table 8-192 describes 62h:128-191 as "Per-media-lane warning and alarm
+    thresholds", and 8.32 titles the page "Lane Supervision Thresholds".
+
+    Both consumers indexed them by host lane: /api/module/ext54 truncated the
+    list to the host lane count, and the monitoring rows attached a window to
+    every host lane. On a coherent module - eight host lanes into one optical
+    carrier - that handed back eight sets of thresholds, seven of them
+    belonging to media lanes the module does not have.
+
+    Same axis mistake as the optical power monitors (Table 8-99) and the
+    tuning table (8.15), one page over."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _ext54(self):
+        return self.assertOk(self.client.get('/api/module/ext54'))['data']
+
+    def _mon(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def test_one_media_lane_gets_one_set_of_thresholds(self):
+        self._connect('mock_coherent_zr')
+        t = self._ext54()['lane_power_thresholds']
+        self.assertEqual([x['lane'] for x in t], [1],
+                         'a module with one media lane was given %d sets of '
+                         'per-media-lane thresholds' % len(t))
+
+    def test_the_set_that_remains_is_the_right_one(self):
+        """Filtering must not shift the list: lane 1 keeps lane 1's values."""
+        self._connect('mock_coherent_zr')
+        t = self._ext54()['lane_power_thresholds'][0]
+        self.assertEqual(t['lane'], 1)
+        self.assertEqual((t['hi_alarm_dbm'], t['lo_alarm_dbm']), (2.0, -2.0))
+
+    def test_only_a_real_media_lane_carries_a_window(self):
+        """A host lane with no media lane behind it has no reading, so giving
+        it a threshold window is a window on nothing."""
+        self._connect('mock_coherent_zr')
+        rows = self._mon()['lanes']
+        with_window = [l['lane'] for l in rows
+                       if l.get('tx_threshold_source') == '62h']
+        self.assertEqual(with_window, [1])
+        for lane in rows[1:]:
+            self.assertIsNone(lane.get('tx_power_high_alarm_dbm'),
+                              'lane %d' % lane['lane'])
+
+    def test_the_lane_that_exists_keeps_its_window(self):
+        """A filter that dropped everything would pass the tests above."""
+        self._connect('mock_coherent_zr')
+        lane = self._mon()['lanes'][0]
+        self.assertEqual(lane['tx_threshold_source'], '62h')
+        self.assertEqual(lane['tx_power_high_alarm_dbm'], 2.0)
+
+    def test_a_wide_module_is_not_narrowed(self):
+        """8.3.7 again: above eight lanes 00h:210 cannot speak, so nothing is
+        hidden on its strength."""
+        self._connect('mock_zr16')
+        t = self._ext54()['lane_power_thresholds']
+        self.assertEqual(len(t), 16)
+        self.assertEqual(len([l for l in self._mon()['lanes']
+                              if l.get('tx_threshold_source') == '62h']), 16)
+
+    def test_a_module_without_the_page_is_unaffected(self):
+        self._connect('mock_dr8')
+        self.assertNotIn('lane_power_thresholds', self._ext54())
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

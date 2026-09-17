@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.74.0'
+__version__ = '2.75.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1033,9 +1033,15 @@ def api_module_ext54():
             thresholds = []
             for _b, raw in _read_banks(*cmis.REG_LANE_PWR_THRESHOLDS):
                 thresholds += cmis.parse_lane_power_thresholds(raw)
+            # Table 8-192 calls 62h:128-191 "Per-media-lane warning and
+            # alarm thresholds". Truncating to the host lane count handed back
+            # eight sets on a coherent module, seven of them the thresholds of
+            # media lanes it does not have.
             for i, t in enumerate(thresholds):
                 t['lane'] = i + 1
-            out['lane_power_thresholds'] = thresholds[:_state['lanes']]
+            out['lane_power_thresholds'] = [
+                t for t in thresholds[:_state['lanes']]
+                if _media_lane_present(t['lane'])]
             out['available']['62h'] = True
 
         if caps.get('media_lane_switching_supported'):
@@ -1356,7 +1362,10 @@ def api_module_monitoring():
                 # alone cannot carry it: three of the codes have no name.
                 'config_status_code': cfg_codes[i],
             })
-            if i < len(lane_thr):
+            # Per media lane as well (Table 8-192), so a host lane with no
+            # media lane behind it has no threshold of its own - and saying
+            # otherwise would put a window on a reading that does not exist.
+            if media and i < len(lane_thr):
                 t = lane_thr[i]
                 lanes[-1].update({
                     'tx_threshold_source': '62h',
