@@ -17476,6 +17476,232 @@ class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
         self.assertEqual(d['patterns'], [12] * 8)
 
 
+class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
+    """Page 14h is Banked: "Each Bank of Page 14h refers to 8 lanes" (8.17).
+    The DiagnosticsSelector at 14h:128 and the result window it selects
+    (14h:192-255) are both inside that page, so every bank keeps its own
+    selector and its own window.
+
+    The SNR and BER endpoints wrote the selector once, in bank 0, and then
+    read the window out of every bank - so on any module wider than eight
+    lanes, lanes 9 and up were decoded from whatever window that bank happened
+    to be left on. The counters endpoint already did it correctly and said so
+    in a comment; the rule simply had not reached the other two.
+
+    Left on the bit-counter window, lanes 9-16 reported SNRs of 181 dB and
+    0.00 dB - and 0.00 is the kind of number that reads as a measurement."""
+
+    SELECTORS = {'/api/module/snr': 0x06, '/api/module/ber': 0x01}
+
+    def _connect(self, backend='mock_zr16'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _banks(self):
+        import app as app_module
+        return list(app_module._state['backend']._page_dicts(0x14))
+
+    def _poison(self, value=0x02):
+        """Leave every bank's selector on some other window."""
+        for d in self._banks():
+            d[0x80] = value
+
+    def _selectors(self):
+        return [d.get(0x80) for d in self._banks()]
+
+    # ---- the selector reaches every bank -----------------------------------
+
+    def test_each_reading_endpoint_selects_in_every_bank(self):
+        for path, sel in self.SELECTORS.items():
+            with self.subTest(path=path):
+                self._connect()
+                self._poison(0xEE)
+                self.assertOk(self.client.get(path))
+                self.assertEqual(self._selectors(), [sel, sel],
+                                 '%s left a bank on another window and read '
+                                 'it anyway' % path)
+
+    def test_the_counters_endpoint_selects_in_every_bank(self):
+        """It was already right; this keeps it that way now that all three
+        share one helper."""
+        self._connect()
+        self._poison(0xEE)
+        self.assertOk(self.client.get('/api/module/counters'))
+        self.assertEqual(self._selectors(), [0x05, 0x05])
+
+    def test_an_eight_lane_module_still_selects_once(self):
+        """One bank means one selector write; the helper must not invent a
+        second bank on a module that has none."""
+        self._connect('mock_coherent')
+        self.assertEqual(len(self._banks()), 1)
+        self.assertOk(self.client.get('/api/module/snr'))
+        self.assertEqual(self._selectors(), [0x06])
+
+    # ---- the readings actually come from the right bank --------------------
+
+    def test_the_wide_module_reports_sixteen_distinct_lanes(self):
+        """If the two banks reported the same numbers, reading bank 0's window
+        twice would be indistinguishable from reading each bank's own.
+
+        The readings drift with time, so "not equal" is not enough - two reads
+        of the same bank differ by about 0.016 dB simply because the clock
+        moved. The banks are a few dB apart by construction, so the difference
+        has to be large to mean anything."""
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/snr'))['data']
+        host = d['host_snr_db']
+        self.assertEqual(len(host), 16)
+        spread = max(abs(host[i] - host[i + 8]) for i in range(8))
+        self.assertGreater(
+            spread, 0.5,
+            'the two banks report the same SNR to within %.3f dB, which is '
+            'the size of the drift between two reads of one bank - so this '
+            'cannot tell a correct reader from one that never leaves bank 0'
+            % spread)
+
+    def test_both_banks_are_actually_read(self):
+        """Time-independent companion to the test above: record the bank of
+        every Page 14h data read and check both were visited."""
+        import app as app_module
+        import cmis_registers as c
+        self._connect()
+        seen = []
+        original = app_module._read_upper
+
+        def traced(page, addr, length, bank=0):
+            if (page, addr) == c.REG_DIAG_DATA[:2]:
+                seen.append(bank)
+            return original(page, addr, length, bank)
+
+        app_module._read_upper = traced
+        try:
+            self.assertOk(self.client.get('/api/module/snr'))
+        finally:
+            app_module._read_upper = original
+        self.assertEqual(sorted(set(seen)), [0, 1],
+                         'the diagnostics window was read from banks %s; '
+                         'lanes 9-16 come from bank 1' % sorted(set(seen)))
+
+    def test_a_poisoned_bank_does_not_reach_the_reply(self):
+        """The failure this guards: lanes 9-16 decoded out of the counter
+        window came back as 181 dB and 0.00 dB."""
+        self._connect()
+        self._poison(0x02)
+        d = self.assertOk(self.client.get('/api/module/snr'))['data']
+        for lane, v in enumerate(d['host_snr_db'], 1):
+            self.assertLess(v, 60.0,
+                            'lane %d reports %.2f dB, which is not a measured '
+                            'optical SNR - it is another window decoded as '
+                            'one' % (lane, v))
+
+    def test_the_ber_of_the_upper_bank_is_its_own(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/ber'))['data']
+        lanes = d['lanes']
+        self.assertEqual(len(lanes), 16)
+        low = [round(l['host_ber'], 14) for l in lanes[:8]]
+        high = [round(l['host_ber'], 14) for l in lanes[8:]]
+        self.assertNotEqual(low, high)
+
+    # ---- the mock is banked too, or none of the above proves anything ------
+
+    def test_the_mock_keeps_a_separate_window_per_bank(self):
+        """It used to read bank 0's selector and fill bank 0's window for the
+        whole module, which made the broken reader look correct."""
+        self._connect()
+        banks = self._banks()
+        self.assertEqual(len(banks), 2)
+        # Selector 06h fills 0xD0 and 0xF0; selector 01h fills 0xC0 and 0xD0.
+        # 0xC0 is therefore the byte that says which of the two a bank was
+        # actually asked for - but only if it starts out clear.
+        for d in banks:
+            for i in range(0xC0, 0x100):
+                d[i] = 0x00
+        banks[0][0x80] = 0x06          # bank 0: SNR
+        banks[1][0x80] = 0x01          # bank 1: BER
+        import app as app_module
+        app_module._state['backend'].read_bytes(0x00, 1)   # let the model run
+        self.assertEqual(banks[0].get(0x80), 0x06)
+        self.assertEqual(banks[1].get(0x80), 0x01)
+        self.assertTrue(any(banks[1].get(0xC0 + i) for i in range(16)),
+                        'bank 1 asked for BER and its BER window is empty, so '
+                        'the model used another bank\'s selector')
+        self.assertFalse(any(banks[0].get(0xC0 + i) for i in range(16)),
+                         'bank 0 asked for SNR and its BER window was filled '
+                         'anyway')
+
+    def test_the_upper_banks_counters_are_its_own_lanes(self):
+        """Dropping the bank from the lane index gave lanes 9-16 the counters
+        of lanes 1-8.
+
+        Simply asserting the two halves differ is not enough: both banks
+        accumulate at the same rate, so sharing one set of counters still
+        leaves the second read a tick ahead of the first. The upper lanes are
+        given a distinctive starting count instead, and it has to come back on
+        the upper lanes.
+        """
+        import app as app_module
+        self._connect()
+        backend = app_module._state['backend']
+        marker = 10 ** 9
+        for lane in range(8, 16):
+            backend._error_counts[lane] = marker
+        d = self.assertOk(self.client.get('/api/module/counters'))['data']
+        lanes = d['lanes']
+        self.assertEqual(len(lanes), 16)
+        for entry in lanes[8:]:
+            self.assertGreaterEqual(
+                entry['host_error_count'], marker,
+                'lane %d reports %d errors; the count put on the upper lanes '
+                'came back somewhere else, so both banks share one set'
+                % (entry['lane'], entry['host_error_count']))
+        for entry in lanes[:8]:
+            self.assertLess(
+                entry['host_error_count'], marker,
+                'lane %d picked up the upper bank\'s count' % entry['lane'])
+
+    def test_the_selector_is_given_time_to_settle(self):
+        """A source-level pin, deliberately.
+
+        The module needs a moment to fill the result window after the selector
+        changes, and reading immediately returns the previous window. The mock
+        cannot model that without making the suite depend on wall-clock
+        timing, so this checks the wait is still there rather than observing
+        its effect."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            src = f.read()
+        start = src.index('def _read_diag_banks(')
+        end = re.search(r'\r?\n(?:def |@app\.route)', src[start:])
+        body = src[start:start + end.start()] if end else src[start:]
+        self.assertIn('time.sleep(', body,
+                      'the selector write is followed straight by the read')
+        self.assertLess(len(body), 2000,
+                        'the slice ran past the function, so it would find '
+                        'time.sleep whether this one has it or not')
+
+    def test_each_lane_has_its_own_error_counter(self):
+        """Eight counters were shared by sixteen lanes, so lane 9's count was
+        lane 1's."""
+        import app as app_module
+        self._connect()
+        self.assertGreaterEqual(
+            len(app_module._state['backend']._bit_counts), 16)
+
+    def test_the_helper_is_what_every_endpoint_uses(self):
+        """Three copies of "write the selector, then read" is how two of them
+        came to be missing the bank."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            src = f.read()
+        self.assertEqual(
+            src.count("write_bytes(cmis.REG_DIAG_SELECTOR[1]"), 1,
+            'the selector is written in more than one place again')
+        self.assertIn('def _read_diag_banks(', src)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

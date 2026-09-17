@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.69.0<br>
+      <b>版本</b>　2.70.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.69.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.69.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.70.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.70.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1740,6 +1740,19 @@
     <b>“没人在监视这一项”看起来就像“这一项正常”</b>。<br>
     现在未实现的 Flag 显示为灰色 <i>n/a</i>，悬停说明原因。
     内置的 <b>mock_sr8</b> 故意不实现 Rx CDR LOL 和 Tx 自适应均衡失败两项。</span>
+  </div>
+
+  <h3>16 通道以上模块的 SNR / BER：选错了窗口</h3>
+  <p>Page 14h 是<b>分 Bank 的</b>（规范 8.17：「Page 14h 的每个 Bank 对应 8 条通道」）。诊断选择器 <code>14h:128</code> 和它选出来的结果窗口 <code>14h:192–255</code> <b>都在这一页里</b>——也就是说，<b>每个 Bank 有自己的选择器、自己的结果窗口</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>SNR 和 BER 两个接口<b>只在 Bank 0 里写了一次选择器</b>，然后去<b>每个 Bank</b> 读结果窗口。于是在超过 8 通道的模块上，<b>第 9 条往上的读数来自一个从没被选中的窗口</b>——那里放的是上一次别的功能留下的数据。<br>
+    实测（16 通道模块，Bank 1 停在误码计数窗口）：第 9–16 通道的 SNR 报成了 <b>181 dB</b>、163 dB 和一串 <b>0.00</b>——181 dB 一眼假，但 <b>0.00 看上去就像一个测量值</b>。</span>
+  </div>
+  <p>误码计数那个接口本来就是对的，代码里还写着这条规矩的注释——只是<b>没推广到另外两个</b>。现在三个接口共用同一个读取函数，<b>在哪个 Bank 读就在哪个 Bank 选</b>。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>8 通道模块只有一个 Bank，行为完全不变。受影响的是 16 / 24 通道这类模块（内置演示模块里的 <code>mock_zr16</code>、<code>mock_1600g_16lane</code>、<code>mock_24lane</code>）。</span>
   </div>
 
   <h3>演示模块不再自相矛盾</h3>
@@ -3509,7 +3522,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.69.0<br>
+    CMIS Module Manager 操作手册 v2.70.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.69.0'
+__version__ = '2.70.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -315,6 +315,27 @@ def _read_banks(page: int, addr: int, length: int, lanes: int = 0):
     lanes = lanes or _state['lanes']
     for bank in range((lanes + 7) // 8):
         yield bank, _read_upper(page, addr, length, bank)
+
+
+def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
+    """Yield (bank, data) from Page 14h, selecting the window in each bank.
+
+    8.17: "Page 14h may optionally be Banked. Each Bank of Page 14h refers to
+    8 lanes." The DiagnosticsSelector at 14h:128 and the Diagnostics Data it
+    selects (14h:192-255) are both inside that banked page, so each bank keeps
+    its own selector and its own result window.
+
+    Writing the selector once and then reading every bank returns lanes 9 and
+    up out of whatever window that bank happened to be left on - a number in a
+    plausible range, decoded as whatever the caller asked for.
+    """
+    page, addr, full = cmis.REG_DIAG_DATA
+    lanes = lanes or _state['lanes']
+    for bank in range((lanes + 7) // 8):
+        _set_page(page, bank)
+        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
+        time.sleep(0.005)
+        yield bank, _read_upper(page, addr, length or full, bank)
 
 
 def _masks_per_bank(value, banks: int) -> list:
@@ -2749,15 +2770,14 @@ def api_module_snr():
         if not (rep['host_side_snr'] or rep['media_side_snr']):
             return _ok({'host_snr_db': [], 'media_snr_db': [],
                         'supported': {'host': False, 'media': False}})
-        _set_page(0x14)
-        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x06]))
-        time.sleep(0.005)
         # Selector 0x06: bytes 192-207 reserved, 208-223 host SNR, 240-255 media SNR
         # Host SNR at offset 16 (bytes 208-223), media SNR at offset 48.
-        # Each bank carries its own eight lanes at the same offsets.
+        # Each bank carries its own eight lanes at the same offsets - and its
+        # own selector, so the window is chosen inside each bank rather than
+        # once in bank 0.
         host_snr = []
         media_snr = []
-        for _bank, data in _read_banks(*cmis.REG_DIAG_DATA):
+        for _bank, data in _read_diag_banks(0x06):
             for i in range(8):
                 host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
                 media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
@@ -2782,13 +2802,11 @@ def api_module_ber():
         # 13h:130.0 advertises whether selector 01h means anything here.
         if not _diag_caps()['reporting']['bit_error_ratio']:
             return _ok({'lanes': [], 'supported': False})
-        # Write selector 0x01 = BER F16
-        _set_page(0x14)
-        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([0x01]))
-        time.sleep(0.005)
-        # Host BER at 0xC0–0xCF, Media BER at 0xD0–0xDF (8 lanes × 2B each)
+        # Selector 0x01 = BER F16, written into each bank that is read: the
+        # page is Banked and every bank keeps its own selector.
+        # Host BER at 0xC0-0xCF, Media BER at 0xD0-0xDF (8 lanes x 2B each)
         lanes = []
-        for _bank, ber_raw in _read_banks(*cmis.REG_DIAG_DATA[:2], 32):
+        for _bank, ber_raw in _read_diag_banks(0x01, 32):
             for i in range(8):
                 lanes.append({
                     'lane': len(lanes) + 1,
@@ -3140,41 +3158,34 @@ def api_module_counters():
         if not _diag_caps()['reporting']['bits_and_errors']:
             return _ok({'lanes': [], 'supported': False})
         lanes = []
-        banks = (_state['lanes'] + 7) // 8
-        for bank in range(banks):
-          for sel, lane_start, side in [
+        for sel, lane_start, side in [
             (0x02, 0, 'host'), (0x03, 4, 'host'),
             (0x04, 0, 'media'), (0x05, 4, 'media'),
-          ]:
-            # The selector is written into the bank being read: each bank
-            # keeps its own diagnostic result window.
-            _set_page(0x14, bank)
-            _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
-            time.sleep(0.005)
-            data = _read_upper(*cmis.REG_DIAG_DATA, bank)
-            for li in range(4):
-                off = li * 16
-                error_count = struct.unpack("<Q", data[off:off+8])[0]
-                total_bits_raw = struct.unpack("<Q", data[off+8:off+16])[0]
-                psl = total_bits_raw & 1  # pattern sync loss indicator
-                total_bits = total_bits_raw & ~1
-                lane_idx = bank * 8 + lane_start + li
-                # Find or create lane entry
-                entry = None
-                for e in lanes:
-                    if e['lane'] == lane_idx + 1:
-                        entry = e
-                        break
-                if entry is None:
-                    entry = {'lane': lane_idx + 1}
-                    lanes.append(entry)
-                entry[f'{side}_error_count'] = error_count
-                entry[f'{side}_total_bits'] = total_bits
-                entry[f'{side}_psl'] = bool(psl)
-                if total_bits > 0:
-                    entry[f'{side}_ber'] = error_count / total_bits
-                else:
-                    entry[f'{side}_ber'] = 0.0
+        ]:
+            for bank, data in _read_diag_banks(sel):
+                for li in range(4):
+                    off = li * 16
+                    error_count = struct.unpack("<Q", data[off:off+8])[0]
+                    total_bits_raw = struct.unpack("<Q", data[off+8:off+16])[0]
+                    psl = total_bits_raw & 1  # pattern sync loss indicator
+                    total_bits = total_bits_raw & ~1
+                    lane_idx = bank * 8 + lane_start + li
+                    # Find or create lane entry
+                    entry = None
+                    for e in lanes:
+                        if e['lane'] == lane_idx + 1:
+                            entry = e
+                            break
+                    if entry is None:
+                        entry = {'lane': lane_idx + 1}
+                        lanes.append(entry)
+                    entry[f'{side}_error_count'] = error_count
+                    entry[f'{side}_total_bits'] = total_bits
+                    entry[f'{side}_psl'] = bool(psl)
+                    if total_bits > 0:
+                        entry[f'{side}_ber'] = error_count / total_bits
+                    else:
+                        entry[f'{side}_ber'] = 0.0
 
         lanes.sort(key=lambda x: x['lane'])
         return _ok({'lanes': lanes, 'supported': True,

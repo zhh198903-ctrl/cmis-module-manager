@@ -696,9 +696,13 @@ class MockBackend(I2CInterface):
         self._absolute_tx_thr = None      # 62h quad when no lane is relative
         self._tx_disable_mask = 0x00
         self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
-        self._error_counts = [0] * 8
-        self._bit_counts = [0] * 8
+        # Per absolute lane, not per bank position: a 16 lane module has 16
+        # independent counters, and eight of them were being shared.
+        _lanes = max(8, self.PROFILE.get('lanes', 8))
+        self._error_counts = [0] * _lanes
+        self._bit_counts = [0] * _lanes
         self._last_counter_time = 0.0
+        self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
 
     @classmethod
@@ -1877,56 +1881,77 @@ class MockBackend(I2CInterface):
         # genuinely low received power had just raised. Rx LOS and CDR LOL now
         # come from the received power alone, in _set_lane_flags.
 
-        # Diagnostic selector-dependent updates
-        sel = self._registers[0x14].get(0x80, 0)
+        # Diagnostic selector-dependent updates.
+        #
+        # 8.17: "Page 14h may optionally be Banked. Each Bank of Page 14h
+        # refers to 8 lanes." So the selector at 14h:128 and the result window
+        # at 14h:192-255 both belong to the bank they are in. This used to read
+        # bank 0's selector and fill bank 0's window for the whole module,
+        # which made a host that selected only in bank 0 look correct: lanes 9
+        # and up got the values bank 0 had just been asked for.
         base_ber = p['base_ber']
+        counters_ticked = False
+        for lane_base, p14 in self._banked_page_dicts(0x14):
+            sel = p14.get(0x80, 0)
 
-        for lane in range(8):
-            phase = lane * math.pi / 4
+            for li in range(8):
+                lane = lane_base + li
+                # lane * pi/4 comes back to where it started every eight
+                # lanes, which is exactly the period that makes bank 1 a copy
+                # of bank 0 - and a reader taking bank 0's window for every
+                # bank indistinguishable from a correct one. The bank term is
+                # zero for bank 0, so the eight lane profiles are unchanged.
+                phase = lane * math.pi / 4 + lane_base * 0.37
 
-            if sel == 0x01 or sel == 0x11:
-                h_ber = base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase))
-                m_ber = base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))
-                w = cmis.encode_f16_ber(h_ber)
-                a = 0xC0 + lane * 2
-                self._registers[0x14][a] = (w >> 8) & 0xFF
-                self._registers[0x14][a + 1] = w & 0xFF
-                w = cmis.encode_f16_ber(m_ber)
-                a = 0xD0 + lane * 2
-                self._registers[0x14][a] = (w >> 8) & 0xFF
-                self._registers[0x14][a + 1] = w & 0xFF
+                if sel == 0x01 or sel == 0x11:
+                    h_ber = base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase))
+                    m_ber = base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))
+                    w = cmis.encode_f16_ber(h_ber)
+                    a = 0xC0 + li * 2
+                    p14[a] = (w >> 8) & 0xFF
+                    p14[a + 1] = w & 0xFF
+                    w = cmis.encode_f16_ber(m_ber)
+                    a = 0xD0 + li * 2
+                    p14[a] = (w >> 8) & 0xFF
+                    p14[a + 1] = w & 0xFF
 
-            elif sel == 0x06:
-                snr_db = p['snr_db_nom'] + 2.0 * math.sin(2 * math.pi * t / 40.0 + phase)
-                snr_val = int(snr_db * 256) & 0xFFFF
-                a_h = 0xD0 + lane * 2
-                self._registers[0x14][a_h] = snr_val & 0xFF
-                self._registers[0x14][a_h + 1] = (snr_val >> 8) & 0xFF
-                a_m = 0xF0 + lane * 2
-                self._registers[0x14][a_m] = snr_val & 0xFF
-                self._registers[0x14][a_m + 1] = (snr_val >> 8) & 0xFF
+                elif sel == 0x06:
+                    snr_db = p['snr_db_nom'] + 2.0 * math.sin(2 * math.pi * t / 40.0 + phase)
+                    snr_val = int(snr_db * 256) & 0xFFFF
+                    a_h = 0xD0 + li * 2
+                    p14[a_h] = snr_val & 0xFF
+                    p14[a_h + 1] = (snr_val >> 8) & 0xFF
+                    a_m = 0xF0 + li * 2
+                    p14[a_m] = snr_val & 0xFF
+                    p14[a_m + 1] = (snr_val >> 8) & 0xFF
 
-        # Error/Bit counters (selectors 0x02-0x05, 0x12-0x15)
-        if sel in (0x02, 0x03, 0x04, 0x05, 0x12, 0x13, 0x14, 0x15):
-            now_t = time.time()
-            dt = now_t - self._last_counter_time if self._last_counter_time > 0 else 0.1
-            self._last_counter_time = now_t
-            bits_per_sec = int(100e9)   # 100 Gbps per lane
-            is_high = sel in (0x03, 0x05, 0x13, 0x15)
-            lane_start = 4 if is_high else 0
-            for li in range(4):
-                lane = lane_start + li
-                new_bits = int(bits_per_sec * dt)
-                new_errors = int(new_bits * base_ber * (1.0 + 0.2 * math.sin(t + lane)))
-                self._bit_counts[lane] += new_bits
-                self._error_counts[lane] += max(new_errors, 0)
-                off = 0xC0 + li * 16
-                ec = self._error_counts[lane]
-                bc = self._bit_counts[lane] & ~1    # PSL=0 in LSB
-                for j in range(8):
-                    self._registers[0x14][off + j] = (ec >> (j * 8)) & 0xFF
-                for j in range(8):
-                    self._registers[0x14][off + 8 + j] = (bc >> (j * 8)) & 0xFF
+            # Error/Bit counters (selectors 0x02-0x05, 0x12-0x15)
+            if sel in (0x02, 0x03, 0x04, 0x05, 0x12, 0x13, 0x14, 0x15):
+                if not counters_ticked:
+                    now_t = time.time()
+                    self._counter_dt = (now_t - self._last_counter_time
+                                        if self._last_counter_time > 0 else 0.1)
+                    self._last_counter_time = now_t
+                    counters_ticked = True
+                bits_per_sec = int(100e9)   # 100 Gbps per lane
+                is_high = sel in (0x03, 0x05, 0x13, 0x15)
+                lane_start = 4 if is_high else 0
+                for li in range(4):
+                    lane = lane_base + lane_start + li
+                    if lane >= len(self._bit_counts):
+                        continue
+                    new_bits = int(bits_per_sec * self._counter_dt)
+                    new_errors = int(new_bits * base_ber
+                                     * (1.0 + 0.2 * math.sin(t + lane)))
+                    self._bit_counts[lane] += new_bits
+                    self._error_counts[lane] += max(new_errors, 0)
+                    off = 0xC0 + li * 16
+                    ec = self._error_counts[lane]
+                    bc = self._bit_counts[lane] & ~1    # PSL=0 in LSB
+                    for j in range(8):
+                        p14[off + j] = (ec >> (j * 8)) & 0xFF
+                    for j in range(8):
+                        p14[off + 8 + j] = (bc >> (j * 8)) & 0xFF
 
         # Laser tuning: update CurrentLaserFrequency from Page 12h control values (tunable only)
         if p['tunable'] and 0x12 in self._registers:
