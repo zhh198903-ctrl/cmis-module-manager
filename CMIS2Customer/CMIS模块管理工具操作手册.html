@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.68.0<br>
+      <b>版本</b>　2.69.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.68.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.68.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.69.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.69.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1382,11 +1382,19 @@
     最危险的一处在数据通道接口：<code>app_select</code> 不提及就默认
     全部为 1——<b>只发一个极性改动，会把每一路的 Application 重配成 1</b>。</span>
   </div>
-  <p>现在四个写入接口（数据通道 / 输出控制 / 环回 / 模块控制）统一为：</p>
+  <p>现在<b>所有写入接口</b>统一为：</p>
   <ul>
     <li><b>没提到的字段保持原值</b>（先读后写）</li>
     <li><b>无法识别的字段返回 400</b>，并列出该接口接受哪些字段</li>
   </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>这条规矩当初只落实到那四个接口，另外三个漏了——而漏掉的恰好是后果最重的：<br>
+    · <b>PRBS</b>：只改使能掩码、不提 <code>patterns</code>，<b>每一条通道的码型都被悄悄改成 0 号（PRBS31Q）</b>，反相 / 字节交换 / FEC 位置掩码一起清零，然后回复「成功」。<br>
+    · <b>激光器调谐</b>：字段名拼错（<code>target_power</code> 少了 <code>_dbm</code>）被静默丢弃，通道号照改、<b>发射功率没动</b>，回复却是「参数已写入」。<br>
+    · <b>通道交换</b>：<code>enable</code> 拼成 <code>enabled</code> 直接被忽略，回复「成功」，什么也没切换。<br>
+    界面每次 Apply 都会把全部字段发出去，所以<b>点界面碰不到</b>；这是走 API 时才会踩的。</span>
+  </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>模块控制寄存器还有一个读写不一致的问题</b>：
@@ -3501,7 +3509,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.68.0<br>
+    CMIS Module Manager 操作手册 v2.69.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

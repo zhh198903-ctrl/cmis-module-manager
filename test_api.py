@@ -123,6 +123,19 @@ def connect_mock(client):
 # Test helpers / fixture
 # ============================================================
 
+def js_function_body(js, header):
+    """The body of a JS function, whichever line ending the file has.
+
+    Git rewrites the working tree to CRLF on checkout here, so slicing on a
+    literal '\n}\n' finds nothing in a file it has just touched and silently
+    returns the rest of the file instead - a test that then asserts something
+    is present passes without checking anything.
+    """
+    start = js.index(header)
+    m = re.search(r'\r?\n\}\r?\n', js[start:])
+    return js[start:start + m.start()] if m else js[start:]
+
+
 class CMISTestCase(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
@@ -241,7 +254,7 @@ class TestMonitoringPresentation(CMISTestCase):
         sweep of table bodies leaves the previous module's squelch settings and
         temperature on screen."""
         js = self._js()
-        body = js.split('function clearTabContent(')[1].split('\n}\n')[0]
+        body = js_function_body(js, 'function clearTabContent(')
         for marker in ("'sq', 'sf', 'od', 'rd'", "'mso', 'msi', 'hso', 'hsi'",
                        'monitor-summary'):
             self.assertIn(marker, body, f'{marker} survives a reconnect')
@@ -845,7 +858,7 @@ class TestUpdateRoutes(CMISTestCase):
         js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                'static', 'app.js')
         js = io.open(js_path, encoding='utf-8').read()
-        body = js.split('async function _waitForNewVersion(')[1].split('\n}\n')[0]
+        body = js_function_body(js, 'async function _waitForNewVersion(')
         instruction = body.index('CMIS_Module_Manager.exe')
         poll = body.index("fetch('/api/version'")
         self.assertLess(instruction, poll,
@@ -954,7 +967,7 @@ class TestUpdateRoutes(CMISTestCase):
                                'static', 'app.js')
         js = io.open(js_path, encoding='utf-8').read()
         self.assertIn("fetch('/api/update/progress'", js)
-        body = js.split('async function _followUpdateProgress(')[1].split('\n}\n')[0]
+        body = js_function_body(js, 'async function _followUpdateProgress(')
         self.assertIn('done / p.total', body.replace('p.done', 'done'))
         self.assertIn('%', body)
 
@@ -16142,8 +16155,7 @@ class TestADroppedUpdatePollIsNotAutomaticallySuccess(CMISTestCase):
 
     def _follow(self):
         js = self._js()
-        i = js.index('async function _followUpdateProgress(btn)')
-        return js[i:js.index('\n}\n', i)]
+        return js_function_body(js, 'async function _followUpdateProgress(btn)')
 
     def test_a_dropped_poll_is_judged_by_what_was_happening(self):
         block = self._follow()
@@ -16945,7 +16957,7 @@ class TestTheAuxAndCustomMonitorFlagsSurvive(CMISTestCase):
                 script = (
                     'const fs=require("fs");'
                     'const s=fs.readFileSync(process.argv[1],"utf8");'
-                    'eval(s.match(/function monitorFlagVerdict[\\s\\S]*?\\n}\\n/)[0]);'
+                    'eval(s.match(/function monitorFlagVerdict[\\s\\S]*?\\r?\\n}\\r?\\n/)[0]);'
                     'process.stdout.write(monitorFlagVerdict('
                     + json.dumps(flags) + '));')
                 out = subprocess.run([node, '-e', script, src],
@@ -17166,8 +17178,7 @@ class TestNothingIsReadFromALatchedBlockAndDropped(CMISTestCase):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
             js = f.read()
-        start = js.index('function renderFlags(')
-        body = js[start:js.index('\n}\n', start)]
+        body = js_function_body(js, 'function renderFlags(')
         used = set(re.findall(r'\blane\.([A-Za-z_][A-Za-z0-9_]*)', body))
         self.assertTrue(used, 'no lane fields found - the scan broke')
         unknown = sorted(used - known)
@@ -17192,6 +17203,277 @@ class TestNothingIsReadFromALatchedBlockAndDropped(CMISTestCase):
         row = row[:row.index('</tr>')]
         self.assertEqual(len(headings), row.count('<td>'))
         self.assertIn('colspan="%d"' % len(headings), html)
+
+
+class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
+    """Four write endpoints promise that a field the caller did not name keeps
+    the value it has, and refuse a field they do not recognise. The manual
+    states it as the fix for a real defect: "the old behaviour was that a
+    field you did not mention defaulted to 0, so setting one control silently
+    cleared the rest - and answered success."
+
+    PRBS is the fifth endpoint of that shape and never got either half. It is
+    also the one where the consequence is worst: omitting `patterns` did not
+    clear a bit, it reprogrammed every lane to pattern 0 (PRBS31Q), and a
+    request carrying the typo `pattern` was accepted - so the caller's
+    patterns were ignored AND the real ones were wiped, under an "ok".
+
+    The GUI always sends every field, so this was reachable through the API
+    rather than by clicking - which is exactly who the endpoint documentation
+    is for."""
+
+    SECTIONS = ('host_gen', 'media_gen', 'host_chk', 'media_chk')
+    FIELDS = ('enable_mask', 'invert_mask', 'byte_swap_mask', 'fec_mask')
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return json.loads(self.client.post(
+            path, data=json.dumps(body),
+            content_type='application/json').data)
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _program(self, section='host_gen', **over):
+        """Put a full, distinctive configuration in place.
+
+        Every field is non-zero by default: a field programmed to 0 cannot
+        tell "kept" from "defaulted to 0", which is the whole question.
+        """
+        cfg = {'enable_mask': 0xFF, 'invert_mask': 0xFF,
+               'byte_swap_mask': 0xFF, 'fec_mask': 0xFF,
+               'patterns': [11] * 8}
+        cfg.update(over)
+        self.assertOk(self.client.post(
+            '/api/module/prbs', data=json.dumps({section: cfg}),
+            content_type='application/json'))
+
+    # ---- the contract ------------------------------------------------------
+
+    def test_naming_only_the_enable_mask_keeps_the_patterns(self):
+        """The whole point: a lane running PRBS7 must not become PRBS31Q
+        because the request was about something else."""
+        self._connect()
+        self._program()
+        self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x0F}})
+        d = self._prbs()['host_gen']
+        self.assertEqual(d['patterns'], [11] * 8,
+                         'every lane was reprogrammed by a request that said '
+                         'nothing about patterns')
+        self.assertEqual(d['enable_mask'], 0x0F, 'the named field did change')
+
+    def test_naming_one_mask_keeps_the_others(self):
+        self._connect()
+        self._program()
+        self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x0F}})
+        d = self._prbs()['host_gen']
+        self.assertEqual(d['invert_mask'], 0xFF)
+        self.assertEqual(d['byte_swap_mask'], 0xFF)
+        self.assertEqual(d['fec_mask'], 0xFF,
+                         'the FEC location mask decides whether the engine '
+                         'runs before or after the FEC, so losing it moves '
+                         'every lane to the other side of it')
+
+    def test_naming_the_patterns_keeps_the_masks(self):
+        """The other direction, so the fix cannot be "always write what was
+        read" for one field and nothing for the rest."""
+        self._connect()
+        self._program()
+        self._post('/api/module/prbs', {'host_gen': {'patterns': [12] * 8}})
+        d = self._prbs()['host_gen']
+        self.assertEqual(d['patterns'], [12] * 8)
+        self.assertEqual(d['enable_mask'], 0xFF)
+        self.assertEqual(d['invert_mask'], 0xFF)
+
+    def test_one_engine_does_not_disturb_another(self):
+        """Each engine is programmed differently on purpose. With the same
+        values in both, an implementation that read host_gen's registers and
+        wrote them back over media_gen would look correct."""
+        self._connect()
+        self._program('host_gen', patterns=[11] * 8, invert_mask=0xFF)
+        self._program('media_gen', patterns=[12] * 8, invert_mask=0x0F,
+                      byte_swap_mask=0x00)
+        self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x01}})
+        d = self._prbs()
+        self.assertEqual(d['media_gen']['patterns'], [12] * 8)
+        self.assertEqual(d['media_gen']['invert_mask'], 0x0F)
+        self.assertEqual(d['media_gen']['byte_swap_mask'], 0x00)
+        self.assertEqual(d['media_gen']['enable_mask'], 0xFF)
+        self.assertEqual(d['host_gen']['patterns'], [11] * 8)
+
+    def test_an_engine_keeps_its_own_values_not_another_engines(self):
+        """Naming one field of media_chk must carry media_chk's other fields
+        forward, not whichever engine happens to be read first."""
+        self._connect()
+        self._program('host_gen', patterns=[11] * 8, invert_mask=0xFF)
+        self._program('media_chk', patterns=[12] * 8, invert_mask=0x33,
+                      byte_swap_mask=0x0F, fec_mask=0x00)
+        self._post('/api/module/prbs', {'media_chk': {'enable_mask': 0x07}})
+        d = self._prbs()['media_chk']
+        self.assertEqual(d['patterns'], [12] * 8)
+        self.assertEqual(d['invert_mask'], 0x33)
+        self.assertEqual(d['byte_swap_mask'], 0x0F)
+        self.assertEqual(d['fec_mask'], 0x00)
+        self.assertEqual(d['enable_mask'], 0x07)
+
+    def test_a_field_it_does_not_know_is_refused(self):
+        """`pattern` for `patterns` used to be accepted, which meant the
+        caller's patterns were dropped and the programmed ones wiped."""
+        self._connect()
+        r = self._post('/api/module/prbs',
+                       {'host_gen': {'enable_mask': 0x0F,
+                                     'pattern': [11] * 8}})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('pattern', r['message'])
+        self.assertIn('host_gen', r['message'],
+                      'the message does not say which section was wrong')
+        self.assertIn('patterns', r['message'],
+                      'the message does not name the field that was meant')
+
+    def test_a_section_it_does_not_know_is_refused(self):
+        self._connect()
+        r = self._post('/api/module/prbs', {'host_genn': {'enable_mask': 1}})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('host_gen', r['message'])
+
+    def test_a_refused_request_changes_nothing(self):
+        """A 400 that has already written half the engines is worse than one
+        that writes none."""
+        self._connect()
+        self._program()
+        before = self._prbs()['host_gen']
+        self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x01},
+                                        'nonsense': 1})
+        self.assertEqual(self._prbs()['host_gen'], before)
+
+    def test_an_omitted_section_is_untouched(self):
+        self._connect()
+        self._program('media_chk')
+        before = self._prbs()['media_chk']
+        self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x03}})
+        self.assertEqual(self._prbs()['media_chk'], before)
+
+    # ---- the same contract, everywhere it applies --------------------------
+
+    def test_every_mask_endpoint_refuses_a_field_it_does_not_know(self):
+        """The sweep that found it: one endpoint of this shape behaving
+        differently from the rest is how a caller learns the wrong rule."""
+        # /laser and /media_lane_switching refuse first for a more
+        # fundamental reason - the module has no such feature - so each is
+        # asked on a module that does, or the test proves nothing.
+        cases = [
+            ('mock_coherent', '/api/module/control'),
+            ('mock_coherent', '/api/module/datapath'),
+            ('mock_coherent', '/api/module/squelch'),
+            ('mock_coherent', '/api/module/loopback'),
+            ('mock_coherent', '/api/module/prbs'),
+            ('mock_coherent_zr', '/api/module/laser'),
+            ('mock_1600g_dr8', '/api/module/media_lane_switching'),
+        ]
+        for backend, path in cases:
+            with self.subTest(path=path):
+                self._connect(backend)
+                r = self._post(path, {'nonsense_field': 1})
+                self.assertEqual(r['status'], 'error',
+                                 '%s silently ignored a field it does not '
+                                 'know' % path)
+                self.assertIn('nonsense_field', r['message'],
+                              '%s refused for some other reason, so this '
+                              'says nothing about unknown fields' % path)
+
+    def test_the_helper_says_which_section_a_bad_field_was_in(self):
+        """Without it, a nested body reports a bare name and the caller has
+        four identical sections to search."""
+        import app as app_module
+        with app_module.app.test_request_context():
+            text = json.loads(app_module._reject_unknown(
+                {'oops': 1}, ('fine',), where='in host_chk, ')[0].data)
+            plain = json.loads(app_module._reject_unknown(
+                {'oops': 1}, ('fine',))[0].data)
+        self.assertIn('in host_chk, this endpoint accepts', text['message'])
+        self.assertIn('; this endpoint accepts', plain['message'],
+                      'the section prefix leaked into the plain message')
+
+    def test_a_misspelled_laser_field_does_not_report_success(self):
+        """`target_power` for `target_power_dbm`: the channel was applied, the
+        power silently dropped, and the reply said the tuning was written. On
+        a tunable coherent module the output power is not a detail."""
+        self._connect('mock_coherent_zr')
+        r = self._post('/api/module/laser',
+                       {'lanes': [{'lane': 1, 'channel': 5,
+                                   'target_power': -3.0}]})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('target_power_dbm', r['message'],
+                      'the message does not name the field that was meant')
+        self.assertIn('lane entry 1', r['message'],
+                      'with several lanes, the caller needs to know which')
+
+    def test_a_misspelled_laser_field_writes_nothing(self):
+        """Refusing after tuning lane 1 would be worse than not refusing."""
+        self._connect('mock_coherent_zr')
+        before = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes']
+        self._post('/api/module/laser',
+                   {'lanes': [{'lane': 1, 'channel': 7,
+                               'target_power': -3.0}]})
+        after = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes']
+        self.assertEqual(after, before)
+
+    def test_a_misspelled_lanes_key_is_named_as_such(self):
+        """It used to come back as "No lanes given", which sends the caller
+        looking for an empty list rather than at their own spelling."""
+        self._connect('mock_coherent_zr')
+        r = self._post('/api/module/laser',
+                       {'lane': [{'lane': 1, 'channel': 5}]})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn("'lane'", r['message'])
+        self.assertIn('lanes', r['message'])
+
+    def test_a_lane_entry_that_is_not_an_object_is_refused(self):
+        """Reached by the same loop, so it needs saying rather than raising
+        a 500 out of the field check."""
+        self._connect('mock_coherent_zr')
+        r = self._post('/api/module/laser', {'lanes': [5]})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('not an object', r['message'])
+
+    def test_a_misspelled_switching_field_is_refused(self):
+        """`enabled` for `enable` used to answer ok having switched nothing."""
+        self._connect('mock_1600g_dr8')
+        r = self._post('/api/module/media_lane_switching', {'enabled': True})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('enable', r['message'])
+
+    def test_the_switching_endpoint_still_takes_its_real_fields(self):
+        self._connect('mock_1600g_dr8')
+        r = self._post('/api/module/media_lane_switching', {'enable': True})
+        self.assertEqual(r['status'], 'ok')
+
+    def test_a_laser_request_with_every_field_is_accepted(self):
+        """The field list is a whitelist, so a name missing from it refuses a
+        request that used to work."""
+        self._connect('mock_coherent_zr')
+        r = self._post('/api/module/laser',
+                       {'lanes': [{'lane': 1, 'grid_code': 4, 'channel': 1,
+                                   'fine_offset_ghz': 0.0,
+                                   'fine_tuning_enabled': False,
+                                   'target_power_dbm': -3.0}]})
+        self.assertEqual(r['status'], 'ok', r.get('message'))
+
+    def test_a_good_request_still_writes(self):
+        """A guard that refused everything would pass every test above."""
+        self._connect()
+        self._post('/api/module/prbs',
+                   {'host_gen': {'enable_mask': 0x0F, 'patterns': [12] * 8}})
+        d = self._prbs()['host_gen']
+        self.assertEqual(d['enable_mask'], 0x0F)
+        self.assertEqual(d['patterns'], [12] * 8)
 
 
 if __name__ == '__main__':

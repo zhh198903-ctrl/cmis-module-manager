@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.68.0'
+__version__ = '2.69.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1099,6 +1099,9 @@ def api_media_lane_switching():
     if not caps.get('media_lane_switching_supported'):
         return _err('This module does not advertise media lane switching', 400)
     body = request.get_json(silent=True) or {}
+    bad = _reject_unknown(body, ('redirection', 'enable', 'commit'))
+    if bad:
+        return bad
     mapping = body.get('redirection') or []
     enable = body.get('enable')
     commit = bool(body.get('commit', False))
@@ -2338,7 +2341,18 @@ def _refuse_unsupported(requested):
     return None
 
 
-def _reject_unknown(body: dict, allowed) -> object:
+# The five per-engine fields of a PRBS section, in the order they sit in the
+# 8-byte block (13h:144+): three masks, the FEC location mask, then the
+# per-lane patterns.
+_PRBS_FIELDS = ('enable_mask', 'invert_mask', 'byte_swap_mask', 'fec_mask',
+                'patterns')
+
+# What one entry of /api/module/laser's `lanes` list may carry.
+_LASER_LANE_FIELDS = ('lane', 'grid_code', 'channel', 'fine_offset_ghz',
+                      'fine_tuning_enabled', 'target_power_dbm')
+
+
+def _reject_unknown(body: dict, allowed, where: str = '') -> object:
     """Refuse a request body carrying a field this handler does not know.
 
     Silently ignoring an unrecognised name is how a typo in a script reports
@@ -2347,9 +2361,9 @@ def _reject_unknown(body: dict, allowed) -> object:
     """
     unknown = sorted(k for k in body if k not in allowed)
     if unknown:
-        return _err('Unknown field%s %s; this endpoint accepts %s'
+        return _err('Unknown field%s %s; %sthis endpoint accepts %s'
                     % ('' if len(unknown) == 1 else 's',
-                       ', '.join(repr(u) for u in unknown),
+                       ', '.join(repr(u) for u in unknown), where,
                        ', '.join(sorted(allowed))), 400)
     return None
 
@@ -2607,6 +2621,15 @@ def api_prbs_set():
         return err
     try:
         body = request.get_json(silent=True) or {}
+        bad = _reject_unknown(body, ('host_gen', 'media_gen', 'host_chk',
+                                     'media_chk', 'user_pattern'))
+        if bad:
+            return bad
+        for _key in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            bad = _reject_unknown(body.get(_key) or {}, _PRBS_FIELDS,
+                                  where='in %s, ' % _key)
+            if bad:
+                return bad
         banks = (_state['lanes'] + 7) // 8
         caps = _diag_caps()
         pattern_caps = caps['patterns']
@@ -2624,6 +2647,12 @@ def api_prbs_set():
             section = body.get(key, {})
             if not section:
                 continue
+            # The same contract the other four write endpoints keep: a field
+            # the caller did not name keeps the value it has. Defaulting to
+            # zero meant a request that set only the enable mask also
+            # reprogrammed every lane to pattern 0 (PRBS31Q) and cleared the
+            # invert, byte-swap and FEC masks - and answered "ok".
+            current = _read_prbs_block(base_addr)
             supported = pattern_caps[key]
             # 13h:131 is the advertisement the Enable byte itself points at.
             # An engine with both bits clear is not in the module, so enabling
@@ -2632,8 +2661,10 @@ def api_prbs_set():
             role = '%s side pattern %s' % (
                 key.split('_')[0], 'generator' if key.endswith('_gen')
                 else 'checker')
-            enabled = _masks_per_bank(section.get('enable_mask', 0), banks)
-            fec_req = _masks_per_bank(section.get('fec_mask', 0), banks)
+            enabled = _keep(section, 'enable_mask',
+                            current['enable_mask_banks'], banks)
+            fec_req = _keep(section, 'fec_mask',
+                            current['fec_mask_banks'], banks)
             if not loc['present'] and any(enabled):
                 return _err(
                     'This module has no %s: 13h:131 bits %s are both clear, '
@@ -2669,8 +2700,7 @@ def api_prbs_set():
                                'Pre' if is_gen else 'Post'),
                             400)
             for lane, pat in enumerate(section.get('patterns', []) or []):
-                if int(pat) not in supported and any(
-                        _masks_per_bank(section.get('enable_mask', 0), banks)):
+                if int(pat) not in supported and any(enabled):
                     return _err(
                         'Lane %d: this module\'s %s does not support pattern '
                         '%d (%s). It advertises %s in 13h:%d-%d'
@@ -2683,13 +2713,17 @@ def api_prbs_set():
                            133 + 2 * ('host_gen', 'media_gen', 'host_chk',
                                       'media_chk').index(key)),
                         400)
-            en  = _masks_per_bank(section.get('enable_mask', 0), banks)
-            inv = _masks_per_bank(section.get('invert_mask', 0), banks)
-            sw  = _masks_per_bank(section.get('byte_swap_mask', 0), banks)
-            fec = _masks_per_bank(section.get('fec_mask', 0), banks)
+            en  = enabled
+            inv = _keep(section, 'invert_mask',
+                        current['invert_mask_banks'], banks)
+            sw  = _keep(section, 'byte_swap_mask',
+                        current['byte_swap_mask_banks'], banks)
+            fec = fec_req
             # Patterns are one flat list over all lanes; each bank takes its
             # own eight, so lanes 9-16 are not left on whatever was there.
-            patterns = list(section.get('patterns', [0] * _state['lanes']))
+            # A caller who names no patterns gets the ones already programmed,
+            # not lane after lane of pattern 0.
+            patterns = list(section.get('patterns') or current['patterns'])
             patterns += [0] * (banks * 8 - len(patterns))
             for b in range(banks):
                 _set_page(0x13, b)
@@ -2939,8 +2973,27 @@ def api_laser_set():
         # A body this handler does not understand used to come back as
         # "parameters written" having written nothing, so a caller with the
         # wrong shape was told its tuning had been applied.
+        # A misspelled field was dropped without a word while the reply said
+        # the tuning had been written: `target_power` for `target_power_dbm`
+        # left the laser at its old output power and reported success. The
+        # handler already refuses an entry that carries nothing it knows; this
+        # is the same check for an entry that carries something as well.
+        #
+        # Checked before "no lanes given", so a misspelled `lanes` is named as
+        # the misspelling rather than reported as an empty request.
+        bad = _reject_unknown(body, ('lanes',))
+        if bad:
+            return bad
         if not isinstance(lanes, list) or not lanes:
             return _err('No lanes given; expected {"lanes": [{"lane": 1, ...}]}', 400)
+        for _i, _entry in enumerate(lanes):
+            if not isinstance(_entry, dict):
+                return _err('Lane entry %d is not an object; expected '
+                            '{"lane": 1, ...}' % (_i + 1), 400)
+            bad = _reject_unknown(_entry, _LASER_LANE_FIELDS,
+                                  where='in lane entry %d, ' % (_i + 1))
+            if bad:
+                return bad
         # The ranges the module advertises are the only thing that says what a
         # legal request looks like, so read them before writing one.
         _set_page(0x04)
