@@ -16553,6 +16553,117 @@ class TestTheLaserPanelAsksWhetherThereIsALaser(CMISTestCase):
         self.assertNotIn('d.grids_supported.length === 0', js)
 
 
+class TestNothingReadsAPageTheModuleDoesNotHave(CMISTestCase):
+    """A standing guard for the class of defect v2.66.0 fixed.
+
+    8.2.4 makes selecting an unimplemented page silent: the module clears
+    PageSelect and serves Upper Page 00h, so a handler that reads an optional
+    page without checking its advertisement gets the identification strings
+    and decodes them as whatever it expected. The laser panel did exactly that
+    and reported five channel grids on a module with no tunable laser.
+
+    Nothing in a reply distinguishes that from a real answer, so the check has
+    to come from the module's side. The mock records every PageSelect it had
+    to redirect, and this walks every endpoint on every profile and asserts
+    there were none.
+
+    The GET list is taken from the route table rather than typed out, so an
+    endpoint added later is covered without anyone remembering to add it."""
+
+    # Bodies are deliberately minimal - enough to reach the page selects, not
+    # to exercise the handler. A request refused for some other reason is fine;
+    # what matters is that nothing selected a page that is not there.
+    POST_BODIES = {
+        '/api/module/acq_counters/reset': {'lanes': [1], 'side': 'both'},
+        '/api/module/prbs': {'host_gen': {'enable_mask': 1,
+                                          'patterns': [1] * 8}},
+        '/api/module/loopback': {'media_side_output': 1},
+        '/api/module/squelch': {'auto_squelch_disable_tx': 1},
+        '/api/module/datapath': {'tx_disable_mask': 1},
+        '/api/module/media_lane_switching': {'enable': True},
+        '/api/module/laser': {'lanes': [{'lane': 1, 'channel': 1}]},
+        '/api/module/control': {'low_pwr': False},
+        '/api/module/flags/clear': {},
+    }
+
+    def _module_gets(self):
+        import app as app_module
+        out = []
+        for rule in app_module.app.url_map.iter_rules():
+            path = str(rule)
+            if not path.startswith('/api/module/'):
+                continue
+            if '<' in path or 'GET' not in rule.methods:
+                continue
+            out.append(path)
+        return sorted(set(out))
+
+    def _mocks(self):
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        return sorted(n for n in i2c_interface._BACKENDS
+                      if n.startswith('mock'))
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _redirects(self):
+        import app as app_module
+        return [hex(p) for p in app_module._state['backend']._page_redirects]
+
+    def test_the_route_table_actually_yields_endpoints(self):
+        """If this ever came back empty the sweep below would pass by
+        checking nothing at all."""
+        self.assertGreaterEqual(len(self._module_gets()), 10)
+
+    def test_no_read_endpoint_selects_a_missing_page(self):
+        for backend in self._mocks():
+            self.client.post('/api/disconnect')
+            self._connect(backend)
+            for path in self._module_gets():
+                self.client.get(path)
+            self.assertEqual(
+                self._redirects(), [],
+                '%s: an endpoint read a page this module does not implement, '
+                'which a real module answers with Page 00h' % backend)
+
+    def test_no_write_endpoint_selects_a_missing_page(self):
+        """Worse than a read: on real hardware the write lands on Page 00h,
+        which is where the module keeps what it is."""
+        for backend in self._mocks():
+            self.client.post('/api/disconnect')
+            self._connect(backend)
+            for path, body in self.POST_BODIES.items():
+                self.client.post(path, data=json.dumps(body),
+                                 content_type='application/json')
+            self.assertEqual(
+                self._redirects(), [],
+                '%s: an endpoint wrote to a page this module does not '
+                'implement' % backend)
+
+    def test_connecting_alone_selects_no_missing_page(self):
+        """Discovery reads a lot of optional pages to find out what is there,
+        which is exactly where an unchecked one is easiest to write."""
+        for backend in self._mocks():
+            self.client.post('/api/disconnect')
+            self._connect(backend)
+            self.assertEqual(self._redirects(), [], backend)
+
+    def test_the_guard_notices_when_a_page_is_missing(self):
+        """The whole thing rests on the mock reporting a redirect, so prove it
+        reports one when a page really is absent."""
+        import app as app_module
+        self._connect('mock_dr8')
+        backend = app_module._state['backend']
+        self.assertNotIn(0x04, backend._registers,
+                         'mock_dr8 was expected to have no Page 04h')
+        backend.write_bytes(0x7F, bytes([0x04]))
+        self.assertEqual(self._redirects(), ['0x4'])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

@@ -686,6 +686,7 @@ class MockBackend(I2CInterface):
         self._apply_hot = False           # ApplyImmediate rather than DPInit
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._apply_provision_only = False
+        self._page_redirects = []         # PageSelects that named a missing page
         self._tuning_accepted = [True] * max(
             8, self.PROFILE.get('lanes', 8))
         self._dp_lane_states = [0x4] * 8  # all Activated
@@ -1719,7 +1720,13 @@ class MockBackend(I2CInterface):
         # One condition, not two: every banked page is built with a bank-0
         # entry under its plain page number, so checking the (page, bank)
         # keys as well was a branch nothing could reach.
-        return page if page in self._registers else 0x00
+        if page in self._registers:
+            return page
+        # Kept so a test can ask "did anything read a page this module does
+        # not have". A real module answers such a read with Page 00h and says
+        # nothing, so the only way to notice is from this side.
+        self._page_redirects.append(page)
+        return 0x00
 
     def _write_targets(self):
         """Where an upper-memory write lands: the selected bank, or every bank
