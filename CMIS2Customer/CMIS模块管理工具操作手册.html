@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.73.0<br>
+      <b>版本</b>　2.74.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.73.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.73.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.74.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.74.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1686,6 +1686,19 @@
     0 °C 和“TEC 没在工作”都是看上去很合理的读数。
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
+  </div>
+
+  <h3>调谐表也是按媒体侧通道排的</h3>
+  <p>规范 8.15 写得很直接：<b>「Page 12h 的每个 Bank 对应 8 条<u>媒体侧</u>通道」</b>，而 Table 8-108 里每一项——栅格间隔、通道号、微调偏移、激光器频率、目标输出功率——都是<b>「每条媒体侧通道一个」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>调谐表此前是<b>按主机侧通道</b>排的。相干模块只有<b>一路激光器</b>，却被排出 8 行——后 7 行读的是不存在的寄存器。<br>
+    更严重的是<b>写</b>：给「第 5 通道」下调谐<b>会被接受并写下去</b>，然后界面把通道号从一个模块根本没有的媒体侧通道读回来显示——操作员以为调好了。</span>
+  </div>
+  <p>现在调谐表只列<b>真实存在的媒体侧通道</b>，对不存在的通道下调谐会被<b>拒绝并说明依据</b>（<code>00h:210</code> 和 8.15）。并且沿用同一条规矩：<b>一次请求里只要有一条通道不合法，一个字节都不写</b>。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>和上一条一样，<b>超过 8 条通道的模块不受此限制</b>——规范 8.3.7 说这类模块无法无歧义地声明，所以工具不据此隐藏任何通道。</span>
   </div>
 
   <h3>相干模块只有一条媒体侧通道,别的行不是读数</h3>
@@ -3556,7 +3569,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.73.0<br>
+    CMIS Module Manager 操作手册 v2.74.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

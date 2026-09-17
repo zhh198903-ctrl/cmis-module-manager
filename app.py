@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.73.0'
+__version__ = '2.74.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2956,6 +2956,13 @@ def api_laser_get():
 
         lanes = []
         for i in range(_state['lanes']):
+            # 8.15: "Each Bank of Page 12h refers to 8 media lanes", and every
+            # subject area in Table 8-108 is "one ... per media lane". The
+            # rows were host lanes, so a coherent module - eight host lanes
+            # into one optical carrier - was offered eight tuning rows for its
+            # single laser, seven of them reading registers that are not there.
+            if not _media_lane_present(i + 1):
+                continue
             gs = grid_spacing[i]
             gc = (gs >> 4) & 0x0F
             fine_en = bool(gs & 0x01)
@@ -3108,6 +3115,16 @@ def api_laser_set():
                     '(01h:142.1-0)'
                     % (lane + 1, _state['lanes'],
                        '' if _state['lanes'] == 1 else 's'), 400)
+            # And the lane has to be a media lane, which is the axis this page
+            # is indexed by. Tuning "lane 5" on a module with one media lane
+            # was accepted and written, and the panel then reported the
+            # channel back from a register the module does not have.
+            if not _media_lane_present(lane + 1):
+                return _err(
+                    'Media lane %d is not on this module (00h:210). Page 12h '
+                    'is indexed by media lane - "Each Bank of Page 12h refers '
+                    'to 8 media lanes" (8.15) - so there is no laser here to '
+                    'tune' % (lane + 1), 400)
             bank, slot = divmod(lane, 8)
             # Counted per field, not per entry: {"lane": 3} on its own asks
             # for nothing, and reporting it as a written lane is the same

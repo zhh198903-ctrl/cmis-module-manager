@@ -7643,7 +7643,7 @@ class TestSupervisionRelativeToTheProgrammedPower(CMISTestCase):
     decoder for the offsets had been in the codebase unexecuted, because no
     profile advertised the bit that reaches it."""
 
-    def _connect(self, backend='mock_coherent_zr'):
+    def _connect(self, backend='mock_zr16'):
         self.assertOk(self.client.post(
             '/api/connect',
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
@@ -7685,10 +7685,16 @@ class TestSupervisionRelativeToTheProgrammedPower(CMISTestCase):
         self.assertEqual(d['relative_power_thresholds'], {})
 
     def test_which_lanes_use_it_is_reported(self):
+        """12h:128-135.1, one bit per media lane. The profile enables it on
+        the first four and leaves the rest absolute, so both regimes are on
+        the same module - which is the point of reporting it per lane."""
         self._connect()
-        self.assertEqual([l['relative_thresholds_enabled']
-                          for l in self._laser()['lanes']],
-                         [True] * 4 + [False] * 4)
+        flags = [l['relative_thresholds_enabled']
+                 for l in self._laser()['lanes']]
+        self.assertEqual(len(flags), 16, 'both banks of Page 12h')
+        # The profile builds every bank from the same bytes, so the pattern
+        # repeats: four relative, four absolute, in each group of eight.
+        self.assertEqual(flags, ([True] * 4 + [False] * 4) * 2)
 
     def test_an_enabled_lane_is_judged_against_its_own_power(self):
         self._connect()
@@ -18243,6 +18249,104 @@ class TestAMediaLaneTheModuleDoesNotHave(CMISTestCase):
                       'the cell does not say which register said so')
         body = js_function_body(js, 'async function _loadMonitoringOnce(')
         self.assertIn('absentLane', body)
+
+
+class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
+    """8.15 is explicit: "Each Bank of Page 12h refers to 8 media lanes", and
+    every subject area in Table 8-108 is "an array with one ... per media
+    lane" - grid spacing, channel offset, fine tuning, laser frequency,
+    target output power.
+
+    The tuning table was built per host lane. A coherent module carries eight
+    host lanes into a single optical carrier, so it was offered eight tuning
+    rows for its one laser, seven of them reading registers that are not
+    there - and, worse, accepting writes to them: tuning "lane 5" answered
+    "Laser tuning parameters written" and the panel then reported the channel
+    back from a media lane the module does not have.
+
+    The handler's own comment already said the page is banked by media lane;
+    it then bounded the request by the host lane count."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _post(self, body):
+        return json.loads(self.client.post(
+            '/api/module/laser', data=json.dumps(body),
+            content_type='application/json').data)
+
+    # ---- the table ---------------------------------------------------------
+
+    def test_one_optical_carrier_gets_one_tuning_row(self):
+        self._connect('mock_coherent_zr')
+        rows = [l['lane'] for l in self._laser()['lanes']]
+        self.assertEqual(rows, [1],
+                         'a module with one media lane was offered %d tuning '
+                         'rows' % len(rows))
+
+    def test_the_rows_are_the_lanes_that_can_be_tuned(self):
+        """No row the module would refuse, and no tunable lane without a row.
+        Either way round is a panel that disagrees with its own Apply."""
+        self._connect('mock_coherent_zr')
+        rows = {l['lane'] for l in self._laser()['lanes']}
+        import app as app_module
+        for lane in range(1, app_module._state['lanes'] + 1):
+            r = self._post({'lanes': [{'lane': lane, 'channel': 1}]})
+            accepted = r['status'] == 'ok'
+            self.assertEqual(accepted, lane in rows,
+                             'lane %d: table %s it, Apply %s it'
+                             % (lane, 'offers' if lane in rows else 'omits',
+                                'took' if accepted else 'refused'))
+
+    # ---- the write ---------------------------------------------------------
+
+    def test_tuning_a_lane_that_is_not_there_is_refused(self):
+        self._connect('mock_coherent_zr')
+        r = self._post({'lanes': [{'lane': 5, 'channel': 10}]})
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('00h:210', r['message'],
+                      'the refusal does not say which register said so')
+        self.assertIn('media lane', r['message'].lower())
+
+    def test_a_refused_tuning_writes_nothing(self):
+        """The all-or-nothing rule again: a request naming a real lane and an
+        absent one must not tune the real one."""
+        self._connect('mock_coherent_zr')
+        before = self._laser()['lanes']
+        r = self._post({'lanes': [{'lane': 1, 'channel': 7},
+                                  {'lane': 5, 'channel': 7}]})
+        self.assertEqual(r['status'], 'error')
+        self.assertEqual(self._laser()['lanes'], before)
+
+    def test_the_lane_that_exists_still_tunes(self):
+        """A gate that refused everything would pass every test above."""
+        self._connect('mock_coherent_zr')
+        r = self._post({'lanes': [{'lane': 1, 'channel': 9}]})
+        self.assertEqual(r['status'], 'ok', r.get('message'))
+        self.assertEqual(self._laser()['lanes'][0]['channel'], 9)
+
+    # ---- the limit of the advertisement ------------------------------------
+
+    def test_a_wide_module_is_not_narrowed(self):
+        """8.3.7: a module with more than eight host lanes "can therefore not
+        unambiguously advertise unsupported media lanes", so 00h:210 is not
+        used there and nothing is hidden on its strength."""
+        self._connect('mock_zr16')
+        rows = [l['lane'] for l in self._laser()['lanes']]
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(self._post(
+            {'lanes': [{'lane': 12, 'channel': 1}]})['status'], 'ok')
+
+    def test_an_untunable_module_is_unaffected(self):
+        self._connect('mock_dr8')
+        r = json.loads(self.client.get('/api/module/laser').data)
+        self.assertFalse(r['data']['tunable'])
 
 
 if __name__ == '__main__':
