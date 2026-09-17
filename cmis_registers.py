@@ -380,7 +380,8 @@ MODULE_STATES = {
     0b111: "Reserved",
 }
 
-# Table 8-84: DataPath State (4-bit field per lane on Page 11h:128-131)
+# Table 8-94 (Data Path State Encoding), reported per host lane at
+# 11h:128-131 - Table 8-93 names those fields DPStateHostLane<i>.
 DP_STATE_NAMES = {
     0x0: "Reserved",
     0x1: "Deactivated",
@@ -623,6 +624,20 @@ def parse_interrupt_asserted(byte_val: int) -> bool:
     return (byte_val & 0x01) == 0
 
 
+def dp_state_name(nibble: int) -> str:
+    """Table 8-94 names 0h and 8h-Fh Reserved - it does define them.
+
+    Calling those Unknown says the tool did not recognise what the module
+    reported, which sends the reader looking for a newer tool. What the module
+    actually did was report an encoding the standard reserves, which is a
+    question about the module.
+
+    The same distinction the ConfigStatus decoder already draws one table
+    over; this one had not been given it.
+    """
+    return DP_STATE_NAMES.get(nibble, 'Reserved (%Xh)' % nibble)
+
+
 def parse_dp_states(data: bytes) -> list:
     """Decode 4 bytes of DataPath state at Page 11h:128-131.
 
@@ -639,7 +654,7 @@ def parse_dp_states(data: bytes) -> list:
             states.append("Unknown")
             continue
         nibble = (data[byte_idx] >> ((lane % 2) * 4)) & 0x0F
-        states.append(DP_STATE_NAMES.get(nibble, f"Unknown(0x{nibble:X})"))
+        states.append(dp_state_name(nibble))
     return states
 
 

@@ -18556,6 +18556,61 @@ class TestEveryScaleFactorAgainstTheSpecification(CMISTestCase):
         self.assertIsNone(blank['voltage_min_v'])
 
 
+class TestAReservedDataPathEncodingIsNamedAsOne(CMISTestCase):
+    """Table 8-94 defines 0h and 8h-Fh as Reserved. It does define them.
+
+    Calling those "Unknown" says the tool did not recognise what the module
+    reported, which sends the reader looking for a newer tool. What the module
+    actually did was report an encoding the standard reserves, which is a
+    question about the module - and on the most prominent per-lane field on
+    the Monitoring panel.
+
+    The ConfigStatus decoder one table over already draws exactly this
+    distinction, in a docstring that says why; the Data Path one had not been
+    given it."""
+
+    def test_the_named_encodings_are_unchanged(self):
+        import cmis_registers as c
+        self.assertEqual(
+            [c.dp_state_name(n) for n in range(8)],
+            ['Reserved', 'Deactivated', 'Init', 'Deinit', 'Activated',
+             'TxTurnOn', 'TxTurnOff', 'Initialized'])
+
+    def test_the_reserved_range_says_reserved(self):
+        import cmis_registers as c
+        for n in range(0x8, 0x10):
+            self.assertEqual(c.dp_state_name(n), 'Reserved (%Xh)' % n)
+
+    def test_a_reserved_state_is_coloured_as_neither(self):
+        """It is not up and it is not down; painting it either way makes a
+        claim about traffic that nothing supports."""
+        import cmis_registers as c
+        for n in (0x0, 0x8, 0xF):
+            self.assertEqual(c.dp_state_kind(c.dp_state_name(n)), 'unknown')
+
+    def test_a_reserved_state_is_not_treated_as_transient(self):
+        """Transient gates the Apply triggers (6.2.4), so guessing here would
+        discard a request or send one that is silently ignored."""
+        import cmis_registers as c
+        for n in (0x0, 0x8, 0xF):
+            name = c.dp_state_name(n)
+            self.assertFalse(c.dp_state_is_transient(name), name)
+            self.assertFalse(c.dp_state_takes_apply_immediate(name), name)
+
+    def test_it_reaches_the_lane_decode(self):
+        import cmis_registers as c
+        states = c.parse_dp_states(bytes([0x81, 0x44, 0x44, 0x44]))
+        self.assertEqual(states[0], 'Deactivated')
+        self.assertEqual(states[1], 'Reserved (8h)')
+
+    def test_the_monitors_of_a_reserved_state_are_not_assured(self):
+        """6.3.3 assures a lane's monitors only in DPInitialized and
+        DPActivated, so an encoding that is neither cannot be assured."""
+        import cmis_registers as c
+        for n in (0x0, 0x8, 0xF):
+            self.assertFalse(c.dp_monitors_assured(c.dp_state_name(n)))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
