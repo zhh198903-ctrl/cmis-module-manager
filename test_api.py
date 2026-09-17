@@ -15606,7 +15606,8 @@ class TestAMonitorTheModuleDoesNotHave(CMISTestCase):
         failed", and only the module can say which."""
         self._connect('mock_fewmon')
         self.assertEqual(self._status()['monitors_present'],
-                         {'temperature': True, 'vcc': False})
+                         {'temperature': True, 'vcc': False, 'aux1': True,
+                          'aux2': True, 'aux3': True, 'custom': False})
         self.assertEqual(self._monitoring()['monitors_present'],
                          {'tx_optical_power': False, 'rx_optical_power': True,
                           'tx_bias': False})
@@ -16662,6 +16663,298 @@ class TestNothingReadsAPageTheModuleDoesNotHave(CMISTestCase):
                          'mock_dr8 was expected to have no Page 04h')
         backend.write_bytes(0x7F, bytes([0x04]))
         self.assertEqual(self._redirects(), ['0x4'])
+
+
+class TestTheAuxAndCustomMonitorFlagsSurvive(CMISTestCase):
+    """Lower Memory 9-11 (Table 8-9) hold the threshold Flags of all six
+    module-level monitors: temperature and Vcc in byte 9, Aux1 and Aux2 in
+    byte 10, Aux3 and the Custom monitor in byte 11.
+
+    The status poll reads bytes 8-13 in one go and decoded byte 9 only. The
+    whole block is RO/COR - "a Flag bit remains set until cleared by a READ of
+    the Byte containing the Flag" - so that read destroyed the Aux and Custom
+    Flags as well. A module raising a TEC current alarm had it consumed by the
+    tool, shown nowhere, and left for nobody: the next reader sees zero.
+
+    The summary row makes the same claim in the UI, labelled Lower 0x08-0x0D
+    and reporting "None" for a range whose last two Flag bytes it never read.
+    """
+
+    LEVELS = ('high_alarm', 'low_alarm', 'high_warn', 'low_warn')
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _drive_aux1(self, percent):
+        """Put the mock's Aux1 TEC current at a chosen percentage."""
+        import app as app_module
+        backend = app_module._state['backend']
+        raw = struct.pack('>h', int(round(percent * 32767 / 100.0)))
+        backend._registers[None][0x12] = raw[0]
+        backend._registers[None][0x13] = raw[1]
+
+    # ---- the decode itself -------------------------------------------------
+
+    def test_every_bit_of_all_three_bytes_is_named(self):
+        """One wrong bit assigns an alarm to the neighbouring monitor, which
+        reads as a plausible fault on the wrong observable."""
+        import cmis_registers as c
+        expect = {
+            (0x09, 0): 'temp', (0x09, 4): 'vcc',
+            (0x0A, 0): 'aux1', (0x0A, 4): 'aux2',
+            (0x0B, 0): 'aux3', (0x0B, 4): 'custom',
+        }
+        for (addr, half), prefix in expect.items():
+            for bit, level in enumerate(self.LEVELS):
+                block = bytearray(6)
+                block[addr - 0x08] = 1 << (half + bit)
+                got = c.parse_module_monitor_flags(bytes(block))
+                on = sorted(k for k, v in got.items() if v)
+                self.assertEqual(
+                    on, ['%s_%s' % (prefix, level)],
+                    'Lower %#04x bit %d' % (addr, half + bit))
+
+    def test_the_decode_covers_six_monitors_and_no_more(self):
+        import cmis_registers as c
+        got = c.parse_module_monitor_flags(bytes(6))
+        self.assertEqual(len(got), 24)
+        self.assertEqual(
+            sorted({k.rsplit('_', 2)[0] for k in got}),
+            ['aux1', 'aux2', 'aux3', 'custom', 'temp', 'vcc'])
+
+    def test_a_short_block_does_not_raise_flags(self):
+        """A truncated read is a failed poll, not six healthy monitors and
+        certainly not six alarms."""
+        import cmis_registers as c
+        got = c.parse_module_monitor_flags(b'\xff\xff')
+        self.assertTrue(all(v is False for k, v in got.items()
+                            if not k.startswith('temp')
+                            and not k.startswith('vcc')))
+
+    # ---- the module Flags reach the reply ----------------------------------
+
+    def test_an_aux_alarm_is_reported_not_swallowed(self):
+        self._connect('mock_coherent')
+        self._drive_aux1(-95.0)          # past the -90 % low alarm
+        d = self._status()
+        self.assertTrue(d['aux1_low_alarm'],
+                        'the module raised an Aux1 low alarm and the reply '
+                        'does not carry it')
+        self.assertTrue(d['alarm_active'],
+                        'the summary says no alarm while an Aux monitor is in '
+                        'alarm, over the same byte range it names')
+
+    def test_the_flag_travels_with_the_reading_it_judges(self):
+        """The value and its thresholds were already on screen; without the
+        Flags next to them the module's own verdict is the missing half."""
+        self._connect('mock_coherent')
+        self._drive_aux1(-95.0)
+        aux1 = [a for a in self._status()['aux'] if a['index'] == 1][0]
+        self.assertTrue(aux1['flags']['low_alarm'])
+        self.assertFalse(aux1['flags']['high_alarm'])
+
+    def test_a_healthy_module_raises_nothing(self):
+        """A guard that fires on every profile would hide a real one."""
+        for backend in ('mock_coherent', 'mock_coherent_zr', 'mock_zr16',
+                        'mock_dr8', 'mock_sr8', 'mock_fr4x2', 'mock_fewmon',
+                        'mock_24lane', 'mock_1600g_dr8', 'mock_1600g_16lane'):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                d = self._status()
+                raised = [k for k in d
+                          if k.rsplit('_', 2)[0] in ('aux1', 'aux2', 'aux3',
+                                                     'custom')
+                          and d[k] is True]
+                self.assertEqual(raised, [], backend)
+
+    def test_a_monitor_the_module_does_not_have_reports_unknown(self):
+        """8.14.1 ties a threshold Flag to a monitor. An absent monitor reads
+        zero, which is exactly what a healthy one reads, so False would be the
+        tool inventing a clean bill of health."""
+        self._connect('mock_dr8')                  # no Aux monitors at all
+        d = self._status()
+        for idx in (1, 2, 3):
+            for level in self.LEVELS:
+                self.assertIsNone(d['aux%d_%s' % (idx, level)],
+                                  'aux%d_%s' % (idx, level))
+
+    def test_the_advertised_monitors_are_listed(self):
+        self._connect('mock_coherent')
+        self.assertEqual(
+            self._status()['monitors_present'],
+            {'temperature': True, 'vcc': True, 'aux1': True, 'aux2': True,
+             'aux3': True, 'custom': False})
+
+    # ---- the history keeps them, because the read destroys them ------------
+
+    def test_an_aux_alarm_is_remembered_after_it_clears(self):
+        """The Flag is gone once the read that reports it has run and the
+        excursion is over. If the history did not keep it, the only trace
+        would be a poll or two that nobody happened to be watching.
+
+        Which poll clears it is not pinned: a status request makes several
+        reads, and any of them that still sees the excursion re-latches the
+        Flag, so it survives for as long as the condition does plus one."""
+        self._connect('mock_coherent')
+        self._drive_aux1(-95.0)
+        self.assertTrue(self._status()['aux1_low_alarm'])
+        self._drive_aux1(-38.0)                    # back inside the window
+        for _ in range(5):
+            d = self._status()
+            if not d['aux1_low_alarm']:
+                break
+        else:
+            self.fail('the Flag never cleared after the excursion ended, so '
+                      'it is being asserted live rather than latched')
+        self.assertIn('aux1_low_alarm', d['seen'],
+                      'the excursion happened and nothing remembers it')
+
+    # ---- the mock tells the truth about its own readings -------------------
+
+    def test_the_mock_raises_the_flag_its_reading_earns(self):
+        """The mock published an Aux value and Aux thresholds and left the
+        Flag bytes at zero, so it could report a TEC current past its own
+        alarm threshold and insist nothing was wrong."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        backend = i2c_interface.create_backend('mock_coherent')
+        backend.connect(0, 0x50)
+        try:
+            raw = struct.pack('>h', int(round(-95 * 32767 / 100.0)))
+            backend._registers[None][0x12] = raw[0]
+            backend._registers[None][0x13] = raw[1]
+            self.assertEqual(backend.read_bytes(0x08, 6)[2], 0x0A,
+                             'Aux1 low alarm and low warning, Table 8-9')
+        finally:
+            backend.disconnect()
+
+    def test_the_mock_latches_the_aux_flag_bytes(self):
+        """Table 8-9 marks bytes 8-11 RO/COR. An excursion that came and went
+        between two polls is exactly what a latched Flag is for, and a mock
+        that left these bytes live could not show one."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        backend = i2c_interface.create_backend('mock_coherent')
+        backend.connect(0, 0x50)
+        try:
+            lower = backend._registers[None]
+            bad = struct.pack('>h', int(round(-95 * 32767 / 100.0)))
+            lower[0x12], lower[0x13] = bad[0], bad[1]
+            backend.read_bytes(0x12, 2)         # a poll that misses the Flag
+            good = struct.pack('>h', int(round(-38 * 32767 / 100.0)))
+            lower[0x12], lower[0x13] = good[0], good[1]
+            self.assertEqual(backend.read_bytes(0x08, 6)[2], 0x0A,
+                             'the transient was not latched')
+            self.assertEqual(backend.read_bytes(0x08, 6)[2], 0x00,
+                             'the Flag survived the read that reported it')
+        finally:
+            backend.disconnect()
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_a_warning_is_not_an_alarm(self):
+        """mock_coherent warns on Aux1 at +-80 % and alarms at +-90 %. A
+        reading between the two must raise the warning and only the warning:
+        judging both levels against one threshold looks right at -95 %, where
+        everything fires anyway."""
+        self._connect('mock_coherent')
+        self._drive_aux1(-85.0)
+        d = self._status()
+        self.assertTrue(d['aux1_low_warn'])
+        self.assertFalse(d['aux1_low_alarm'],
+                         '-85 % is inside the -90 % alarm threshold')
+        self.assertFalse(d['aux1_high_warn'])
+
+    def test_each_aux_monitor_flags_into_its_own_byte(self):
+        """Aux1 and Aux2 share byte 10 and Aux3 has byte 11. Writing Aux3's
+        result into byte 10 would report a healthy Vcc2 excursion as a TEC
+        current alarm - a plausible fault on the wrong observable."""
+        import app as app_module
+        self._connect('mock_coherent')
+        lower = app_module._state['backend']._registers[None]
+        raw = struct.pack('>h', 25000)          # 2.5 V, past the 1.98 V alarm
+        lower[0x16], lower[0x17] = raw[0], raw[1]
+        d = self._status()
+        self.assertTrue(d['aux3_high_alarm'])
+        for other in ('aux1', 'aux2'):
+            for level in self.LEVELS:
+                self.assertFalse(d['%s_%s' % (other, level)],
+                                 'Aux3 raised %s_%s' % (other, level))
+
+    def test_the_mock_raises_no_flag_for_a_monitor_it_denies_having(self):
+        """Same rule the module-level Flags already follow: no monitor, no
+        Flag. The API gates unadvertised monitors to unknown, so a mock that
+        raised them anyway would be contradicting itself behind that gate."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        backend = i2c_interface.create_backend('mock_coherent')
+        backend.connect(0, 0x50)
+        try:
+            backend._profile = dict(backend._profile, monitors_159=0x1B)
+            raw = struct.pack('>h', int(round(-95 * 32767 / 100.0)))
+            backend._registers[None][0x12] = raw[0]
+            backend._registers[None][0x13] = raw[1]
+            self.assertEqual(
+                backend.read_bytes(0x08, 6)[2] & 0x0F, 0x00,
+                'Aux1 is not advertised in 01h:159 and still raised a Flag')
+        finally:
+            backend.disconnect()
+
+    def test_the_panel_shows_the_verdict(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('monitorFlagVerdict(a.flags)', js,
+                      'the Aux rows show a value with no verdict on it')
+        self.assertIn('Custom Monitor', js,
+                      'the Custom monitor Flags are read and never shown')
+
+    def test_an_unadvertised_flag_paints_nothing(self):
+        """null is "the module has no such monitor", not "in alarm"."""
+        js = self._helper()
+        self.assertEqual(js.verdict({'low_alarm': None, 'high_alarm': None}),
+                         '')
+        self.assertEqual(js.verdict(None), '')
+
+    def test_an_alarm_outranks_a_warning_in_the_colour(self):
+        js = self._helper()
+        both = js.verdict({'low_alarm': True, 'low_warn': True})
+        self.assertIn('text-danger', both)
+        self.assertNotIn('text-warning', both)
+        self.assertIn('text-warning', js.verdict({'low_warn': True}))
+
+    def _helper(self):
+        """Run the real monitorFlagVerdict from app.js under node."""
+        import subprocess
+        import shutil
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(here, 'static', 'app.js')
+
+        class _Runner(object):
+            def verdict(_self, flags):
+                script = (
+                    'const fs=require("fs");'
+                    'const s=fs.readFileSync(process.argv[1],"utf8");'
+                    'eval(s.match(/function monitorFlagVerdict[\\s\\S]*?\\n}\\n/)[0]);'
+                    'process.stdout.write(monitorFlagVerdict('
+                    + json.dumps(flags) + '));')
+                out = subprocess.run([node, '-e', script, src],
+                                     capture_output=True, text=True)
+                if out.returncode:
+                    raise AssertionError(out.stderr)
+                return out.stdout
+
+        return _Runner()
 
 
 if __name__ == '__main__':

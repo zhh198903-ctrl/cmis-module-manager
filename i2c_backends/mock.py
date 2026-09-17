@@ -2122,6 +2122,37 @@ class MockBackend(I2CInterface):
         # is still the thing the operator needs to know about.
         lower[0x09] = lower.get(0x09, 0) | bits
 
+        # Lower 10-11 (Table 8-9) carry the same four levels for the three Aux
+        # monitors. The mock published Aux values and Aux thresholds and then
+        # left these bytes at zero, so it could report a TEC current past its
+        # own alarm threshold while insisting nothing was wrong.
+        #
+        # A monitor and its thresholds are the same raw S16 (Table 8-10,
+        # Table 8-64), so they compare directly - converting either to volts or
+        # degrees first would only add a way to compare two different units.
+        if p02 and self._profile.get('aux_thresholds'):
+            aux_bits = {0x0A: 0, 0x0B: 0}
+            for idx in (1, 2, 3):
+                if not _mon_supported(self._profile, 'aux%d' % idx):
+                    continue
+                addr = 0x12 + 2 * (idx - 1)
+                raw = (lower.get(addr, 0) << 8) | lower.get(addr + 1, 0)
+                value = raw - 0x10000 if raw & 0x8000 else raw
+                base = 0x90 + 8 * (idx - 1)
+
+                def thr(off, _base=base):
+                    v = (p02.get(_base + off, 0) << 8) | p02.get(_base + off + 1, 0)
+                    return v - 0x10000 if v & 0x8000 else v
+
+                byte_addr = 0x0A if idx < 3 else 0x0B
+                shift = 0 if idx in (1, 3) else 4
+                for bit, hit in enumerate((value > thr(0), value < thr(2),
+                                           value > thr(4), value < thr(6))):
+                    if hit:
+                        aux_bits[byte_addr] |= 1 << (shift + bit)
+            for byte_addr, raised in aux_bits.items():
+                lower[byte_addr] = lower.get(byte_addr, 0) | raised
+
     def _set_lane_flags(self, lane, tx_uw, bias_ma, rx_uw):
         """Raise the flags a module would raise for the values it is reporting.
 
@@ -2553,7 +2584,10 @@ class MockBackend(I2CInterface):
     # have. A mock that instead tracked the live value could never show a
     # transient at all, and let the host get away with not remembering.
     _COR_BYTES = {
-        None: range(0x08, 0x0A),
+        # 8-11, not 8-9: Table 8-9 marks the Aux and Custom monitor Flag bytes
+        # RO/COR too. Leaving them live let a reader see an Aux alarm twice,
+        # which is the one thing a latched Flag guarantees cannot happen.
+        None: range(0x08, 0x0C),
         0x11: range(0x86, 0x9A),   # 134-153, DPStateChanged..RxOutputChanged
         # Table 8-138 is titled "Latched Diagnostics Flags" and marks the
         # whole of 132-139 RO/COR. A pattern checker that lost lock for a

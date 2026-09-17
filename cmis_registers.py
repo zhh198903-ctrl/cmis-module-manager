@@ -1236,6 +1236,41 @@ def parse_aux_thresholds(data: bytes, observables: dict) -> dict:
     return out
 
 
+# Table 8-9, Lower Memory 9-11. The six module-level monitors carry their
+# threshold Flags in three bytes that share one layout: bits 3-0 are the
+# high alarm, low alarm, high warning and low warning of one monitor and
+# bits 7-4 the same four of the next. Only byte 9 used to be decoded, so
+# the Aux and Custom monitor Flags were read - which is what clears them -
+# and dropped.
+MODULE_MONITOR_FLAG_BYTES = (
+    (0x09, 'temp', 'vcc'),
+    (0x0A, 'aux1', 'aux2'),
+    (0x0B, 'aux3', 'custom'),
+)
+
+MONITOR_FLAG_LEVELS = ('high_alarm', 'low_alarm', 'high_warn', 'low_warn')
+
+
+def parse_module_monitor_flags(data: bytes, first: int = 0x08) -> dict:
+    """Lower Memory 9-11 (Table 8-9), RO/COR.
+
+    `data` is the Flag block starting at `first`, normally Lower 8-13.
+
+    The Aux and Custom monitor Flags share the block with the temperature
+    and Vcc ones, so the read that reports either clears both. Decoding
+    part of the block does not leave the rest for the next reader.
+    """
+    out = {}
+    for addr, first_mon, second_mon in MODULE_MONITOR_FLAG_BYTES:
+        idx = addr - first
+        byte_val = data[idx] if 0 <= idx < len(data) else 0
+        for half, prefix in ((0, first_mon), (4, second_mon)):
+            for bit, level in enumerate(MONITOR_FLAG_LEVELS):
+                out['%s_%s' % (prefix, level)] = bool(
+                    byte_val & (1 << (half + bit)))
+    return out
+
+
 def parse_supported_flags(data: bytes) -> dict:
     """01h:157-158 (Table 8-52).
 

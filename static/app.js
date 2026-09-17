@@ -603,12 +603,32 @@ async function loadInfo() {
     const addr = ['0x12–0x13', '0x14–0x15', '0x16–0x17'][a.index - 1];
     const shown = a.unit === 'degC' ? `${a.value} °C`
                 : a.unit ? `${a.value} ${a.unit}` : `${a.value}`;
-    rows.push([`Aux${a.index} — ${a.name}`, esc(shown), 'Lower', addr,
+    rows.push([`Aux${a.index} — ${a.name}`,
+               esc(shown) + monitorFlagVerdict(a.flags), 'Lower', addr,
                `Aux${a.index}MonValue; observable advertised in 01h:145.${a.index - 1}`
                + (a.observable === 'tec_current'
                   ? ' — signed percentage of the maximum TEC current: '
                     + 'positive heats, negative cools'
-                  : '')]);
+                  : '')
+               + ` — threshold Flags in Lower ${a.index < 3 ? '0x0A' : '0x0B'}`]);
+  }
+
+  // Table 8-10 leaves the Custom monitor's encoding to the vendor ("S16 or
+  // U16"), so there is no honest way to print its value. Its four threshold
+  // Flags are defined exactly like every other monitor's, and they sit in the
+  // Flag block the status poll reads - so they were being cleared with
+  // nothing shown for them.
+  if ((s.monitors_present || {}).custom) {
+    const verdict = monitorFlagVerdict({
+      high_alarm: s.custom_high_alarm, low_alarm: s.custom_low_alarm,
+      high_warn: s.custom_high_warn, low_warn: s.custom_low_warn,
+    });
+    rows.push(['Custom Monitor',
+               verdict || '<span class="text-success">no flags set</span>',
+               'Lower', '0x0B[7:4]',
+               'CustomMon threshold Flags (Table 8-9). The observable and its '
+               + 'encoding are vendor defined (Table 8-10, Lower 24–25), '
+               + 'so only the module\'s verdict is shown']);
   }
 
   tbody.innerHTML = rows.map(([k, v, pg, addr, def, since]) => {
@@ -628,6 +648,26 @@ async function loadInfo() {
     </tr>`;
   }).join('');
 }
+
+// The module's own verdict on a module-level monitor: which of its four
+// threshold Flags (Table 8-9, Lower 9–11) are set. They are latched and
+// cleared by the read that reports them, so this says "since the previous
+// poll", not "at this instant". null means the module does not advertise the
+// monitor, which is not the same as a monitor that is fine.
+function monitorFlagVerdict(flags) {
+  if (!flags) return '';
+  const hits = [
+    ['high_alarm', 'high alarm', 'text-danger'],
+    ['low_alarm', 'low alarm', 'text-danger'],
+    ['high_warn', 'high warning', 'text-warning'],
+    ['low_warn', 'low warning', 'text-warning'],
+  ].filter(([k]) => flags[k] === true);
+  if (!hits.length) return '';
+  const cls = hits.some(h => h[2] === 'text-danger') ? 'text-danger'
+                                                     : 'text-warning';
+  return ` <span class="${cls}">${hits.map(h => h[1]).join(', ')}</span>`;
+}
+
 
 function rebuildLaneColumns() {
   // Five tables lay lanes out as columns, with L1..L8 written into the HTML.

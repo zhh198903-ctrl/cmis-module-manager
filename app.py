@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.66.1'
+__version__ = '2.67.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -135,11 +135,14 @@ _THRESHOLD_FLAG_MONITOR = {
     'rx_power_low_warn': 'rx_optical_power',
 }
 
+# Built from the same table the Flags are decoded with, so a monitor cannot
+# be gated on one advertisement and read from another. 'temp' is the only
+# prefix Table 8-53 spells differently from Table 8-9.
 _MODULE_FLAG_MONITOR = {
-    'temp_high_alarm': 'temperature', 'temp_low_alarm': 'temperature',
-    'temp_high_warn': 'temperature', 'temp_low_warn': 'temperature',
-    'vcc_high_alarm': 'vcc', 'vcc_low_alarm': 'vcc',
-    'vcc_high_warn': 'vcc', 'vcc_low_warn': 'vcc',
+    '%s_%s' % (_prefix, _level): {'temp': 'temperature'}.get(_prefix, _prefix)
+    for _addr, _first, _second in cmis.MODULE_MONITOR_FLAG_BYTES
+    for _prefix in (_first, _second)
+    for _level in cmis.MONITOR_FLAG_LEVELS
 }
 
 
@@ -850,6 +853,20 @@ def api_module_status():
         _caps = _state.get('caps') or {}
         _obs = _caps.get('aux') or {}
         _mons = _caps.get('monitors') or {}
+
+        # Lower 9-11 (Table 8-9): the temperature and Vcc Flags share the block
+        # with the three Aux monitors and the Custom one, and all of it is
+        # RO/COR. Reading part of it clears the rest, so a decode that stopped
+        # at byte 9 did not leave the Aux alarms for anyone else to find - it
+        # consumed them and reported none.
+        temp_alarms = cmis.parse_module_monitor_flags(mod_flags_raw)
+        # 8.14.1: a threshold Flag belongs to a monitor, and every one of these
+        # monitors is optional (Table 8-53). An absent one reads zero, which is
+        # indistinguishable from healthy, so it is reported as unknown instead.
+        for name in list(temp_alarms):
+            if not _monitor_present(_MODULE_FLAG_MONITOR[name]):
+                temp_alarms[name] = None
+
         aux_monitors = []
         for idx, raw in ((1, aux1_raw), (2, aux2_raw), (3, aux3_raw)):
             key = 'aux%d' % idx
@@ -861,26 +878,13 @@ def api_module_status():
             aux_monitors.append({
                 'index': idx, 'observable': observable, 'name': name_en,
                 'name_zh': name_zh, 'value': value, 'unit': unit,
+                # The value and its thresholds were already on screen; this is
+                # the module's own verdict on them, and it is destroyed by the
+                # read that produced the value.
+                'flags': {level: temp_alarms.get('%s_%s' % (key, level))
+                          for level in cmis.MONITOR_FLAG_LEVELS},
             })
 
-        # Module flags byte 0x09 = Vcc/Temp Low/High Warning/Alarm bits
-        f_byte9 = mod_flags_raw[1]
-        temp_alarms = {
-            'temp_high_alarm': bool((f_byte9 >> 0) & 1),
-            'temp_low_alarm':  bool((f_byte9 >> 1) & 1),
-            'temp_high_warn':  bool((f_byte9 >> 2) & 1),
-            'temp_low_warn':   bool((f_byte9 >> 3) & 1),
-            'vcc_high_alarm':  bool((f_byte9 >> 4) & 1),
-            'vcc_low_alarm':   bool((f_byte9 >> 5) & 1),
-            'vcc_high_warn':   bool((f_byte9 >> 6) & 1),
-            'vcc_low_warn':    bool((f_byte9 >> 7) & 1),
-        }
-        # Same rule one level up: Lower 9 holds the temperature and Vcc
-        # threshold Flags, both typed Adv., and a module without the monitor
-        # has neither.
-        for name in list(temp_alarms):
-            if not _monitor_present(_MODULE_FLAG_MONITOR[name]):
-                temp_alarms[name] = None
         state_changed = bool(mod_flags_raw[0] & 0x01)
         # A state change is an event, not a fault. Folding it in here lit the
         # alarm indicator every time somebody reset the module on purpose, and
@@ -908,8 +912,9 @@ def api_module_status():
             # So the panel can say which reading is missing and why, rather
             # than leaving a blank cell that reads as a failed poll.
             'monitors_present': {
-                'temperature': _monitor_present('temperature'),
-                'vcc': _monitor_present('vcc'),
+                key: _monitor_present(key)
+                for key in ('temperature', 'vcc', 'aux1', 'aux2', 'aux3',
+                            'custom')
             },
             'aux1_raw': struct.unpack(">h", aux1_raw[:2])[0] if len(aux1_raw) >= 2 else 0,
             'aux2_raw': struct.unpack(">h", aux2_raw[:2])[0] if len(aux2_raw) >= 2 else 0,
