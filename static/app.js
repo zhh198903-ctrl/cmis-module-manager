@@ -592,6 +592,17 @@ async function loadInfo() {
     ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
     ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
     ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
+    // The API has computed this from Lower 0x03 since the beginning and
+    // nothing displayed it. CMIS defines the line in one sentence - it is
+    // "asserted as long as any Flag is set with its associated Mask
+    // cleared" - which makes the interesting case the disagreement: a
+    // Flag on screen with no Interrupt is a Flag whose Mask is set, and
+    // the host is never told about it.
+    ['Interrupt',       s.interrupt_asserted
+        ? '<span class="text-danger">Asserted</span>'
+        : '<span class="text-success">Not asserted</span>',
+     'Lower', '0x03[0]',
+     'InterruptDeasserted (Table 8-6) — the module\'s own request for the host\'s attention, reported with its sense inverted. CMIS asserts it "as long as any Flag is set with its associated Mask cleared", so a Flag showing here with no Interrupt is one whose Mask is set'],
     ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
   ];
 

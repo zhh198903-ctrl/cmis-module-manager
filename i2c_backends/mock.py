@@ -1403,6 +1403,10 @@ class MockBackend(I2CInterface):
         if self._module_state != self._last_module_state:
             self._registers[None][0x08] =                 self._registers[None].get(0x08, 0) | 0x01
             self._last_module_state = self._module_state
+        # Bit 0 is InterruptDeasserted and is set at the end of the refresh,
+        # once this poll's Flags are in place: see _update_dynamic_values.
+        # Deciding it here would use the previous poll's Flags, so a fault
+        # would reach the line one read after it latched.
         self._registers[None][0x03] = (self._module_state << 1) | 0x01
 
         # A path being taken down walks DPTxTurnOff -> DPDeinit ->
@@ -1980,6 +1984,16 @@ class MockBackend(I2CInterface):
                     p12[a + 3] = freq_mhz & 0xFF
                     p12[0xDE + lane] = 0x00
 
+        # Last, because it depends on every Flag the refresh has just raised.
+        # The specification defines the line in one sentence: Interrupt "is
+        # asserted as long as any Flag is set with its associated Mask
+        # cleared". It used to be hard-wired to deasserted, so a mock could
+        # hold a temperature alarm, a Tx fault and a checker that had lost
+        # lock while reporting that it was asking the host for nothing.
+        lower = self._registers[None]
+        lower[0x03] = (lower.get(0x03, 0) & ~0x01) | (
+            0 if self._interrupt_pending() else 1)
+
     # ------------------------------------------------------------------
     def _intercept_write(self, register, data):
         """Trigger state-machine transitions; return the bytes to actually store.
@@ -2103,6 +2117,28 @@ class MockBackend(I2CInterface):
         (0x95, 0x96, 0xC0, 0xC2, 'rx_power'),
         (0x97, 0x98, 0xC4, 0xC6, 'rx_power'),
     )
+
+    def _interrupt_pending(self) -> bool:
+        """Any Flag set whose Mask is clear (the specification's definition).
+
+        A Mask register the profile never wrote reads 0, which is "not
+        masked" - the default - so an unmodelled Mask does not silently
+        suppress the line.
+        """
+        for flag_page, flag_first, mask_page, mask_first, count in \
+                cmis.FLAG_MASK_BLOCKS:
+            flag_banks = (self._page_dicts(flag_page)
+                          if flag_page is not None
+                          else [self._registers[None]])
+            mask_banks = (self._page_dicts(mask_page)
+                          if mask_page is not None
+                          else [self._registers[None]])
+            for flags, masks in zip(flag_banks, mask_banks):
+                for i in range(count):
+                    if flags.get(flag_first + i, 0) & ~masks.get(
+                            mask_first + i, 0) & 0xFF:
+                        return True
+        return False
 
     def _set_module_flags(self, temp_c):
         """Raise the module-level temperature and Vcc flags the readings earn.

@@ -1251,6 +1251,22 @@ MODULE_MONITOR_FLAG_BYTES = (
 MONITOR_FLAG_LEVELS = ('high_alarm', 'low_alarm', 'high_warn', 'low_warn')
 
 
+# Which Mask byte belongs to which Flag byte.
+#
+# The specification defines Interrupt in one sentence: it "is asserted as
+# long as any Flag is set with its associated Mask cleared". So the state
+# of the Interrupt line is not a separate thing to read - it is this
+# pairing applied to the Flag bytes, and a Flag that is set while Interrupt
+# stays deasserted is a Flag whose Mask is set.
+#
+# (flag page, first flag byte, mask page, first mask byte, count)
+FLAG_MASK_BLOCKS = (
+    (None, 0x08, None, 0x1F, 6),    # Lower 8-13 <- Lower 31-36 (Table 8-12)
+    (0x11, 0x86, 0x10, 0xD5, 20),   # 11h:134-153 <- 10h:213-232
+    (0x14, 0x84, 0x13, 0xCE, 18),   # 14h:132-149 <- 13h:206-223
+)
+
+
 def parse_module_monitor_flags(data: bytes, first: int = 0x08) -> dict:
     """Lower Memory 9-11 (Table 8-9), RO/COR.
 

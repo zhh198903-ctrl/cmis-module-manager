@@ -17931,6 +17931,165 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
         self.assertTrue(calls(loop, 'write_bytes') and refuses(loop))
 
 
+class TestTheInterruptLineIsReportedAndModelled(CMISTestCase):
+    """CMIS defines the Interrupt output in one sentence: it "is asserted as
+    long as any Flag is set with its associated Mask cleared".
+
+    The API has decoded Lower 0x03 bit 0 into `interrupt_asserted` since the
+    beginning and nothing ever displayed it - neither the panel nor either
+    manual mentions it. The mock, meanwhile, hard-wired the bit to "not
+    asserted", so it could hold a temperature alarm, a Tx fault and a checker
+    that had lost lock while reporting that it was asking the host for
+    nothing.
+
+    What it is worth showing for is the disagreement: a Flag on screen with no
+    Interrupt is a Flag whose Mask is set, and the operator's host is never
+    going to be told about it."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _settle(self):
+        """One poll clears the ModuleStateChangedFlag latched at power-up."""
+        self._status()
+
+    def _raise_aux_alarm(self):
+        import app as app_module
+        raw = struct.pack('>h', int(round(-95 * 32767 / 100.0)))
+        lower = app_module._state['backend']._registers[None]
+        lower[0x12], lower[0x13] = raw[0], raw[1]
+
+    # ---- the decode --------------------------------------------------------
+
+    def test_the_sense_is_inverted(self):
+        """Table 8-6 names the bit InterruptDeasserted: 1 means the line is
+        NOT asserted. Reading it straight reports every healthy module as
+        interrupting and every interrupting one as fine."""
+        import cmis_registers as c
+        self.assertTrue(c.parse_interrupt_asserted(0b0000_0110))
+        self.assertFalse(c.parse_interrupt_asserted(0b0000_0111))
+
+    def test_the_state_bits_do_not_disturb_it(self):
+        import cmis_registers as c
+        for state in range(8):
+            self.assertTrue(c.parse_interrupt_asserted(state << 1),
+                            'state %d' % state)
+            self.assertFalse(c.parse_interrupt_asserted((state << 1) | 1),
+                             'state %d' % state)
+
+    def test_the_flag_and_mask_blocks_line_up(self):
+        """Each block pairs a run of Flag bytes with the same-length run of
+        Mask bytes. An off-by-one here masks the wrong Flag."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.FLAG_MASK_BLOCKS,
+            ((None, 0x08, None, 0x1F, 6),
+             (0x11, 0x86, 0x10, 0xD5, 20),
+             (0x14, 0x84, 0x13, 0xCE, 18)))
+        # Lower: Flags 8-13 (Table 8-9) against Masks 31-36 (Table 8-12).
+        self.assertEqual(0x1F - 0x08, 23)
+        # 11h:134-153 against 10h:213-232, and 14h:132-149 against 13h:206-223.
+        self.assertEqual((0x86, 0xD5, 20), (134, 213, 20))
+        self.assertEqual((0x84, 0xCE, 18), (132, 206, 18))
+
+    # ---- the module drives the line ----------------------------------------
+
+    def test_a_quiet_module_is_not_interrupting(self):
+        self._connect()
+        self._settle()
+        self.assertFalse(self._status()['interrupt_asserted'])
+
+    def test_a_raised_flag_asserts_it(self):
+        self._connect()
+        self._settle()
+        self._raise_aux_alarm()
+        self.assertTrue(self._status()['interrupt_asserted'],
+                        'the module latched an Aux alarm and reported that it '
+                        'was asking the host for nothing')
+
+    def test_power_up_asserts_it_until_somebody_looks(self):
+        """ModuleStateChangedFlag is latched by reaching ModuleReady, so the
+        first poll after connecting should find the line asserted - and the
+        read that reports it should clear it."""
+        self._connect()
+        self.assertTrue(self._status()['interrupt_asserted'])
+        self.assertFalse(self._status()['interrupt_asserted'])
+
+    def test_a_masked_flag_does_not_assert_it(self):
+        """The case the row exists for: the Flag is on screen, the Mask is
+        set, and the host is never told."""
+        import app as app_module
+        self._connect()
+        self._settle()
+        # Lower 33 masks Lower 10, which carries the Aux1 and Aux2 Flags.
+        app_module._state['backend']._registers[None][0x21] = 0xFF
+        self._raise_aux_alarm()
+        d = self._status()
+        self.assertTrue(d['aux1_low_alarm'],
+                        'the Flag itself is still latched and reported')
+        self.assertFalse(d['interrupt_asserted'],
+                         'a masked Flag asserted the Interrupt line')
+
+    def test_a_mask_on_another_byte_does_not_suppress_it(self):
+        """Masking Lower 32 (temperature and Vcc) must not silence an Aux
+        alarm - that is the off-by-one the block table guards against."""
+        import app as app_module
+        self._connect()
+        self._settle()
+        app_module._state['backend']._registers[None][0x20] = 0xFF
+        self._raise_aux_alarm()
+        self.assertTrue(self._status()['interrupt_asserted'])
+
+    def test_a_lane_flag_asserts_it_too(self):
+        """11h's latched Flags are in the block table as well, so a lane fault
+        with nothing wrong at module level still raises the line.
+
+        Driven through the module's own model rather than poked in: disabling
+        a Tx lane takes its output power to zero, which is under the module's
+        own low alarm threshold."""
+        self._connect()
+        self._settle()
+        self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps({'tx_disable_mask': 0x01}),
+            content_type='application/json'))
+        flags = self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes'][0]
+        self.assertTrue(flags['tx_power_low_alarm'],
+                        'the mock did not raise the lane Flag this rests on')
+        self.assertTrue(self._status()['interrupt_asserted'])
+
+    def test_every_profile_settles_quiet(self):
+        """A line stuck asserted is as useless as one stuck clear."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        for backend in sorted(n for n in i2c_interface._BACKENDS
+                              if n.startswith('mock')):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                self._settle()
+                self._status()
+                self.assertFalse(self._status()['interrupt_asserted'],
+                                 '%s never stops interrupting' % backend)
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_panel_shows_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('s.interrupt_asserted', js,
+                      'the API computes the Interrupt state and nothing '
+                      'displays it')
+        self.assertIn('0x03[0]', js,
+                      'the row does not say where the value comes from')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
