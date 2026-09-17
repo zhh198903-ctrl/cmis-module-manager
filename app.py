@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.65.0'
+__version__ = '2.66.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2762,6 +2762,34 @@ def api_laser_get():
     if err:
         return err
     try:
+        # 01h:155.6 is what says Pages 04h and 12h exist. Selecting a page the
+        # module does not implement is not an error it reports: 8.2.4 has it
+        # clear the PageSelect byte and serve Upper Page 00h instead, so the
+        # reads below quietly return the identifier, vendor name and part
+        # number - and this handler decoded them as a grid bitmap and a
+        # programmable power range. A non-tunable module came back advertising
+        # five channel grids and a power range of 123.36 to -163.28 dBm.
+        #
+        # The write side has always refused on this bit, and the Page checksum
+        # sweep already skips Page 04h for the same reason.
+        if not (_state.get('caps') or {}).get('controls', {}).get(
+                'transmitter_tunable'):
+            return _ok({
+                'tunable': False,
+                'grids_supported': [],
+                'grid_300ghz_supported': False,
+                'grid_300ghz_range': None,
+                'relative_power_thresholds_supported': False,
+                'relative_power_thresholds': {},
+                'fine_tuning_supported': False,
+                'fine_resolution_ghz': None,
+                'fine_range_ghz': None,
+                'power_range_dbm': None,
+                'grid_channel_ranges': {},
+                'grid_names': {str(k): v for k, v in cmis.GRID_CODES.items()},
+                'lanes': [],
+            })
+
         # Capabilities (Page 04h)
         grid_sup = _read_upper(*cmis.REG_GRID_SUPPORTED)
         fine_res = _read_upper(*cmis.REG_FINE_RESOLUTION)
@@ -2863,6 +2891,7 @@ def api_laser_get():
                 struct.unpack(">h", pwr_min)[0] * 0.01,
                 struct.unpack(">h", pwr_max)[0] * 0.01,
             ],
+            'tunable': True,
             'grid_channel_ranges': grid_channel_ranges,
             # Table 8-109 names every grid code, 1111b included ("Not
             # available"). The panel kept its own copy of that table and the

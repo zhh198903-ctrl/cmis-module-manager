@@ -3308,12 +3308,15 @@ async function loadLaser() {
     ? res.data.relative_power_thresholds : null;
   const d = res.data;
 
-  // Non-tunable module: Page 04h reads all zeros → no grids advertised
-  if (!d.grids_supported || d.grids_supported.length === 0) {
+  // 01h:155.6, as the server read it. This used to infer "not tunable" from
+  // an empty grid list, which is a different question: a module without Page
+  // 04h is served Page 00h instead of it (8.2.4), and the vendor name decodes
+  // to a perfectly plausible set of grids.
+  if (d.tunable === false) {
     if (capsEl) {
-      capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module (Media Interface Technology is not C-band/L-band); Page 04h tuning capabilities not advertised.</span>';
+      capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module — 01h:155.6 (TransmitterIsTunable) is clear, so this module has no Page 04h or 12h.</span>';
     }
-    tbody.innerHTML = '<tr><td colspan="9" class="placeholder-text">Non-tunable module — no Page 04h/12h data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="placeholder-text">Non-tunable module — no Page 04h/12h to read.</td></tr>';
     return;
   }
 

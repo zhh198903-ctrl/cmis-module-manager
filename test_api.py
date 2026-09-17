@@ -16422,6 +16422,137 @@ class TestThePanelKeepsNoGridTable(CMISTestCase):
         self.assertIn('gridOpts(l.grid_code, l.grid)', js)
 
 
+class TestSelectingAPageTheModuleDoesNotHave(CMISTestCase):
+    """8.2.4: "When a host write would result in a not supported Page Address
+    in the PageMapping register, the module clears the PageSelect Byte ...
+    such that the resulting PageMapping register selects Page 00h".
+
+    So asking for a page a module does not implement is not refused and not
+    answered with zeros - the host is quietly handed Upper Page 00h, which is
+    the identifier, vendor name and part number. Any handler that reads a page
+    without first checking the advertisement is decoding ASCII."""
+
+    def _backend(self, name='mock_dr8'):
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        b = i2c_interface._BACKENDS[name]()
+        b.connect(0, 0x50)
+        return b
+
+    def _select(self, b, page):
+        b.write_bytes(0x7F, bytes([page]))
+        time.sleep(0.012)
+
+    def test_an_unimplemented_page_lands_on_page_00h(self):
+        b = self._backend()
+        self._select(b, 0x00)
+        page00 = b.read_bytes(0x80, 8)
+        self._select(b, 0x04)          # mock_dr8 is not tunable: no Page 04h
+        self.assertEqual(b.read_bytes(0x80, 8), page00,
+                         'an unimplemented page answered with something of '
+                         'its own instead of Page 00h')
+
+    def test_the_page_select_byte_is_cleared(self):
+        """The spec clears the register itself, so a host reading it back sees
+        00h - which is the only clue it was not given what it asked for."""
+        b = self._backend()
+        self._select(b, 0x04)
+        self.assertEqual(b.read_bytes(0x7F, 1)[0], 0x00)
+
+    def test_zeros_are_not_the_answer(self):
+        """Zeros are the one reply a real module never gives here, and they
+        are the reply that makes an unchecked read look harmless."""
+        b = self._backend()
+        self._select(b, 0x04)
+        self.assertNotEqual(list(b.read_bytes(0x80, 8)), [0] * 8)
+
+    def test_a_page_the_module_does_have_still_selects(self):
+        b = self._backend()
+        self._select(b, 0x01)
+        self.assertEqual(b.read_bytes(0x7F, 1)[0], 0x01)
+
+    def test_a_banked_page_still_selects(self):
+        """Bank 0 of a banked page is stored under the page number, the rest
+        under (page, bank); both count as implemented."""
+        b = self._backend('mock_1600g_16lane')
+        self._select(b, 0x11)
+        self.assertEqual(b.read_bytes(0x7F, 1)[0], 0x11)
+
+
+class TestTheLaserPanelAsksWhetherThereIsALaser(CMISTestCase):
+    """Page 04h exists only where 01h:155.6 says the transmitter is tunable.
+    Reading it anyway returns Page 00h (see above), and this handler decoded
+    the identifier byte and the vendor name as a grid bitmap: a module with no
+    tunable laser advertised five channel grids and a programmable power range
+    of 123.36 to -163.28 dBm."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'address': 0x50}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def test_a_non_tunable_module_says_so(self):
+        self._connect('mock_dr8')
+        self.assertFalse(self._laser()['tunable'])
+
+    def test_a_non_tunable_module_advertises_no_grids(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._laser()['grids_supported'], [])
+
+    def test_a_non_tunable_module_offers_no_power_range(self):
+        """None rather than a pair: an inverted range with a negative floor is
+        a number the panel would happily print."""
+        self._connect('mock_dr8')
+        d = self._laser()
+        self.assertIsNone(d['power_range_dbm'])
+        self.assertIsNone(d['fine_range_ghz'])
+
+    def test_a_non_tunable_module_has_no_lanes_to_tune(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._laser()['lanes'], [])
+
+    def test_every_non_tunable_demo_module_is_quiet(self):
+        """The bit, not the shape of the reply, is what decides - so every
+        profile that does not advertise it has to come back empty."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        for name in sorted(n for n in i2c_interface._BACKENDS
+                           if n.startswith('mock')):
+            self.client.post('/api/disconnect')
+            self._connect(name)
+            caps = self.assertOk(
+                self.client.get('/api/module/capabilities'))['data']
+            tunable = bool((caps.get('controls') or {}).get(
+                'transmitter_tunable'))
+            d = self._laser()
+            self.assertEqual(d['tunable'], tunable, name)
+            if not tunable:
+                self.assertEqual(d['grids_supported'], [], name)
+
+    def test_a_tunable_module_still_reads_its_page_04h(self):
+        self._connect('mock_coherent_zr')
+        d = self._laser()
+        self.assertTrue(d['tunable'])
+        self.assertTrue(d['grids_supported'])
+        self.assertEqual(len(d['power_range_dbm']), 2)
+        self.assertLess(d['power_range_dbm'][0], d['power_range_dbm'][1],
+                        'a programmable power range runs low to high')
+
+    def test_the_panel_asks_the_bit_not_the_grid_list(self):
+        """Inferring "not tunable" from an empty grid list asks a different
+        question, and Page 00h answers it wrongly."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('d.tunable === false', js)
+        self.assertNotIn('d.grids_supported.length === 0', js)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

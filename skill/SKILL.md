@@ -156,6 +156,17 @@ CMIS 的每一项监控都是可选的，模块在 `01h:159-160` 广告自己有
 `monitors_present` 告诉你哪几项存在，用它把「没有这项监控」和「这次读失败」区分开。
 拿 `mock_fewmon` 试。
 
+## 读某一页之前，先确认模块有这一页
+
+规范里的坑：**选一个模块没有的页，模块不报错**，而是把 PageSelect 清零、
+改成给你 **Page 00h**（上半区是厂商名/料号/序列号的 ASCII）。
+所以不看广告位就去读一个可选页，读回来的是文本，解出来的是**看着很像真的**的能力。
+
+`GET /api/module/laser` 因此先看 `01h:155.6`，返回里带 `tunable`：
+**`tunable=false` 时不读 Page 04h/12h**，`grids_supported` 为空、
+`power_range_dbm` 为 `null`——不是 0，也不是编出来的数。
+判断「这块模块能不能调谐」请用 `tunable`，别用 `grids_supported` 是否为空。
+
 ## 哪几条通道算同一条数据通道，问服务端
 
 `GET /api/module/datapath` 返回 `datapath_groups`：每组是一条数据通道包含的通道号

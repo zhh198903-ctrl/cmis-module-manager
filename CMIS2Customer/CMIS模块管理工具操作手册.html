@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.65.0<br>
+      <b>版本</b>　2.66.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -610,6 +610,24 @@
     <li>若未出现，点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
   </ol>
 
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>不可调谐的模块，调谐页以前会「凭空」列出一堆栅格</b>（v2.66.0 修复）。<br>
+    这是规范里一条很容易踩的规则：<b>选一个模块没有的页，模块不会报错</b>——
+    它会<b>把页号清零、改成给你 Page 00h</b>。
+    而 Page 00h 的上半区是<b>厂商名、料号、序列号</b>这些 ASCII 文本。<br>
+    调谐能力表在 Page 04h，只有 <code>01h:155.6</code> 说「发射端可调谐」时才存在。
+    工具此前<b>不看这一位就去读</b>，于是读回来的其实是厂商名那几个字节，
+    再按栅格位图解码——一块<b>根本没有可调谐激光器</b>的模块，
+    调谐页上会显示 <b>「支持 6.25 / 12.5 / 25 / 50 / 150 GHz 五种栅格」</b>，
+    以及一个<b>「123.36 到 −163.28 dBm」</b>的可编程功率范围
+    （上下限还是反的）。<br>
+    现在先看 <code>01h:155.6</code>：这一位是 0 就<b>根本不去读那一页</b>，
+    页面直接说明该模块没有 Page 04h/12h。
+    <span class="reg-meta">写入侧一直是按这一位拦的，页校验和那部分也一直跳过 Page 04h——
+    只有读取这一条漏了。</span></span>
+  </div>
+
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>激光器调谐页：同一个栅格，下拉框和悬停提示可能显示成两个名字</b>（v2.65.0 修复）。<br>
@@ -805,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.65.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.65.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.66.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.66.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3450,7 +3468,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.65.0<br>
+    CMIS Module Manager 操作手册 v2.66.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

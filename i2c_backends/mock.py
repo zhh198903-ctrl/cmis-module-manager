@@ -1702,6 +1702,25 @@ class MockBackend(I2CInterface):
                 (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
                 | (0x0C << shift))          # ConfigInProgress
 
+    def _selectable(self, page: int) -> int:
+        """The page a module would actually end up on after this PageSelect.
+
+        8.2.4: "When a host write would result in a not supported Page Address
+        in the PageMapping register, the module clears the PageSelect Byte ...
+        such that the resulting PageMapping register selects Page 00h". So a
+        host that asks for a page the module does not implement is not told
+        so - it is quietly handed Upper Page 00h instead, and whatever it
+        reads next is the vendor name and part number.
+
+        Serving zeros for an unimplemented page, as this used to, is the one
+        answer a real module never gives, and it is the answer that makes a
+        host which reads such a page without checking look correct.
+        """
+        # One condition, not two: every banked page is built with a bank-0
+        # entry under its plain page number, so checking the (page, bank)
+        # keys as well was a branch nothing could reach.
+        return page if page in self._registers else 0x00
+
     def _write_targets(self):
         """Where an upper-memory write lands: the selected bank, or every bank
         of a lane-banked page when bank broadcast is on.
@@ -2566,7 +2585,11 @@ class MockBackend(I2CInterface):
             if register <= 0x7E <= register + len(data) - 1:
                 self._current_bank = data[0x7E - register]
             if register <= 0x7F <= register + len(data) - 1:
-                self._current_page = data[0x7F - register]
+                self._current_page = self._selectable(data[0x7F - register])
+                # 8.2.4 clears the byte itself, not just the mapping: a host
+                # that reads PageSelect back sees 00h, which is its only clue
+                # that it did not get the page it asked for.
+                page_dict[0x7F] = self._current_page
             if (self._current_page, self._current_bank) != was:
                 # tBPC runs from an actual change. Re-selecting what is
                 # already selected changes nothing, so it owes nothing: a
