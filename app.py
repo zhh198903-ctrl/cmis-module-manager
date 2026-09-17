@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.67.0'
+__version__ = '2.68.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1977,6 +1977,13 @@ def api_module_flags():
         tx_fault  = flags(0x87)
         tx_los    = flags(0x88)
         tx_cdrlol = flags(0x89)
+        # 11h:138 (Table 8-96), advertised in 01h:157.3. It sits inside the
+        # burst above, so the read that fetched the other nineteen bytes
+        # cleared this one too - dropping it did not leave it for the next
+        # reader, it destroyed it. The advertisement was already being
+        # published, so the reply claimed the module supports a Flag that
+        # appeared on no lane.
+        tx_aeq_fail = flags(cmis.REG_TX_AEQ_FAIL[1])
         txpwr_ha  = flags(0x8B)
         txpwr_la  = flags(0x8C)
         txpwr_hw  = flags(0x8D)
@@ -2013,6 +2020,7 @@ def api_module_flags():
                 'tx_fault':           tx_fault[i],
                 'tx_los':             tx_los[i],
                 'tx_cdr_lol':         tx_cdrlol[i],
+                'tx_adaptive_eq_fail': tx_aeq_fail[i],
                 'tx_power_high_alarm': txpwr_ha[i],
                 'tx_power_low_alarm':  txpwr_la[i],
                 'tx_power_high_warn':  txpwr_hw[i],

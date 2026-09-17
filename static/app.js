@@ -2534,6 +2534,13 @@ function renderFlags(lanes, supported) {
     const txFault   = flagCell(lane.tx_fault, true, 'tx_fault', has('tx_fault'));
     const txLos     = flagCell(lane.tx_los, true, 'tx_los', has('tx_los'));
     const txCdrLol  = flagCell(lane.tx_cdr_lol, true, 'tx_cdr_lol', has('tx_cdr_lol'));
+    // 11h:138, advertised in 01h:157.3. The host side input equaliser
+    // failed to converge, so what this lane is receiving from the host
+    // is not being equalised - it is a fault on the link into the
+    // module, not inside it.
+    const txAeqFail = flagCell(lane.tx_adaptive_eq_fail, true,
+                               'tx_adaptive_eq_fail',
+                               has('tx_adaptive_eq_fail'));
     const rxLos     = flagCell(lane.rx_los, true, 'rx_los', has('rx_los'));
     const rxCdrLol  = flagCell(lane.rx_cdr_lol, true, 'rx_cdr_lol', has('rx_cdr_lol'));
     // A squelch that came and went between two polls leaves nothing in
@@ -2575,6 +2582,7 @@ function renderFlags(lanes, supported) {
       <td>${txFault}</td>
       <td>${txLos}</td>
       <td>${txCdrLol}</td>
+      <td>${txAeqFail}</td>
       <td>${rxLos}</td>
       <td>${rxCdrLol}</td>
       <td>${rxOutCh}</td>

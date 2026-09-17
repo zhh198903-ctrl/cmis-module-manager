@@ -16957,6 +16957,243 @@ class TestTheAuxAndCustomMonitorFlagsSurvive(CMISTestCase):
         return _Runner()
 
 
+class TestNothingIsReadFromALatchedBlockAndDropped(CMISTestCase):
+    """A latched (RO/COR) Flag is destroyed by the read that reports it, so
+    reading a byte and not decoding it is not the same as leaving it alone:
+    it consumes the Flag and leaves nothing for the next reader.
+
+    /api/module/flags reads 11h:134-153 as one burst - twenty bytes in one go
+    rather than twenty page-select and settle cycles - and decoded nineteen of
+    them. The byte it skipped was 11h:138, AdaptiveInputEqFailFlagTx<i>
+    (Table 8-96), whose advertisement at 01h:157.3 the tool was already
+    publishing: the reply said the module supports the Flag and no lane
+    carried it.
+
+    The same lens over the other two latched blocks comes back clean: 14h's
+    diagnostic Flags (132-139) are read a byte at a time and every byte read
+    is decoded, and 12h's tuning Flags are read per lane. Neither block is
+    read by a second endpoint either, which would consume it twice."""
+
+    # Every byte of the burst, and what the reply is expected to carry for it.
+    # 11h:138 was the one missing entry.
+    BURST = {
+        0x86: 'dp_state_changed',
+        0x87: 'tx_fault',
+        0x88: 'tx_los',
+        0x89: 'tx_cdr_lol',
+        0x8A: 'tx_adaptive_eq_fail',
+        0x8B: 'tx_power_high_alarm',
+        0x8C: 'tx_power_low_alarm',
+        0x8D: 'tx_power_high_warn',
+        0x8E: 'tx_power_low_warn',
+        0x8F: 'tx_bias_high_alarm',
+        0x90: 'tx_bias_low_alarm',
+        0x91: 'tx_bias_high_warn',
+        0x92: 'tx_bias_low_warn',
+        0x93: 'rx_los',
+        0x94: 'rx_cdr_lol',
+        0x95: 'rx_power_high_alarm',
+        0x96: 'rx_power_low_alarm',
+        0x97: 'rx_power_high_warn',
+        0x98: 'rx_power_low_warn',
+        0x99: 'rx_output_changed',
+    }
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']
+
+    def _raise(self, addr, mask):
+        """Set a latched Flag byte on the mock, on every bank."""
+        import app as app_module
+        backend = app_module._state['backend']
+        for page_dict in backend._page_dicts(0x11):
+            page_dict[addr] = mask
+
+    def test_every_byte_of_the_burst_reaches_the_reply(self):
+        """The read clears all twenty, so any byte without a home in the
+        reply is a Flag the tool destroys and nobody ever sees."""
+        self._connect()
+        lane = self._flags()['lanes'][0]
+        for addr, name in sorted(self.BURST.items()):
+            self.assertIn(name, lane,
+                          '11h:%d (%#04x) is read and has nowhere to go'
+                          % (addr, addr))
+
+    def test_the_burst_is_exactly_the_bytes_the_reply_accounts_for(self):
+        """Widening the read later without decoding the new bytes would
+        reintroduce the defect; this pins the two together."""
+        import app as app_module
+        import cmis_registers as c
+        first = c.REG_DP_STATE_CHANGED[1]
+        seen = []
+
+        backend_reads = []
+        self._connect()
+        backend = app_module._state['backend']
+        original = backend.read_bytes
+
+        def traced(addr, length):
+            if backend._current_page == 0x11 and addr >= 0x80:
+                backend_reads.append((addr, length))
+            return original(addr, length)
+
+        backend.read_bytes = traced
+        try:
+            self._flags()
+        finally:
+            backend.read_bytes = original
+        for addr, length in backend_reads:
+            if addr == first:
+                seen = list(range(addr, addr + length))
+                break
+        self.assertTrue(seen, 'the flags endpoint did not read the block')
+        self.assertEqual(sorted(self.BURST), seen,
+                         'the burst and the decoded bytes have drifted apart')
+
+    def test_the_adaptive_eq_flag_reaches_the_lane_it_belongs_to(self):
+        """One bit per host lane, so a wrong shift reports the fault on a
+        lane that is fine and clears the one that is not."""
+        self._connect()
+        self._raise(0x8A, 0b00000101)          # lanes 1 and 3
+        lanes = self._flags()['lanes']
+        raised = [l['lane'] for l in lanes if l['tx_adaptive_eq_fail']]
+        self.assertEqual(raised, [1, 3])
+
+    def test_a_supported_flag_appears_on_every_lane(self):
+        """01h:157.3 is published in `supported`. Claiming support for a Flag
+        that is on no lane is the shape the defect took."""
+        self._connect()
+        d = self._flags()
+        for name, supported in d['supported'].items():
+            if not supported:
+                continue
+            for lane in d['lanes']:
+                self.assertIn(name, lane,
+                              '%s is advertised and carried by no lane'
+                              % name)
+
+    def test_the_flag_is_remembered_after_the_read_clears_it(self):
+        """It is gone from the module one read later; the history is the only
+        remaining record."""
+        self._connect()
+        self._raise(0x8A, 0b00000010)          # lane 2
+        self.assertTrue(self._flags()['lanes'][1]['tx_adaptive_eq_fail'])
+        lane2 = self._flags()['lanes'][1]
+        self.assertFalse(lane2['tx_adaptive_eq_fail'],
+                         'a latched Flag survived the read that reported it')
+        self.assertIn('tx_adaptive_eq_fail', lane2['seen'])
+
+    def test_a_module_that_does_not_advertise_it_reports_nothing(self):
+        """Table 8-96 types it Adv. An unimplemented Flag reads 0, which is
+        what a healthy lane reads, so the panel is told not to paint it."""
+        self._connect('mock_dr8')
+        supported = self._flags()['supported']
+        import app as app_module
+        advert = (app_module._state['caps'] or {}).get('flags_supported', {})
+        self.assertEqual(supported.get('tx_adaptive_eq_fail'),
+                         advert.get('tx_adaptive_eq_fail'))
+
+    # ---- the other latched blocks --------------------------------------
+
+    def test_the_diagnostic_flags_are_read_one_byte_at_a_time(self):
+        """14h:132-139 is latched too (Table 8-138). It is read byte by byte,
+        so nothing is consumed that is not decoded - if that ever became a
+        burst, the same audit would be needed."""
+        import cmis_registers as c
+        for reg in (c.REG_REF_CLOCK_LOL, c.REG_HOST_GATE_DONE,
+                    c.REG_MEDIA_GATE_DONE, c.REG_HOST_GEN_LOL,
+                    c.REG_MEDIA_GEN_LOL, c.REG_HOST_PRBS_LOL,
+                    c.REG_MEDIA_PRBS_LOL):
+            self.assertEqual(reg[2], 1,
+                             '%#04x is read wider than one byte; every byte '
+                             'it covers has to be decoded' % reg[1])
+
+    def test_the_panel_has_a_column_for_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('11h / 0x8A', html,
+                      'the Flag is decoded and has no column')
+        self.assertIn('lane.tx_adaptive_eq_fail', js)
+
+    def test_every_bit_of_the_flag_advertisement_is_named(self):
+        """Table 8-52 is four bits in 157 and two in 158, and 158.0 is
+        reserved. One wrong mask reads a neighbouring Flag's advertisement,
+        which silently hides or invents support for a whole column."""
+        import cmis_registers as c
+        expect = {
+            (0, 0x08): 'tx_adaptive_eq_fail',
+            (0, 0x04): 'tx_cdr_lol',
+            (0, 0x02): 'tx_los',
+            (0, 0x01): 'tx_fault',
+            (1, 0x04): 'rx_cdr_lol',
+            (1, 0x02): 'rx_los',
+        }
+        for (idx, mask), name in expect.items():
+            data = bytearray(2)
+            data[idx] = mask
+            got = c.parse_supported_flags(bytes(data))
+            on = sorted(k for k, v in got.items() if v)
+            self.assertEqual(on, [name],
+                             '01h:%d bit mask %#04x' % (157 + idx, mask))
+        self.assertEqual(
+            sorted(k for k, v in c.parse_supported_flags(b'\x00\x01').items()
+                   if v), [],
+            '01h:158.0 is Reserved in Table 8-52')
+        self.assertEqual(
+            sorted(k for k, v in c.parse_supported_flags(b'\xF0\x00').items()
+                   if v), [],
+            '01h:157.7-4 are Reserved in Table 8-52')
+
+    def test_the_panel_reads_only_field_names_the_api_sends(self):
+        """`lane.tx_adaptive_eq_fails` renders an empty cell on every lane and
+        looks exactly like a module with nothing wrong. Checking the name is
+        merely present in the file does not catch it - it is a substring of
+        the typo - so every name the row reads is checked against the reply."""
+        import re
+        self._connect()
+        d = self._flags()
+        known = set(d['lanes'][0]) | {'lane', 'seen'}
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        start = js.index('function renderFlags(')
+        body = js[start:js.index('\n}\n', start)]
+        used = set(re.findall(r'\blane\.([A-Za-z_][A-Za-z0-9_]*)', body))
+        self.assertTrue(used, 'no lane fields found - the scan broke')
+        unknown = sorted(used - known)
+        self.assertEqual(unknown, [],
+                         'the flags panel reads %s, which /api/module/flags '
+                         'does not send' % unknown)
+
+    def test_the_flags_table_has_as_many_cells_as_headings(self):
+        """A column added to one and not the other slides every reading after
+        it under the wrong heading."""
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        i = html.index('id="tbl-flags"')
+        head = html[html.rindex('<thead>', 0, i):i]
+        headings = re.findall(r'<th>', head)
+        row = js[js.index('<td>${lane.lane}</td>'):]
+        row = row[:row.index('</tr>')]
+        self.assertEqual(len(headings), row.count('<td>'))
+        self.assertIn('colspan="%d"' % len(headings), html)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

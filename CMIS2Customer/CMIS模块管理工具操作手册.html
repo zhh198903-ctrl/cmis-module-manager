@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.67.0<br>
+      <b>版本</b>　2.68.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.67.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.67.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.68.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.68.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1711,6 +1711,15 @@
     正好超过 ×1 能表达的上限，方便你验证主机软件有没有处理这个倍数。
     规范里 <code>11b</code> 是保留值，工具按 ×1 处理，不会自作主张地把读数放大四倍。</span>
   </div>
+
+  <h3>读了却没解析的那一个字节</h3>
+  <p>通道标志在 <code>11h:134–153</code>是连续的，工具<b>一次性读 20 个字节</b>——真实硬件上这比 20 次切页加等待快得多。但其中<b>只解析了 19 个</b>：<code>0x8A</code>（Tx 自适应均衡失败）被跳过了。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>这一整块是<b>读后即清</b>的，所以「读了不用」和「没读」完全不是一回事：这个读动作<b>把标志消耗掉了</b>，谁也再看不到。<br>
+    更能说明问题的是：这个标志的<b>能力声明</b>（<code>01h:157.3</code>）工具是读了的，接口返回里明确写着模块支持它——<b>却没有任何一条通道带着它的值</b>。</span>
+  </div>
+  <p>现在 Lane Flags 表里多了一列 <b>Tx AEQ Fail</b>。它的含义值得单独说一句：自适应均衡没能收敛，意味着模块<b>没能把主机发过来的信号均衡干净</b>——问题在进模块的那段链路上（连接器、PCB、主机侧发送参数），而不是模块内部坏了。</p>
 
   <h3>模块没实现的标志，不再显示为“正常”</h3>
   <p><code>01h:157–158</code>（Table 8-52）声明了模块到底实现了哪些 Flag：
@@ -2729,6 +2738,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>Tx Fault</td><td class="label">发送故障</td><td><code>11h / 0x87</code></td></tr>
         <tr><td>Tx LOS</td><td class="label">发送端信号丢失</td><td><code>11h / 0x88</code></td></tr>
         <tr><td>Tx CDR-LOL</td><td class="label">发送 CDR 失锁</td><td><code>11h / 0x89</code></td></tr>
+        <tr><td>Tx AEQ Fail</td><td class="label">主机侧输入自适应均衡没能收敛（AdaptiveInputEqFailFlagTx）——故障在<b>进模块的链路上</b>，不是模块内部</td><td><code>11h / 0x8A</code></td></tr>
         <tr><td>Rx LOS</td><td class="label">接收端信号丢失</td><td><code>11h / 0x93</code></td></tr>
         <tr><td>Rx CDR-LOL</td><td class="label">接收 CDR 失锁</td><td><code>11h / 0x94</code></td></tr>
         <tr><td>Alarms/Warns</td><td class="label">功率 / 偏置综合告警状态</td><td><code>11h / 0x8B–0x98</code></td></tr>
@@ -3491,7 +3501,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.67.0<br>
+    CMIS Module Manager 操作手册 v2.68.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
