@@ -126,6 +126,8 @@ _COHERENT_800G = {
         (0xA4, 0x4A38),
         (0xA6, 0x4268),
     ],
+    # One optical carrier: media lanes 2-8 are not there (00h:210).
+    'media_lane_unsupported': 0xFE,
     'display':         '800GBASE-LR1 coherent lite (DP-16QAM, SMF 10km, 802.3dj)',
     'config_caps_02':  0x00,  # legacy default: hot and regular both supported
     'vendor_name':     b"OPENCMIS DEMO   ",
@@ -187,6 +189,8 @@ _ZR_800G = {
     # Aux3 is S16 at 100 uV/LSB, so it tops out at 3.2767 V - a 3.3 V rail
     # does not fit. 1.8 V is the secondary rail a coherent module reports.
     'aux_values':         (-38.0, 45.0, 1.8),
+    # One optical carrier: media lanes 2-8 are not there (00h:210).
+    'media_lane_unsupported': 0xFE,
     'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
     'config_caps_02':  0x00,  # retuned under traffic, so hot reconfiguration matters
     # Biased past the 131 mA that x1 scaling can express, so 160.4-3 says x2.
@@ -804,7 +808,19 @@ class MockBackend(I2CInterface):
         p00[0xCA] = 0x00                    # Cable length = 0 (transceiver)
         p00[0xCB] = p['connector_type']
         for a in range(0xCC, 0xD2): p00[a] = 0x00   # Cu attenuation = 0
-        p00[0xD2] = 0x00                    # MediaLaneInformation
+        # MediaLaneUnsupported (00h:210, Table 8-36): which media lanes the
+        # module does NOT have. This was a flat zero - "all eight supported" -
+        # on every profile, including the coherent ones whose Application
+        # takes eight host lanes into a single optical carrier. A module that
+        # reports one media lane and then advertises eight contradicts itself,
+        # and it let a host read seven media lanes' worth of optical power
+        # that no real module would answer.
+        #
+        # Declared per profile rather than derived: the count is not the
+        # largest Application's media lane count. mock_fr4x2 runs two
+        # four-lane Applications side by side and so has eight media lanes,
+        # which taking the maximum would have marked half absent.
+        p00[0xD2] = p.get('media_lane_unsupported', 0x00)
         p00[0xD3] = 0x00                    # FarEndConfig
         p00[0xD4] = p['media_if_tech']      # Media Interface Technology
         lower[0x3C] = p.get('module_subtype', 0x00)          # 60

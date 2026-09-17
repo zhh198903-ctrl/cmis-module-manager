@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.72.0<br>
+      <b>版本</b>　2.73.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.72.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.72.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.73.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.73.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1686,6 +1686,20 @@
     0 °C 和“TEC 没在工作”都是看上去很合理的读数。
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
+  </div>
+
+  <h3>相干模块只有一条媒体侧通道,别的行不是读数</h3>
+  <p>Monitoring 表里每一行是一条<b>主机侧通道</b>,但其中三列—— Tx Power、Tx Bias、Rx Power ——规范(Table 8-99)叫的是<b>「媒体侧通道监控」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>相干模块把 <b>8 条主机侧通道汇进 1 路光载波</b>,所以它只有<b>一条</b>媒体侧通道。第 2–8 行读的是模块<b>声明自己没有</b>的媒体侧通道的寄存器——<b>读出来是 0</b>,而 0.0 µW 是 dBm 量程的底部,正是界面涂成告警红的那个值。<br>
+    这和「模块没实现这项监控」是同一个错,只是换了一个轴。</span>
+  </div>
+  <p><code>00h:210</code>(Table 8-36)就是模块自己说的<b>哪几条媒体侧通道不存在</b>。工具<b>一直在读</b>这个寄存器,只是<b>没有任何地方用它</b>。现在这三列在不存在的媒体侧通道上显示<b>「no such media lane」</b>,和「not implemented」分开写——两者是不同的答案,要查的寄存器也不同。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>超过 8 条通道的模块不用这个寄存器</b>:规范 8.3.7 自己说了,这类模块「<b>无法无歧义地声明哪些媒体侧通道不受支持</b>」——一句有歧义的话,只用它的一半并不会更安全。<br>
+    DataPath State、Output、Config Status 这几列是<b>主机侧</b>的,每一行照常显示。</span>
   </div>
 
   <h3>标志亮着、中断却没来：那是被屏蔽了</h3>
@@ -3542,7 +3556,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.72.0<br>
+    CMIS Module Manager 操作手册 v2.73.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

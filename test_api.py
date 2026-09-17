@@ -4819,11 +4819,21 @@ class TestCoherentProfiles(CMISTestCase):
         self.assertEqual(t['rx_power_high_alarm_dbm'], -4.0)
         self.assertEqual(t['rx_power_low_alarm_dbm'], -17.5)
         m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        # Eight host lanes into one optical carrier: the optical power
+        # monitors are per media lane (Table 8-99), so only the lanes this
+        # module actually has carry a reading.
+        checked = 0
         for lane in m['lanes']:
+            if lane['tx_power_dbm'] is None:
+                self.assertFalse(lane['media_lane_present'], lane['lane'])
+                continue
+            checked += 1
             self.assertLess(lane['tx_power_dbm'], t['tx_power_high_warn_dbm'])
             self.assertGreater(lane['tx_power_dbm'], t['tx_power_low_warn_dbm'])
             self.assertLess(lane['rx_power_dbm'], t['rx_power_high_warn_dbm'])
             self.assertGreater(lane['rx_power_dbm'], t['rx_power_low_warn_dbm'])
+        self.assertGreater(checked, 0, 'no lane carried a reading, so this '
+                                       'checked nothing')
 
     def test_lr1_advertises_no_tuning_grid(self):
         """Clause 185 gives one carrier frequency with a tolerance, not a grid.
@@ -5071,11 +5081,21 @@ class TestDj1600GAlignment(CMISTestCase):
         self._connect_dr8()
         t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
         m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        # Eight host lanes into one optical carrier: the optical power
+        # monitors are per media lane (Table 8-99), so only the lanes this
+        # module actually has carry a reading.
+        checked = 0
         for lane in m['lanes']:
+            if lane['tx_power_dbm'] is None:
+                self.assertFalse(lane['media_lane_present'], lane['lane'])
+                continue
+            checked += 1
             self.assertLess(lane['tx_power_dbm'], t['tx_power_high_warn_dbm'])
             self.assertGreater(lane['tx_power_dbm'], t['tx_power_low_warn_dbm'])
             self.assertLess(lane['rx_power_dbm'], t['rx_power_high_warn_dbm'])
             self.assertGreater(lane['rx_power_dbm'], t['rx_power_low_warn_dbm'])
+        self.assertGreater(checked, 0, 'no lane carried a reading, so this '
+                                       'checked nothing')
 
     def test_every_profile_that_serves_page_62h_agrees_with_its_page_02h(self):
         """The 16-lane profile also advertises Page 62h but names no PMD, so it
@@ -18088,6 +18108,141 @@ class TestTheInterruptLineIsReportedAndModelled(CMISTestCase):
                       'displays it')
         self.assertIn('0x03[0]', js,
                       'the row does not say where the value comes from')
+
+
+class TestAMediaLaneTheModuleDoesNotHave(CMISTestCase):
+    """Table 8-99 calls Tx power, Tx bias and Rx power "Media Lane-Specific
+    Monitors". The monitoring rows are host lanes, and on a module that
+    carries more host lanes than media lanes - a coherent one takes eight into
+    a single optical carrier - the rows past the last media lane were reading
+    registers for lanes the module says it does not have.
+
+    Those read zero, and zero is not a blank here: 0.0 uW is the bottom of the
+    dBm scale, which is the value the panel paints in alarm red. It is the
+    same mistake the tool already avoids for a monitor the module does not
+    implement, one axis over.
+
+    00h:210 (Table 8-36) is the module's own statement of which media lanes
+    are absent. The tool read it, published it as media_lane_unsupported_mask,
+    and nothing used it."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _mon(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def _info(self):
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    # ---- the gate ----------------------------------------------------------
+
+    def test_a_coherent_module_reports_one_media_lane_of_optical_power(self):
+        """Eight host lanes, one optical carrier. Seven rows of Tx and Rx
+        power were being read off registers for media lanes 2-8."""
+        self._connect('mock_coherent')
+        lanes = self._mon()['lanes']
+        self.assertEqual(len(lanes), 8, 'the rows are host lanes')
+        self.assertIsNotNone(lanes[0]['tx_power_dbm'])
+        for lane in lanes[1:]:
+            # Both halves of each reading: the microwatt value is what the
+            # panel formats, so leaving it while clearing the dBm one puts a
+            # number back on screen for a lane that does not exist.
+            for field in ('tx_power_dbm', 'tx_power_uw',
+                          'rx_power_dbm', 'rx_power_uw', 'tx_bias_ma'):
+                self.assertIsNone(lane[field],
+                                  'lane %d %s' % (lane['lane'], field))
+
+    def test_the_host_lane_columns_are_untouched(self):
+        """Data Path state and Config Status are per host lane (the Flags in
+        Table 8-96 say "host lane <i>"), so they belong on every row."""
+        self._connect('mock_coherent')
+        for lane in self._mon()['lanes']:
+            self.assertIsNotNone(lane['datapath_state'], lane['lane'])
+            self.assertIsNotNone(lane['config_status'], lane['lane'])
+
+    def test_a_symmetric_module_loses_nothing(self):
+        self._connect('mock_dr8')
+        for lane in self._mon()['lanes']:
+            self.assertTrue(lane['media_lane_present'])
+            self.assertIsNotNone(lane['tx_power_dbm'], lane['lane'])
+
+    def test_two_applications_side_by_side_keep_all_eight(self):
+        """mock_fr4x2 runs two four-lane Applications, so it has eight media
+        lanes. Deriving the count from the largest Application would mark half
+        of them absent - which a first attempt at this did."""
+        self._connect('mock_fr4x2')
+        self.assertEqual(self._info()['media_lanes'], 8)
+        for lane in self._mon()['lanes']:
+            self.assertTrue(lane['media_lane_present'], lane['lane'])
+
+    def test_the_register_is_not_used_beyond_eight_lanes(self):
+        """8.3.7: a module with more than eight host lanes "can therefore not
+        unambiguously advertise unsupported media lanes". Half of an ambiguous
+        statement is not safer to act on than none of it."""
+        self._connect('mock_zr16')
+        self.assertEqual(self._info()['media_lane_unsupported_mask'], 0xFE)
+        lanes = self._mon()['lanes']
+        self.assertEqual(len(lanes), 16)
+        for lane in lanes:
+            self.assertTrue(lane['media_lane_present'],
+                            'lane %d was hidden on the strength of a register '
+                            'the specification says cannot speak for this '
+                            'module' % lane['lane'])
+
+    def test_an_unread_advertisement_hides_nothing(self):
+        """With no capabilities at all, hiding every reading would be the
+        worse error - the same rule _monitor_present follows."""
+        import app as app_module
+        self._connect('mock_coherent')
+        saved = app_module._state['caps'].pop('media_lane_unsupported_mask')
+        try:
+            for lane in self._mon()['lanes']:
+                self.assertTrue(lane['media_lane_present'])
+        finally:
+            app_module._state['caps']['media_lane_unsupported_mask'] = saved
+
+    # ---- the mock must not contradict itself -------------------------------
+
+    def test_no_profile_advertises_more_media_lanes_than_it_has(self):
+        """Every profile used to answer 0x00 - "all eight supported" -
+        including the coherent ones that report one media lane. A mock that
+        says one and advertises eight is what made the unchecked read look
+        correct."""
+        import i2c_interface
+        import i2c_backends            # noqa: F401
+        for backend in sorted(n for n in i2c_interface._BACKENDS
+                              if n.startswith('mock')):
+            with self.subTest(backend=backend):
+                self._connect(backend)
+                info = self._info()
+                mask = info['media_lane_unsupported_mask']
+                advertised = sum(1 for i in range(8) if not (mask >> i) & 1)
+                media = info['media_lanes']
+                if media < 8:
+                    self.assertLessEqual(
+                        advertised, media,
+                        '%s reports %d media lanes and advertises %d as '
+                        'supported' % (backend, media, advertised))
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_panel_says_which_it_is(self):
+        """"not implemented" and "no such media lane" are different answers
+        and send the reader to different registers."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('media_lane_present', js,
+                      'the panel prints a reading for a media lane the module '
+                      'says it does not have')
+        self.assertIn('00h:210', js,
+                      'the cell does not say which register said so')
+        body = js_function_body(js, 'async function _loadMonitoringOnce(')
+        self.assertIn('absentLane', body)
 
 
 if __name__ == '__main__':

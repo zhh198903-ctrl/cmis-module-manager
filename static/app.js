@@ -1511,6 +1511,18 @@ async function _loadMonitoringOnce() {
       `<span class="reg-meta" title="${esc('This module does not implement '
         + 'this monitor (' + reg + '), so there is no reading to show')}">`
       + `not implemented<br><small>${reg}</small></span>`;
+    // Table 8-99 calls Tx power, Tx bias and Rx power "Media Lane-Specific
+    // Monitors", and these rows are host lanes. A coherent module carries
+    // eight host lanes into one optical carrier, so the rows past its last
+    // media lane were printing registers for lanes the module says it does
+    // not have - which read zero, the bottom of the dBm scale, coloured as an
+    // alarm.
+    const noLane =
+      `<span class="reg-meta" title="${esc('This module advertises that it '
+        + 'does not have this media lane (00h:210). Tx power, Tx bias and Rx '
+        + 'power are per media lane (Table 8-99), so there is nothing here '
+        + 'to measure')}">no such media lane<br><small>00h:210</small></span>`;
+    const absentLane = lane.media_lane_present === false;
     // A monitor the module does not implement has no reading to colour. It
     // read zero, which the threshold comparison called an alarm - the tool
     // announcing a dark laser on a module that never claimed to measure one.
@@ -1551,13 +1563,13 @@ async function _loadMonitoringOnce() {
     return `<tr>
       <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
       <td class="${txCls}" title="${esc(txTip)}">${txDbm == null
-        ? noMon('01h:160.1')
+        ? (absentLane ? noLane : noMon('01h:160.1'))
         : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${
-        lane.tx_bias_ma == null ? noMon('01h:160.0')
+        lane.tx_bias_ma == null ? (absentLane ? noLane : noMon('01h:160.0'))
                                 : `${lane.tx_bias_ma.toFixed(3)} mA`}</td>
       <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${rxDbm == null
-        ? noMon('01h:160.2')
+        ? (absentLane ? noLane : noMon('01h:160.2'))
         : `${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
           title="${esc(dpStateNote(lane))}">${lane.datapath_state}${

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.72.0'
+__version__ = '2.73.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -144,6 +144,31 @@ _MODULE_FLAG_MONITOR = {
     for _prefix in (_first, _second)
     for _level in cmis.MONITOR_FLAG_LEVELS
 }
+
+
+def _media_lane_present(lane: int) -> bool:
+    """Whether the module has this media lane (00h:210, Table 8-36).
+
+    Table 8-99 calls Tx power, Tx bias and Rx power "Media Lane-Specific
+    Monitors", so on a module whose media lanes are fewer than its host lanes
+    - a coherent one carries eight host lanes into a single optical carrier -
+    the rows past the last media lane are reading registers for lanes that do
+    not exist. Those read zero, and zero is a plausible-looking measurement:
+    0.0 uW is the bottom of the dBm scale, which is what the panel paints in
+    alarm red.
+
+    `lane` is 1-based.
+
+    On a module with more than eight lanes the register is not used at all.
+    The specification's note is that such a module "can therefore not
+    unambiguously advertise unsupported media lanes" - so its eight bits
+    cannot be taken to mean media lanes 1-8 either, and half of an ambiguous
+    statement is not a safer thing to act on than none of it.
+    """
+    mask = (_state.get('caps') or {}).get('media_lane_unsupported_mask')
+    if mask is None or _state.get('lanes', 8) > 8 or not 1 <= lane <= 8:
+        return True
+    return not (mask >> (lane - 1)) & 1
 
 
 def _require_connected():
@@ -565,6 +590,15 @@ def _discover_capabilities() -> dict:
         # _state['lanes']: that is assigned from this dict only after
         # discovery returns, so reading it here would size this module's
         # banks from the one connected before it.
+        # 00h:210 (Table 8-36) says which media lanes are NOT supported. It
+        # is an advertisement, so it is read here rather than on every poll.
+        # The specification's own note limits what it can say: "This lane
+        # related register is on a non-banked page. Modules with more than 8
+        # host lanes can therefore not unambiguously advertise unsupported
+        # media lanes" - so it is taken to cover media lanes 1-8 and nothing
+        # is inferred beyond them.
+        caps['media_lane_unsupported_mask'] = _read_upper(
+            *cmis.REG_MEDIA_LANE_INFO)[0]
         lane_count = caps.get('max_lanes', 8)
         caps['media_lane_map'] = cmis.parse_media_lane_mapping(
             b''.join(raw for _b, raw in
@@ -1285,15 +1319,24 @@ def api_module_monitoring():
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
             rx_uw = cmis.parse_power_uw(rx_power_raw[i*2:(i+1)*2])
             bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2], bias_scale)
+            # Table 8-99 calls these three "Media Lane-Specific Monitors", and
+            # the rows are host lanes. On a module that carries more host
+            # lanes than media lanes - a coherent one takes eight into a
+            # single optical carrier - the rows past the last media lane were
+            # reading registers for lanes the module says it does not have.
+            # Those read zero, which is 0.0 uW: the bottom of the dBm scale,
+            # and the value the panel paints in alarm red.
+            media = _media_lane_present(i + 1)
             lanes.append({
                 'lane': i + 1,
-                'tx_power_uw': round(tx_uw, 2) if has_tx_pwr else None,
+                'media_lane_present': media,
+                'tx_power_uw': round(tx_uw, 2) if has_tx_pwr and media else None,
                 'tx_power_dbm': (round(cmis.uw_to_dbm(tx_uw), 2)
-                                 if has_tx_pwr else None),
-                'rx_power_uw': round(rx_uw, 2) if has_rx_pwr else None,
+                                 if has_tx_pwr and media else None),
+                'rx_power_uw': round(rx_uw, 2) if has_rx_pwr and media else None,
                 'rx_power_dbm': (round(cmis.uw_to_dbm(rx_uw), 2)
-                                 if has_rx_pwr else None),
-                'tx_bias_ma': round(bias_ma, 3) if has_bias else None,
+                                 if has_rx_pwr and media else None),
+                'tx_bias_ma': round(bias_ma, 3) if has_bias and media else None,
                 'datapath_state': dp_states[i],
                 'datapath_state_kind': cmis.dp_state_kind(dp_states[i]),
                 # 6.3.3: the Flags of this lane's monitors are assured only in
