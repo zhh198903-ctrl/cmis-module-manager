@@ -16326,6 +16326,102 @@ class TestThePanelDoesNotRegroupLanesItself(CMISTestCase):
         self.assertIn('return [lane];', js[i:i + 320])
 
 
+class TestOneTableOfGridNames(CMISTestCase):
+    """Table 8-109 names every GridSpacingTx code, 1111b included, where it
+    means "Not available". The panel kept a second copy of that table and the
+    copy stopped at 1001b, so a lane sitting on 1111b was named "Not
+    available" in its tooltip and "15" in the dropdown on the same row - one
+    register, two answers, side by side."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'address': 0x50}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _set_grid(self, raw):
+        """12h:128 bits 7-4 are GridSpacingTx1."""
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x12, 'address': 0x80, 'data': [raw]}),
+            content_type='application/json'))
+
+    def test_the_names_come_from_the_server(self):
+        names = self._connect() or self._laser()['grid_names']
+        self.assertEqual(names['0'], '3.125 GHz')
+        self.assertEqual(names['9'], '300 GHz')
+
+    def test_the_not_available_code_is_named(self):
+        """1111b is a real value with a real meaning, not a gap in the table."""
+        self._connect()
+        self.assertEqual(self._laser()['grid_names']['15'], 'Not available')
+
+    def test_the_published_names_are_the_ones_the_lane_is_decoded_with(self):
+        """Two tables is the defect; this is what makes it one."""
+        import cmis_registers as c
+        self._connect()
+        names = self._laser()['grid_names']
+        self.assertEqual({int(k): v for k, v in names.items()}, c.GRID_CODES)
+
+    def test_a_lane_on_the_not_available_grid_reads_the_same_both_ways(self):
+        self._connect()
+        self._set_grid(0xF0)
+        lane = self._laser()['lanes'][0]
+        self.assertEqual(lane['grid_code'], 15)
+        self.assertEqual(lane['grid'], 'Not available')
+        self.assertEqual(self._laser()['grid_names'][str(lane['grid_code'])],
+                         lane['grid'])
+
+    def test_the_names_cover_every_code_the_lane_decode_can_produce(self):
+        """Anything the lane can be named, the dropdown has to be able to name
+        too - otherwise it falls back to a number beside a word."""
+        import cmis_registers as c
+        self._connect()
+        names = self._laser()['grid_names']
+        for code in range(16):
+            self._set_grid(code << 4)
+            lane = self._laser()['lanes'][0]
+            named = names.get(str(code))
+            if named is not None:
+                self.assertEqual(lane['grid'], named, 'code %d' % code)
+            else:
+                # Undefined in Table 8-109; the dropdown uses the lane's own
+                # decoded name for these rather than guessing again.
+                self.assertIn('Unknown', lane['grid'], 'code %d' % code)
+
+
+class TestThePanelKeepsNoGridTable(CMISTestCase):
+    """The browser's copy is what drifted; it has to stay gone."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_there_is_no_second_table_of_grid_names(self):
+        js = self._js()
+        self.assertNotIn('GRID_NAMES', js)
+        self.assertNotIn("'3.125 GHz'", js,
+                         'a grid name spelled out in the panel is a second '
+                         'table starting again')
+
+    def test_the_dropdown_labels_come_from_the_payload(self):
+        self.assertIn('(d.grid_names || {})[code]', self._js())
+
+    def test_an_unadvertised_grid_is_named_by_the_lane_itself(self):
+        """Codes Table 8-109 leaves undefined have no entry to look up, and
+        guessing a second wording for them is how the two drifted apart."""
+        js = self._js()
+        i = js.index('const gridOpts =')
+        block = js[i:i + 1100]
+        self.assertIn('curName || gridName(cur)', block)
+        self.assertIn('gridOpts(l.grid_code, l.grid)', js)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

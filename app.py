@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.64.0'
+__version__ = '2.65.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2864,6 +2864,12 @@ def api_laser_get():
                 struct.unpack(">h", pwr_max)[0] * 0.01,
             ],
             'grid_channel_ranges': grid_channel_ranges,
+            # Table 8-109 names every grid code, 1111b included ("Not
+            # available"). The panel kept its own copy of that table and the
+            # copy stopped at 1001b, so a lane on 1111b was named "Not
+            # available" in the tooltip and "15" in the dropdown beside it -
+            # one register, two answers, on the same row.
+            'grid_names': {str(k): v for k, v in cmis.GRID_CODES.items()},
             'lanes': lanes,
         })
     except Exception as e:

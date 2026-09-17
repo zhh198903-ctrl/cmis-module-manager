@@ -3249,11 +3249,6 @@ async function loadCounters() {
 // ---------------------------------------------------------------------------
 let _laserData = null;
 
-const GRID_NAMES = {
-  0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz', 4: '50 GHz',
-  5: '100 GHz', 6: '33 GHz', 7: '75 GHz', 8: '150 GHz', 9: '300 GHz',
-};
-
 // Page 12h:231-238, latched and clear-on-read. The module answers a tuning
 // request here and nothing read it, so a refused channel looked applied.
 const TUNING_FLAG_LABELS = {
@@ -3330,19 +3325,26 @@ async function loadLaser() {
       ` | Power: <b>${d.power_range_dbm[0]}..${d.power_range_dbm[1]} dBm</b>`;
   }
 
+  // Named by the server, from the same table it decodes the lane's current
+  // grid with. Keeping a second copy here is what let the two drift.
+  const gridName = code => (d.grid_names || {})[code] || `code ${code}`;
   const ranges = d.grid_channel_ranges || {};
   const advertised = Object.keys(ranges).map(Number).sort((a, b) => a - b);
-  const gridOpts = (cur) => {
+  const gridOpts = (cur, curName) => {
     const opts = advertised.map(code => {
       const r = ranges[code];
       return `<option value="${code}" ${cur === code ? 'selected' : ''}>`
-           + `${esc(GRID_NAMES[code] || code)} (ch ${r[0]}..${r[1]})</option>`;
+           + `${esc(gridName(code))} (ch ${r[0]}..${r[1]})</option>`;
     });
     // A lane can sit on a grid the module no longer advertises a plan for;
-    // keep it visible rather than silently snapping to another value.
+    // keep it visible rather than silently snapping to another value. Its
+    // name comes from the lane itself, which the server has already decoded -
+    // including the codes Table 8-109 leaves undefined, where "Unknown(10)"
+    // and a second guess at the same byte would be two answers again.
     if (!advertised.includes(cur)) {
       opts.unshift(`<option value="${cur}" selected>`
-                   + `${esc(GRID_NAMES[cur] || cur)} — not advertised</option>`);
+                   + `${esc(curName || gridName(cur))} — not advertised`
+                   + `</option>`);
     }
     return opts.join('');
   };
@@ -3378,7 +3380,7 @@ async function loadLaser() {
 
     return `<tr>
       <td>${l.lane}</td>
-      <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code)}</select></td>
+      <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code, l.grid)}</select></td>
       <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_thz.toFixed(6)}</td>

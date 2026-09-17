@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.64.0<br>
+      <b>版本</b>　2.65.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -610,6 +610,19 @@
     <li>若未出现，点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
   </ol>
 
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>激光器调谐页：同一个栅格，下拉框和悬停提示可能显示成两个名字</b>（v2.65.0 修复）。<br>
+    规范给<b>每一个栅格编码</b>都定了名字，包括 <code>1111b</code>——它的含义是
+    <b>「不可用 / Not available」</b>，是一个有意义的值，不是空档。<br>
+    界面此前<b>自己抄了一份</b>栅格名字表，而那份抄到 <code>1001b</code>（300 GHz）就停了。
+    于是一条处于 <code>1111b</code> 的通道，<b>悬停提示显示「Not available」，
+    同一行的下拉框却显示「15」</b>——同一个寄存器，同一行上两个答案。<br>
+    现在名字只由后端给一份，界面直接用；
+    规范未定义的那几个编码（<code>1010b</code>–<code>1110b</code>）
+    也统一用后端解出来的写法，不再各猜各的。</span>
+  </div>
+
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span><b>「数据通道」页勾选 DP Deinit 时，勾中的通道和实际生效的通道可能对不上</b>（v2.64.0 修复）。<br>
@@ -792,8 +805,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.64.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.64.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.65.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.65.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -3437,7 +3450,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.64.0<br>
+    CMIS Module Manager 操作手册 v2.65.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
