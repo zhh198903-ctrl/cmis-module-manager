@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.87.0'
+__version__ = '2.88.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -960,9 +960,16 @@ def api_module_info():
         # HW revision: Page 01h:0x82-0x83
         try:
             fw_active_raw = _read_lower(0x27, 2)
-            fw_rev = f"{fw_active_raw[0]}.{fw_active_raw[1]}"
+            # 8.2.9: FFh.FFh is not a version, it is "the active firmware load
+            # is invalid", and 0.0 is a module with no firmware. Printed as
+            # numbers, the fault reads as an ordinary release.
+            fw_active = cmis.parse_firmware_revision(*fw_active_raw[:2])
+            fw_rev = (fw_active['version'] or
+                      ('Invalid firmware load' if fw_active['invalid']
+                       else 'No firmware'))
         except Exception:
             fw_rev = "N/A"
+            fw_active = None
         # 01h:128-137 are ten contiguous required bytes: the inactive firmware
         # revision (Table 8-44), the hardware revision, and the supported link
         # length per fibre type (Table 8-45). One burst rather than three
@@ -970,11 +977,18 @@ def api_module_info():
         try:
             blk = _read_upper(cmis.REG_FW_INACT_MAJOR[0],
                               cmis.REG_FW_INACT_MAJOR[1], 10)
-            fw_inactive = f"{blk[0]}.{blk[1]}"
+            # Same encoding (Table 8-44), and "a module without inactive
+            # firmware clears these fields" - so 0.0 here is the common case,
+            # not a module without firmware.
+            fw_inact = cmis.parse_firmware_revision(blk[0], blk[1])
+            fw_inactive = (fw_inact['version'] or
+                           ('Invalid firmware load' if fw_inact['invalid']
+                            else 'None'))
             hw_rev = f"{blk[2]}.{blk[3]}"
             link_lengths = cmis.parse_link_lengths(blk[4:10])
         except Exception:
             fw_inactive = "N/A"
+            fw_inact = None
             hw_rev = "N/A"
             link_lengths = []
 
@@ -1013,6 +1027,10 @@ def api_module_info():
             'media_lanes_app1': media_lanes_app1,
             'lanes_detail':     lanes_detail,
             'fw_revision': fw_rev,
+            # The decoded form beside the text, so the panel can mark an
+            # invalid load as the fault it is rather than as a version.
+            'fw_active': fw_active,
+            'fw_inactive_decoded': fw_inact,
             'fw_inactive_revision': fw_inactive,
             'hw_revision': hw_rev,
             'link_lengths': link_lengths,

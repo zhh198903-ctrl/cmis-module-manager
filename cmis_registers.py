@@ -1385,6 +1385,34 @@ FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
                    27: '16-lane'}
 
 
+def parse_firmware_revision(major: int, minor: int) -> dict:
+    """8.2.9 defines two combinations that are not version numbers.
+
+      Major = 0 and Minor = 0      the module does not have any firmware
+      Major = FFh and Minor = FFh  the active firmware load is invalid
+      anything else                the firmware version
+
+    Both were printed as "major.minor", so a module reporting an invalid
+    firmware load showed 255.255 - a fault condition dressed as a plausible
+    version, and the one value a reader would not question.
+
+    Table 8-44 gives the inactive firmware fields "the same encoding", and
+    adds that "a module without inactive firmware clears these fields" - so
+    0.0 there is the ordinary case rather than a module with no firmware at
+    all. The caller says which field it is reading; this says what the numbers
+    mean.
+    """
+    invalid = major == 0xFF and minor == 0xFF
+    absent = major == 0 and minor == 0
+    return {
+        'major': major,
+        'minor': minor,
+        'invalid': invalid,
+        'absent': absent,
+        'version': None if (invalid or absent) else '%d.%d' % (major, minor),
+    }
+
+
 def parse_far_end_config(byte_211: int) -> dict:
     """00h:211.4-0 (Table 8-37): how a cable assembly's far end breaks out.
 

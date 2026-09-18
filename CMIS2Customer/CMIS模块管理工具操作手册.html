@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.87.0<br>
+      <b>版本</b>　2.88.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.87.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.87.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.88.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.88.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,21 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>固件版本:有两个取值不是版本号</h3>
+  <p>规范 8.2.9 规定了固件主/次版本号的编码,其中两种组合<b>不是版本号</b>:</p>
+  <table>
+    <tr><th>取值</th><th>含义</th></tr>
+    <tr><td>Major = 0 且 Minor = 0</td><td>模块<b>没有固件</b></td></tr>
+    <tr><td>Major = FFh 且 Minor = FFh</td><td><b>活动固件映像无效</b></td></tr>
+    <tr><td>其余组合</td><td>固件版本</td></tr>
+  </table>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>而两者此前都按 <code>主.次</code> 直接打印。于是一块<b>报告固件映像无效</b>的模块,面板上显示的是 <code>255.255</code>——<b>一个故障状态被打扮成了一个像模像样的版本号</b>,而且恰恰是读者最不会去怀疑的那种值。</span>
+  </div>
+  <p>现在分别显示为「Invalid firmware load」与「No firmware」,<b>无效映像还会被标红</b>——那是故障,不是版本。</p>
+  <p>Table 8-44 规定非活动固件字段<b>用同一套编码</b>,并补充说「没有非活动固件的模块会清零这两个字段」。所以那里的 <code>0.0</code> 是<b>常见情形</b>(显示为 None),而不是「模块没有固件」——<b>同一套解码,不同的措辞</b>,因此判断放在解码器里、措辞放在调用处。硬件版本号规范未定义任何特殊编码,保持原样。</p>
 
   <h3>线缆长度:有两个取值不是长度</h3>
   <p>规范 8.3.4 说 00h:202:<b>「CableAssemblyLinkLength 取值 1111 1111b 表示链路长度<u>大于</u> 6300 m」</b>。</p>
@@ -3711,7 +3726,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.87.0<br>
+    CMIS Module Manager 操作手册 v2.88.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

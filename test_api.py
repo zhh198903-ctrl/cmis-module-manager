@@ -21079,6 +21079,116 @@ class TestTheCableLengthByteHasTwoValuesThatAreNotLengths(CMISTestCase):
                          'the two cases apart')
 
 
+class TestTwoFirmwareRevisionsThatAreNotRevisions(CMISTestCase):
+    """8.2.9 defines the encoding of the firmware major and minor revision
+    fields, and two combinations are not version numbers:
+
+        Major = 0 and Minor = 0       the module does not have any firmware
+        Major = FFh and Minor = FFh   the active firmware load is invalid
+        anything else                 the firmware version
+
+    Both were printed as "major.minor". A module reporting an invalid firmware
+    load showed 255.255 - a fault condition dressed as a plausible release,
+    and the one value a reader would not question.
+
+    Table 8-44 gives the inactive firmware fields "the same encoding", and
+    adds that "a module without inactive firmware clears these fields" - so
+    0.0 there is the ordinary case, not a module with no firmware at all.
+    Same decoding, different wording, which is why the decision is in the
+    caller and only the meaning is in the parser."""
+
+    def _info(self, major, minor, backend='mock_dr8'):
+        import app as app_module
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        regs = app_module._state['backend']._registers
+        regs[None][0x27], regs[None][0x28] = major, minor
+        regs[0x01][0x80], regs[0x01][0x81] = major, minor
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def test_an_ordinary_version_is_unchanged(self):
+        import cmis_registers as c
+        d = c.parse_firmware_revision(1, 5)
+        self.assertEqual(d['version'], '1.5')
+        self.assertFalse(d['invalid'])
+        self.assertFalse(d['absent'])
+
+    def test_the_invalid_load_is_not_a_version(self):
+        import cmis_registers as c
+        d = c.parse_firmware_revision(0xFF, 0xFF)
+        self.assertTrue(d['invalid'])
+        self.assertIsNone(d['version'], '255.255 is not a release')
+
+    def test_no_firmware_is_not_version_zero(self):
+        import cmis_registers as c
+        d = c.parse_firmware_revision(0, 0)
+        self.assertTrue(d['absent'])
+        self.assertIsNone(d['version'])
+
+    def test_only_both_bytes_together_are_special(self):
+        """FFh.00h and 00h.FFh are ordinary versions - the specification names
+        the combinations, not the bytes. Treating either byte alone as the
+        escape would hide a real version."""
+        import cmis_registers as c
+        for major, minor in ((0xFF, 0x00), (0x00, 0xFF), (0xFF, 0x01),
+                             (0x01, 0xFF)):
+            d = c.parse_firmware_revision(major, minor)
+            self.assertFalse(d['invalid'], '%d.%d' % (major, minor))
+            self.assertFalse(d['absent'], '%d.%d' % (major, minor))
+            self.assertEqual(d['version'], '%d.%d' % (major, minor))
+
+    def test_the_active_row_says_the_load_is_invalid(self):
+        d = self._info(0xFF, 0xFF)
+        self.assertIn('nvalid', d['fw_revision'])
+        self.assertNotIn('255', d['fw_revision'])
+
+    def test_the_active_row_says_there_is_no_firmware(self):
+        d = self._info(0, 0)
+        self.assertIn('No firmware', d['fw_revision'])
+
+    def test_the_inactive_row_reads_none_rather_than_no_firmware(self):
+        """The same zero means something else here: a module without a second
+        load clears the field, which is the common case and not a fault."""
+        d = self._info(0, 0)
+        self.assertEqual(d['fw_inactive_revision'], 'None')
+
+    def test_the_inactive_row_still_reports_an_invalid_load(self):
+        d = self._info(0xFF, 0xFF)
+        self.assertIn('nvalid', d['fw_inactive_revision'])
+
+    def test_an_ordinary_version_reaches_the_panel_unchanged(self):
+        d = self._info(3, 7)
+        self.assertEqual(d['fw_revision'], '3.7')
+        self.assertEqual(d['fw_inactive_revision'], '3.7')
+
+    def test_the_decoded_form_travels_with_the_text(self):
+        """The panel needs to know it is a fault, not just read the sentence."""
+        d = self._info(0xFF, 0xFF)
+        self.assertTrue(d['fw_active']['invalid'])
+        self.assertTrue(d['fw_inactive_decoded']['invalid'])
+
+    def test_the_panel_marks_an_invalid_load(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function firmwareCell(')
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn('decoded.invalid', code)
+        self.assertIn('flag-active', code,
+                      'a fault has to look different from a version')
+        self.assertIn('firmwareCell(d.fw_revision', js)
+        self.assertIn('firmwareCell(d.fw_inactive_revision', js)
+
+    def test_the_hardware_revision_is_left_alone(self):
+        """Table 8-44 says the hardware fields "contain version numbers" and
+        names no escape, so 0.0 there is 0.0."""
+        d = self._info(0, 0)
+        self.assertRegex(d['hw_revision'], r'^\d+\.\d+$',
+                         'the hardware revision is still a pair of numbers')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

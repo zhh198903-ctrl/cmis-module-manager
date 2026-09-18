@@ -630,8 +630,8 @@ async function loadInfo() {
     ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', true],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
-    ['FW Revision',     d.fw_revision,                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
-    ['Inactive FW',     d.fw_inactive_revision || '—',                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
+    ['FW Revision',     firmwareCell(d.fw_revision, d.fw_active),                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
+    ['Inactive FW',     firmwareCell(d.fw_inactive_revision, d.fw_inactive_decoded),                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
     ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
     ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
@@ -810,6 +810,20 @@ function cableLengthCell(d) {
   if (!cl) return d.cable_length_m ? esc(d.cable_length_m + ' m') : '-';
   if (cl.undefined) return esc('\u2014 (transceiver, see Link Length)');
   return esc(cl.text);
+}
+
+// 8.2.9: FFh.FFh is not a version, it is "the active firmware load is
+// invalid". Printed as 255.255 it reads as an ordinary release, which is
+// the one value a reader would not question. Marked rather than merely
+// reworded: it is a fault.
+function firmwareCell(text, decoded) {
+  if (decoded && decoded.invalid) {
+    return '<span class="flag-active" title="'
+      + esc('The module reports FFh.FFh, which the specification defines '
+            + 'as an invalid firmware load - not a version number.')
+      + '">' + esc(text) + '</span>';
+  }
+  return esc(String(text || '-'));
 }
 
 function mediaIfTechCell(d) {
