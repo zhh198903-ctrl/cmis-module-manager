@@ -18632,89 +18632,105 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
 
     # Verified against OIF-CMIS-05.4 on 2026-09-18.
     VERIFIED_CMIS = frozenset([
-    '8-4',
-    '8-5',
-    '8-6',
-    '8-7',
-    '8-9',
-    '8-10',
-    '8-11',
-    '8-12',
-    '8-15',
-    '8-18',
-    '8-20',
-    '8-21',
-    '8-26',
-    '8-36',
-    '8-40',
-    '8-43',
-    '8-44',
-    '8-45',
-    '8-46',
-    '8-47',
-    '8-48',
-    '8-49',
-    '8-50',
-    '8-51',
-    '8-52',
-    '8-53',
-    '8-54',
-    '8-56',
-    '8-57',
-    '8-58',
-    '8-59',
-    '8-60',
-    '8-61',
-    '8-62',
-    '8-64',
-    '8-66',
-    '8-67',
-    '8-69',
-    '8-70',
-    '8-71',
-    '8-77',
-    '8-78',
-    '8-82',
-    '8-83',
-    '8-84',
-    '8-92',
-    '8-93',
-    '8-94',
-    '8-95',
-    '8-96',
-    '8-99',
-    '8-101',
-    '8-104',
-    '8-105',
-    '8-106',
-    '8-107',
-    '8-108',
-    '8-109',
-    '8-111',
-    '8-112',
-    '8-113',
-    '8-114',
-    '8-115',
-    '8-116',
-    '8-117',
-    '8-118',
-    '8-126',
-    '8-127',
-    '8-134',
-    '8-138',
-    '8-188',
-    '8-189',
-    '8-191',
-    '8-192',
-    '8-193',
-    '8-196',
+        '6-3',
+        '6-4',
+        '8-4',
+        '8-5',
+        '8-6',
+        '8-7',
+        '8-9',
+        '8-10',
+        '8-11',
+        '8-12',
+        '8-15',
+        '8-18',
+        '8-20',
+        '8-21',
+        '8-26',
+        '8-36',
+        '8-40',
+        '8-43',
+        '8-44',
+        '8-45',
+        '8-46',
+        '8-47',
+        '8-48',
+        '8-49',
+        '8-50',
+        '8-51',
+        '8-52',
+        '8-53',
+        '8-54',
+        '8-56',
+        '8-57',
+        '8-58',
+        '8-59',
+        '8-60',
+        '8-61',
+        '8-62',
+        '8-64',
+        '8-66',
+        '8-67',
+        '8-69',
+        '8-70',
+        '8-71',
+        '8-72',
+        '8-77',
+        '8-78',
+        '8-80',
+        '8-82',
+        '8-83',
+        '8-84',
+        '8-91',
+        '8-92',
+        '8-93',
+        '8-94',
+        '8-95',
+        '8-96',
+        '8-99',
+        '8-101',
+        '8-102',
+        '8-104',
+        '8-105',
+        '8-106',
+        '8-107',
+        '8-108',
+        '8-109',
+        '8-111',
+        '8-112',
+        '8-113',
+        '8-114',
+        '8-115',
+        '8-116',
+        '8-117',
+        '8-118',
+        '8-121',
+        '8-126',
+        '8-127',
+        '8-134',
+        '8-138',
+        '8-139',
+        '8-188',
+        '8-189',
+        '8-191',
+        '8-192',
+        '8-193',
+        '8-196',
     ])
 
-    # Cited as SFF-8024 in the source, and correctly so: connector type, fiber
-    # face type and heatsink type live in that document, not in CMIS.
-    VERIFIED_OTHER = frozenset(['4-3', '4-12', '4-13'])
+    # Not CMIS tables, and correctly cited as belonging elsewhere: connector
+    # type, fiber face type and heatsink type are SFF-8024; the launch power
+    # and receive sensitivity windows the coherent and 1.6T profiles are built
+    # from are IEEE 802.3 clause 180 and 185.
+    VERIFIED_OTHER = frozenset(['4-3', '4-12', '4-13',
+                                '180-7', '180-8', '185-5', '185-6'])
 
-    SOURCES = ('cmis_registers.py', 'app.py', 'static/app.js')
+    # test_api.py is scanned too. It was left out at first, and a citation
+    # added to a test in the very next round was wrong - Table 8-102 for the
+    # Apply trigger restriction, which is Table 8-80 - and went unnoticed
+    # because nothing looked there. A rule that exempts the tests is a rule
+    # with a hole exactly where new citations get written.
+    SOURCES = ('cmis_registers.py', 'app.py', 'static/app.js', 'test_api.py')
 
     def _cited(self):
         import re
@@ -18853,6 +18869,107 @@ class TestThePanelsAddressLabelsPointAtRealRegisters(CMISTestCase):
         # 11h:0x00 is lower memory's range, never part of an upper-page block.
         self.assertFalse(any(bp == 0x11 and bs <= 0x00 <= be
                              for bp, bs, be, _ in blocks))
+
+
+class TestTheApplyTriggersAreWrittenOnTheirOwn(CMISTestCase):
+    """Table 8-80 attaches a restriction to each Apply trigger byte: "This
+    byte must be written in a single-byte WRITE."
+
+    10h:143 is ApplyDPInit and 10h:144 ApplyImmediate, and they sit between
+    the Rx polarity control at 137 and the staged DPConfig block at 145-152 -
+    so a block write that reached a little further either way would trigger a
+    reconfiguration nobody asked for, or trigger it as a side effect of
+    writing something else.
+
+    The two are also written one at a time by design, not both: CMIS 5.4
+    records that "ApplyImmediate and ApplyDPInit now have a distinct and
+    non-overlapping purpose", and the memory map draws them as an OR."""
+
+    PAGE = 0x10
+    TRIGGERS = (143, 144)
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _writes_during(self, path, body):
+        """Every (page, first byte, length) the request wrote."""
+        import app as app_module
+        backend = app_module._state['backend']
+        seen = []
+        original = backend.write_bytes
+
+        def traced(addr, data):
+            seen.append((backend._current_page, addr, len(data)))
+            return original(addr, data)
+
+        backend.write_bytes = traced
+        try:
+            self.client.post(path, data=json.dumps(body),
+                             content_type='application/json')
+        finally:
+            backend.write_bytes = original
+        return seen
+
+    def test_no_write_spans_a_trigger_byte(self):
+        """Any write covering 143 or 144 has to be exactly that one byte."""
+        self._connect()
+        writes = self._writes_during(
+            '/api/module/datapath',
+            {'app_select': [1] * 8, 'tx_disable_mask': 0x01, 'apply': True})
+        self.assertTrue(writes, 'the request wrote nothing, so this checked '
+                                'nothing')
+        touched = 0
+        for page, addr, length in writes:
+            if page != self.PAGE or addr < 0x80:
+                continue
+            covered = range(addr, addr + length)
+            hits = [t for t in self.TRIGGERS if t in covered]
+            if not hits:
+                continue
+            touched += 1
+            self.assertEqual(
+                length, 1,
+                'a %d-byte write at 10h:%d covers the Apply trigger(s) %s; '
+                'Table 8-80 requires a single-byte WRITE'
+                % (length, addr, hits))
+        self.assertGreater(touched, 0,
+                           'no write reached a trigger byte, so the check '
+                           'above never ran - did the Apply happen?')
+
+    def test_the_neighbouring_blocks_stop_short_of_them(self):
+        """The staged configuration is 145-152 and the lane controls 129-137;
+        neither may grow into 143-144 without the write becoming illegal."""
+        import cmis_registers as c
+        for reg in (c.REG_DP_DEINIT, c.REG_TX_POL_FLIP, c.REG_RX_POL_FLIP,
+                    c.REG_APP_SELECT):
+            page, addr, length = reg
+            self.assertEqual(page, self.PAGE)
+            covered = set(range(addr, addr + length))
+            self.assertEqual(
+                covered & set(self.TRIGGERS), set(),
+                'the block at 10h:%d..%d covers an Apply trigger'
+                % (addr, addr + length - 1))
+
+    def test_the_triggers_are_one_byte_each(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_APPLY_DATAPATH, (0x10, 0x8F, 1))
+        self.assertEqual(c.REG_APPLY_IMM, (0x10, 0x90, 1))
+        self.assertEqual((0x8F, 0x90), self.TRIGGERS)
+
+    def test_asking_for_both_triggers_is_refused(self):
+        """They have "a distinct and non-overlapping purpose" - one
+        re-initialises the Data Path, the other commits without doing so - and
+        the memory map shows them as an OR."""
+        self._connect()
+        r = json.loads(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'apply': True, 'apply_immediate': True}),
+            content_type='application/json').data)
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('one Apply trigger', r['message'])
 
 
 if __name__ == '__main__':
