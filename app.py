@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.76.0'
+__version__ = '2.76.1'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -796,7 +796,7 @@ def api_module_info():
         mem_model_raw = _read_lower(0x02, 1)
         media_type_raw = _read_lower(0x55, 1)
 
-        # Page 00h vendor information block (addresses per CMIS 5.4 Table 8-26)
+        # Page 00h vendor information block (addresses per CMIS 5.4 Table 8-29)
         vendor_name_raw = _read_upper(*cmis.REG_VENDOR_NAME)
         vendor_oui_raw  = _read_upper(*cmis.REG_VENDOR_OUI)
         vendor_pn_raw   = _read_upper(*cmis.REG_VENDOR_PN)

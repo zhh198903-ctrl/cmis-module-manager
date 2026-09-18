@@ -44,7 +44,7 @@ REG_BANK_SELECT      = (None, 0x7E, 1)
 REG_PAGE_SELECT      = (None, 0x7F, 1)
 
 # ---------------------------------------------------------------------------
-# Page 00h — Administrative Information (Table 8-26)
+# Page 00h — Administrative Information (Table 8-27 overview)
 # ---------------------------------------------------------------------------
 REG_VENDOR_NAME      = (0x00, 0x81, 16)  # 129-144  ASCII
 REG_VENDOR_OUI       = (0x00, 0x91, 3)   # 145-147  IEEE OUI
@@ -101,7 +101,7 @@ REG_MISC_CAPS        = (0x01, 0xFC, 1)   # 252  bit5 MediaLaneSwitchingSupported
 REG_CDB_CAPS         = (0x01, 0xA3, 4)   # 163-166
 
 # ---------------------------------------------------------------------------
-# Page 02h — Thresholds (Table 8-62)
+# Page 02h — Thresholds (Table 8-63 overview)
 # ---------------------------------------------------------------------------
 # 144-175 (Table 8-64): four thresholds each for the three Aux monitors and
 # the Custom monitor. The Aux readings were on screen with nothing to judge
@@ -130,10 +130,11 @@ REG_RXPWR_HIGH_WARN     = (0x02, 0xC4, 2)
 REG_RXPWR_LOW_WARN      = (0x02, 0xC6, 2)
 
 # ---------------------------------------------------------------------------
-# Page 10h — Data Path Control (Table 8-67 overview):
+# Page 10h — Data Path Control (Table 8-77 overview):
 #   128     Data Path Control
-#   129-142 Lane-Specific Control   (Table 8-69)
-#   143-177 Staged Control Set 0    (Tables 8-70 / 8-72)
+#   129-142 Lane-Specific Control   (Table 8-79)
+#   143-177 Staged Control Set 0    (Tables 8-80 / 8-82 / 8-83 /
+#                                    8-84 / 8-85)
 # Bytes 133 and 140-142 are Reserved. Note there is deliberately no
 # OutputSquelchForceRx counterpart to OutputSquelchForceTx (§8.9.2.3).
 # ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
 REG_AUX_OBSERVABLE     = (0x01, 0x91, 1)  # 145 (Table 8-50)
 REG_RX_TX_CHARACTER    = (0x01, 0x97, 1)  # 151 (Table 8-50)
-REG_SI_MAXIMA          = (0x01, 0x99, 2)  # 153-154 (Table 8-53 continuation)
+REG_SI_MAXIMA          = (0x01, 0x99, 2)  # 153-154 (Table 8-50 continuation)
 REG_SI_CONTROLS_ADV    = (0x01, 0xA1, 2)  # 161-162 (Table 8-54)
 
 # Staged Control Set 0 on Page 10h (Tables 8-83, 8-84). The tool applies this
@@ -174,7 +175,7 @@ REG_APP_SELECT       = (0x10, 0x91, 8)   # 145-152 DPConfigLane1-8 (staged)
 REG_ACTIVE_APP_SELECT = (0x11, 0xCE, 8)  # 206-213 Active DPConfigLane1-8
 
 # ---------------------------------------------------------------------------
-# Page 11h — DataPath Status & Monitoring (Table 8-82)
+# Page 11h — DataPath Status & Monitoring (Table 8-92 overview)
 # ---------------------------------------------------------------------------
 REG_DP_STATE        = (0x11, 0x80, 4)   # 4 bytes, 4 bits/lane (nibble per lane)
 REG_OUTPUT_STATUS_RX= (0x11, 0x84, 1)   # 132  Table 8-95, RO/Rqd, 1b/lane
@@ -233,7 +234,7 @@ REG_ACS_RX_EQ_POST     = (0x11, 0xE3, 4)  # 227-230 OutputEqPostCursorTargetRx
 REG_ACS_RX_AMPLITUDE   = (0x11, 0xE7, 4)  # 231-234 OutputAmplitudeTargetRx
 
 # ---------------------------------------------------------------------------
-# Page 04h — Laser Capabilities (Table 8-66, RO)
+# Page 04h — Laser Capabilities (Table 8-68, RO)
 # ---------------------------------------------------------------------------
 REG_GRID_SUPPORTED   = (0x04, 0x80, 2)   # 128-129: grid support + fine tuning
 REG_GRID_CHANNELS    = (0x04, 0x82, 36)  # 130-165: S16 low/high per grid (9 grids × 4)
@@ -247,7 +248,7 @@ REG_REL_THR_CAP      = (0x04, 0xC4, 1)   # 196: bit6 relative Tx power threshold
 REG_PROG_PWR_MAX     = (0x04, 0xC8, 2)   # 200-201: S16 0.01 dBm
 
 # ---------------------------------------------------------------------------
-# Page 12h — Laser Tuning Control & Status (Table 8-99, banked)
+# Page 12h — Laser Tuning Control & Status (Table 8-109, banked)
 # ---------------------------------------------------------------------------
 REG_GRID_SPACING_TX  = (0x12, 0x80, 8)   # 128-135: 1B/lane [7:4]=grid [0]=FineTuneEn
 REG_CHANNEL_NUM_TX   = (0x12, 0x88, 16)  # 136-151: S16/lane (2B × 8)
@@ -303,7 +304,7 @@ def parse_grid_channel_ranges(data: bytes) -> dict:
     return out
 
 # ---------------------------------------------------------------------------
-# Page 13h — Diagnostic Controls (Tables 8-109..8-117)
+# Page 13h — Diagnostic Controls (Tables 8-110..8-134)
 # Each PRBS block is 8 bytes per side:
 #   +0 Enable, +1 DataInvert, +2 ByteSwap, +3 Pre/PostFEC, +4..+7 PatternSelect
 # ---------------------------------------------------------------------------
@@ -329,7 +330,7 @@ REG_HOST_OUT_LB      = (0x13, 0xB6, 1)
 REG_HOST_IN_LB       = (0x13, 0xB7, 1)
 
 # ---------------------------------------------------------------------------
-# Page 14h — Diagnostic Results (Tables 8-126..8-129)
+# Page 14h — Diagnostic Results (Tables 8-135..8-139)
 # ---------------------------------------------------------------------------
 REG_DIAG_SELECTOR    = (0x14, 0x80, 1)
 # Table 8-138 "Latched Diagnostics Flags" has five flag bytes; the checker
@@ -1498,7 +1499,7 @@ def parse_pattern_locations(b131: int) -> dict:
 
 
 def parse_pattern_control_caps(b141: int, b142: int) -> dict:
-    """13h:141-142 (Table 8-117 continuation), both RO and Required.
+    """13h:141-142 (Table 8-118 continuation), both RO and Required.
 
     Two questions per role that the pattern tables answer wrongly without
     them. 141 says whether the DataInvert and SwapSymbolBits bytes exist at

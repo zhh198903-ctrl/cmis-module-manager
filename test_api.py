@@ -5499,10 +5499,10 @@ class TestRegisterTooltips(CMISTestCase):
     """The UI hover tooltips quote CMIS field names and addresses at the user.
 
     A wrong tooltip is worse than none, so pin the strings that app.js emits to
-    the names and byte addresses in OIF CMIS 5.3. Sources: Table 8-69
-    (lane-specific controls, Page 10h), Table 8-72 (Staged Control Set 0),
-    Tables 8-109/8-111/8-113/8-115 (pattern gen/check, Page 13h), Table 8-121
-    (loopback controls), Table 8-99 (tunable laser, Page 12h) and the Module
+    the names and byte addresses in OIF CMIS 5.3. Sources: Table 8-79
+    (lane-specific controls, Page 10h), Table 8-82 (Staged Control Set 0),
+    Tables 8-119/8-121/8-123/8-125 (pattern gen/check, Page 13h), Table 8-131
+    (loopback controls), Table 8-109 (tunable laser, Page 12h) and the Module
     Control byte in Lower Memory.
     """
 
@@ -6076,7 +6076,7 @@ class TestDatapathSet(CMISTestCase):
         self.assertEqual(body['data']['tx_disable_mask'], 0xFF)
 
     def test_page10h_addresses_match_spec(self):
-        """Pin the Page 10h control map to OIF CMIS 5.3 Tables 8-67/8-69/8-70/8-72.
+        """Pin the Page 10h control map to OIF CMIS 5.3 Tables 8-77/8-79/8-80/8-82.
 
         These addresses were previously off by several bytes, which on real
         hardware silently flipped Tx polarity instead of disabling Tx and
@@ -18622,107 +18622,132 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     audit - to the wrong page, where they may change the code to match a table
     that governs something else.
 
-    Two were found stale this way. "Table 8-91: ConfigStatus codes" named
-    Lane-Specific Masks on Page 10h; the codes are Table 8-101, which the very
-    next function cited correctly. "PRBS pattern IDs (Table 8-105)" named the
-    Active Control Set's provisioned Rx controls; the IDs are Table 8-115,
-    cited correctly further down the same file. An earlier round found
-    "Table 8-84" for the Data Path State encoding, which is Table 8-94.
+    The first version of this guard asked only whether a number had been looked
+    up. That is half the property, and the weaker half: a number can be a real
+    table and still be the wrong table. Sixteen citations passed it while
+    naming a table about another subject entirely. The four Page 13h pattern
+    control blocks were cited as the four tables ten numbers lower, which are
+    about laser tuning, loopback capabilities, diagnostic reporting and the
+    pattern ID list. The Page 10h section header cited the Page 04h and Page
+    0Ch overviews. The Page 14h results were cited as four tables that belong
+    to Page 13h. Each number was on the verified list, because each is cited
+    correctly somewhere else in the same file. A guard that checks the number
+    and not the subject passes exactly the citations worth catching.
 
-    Every number below was looked up in OIF-CMIS-05.4 and its title matched
-    against what the code says it is. This cannot check that a *new* citation
-    is right - nothing here can, without the specification, which is not
-    distributed with the source - but it does stop one being added without
-    somebody going to look."""
+    So the list below now carries each table's caption, and the second check
+    uses it: where a citation sits next to a register address, the page in that
+    address must be the page the table governs.
 
-    # Verified against OIF-CMIS-05.4 on 2026-09-18.
-    VERIFIED_CMIS = frozenset([
-        '6-3',
-        '6-4',
-        '8-4',
-        '8-5',
-        '8-6',
-        '8-7',
-        '8-9',
-        '8-10',
-        '8-11',
-        '8-12',
-        '8-15',
-        '8-18',
-        '8-20',
-        '8-21',
-        '8-26',
-        '8-36',
-        '8-40',
-        '8-43',
-        '8-44',
-        '8-45',
-        '8-46',
-        '8-47',
-        '8-48',
-        '8-49',
-        '8-50',
-        '8-51',
-        '8-52',
-        '8-53',
-        '8-54',
-        '8-56',
-        '8-57',
-        '8-58',
-        '8-59',
-        '8-60',
-        '8-61',
-        '8-62',
-        '8-64',
-        '8-66',
-        '8-67',
-        '8-69',
-        '8-70',
-        '8-71',
-        '8-72',
-        '8-77',
-        '8-78',
-        '8-80',
-        '8-82',
-        '8-83',
-        '8-84',
-        '8-91',
-        '8-92',
-        '8-93',
-        '8-94',
-        '8-95',
-        '8-96',
-        '8-99',
-        '8-101',
-        '8-102',
-        '8-104',
-        '8-105',
-        '8-106',
-        '8-107',
-        '8-108',
-        '8-109',
-        '8-111',
-        '8-112',
-        '8-113',
-        '8-114',
-        '8-115',
-        '8-116',
-        '8-117',
-        '8-118',
-        '8-121',
-        '8-126',
-        '8-127',
-        '8-131',
-        '8-134',
-        '8-138',
-        '8-139',
-        '8-188',
-        '8-189',
-        '8-191',
-        '8-192',
-        '8-193',
-        '8-196',
-    ])
+    What that check cannot see, and this is worth knowing before trusting it:
+    a wrong table on the *right* page. Reverting three of the sixteen was
+    invisible to it for exactly that reason - 01h:153-154 attributed to Table
+    8-53 instead of 8-50, 13h:141-142 to 8-117 instead of 8-118, and the
+    loopback controls to 8-121 instead of 8-131. Catching those needs each
+    table's byte range, which is sixty-odd hand-verified numbers; a wrong one
+    there would fail a correct citation and invite somebody to "fix" it, which
+    is the defect this class exists to prevent. The page is what is checked.
+
+    Three were found stale by hand before that check existed. "Table 8-91:
+    ConfigStatus codes" named Lane-Specific Masks on Page 10h; the codes are
+    Table 8-101, which the very next function cited correctly. "PRBS pattern
+    IDs (Table 8-105)" named the Active Control Set's provisioned Rx controls;
+    the IDs are Table 8-115. "Table 8-84" was cited for the Data Path State
+    encoding, which is Table 8-94."""
+
+    # Verified against OIF-CMIS-05.4 on 2026-09-18: the caption printed above
+    # each table in the specification, copied verbatim.
+    VERIFIED_CMIS = {
+        '6-3': 'Configuration Commands (Intervention-Free Reconfiguration Procedures Supported)',
+        '6-4': 'Configuration Commands (Intervention-Free Reconfigurations Not Supported)',
+        '8-4': 'Lower Memory Overview',
+        '8-5': 'Management Characteristics (Lower Memory)',
+        '8-6': 'Global Status Information (Lower Memory)',
+        '8-7': 'Module State Encodings',
+        '8-9': 'Module Flags (not for static memory modules) (Lower Memory)',
+        '8-10': 'Module-Level Monitor Values (not for static memory modules) (Lower Memory)',
+        '8-11': 'Module Global Controls (not for static memory modules ) (Lower Memory)',
+        '8-12': 'Module Level Masks (not for static memory modules) (Lower Memory)',
+        '8-15': 'Module Active Firmware Version (Lower Memory)',
+        '8-18': 'Extended Module Information (Lower Memory)',
+        '8-20': 'Media Type Encodings (Table Selection)',
+        '8-21': 'Media Type Register (Lower Memory)',
+        '8-27': 'Page 00h Overview',
+        '8-29': 'Vendor Information (Page 00h)',
+        '8-36': 'Media Lane Information (Page 00h)',
+        '8-40': 'Media Connector Type (Page 00h)',
+        '8-43': 'Page 01h Overview',
+        '8-44': 'Module Inactive Firmware and Hardware Revisions (Page 01h)',
+        '8-45': 'Supported Fiber Link Length (Page 01h)',
+        '8-46': 'Wavelength Information (Page 01h)',
+        '8-47': 'Supported Pages and Banks Advertising (Page 01h)',
+        '8-48': 'Durations Advertising (Page 01h)',
+        '8-49': 'State Duration Encoding (Page 01h)',
+        '8-50': 'Module Characteristics Advertisement (Page 01h)',
+        '8-51': 'Supported Controls Advertisement (Page 01h)',
+        '8-52': 'Supported Flags Advertisement (Page 01h)',
+        '8-53': 'Supported Monitors Advertisement (Page 01h)',
+        '8-54': 'Supported Signal Integrity Controls Advertisement (Page 01h)',
+        '8-56': 'Additional Durations Advertising (Page 01h)',
+        '8-57': 'Host Lane Polarity Inversion Indication (Page 01h)',
+        '8-58': 'Supported Pages and Banks Advertisement (Page 01h)',
+        '8-59': 'Normalized Application Descriptors Support (Page 01h)',
+        '8-60': 'Media Lane Assignment Advertising (Page 01h)',
+        '8-61': 'Additional Application Descriptor Registers (Page 01h)',
+        '8-62': 'Miscellaneous Feature Advertisements (Page 01h)',
+        '8-63': 'Page 02h Overview',
+        '8-64': 'Module-Level Supervision Thresholds (Page 02h)',
+        '8-68': 'Laser capabilities for tunable lasers (Page 04h)',
+        '8-70': 'Supported Pages Map (Page 0Ch)',
+        '8-71': 'Generic FeatureAdvertisement Data Structure',
+        '8-77': 'Page 10h Overview',
+        '8-78': 'Data Path initialization control (Page 10h:128)',
+        '8-79': 'Lane-specific Direct Effect Control Fields (Page 10h)',
+        '8-80': 'Staged Control Set 0, Apply Triggers (Page 10h)',
+        '8-82': 'Staged Control Set 0, Data Path Configuration (Page 10h)',
+        '8-83': 'Staged Control Set 0, Tx Controls (Page 10h)',
+        '8-84': 'Staged Control Set 0, Rx Controls (Page 10h)',
+        '8-91': 'Lane-Specific Masks (Page 10h)',
+        '8-92': 'Page 11h Overview',
+        '8-93': 'Lane-associated Data Path States (Page 11h)',
+        '8-94': 'Data Path State Encoding',
+        '8-95': 'Lane-Specific Output Status (Page 11h)',
+        '8-96': 'Lane-Specific State Changed Flags (Page 11h)',
+        '8-99': 'Media Lane-Specific Monitors (Page 11h)',
+        '8-101': 'Configuration Command Execution and Result Status Codes (Page 11h)',
+        '8-102': 'Provisioned Data Path Configuration per Lane (DPConfigLane<i> Field)',
+        '8-104': 'Active Control Set, Provisioned Tx Controls (Page 11h)',
+        '8-105': 'Active Control Set, Provisioned Rx Controls (Page 11h)',
+        '8-106': 'Data Path Conditions (Page 11h)',
+        '8-107': 'Media Lane to Media Wavelength and Fiber mapping (Page 11h)',
+        '8-108': 'Page 12h Overview',
+        '8-109': 'Laser tuning, status, and Flags for tunable transmitters (Page 12h)',
+        '8-110': 'Page 13h Overview',
+        '8-111': 'Loopback Capabilities (Page 13h)',
+        '8-112': 'Diagnostics Measurement Capabilities (Page 13h)',
+        '8-113': 'Diagnostic Reporting Capabilities (Page 13h)',
+        '8-114': 'Pattern Generation and Checking Location (Page 13h)',
+        '8-115': 'Pattern IDs',
+        '8-116': 'PRBS Pattern Generation Capabilities (Page 13h)',
+        '8-117': 'Pattern Checking Capabilities (Page 13h)',
+        '8-118': 'Pattern Generator and Checker swap and invert Capabilities (Page 13h)',
+        '8-119': 'Host Side Pattern Generator Controls (Page 13h)',
+        '8-121': 'Media Side Pattern Generator Controls (Page 13h)',
+        '8-123': 'Host Side Pattern Checker Controls (Page 13h)',
+        '8-125': 'Media Side Pattern Checker Controls (Page 13h)',
+        '8-127': 'Clocking and Measurement Controls (Page 13h)',
+        '8-131': 'Loopback Controls (Page 13h)',
+        '8-134': 'User Pattern (Page 13h)',
+        '8-135': 'Page 14h Overview',
+        '8-138': 'Latched Diagnostics Flags (Page 14h)',
+        '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
+        '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
+        '8-189': 'Reset Acquisition Counters (Page 60h)',
+        '8-191': 'Acquisition Counters (Page 61h)',
+        '8-192': 'Page 62h Overview',
+        '8-193': 'Output Power Threshold Quad Data Structure',
+        '8-194': 'Output Power Thresholds (Page 62h)',
+        '8-196': 'Media Lane Switching (Page 6Dh)',
+    }
 
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
     # type, fiber face type and heatsink type are SFF-8024; the launch power
@@ -18738,20 +18763,83 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     # with a hole exactly where new citations get written.
     SOURCES = ('cmis_registers.py', 'app.py', 'static/app.js', 'test_api.py')
 
+    # A citation names several tables as often as one, and the first pattern
+    # here only captured "Table 8-x and 8-y". Everything after a slash or a
+    # comma went unread, which is how a citation of four Page 13h tables was
+    # scanned as one number, and how 8-194 was cited for two rounds without
+    # ever being looked up.
+    CITE = r'Tables?\s+((?:\d+-\d+)(?:\s*(?:\.\.|,|/|and|&)\s*(?:Tables?\s+)?\d+-\d+)*)'
+
+    # "13h:144", "Page 10h", "Lower 8-13", "Lower Memory".
+    ADDR = r'\bPage ([0-9A-F]{2})h\b|\b([0-9A-F]{2})h:\s?\d|\bLower Memory\b|\bLower \d'
+
+    # How far from the citation an address still counts as qualifying it. Wide
+    # enough for "Page 12h - Laser Tuning Control & Status (Table 8-109)",
+    # narrow enough that the next sentence's subject does not bleed in.
+    SPAN = 55
+
+    # Two citations name a table from another page on purpose. Each is listed
+    # with the words that identify it rather than a line number, and
+    # test_every_exception_is_still_needed fails if one stops being reached -
+    # an exception nothing uses is an exception nobody will re-examine.
+    CROSS_PAGE_EXCEPTIONS = (
+        # 6Dh:128.7-4 says in so many words "encoded as defined in Table
+        # 8-49"; the encoding table lives on Page 01h and is referenced from
+        # everywhere the same encoding is used.
+        ('test_api.py', '8-49', '6Dh:128.7-4'),
+    )
+
+    def _read(self, name):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, *name.split('/')), encoding='utf-8') as f:
+            return f.read()
+
     def _cited(self):
         import re
-        here = os.path.dirname(os.path.abspath(__file__))
         found = {}
         for name in self.SOURCES:
-            with open(os.path.join(here, *name.split('/')),
-                      encoding='utf-8') as f:
-                src = f.read()
-            for m in re.finditer(
-                    r'Tables?\s+(\d+-\d+)(?:\s+and\s+(\d+-\d+))?', src):
-                for num in (m.group(1), m.group(2)):
-                    if num:
-                        found.setdefault(num, set()).add(name)
+            for m in re.finditer(self.CITE, self._read(name)):
+                for num in re.findall(r'\d+-\d+', m.group(1)):
+                    found.setdefault(num, set()).add(name)
         return found
+
+    def _page_of(self, num):
+        """The page a table governs, from its caption, or None if it names no
+        page - an encoding or a data structure rather than a register map."""
+        import re
+        title = self.VERIFIED_CMIS.get(num, '')
+        m = (re.search(r'\(Page ([0-9A-F]{2})h\)', title)
+             or re.match(r'Page ([0-9A-F]{2})h Overview', title))
+        if m:
+            return m.group(1).lower()
+        return 'lower' if 'Lower Memory' in title else None
+
+    def _address_qualified(self):
+        """Every citation that sits beside a register address, as
+        (file, line number, table number, pages named nearby, the line)."""
+        import re
+        out = []
+        for name in self.SOURCES:
+            for ln, line in enumerate(self._read(name).split('\n'), 1):
+                for c in re.finditer(self.CITE, line):
+                    near = set()
+                    for a in re.finditer(self.ADDR, line):
+                        if (a.start() < c.end() + self.SPAN
+                                and a.end() > c.start() - self.SPAN):
+                            near.add((a.group(1) or a.group(2)
+                                      or 'lower').lower())
+                    if not near:
+                        continue
+                    # Page 01h is the advertising page: a control or Flag on
+                    # another page has its advertisement here, and the two
+                    # addresses in such a sentence are meant to differ.
+                    if 'advertis' in line.lower():
+                        near.discard('01')
+                        if not near:
+                            continue
+                    for num in set(re.findall(r'\d+-\d+', c.group(1))):
+                        out.append((name, ln, num, near, line.strip()))
+        return out
 
     def test_the_scan_finds_the_citations(self):
         """If this came back empty the check below would pass by looking at
@@ -18760,7 +18848,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
 
     def test_no_table_is_cited_without_having_been_looked_up(self):
         cited = self._cited()
-        known = self.VERIFIED_CMIS | self.VERIFIED_OTHER
+        known = set(self.VERIFIED_CMIS) | self.VERIFIED_OTHER
         unknown = sorted(set(cited) - known,
                          key=lambda n: tuple(int(x) for x in n.split('-')))
         detail = ', '.join(
@@ -18769,25 +18857,90 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
             unknown, [],
             'cited but not on the verified list: ' + detail + '. Look each up '
             'in OIF-CMIS-05.4, check the title matches what the code says it '
-            'is, and add it here.')
+            'is, and add it here with its caption.')
 
-    def test_the_two_that_were_wrong_stay_fixed(self):
-        """Both had the right number in the same file for the same subject,
-        which is what made them easy to miss."""
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'cmis_registers.py'),
-                  encoding='utf-8') as f:
-            src = f.read()
+    def test_the_address_scan_reaches_most_citations(self):
+        """The page check is worth nothing if the pattern stops matching. Most
+        citations in this code sit next to the address they explain."""
+        qualified = [q for q in self._address_qualified()
+                     if self._page_of(q[2]) is not None]
+        self.assertGreater(len(qualified), 100)
+
+    def test_no_table_is_cited_for_a_page_it_does_not_govern(self):
+        """The half of the property the number check cannot see. A caption
+        that names a page is a statement about which registers the table
+        describes, and a citation beside an address on another page is either
+        the wrong table or a sentence that needs rewording."""
+        wrong = []
+        for name, ln, num, near, line in self._address_qualified():
+            page = self._page_of(num)
+            if page is None or page in near:
+                continue
+            if any(f == name and n == num and words in line
+                   for f, n, words in self.CROSS_PAGE_EXCEPTIONS):
+                continue
+            wrong.append('%s:%d cites Table %s (%s) beside %s'
+                         % (name, ln, num, self.VERIFIED_CMIS[num],
+                            '/'.join(sorted(near))))
+        self.assertEqual(wrong, [], 'table cited for the wrong page: '
+                                    + '; '.join(wrong))
+
+    def test_every_exception_is_still_needed(self):
+        """An exception that no longer matches anything is one nobody will
+        think about again, and it would silently cover a future mistake."""
+        reached = set()
+        for name, _ln, num, _near, line in self._address_qualified():
+            for f, n, words in self.CROSS_PAGE_EXCEPTIONS:
+                if f == name and n == num and words in line:
+                    reached.add((f, n, words))
+        self.assertEqual(sorted(set(self.CROSS_PAGE_EXCEPTIONS) - reached), [],
+                         'listed as a deliberate cross-page citation but no '
+                         'longer found')
+
+    def test_the_four_pattern_blocks_name_their_own_tables(self):
+        """The citation that showed the number check was not enough. 8-119,
+        8-121, 8-123 and 8-125 are the four Page 13h control blocks; the
+        numbers ten lower are about four other things."""
+        # Spelled out rather than written as one literal: this file is one of
+        # the files being searched, so a literal here would be found in the
+        # assertion itself and the check could never fail.
+        wrong = '/'.join('8-%d' % n for n in (109, 111, 113, 115))
+        right = '/'.join('8-%d' % n for n in (119, 121, 123, 125))
+        js = self._read('static/app.js')
+        self.assertIn('Tables ' + right, js)
+        self.assertNotIn(wrong, js)
+        self.assertNotIn(wrong, self._read('test_api.py'))
+
+    def test_the_three_that_were_wrong_stay_fixed(self):
+        """All three had the right number in the same file for the same
+        subject, which is what made them easy to miss."""
+        src = self._read('cmis_registers.py')
         self.assertNotIn('Table 8-91: ConfigStatus', src)
         self.assertIn('Table 8-101', src)
         self.assertNotIn('(Table 8-105)', src)
         self.assertIn('Table 8-115 Pattern IDs', src)
+        self.assertIn('Table 8-94 (Data Path State Encoding)', src)
+
+    def test_every_caption_reads_like_a_caption(self):
+        """The captions were lifted from the specification by script, and one
+        came back as the sentence above the table rather than the caption
+        itself ("Table 8-134 provides space for the host to define..."). A
+        wrong caption here is the same defect this class exists to catch, one
+        level down: the page check would then be measuring against fiction."""
+        import re
+        wrong = []
+        for num, title in sorted(self.VERIFIED_CMIS.items()):
+            if not re.match(r'^[A-Z0-9]', title):
+                wrong.append('%s starts lowercase: %r' % (num, title))
+            elif title.endswith('.') or len(title) > 90:
+                wrong.append('%s reads like prose: %r' % (num, title))
+        self.assertEqual(wrong, [], 'not a table caption: ' + '; '.join(wrong))
 
     def test_the_list_is_not_padded(self):
         """A verified entry nothing cites is a number somebody stopped using;
         leaving it invites the list to drift into a junk drawer."""
         cited = set(self._cited())
-        stale = sorted(self.VERIFIED_CMIS - cited)
+        stale = sorted(set(self.VERIFIED_CMIS) - cited)
         self.assertEqual(stale, [], 'no longer cited: {0}'.format(stale))
 
 

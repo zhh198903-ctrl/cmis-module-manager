@@ -2907,9 +2907,10 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
   const follows = (what, addr) => esc('This module applies lane 1\u2019s '
     + what + ' to every lane of the bank (13h:' + addr + '), so this row '
     + 'follows lane 1.');
-  // Field names follow CMIS 5.4 Tables 8-109/8-111/8-113/8-115: each block is
-  // 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits, Pre/PostFECEnable,
-  // then 4 PatternSelect bytes holding two 4-bit lane selectors each.
+  // Field names follow CMIS 5.4 Tables 8-119/8-121/8-123/8-125 (Page 13h):
+  // each block is 8 bytes from `base` — Enable, DataInvert, SwapSymbolBits,
+  // Pre/PostFECEnable, then 4 PatternSelect bytes holding two 4-bit lane
+  // selectors each.
   const role = isChecker ? 'Checker' : 'Generator';
   const fecName = isChecker ? 'PostFECEnable' : 'PreFECEnable';
   // 13h:131 (Table 8-114). Both bits clear means the module has no such
