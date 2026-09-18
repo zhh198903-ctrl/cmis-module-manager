@@ -18769,6 +18769,92 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         self.assertEqual(stale, [], 'no longer cited: {0}'.format(stale))
 
 
+class TestThePanelsAddressLabelsPointAtRealRegisters(CMISTestCase):
+    """Every row of the panel carries the page and byte its value came from,
+    which is most of what makes the tool useful against the specification: the
+    reader can go and check.
+
+    That address is the same fact written down twice - once as a register
+    constant the code reads, and again as a string in the panel - and the two
+    are far apart. A label that drifts is worse than no label, because it is
+    believed: it sends the reader to a byte that holds something else, and the
+    reading beside it looks like evidence for whatever is there.
+
+    So every page/address the panel prints has to fall inside a register this
+    code actually reads. Not at its start, necessarily - the Custom monitor
+    Flags are at Lower 0x0B inside the Flag block that begins at 0x08, and the
+    Aux thresholds at 02h:0x98 inside the quad block that begins at 0x90 -
+    but inside one."""
+
+    def _blocks(self):
+        """(page, first, last, name) for every register the code declares."""
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'cmis_registers.py'), encoding='utf-8') as f:
+            src = f.read()
+        out = []
+        for m in re.finditer(
+                r'^(REG_\w+)\s*=\s*\((None|0x[0-9A-Fa-f]+),\s*'
+                r'(0x[0-9A-Fa-f]+),\s*([0-9*\s]+)\)', src, re.M):
+            name, page, addr, length = m.groups()
+            page = None if page == 'None' else int(page, 16)
+            addr = int(addr, 16)
+            # Lengths are written as plain numbers or as products like "4 * 8".
+            size = 1
+            for part in length.split('*'):
+                size *= int(part.strip())
+            out.append((page, addr, addr + size - 1, name))
+        return out
+
+    def _labels(self):
+        """(page, address) for every one the panel prints."""
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = ''
+        for name in ('static/app.js', 'templates/index.html'):
+            with open(os.path.join(here, *name.split('/')), encoding='utf-8') as f:
+                src += f.read()
+        found = set()
+        for m in re.finditer(
+                r"(Lower|[0-9A-Fa-f]{2}h)\s*/?\s*'?,?\s*'?(0x[0-9A-Fa-f]{2})",
+                src):
+            page = None if m.group(1) == 'Lower' else int(m.group(1)[:-1], 16)
+            found.add((page, int(m.group(2), 16)))
+        return found
+
+    def test_the_scan_finds_both_sides(self):
+        """Either side coming back empty would make the check below pass by
+        comparing nothing."""
+        self.assertGreater(len(self._blocks()), 100)
+        self.assertGreater(len(self._labels()), 50)
+
+    def test_every_label_falls_inside_a_register_the_code_reads(self):
+        blocks = self._blocks()
+        uncovered = []
+        for page, addr in sorted(self._labels(),
+                                 key=lambda t: (t[0] is not None, t)):
+            if not any(bp == page and bs <= addr <= be
+                       for bp, bs, be, _ in blocks):
+                uncovered.append('%s / 0x%02X'
+                                 % ('Lower' if page is None else '%02Xh' % page,
+                                    addr))
+        self.assertEqual(
+            uncovered, [],
+            'the panel prints these addresses and no register covers them: '
+            + ', '.join(uncovered) + '. Either the label is wrong, or the '
+            'register it names is not one this code reads.')
+
+    def test_the_check_would_notice_a_drifted_label(self):
+        """Prove the comparison bites rather than always passing: an address
+        no register covers has to be reported."""
+        blocks = self._blocks()
+        pages = {bp for bp, _s, _e, _n in blocks}
+        self.assertIn(0x11, pages)
+        # 11h:0x00 is lower memory's range, never part of an upper-page block.
+        self.assertFalse(any(bp == 0x11 and bs <= 0x00 <= be
+                             for bp, bs, be, _ in blocks))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
