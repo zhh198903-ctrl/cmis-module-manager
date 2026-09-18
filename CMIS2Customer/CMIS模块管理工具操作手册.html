@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.86.0<br>
+      <b>版本</b>　2.87.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.86.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.86.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.87.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.87.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,16 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>线缆长度:有两个取值不是长度</h3>
+  <p>规范 8.3.4 说 00h:202:<b>「CableAssemblyLinkLength 取值 1111 1111b 表示链路长度<u>大于</u> 6300 m」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>而这个字节按乘数算出来<b>恰好是 6300</b>,于是面板显示「6300 m」——给一根模块自己说「测不出来」的线,报了一个精确数字。<b>整个字节里唯一表示「比我能说的更长」的那个值,恰恰长得最像一个答案。</b></span>
+  </div>
+  <p>另外 Table 8-33 对 BaseLength 写明:<b>「取值 0 表示链路长度未定义,例如物理介质可以与模块分离时」</b>。这指的是<b>低六位为 0 的任何字节</b>,不只是 00h —— 有乘数而没有基数一样是未定义。两种情况乘出来都是 0,所以面板此前「等于 0 就当作收发模块」<b>碰巧是对的,但说不出原因</b>,也无法与一个真的测得 0 区分(而那种东西并不存在)。</p>
+  <p>现在这三种情况分别显示为 <code>greater than 6300 m</code>、<code>— (transceiver, see Link Length)</code>、以及普通的 <code>3 m</code>。<code>0xFE</code> 仍然是普通的 6200 m —— 只有 <code>0xFF</code> 特殊。</p>
+  <p class="note">顺带修了演示模块:规范说可分离光介质的模块该把这个字节清零,而<b>所有</b>演示模块都报 0,包括新加的无源铜缆 DAC——一根没有长度的铜缆不成其为线缆。它现在报告 3 m。</p>
 
   <h3>这根线的远端分成几路,现在看得到了</h3>
   <p>00h:211 <code>FarEndConfiguration</code>(Table 8-37)此前<b>在寄存器表里声明了,却从来没有被读过</b>——而它就夹在 00h:210 和 00h:212 之间,这两个工具都在读。</p>
@@ -3701,7 +3711,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.86.0<br>
+    CMIS Module Manager 操作手册 v2.87.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

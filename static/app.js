@@ -537,7 +537,7 @@ async function loadInfo() {
     ['CLEI Code',       d.clei_code || '(none)',                                                  '00h',   '0xBE–0xC7',   'CLEI Code, 10-byte ASCII'],
     ['Power Class',     `Class ${d.power_class}`,                                                 '00h',   '0xC8[7:5]',   'Module Power Class (1–8)'],
     ['Max Power',       `${d.max_power_w} W`,                                                     '00h',   '0xC9',        'Maximum Power Consumption (×0.25 W)'],
-    ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver, see Link Length)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
+    ['Cable Length',    cableLengthCell(d),    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
     ['Link Length',     linkLengthSummary(d.link_lengths),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     // The raw code is appended so the reader can take it to Table 8-41,
@@ -798,6 +798,18 @@ function memoryModelCell(d) {
   return esc('Flat') + ' <span class="reg-meta">no Page 01h/02h &mdash; '
     + 'a static memory module has no advertisements, monitors or Flags'
     + '</span>';
+}
+
+// 00h:202 has two defined values that are not lengths: FFh is "greater than
+// 6300 m", and a zero base is an undefined length - "e.g. when the physical
+// media can be disconnected from the module", which is what a transceiver is.
+// Testing the product for zero caught the second by accident and printed the
+// first as a measurement.
+function cableLengthCell(d) {
+  const cl = d.cable_length;
+  if (!cl) return d.cable_length_m ? esc(d.cable_length_m + ' m') : '-';
+  if (cl.undefined) return esc('\u2014 (transceiver, see Link Length)');
+  return esc(cl.text);
 }
 
 function mediaIfTechCell(d) {

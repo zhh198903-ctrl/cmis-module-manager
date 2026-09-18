@@ -867,11 +867,52 @@ def parse_max_power_w(byte_val: int) -> float:
 
 
 def parse_cable_length_m(byte_val: int) -> float:
-    """Byte 00h:202: bits[7:6]=multiplier (0.1, 1, 10, 100), bits[5:0]=base (0..63)."""
+    """Byte 00h:202: bits[7:6]=multiplier (0.1, 1, 10, 100), bits[5:0]=base (0..63).
+
+    The arithmetic only. Two byte values are defined to mean something other
+    than their product - see parse_cable_length, which is what the panel uses.
+    """
     base = byte_val & 0x3F
     mult_code = (byte_val >> 6) & 0x03
     mult = [0.1, 1.0, 10.0, 100.0][mult_code]
     return base * mult
+
+
+def parse_cable_length(byte_202: int) -> dict:
+    """00h:202 (Table 8-33), and the two values that are not lengths.
+
+    "A CableAssemblyLinkLength value of 1111 1111b indicates a link length
+    greater than 6300 m." The product of that byte is exactly 6300, so the
+    tool printed "6300 m" - a precise measurement of a cable the module said
+    it could not measure. The one byte that means "longer than I can say" is
+    the one that looked most like an answer.
+
+    And of BaseLength: "A value of 0 indicates an undefined Link Length, e.g.
+    when the physical media can be disconnected from the module." That is any
+    byte whose low six bits are zero, not only 00h - a multiplier with no base
+    is still undefined, and the product is zero either way, so the panel's
+    test for exactly zero happened to catch it but could not say why.
+
+    "Modules with separable optical media shall set the CableAssemblyLinkLength
+    value to 0000 0000b", so on a transceiver this field being absent is the
+    specified behaviour rather than a gap.
+    """
+    base = byte_202 & 0x3F
+    mult = [0.1, 1.0, 10.0, 100.0][(byte_202 >> 6) & 0x03]
+    out = {'code': byte_202, 'metres': None,
+           'over_max': byte_202 == 0xFF, 'undefined': False}
+    if out['over_max']:
+        out['text'] = 'greater than 6300 m'
+        return out
+    if base == 0:
+        out['undefined'] = True
+        out['text'] = ('undefined - the media can be disconnected from the '
+                       'module')
+        return out
+    metres = round(base * mult, 1)
+    out['metres'] = metres
+    out['text'] = '%g m' % metres
+    return out
 
 
 def connector_type_name(code: int) -> str:

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.86.0'
+__version__ = '2.87.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -998,6 +998,10 @@ def api_module_info():
             'power_class':       pwr_class['class'],
             'max_power_w':       round(cmis.parse_max_power_w(max_pwr_raw[0]), 2),
             'cable_length_m':    cmis.parse_cable_length_m(cable_len_raw[0]),
+            # The same byte read for what it says rather than what it
+            # multiplies out to: FFh is "greater than 6300 m" and a zero base
+            # is an undefined length, neither of which is a measurement.
+            'cable_length':      cmis.parse_cable_length(cable_len_raw[0]),
             'connector_type':    cmis.connector_type_name(connector_raw[0]),
             'connector_code':    connector_raw[0],
             'media_if_tech':     cmis.media_if_tech_name(media_if_tech_raw[0]),

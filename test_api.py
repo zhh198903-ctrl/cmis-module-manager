@@ -7339,8 +7339,13 @@ class TestHowFarTheModuleReaches(CMISTestCase):
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
+        # The row now calls a helper, because the byte has two defined
+        # values that are not lengths. The pointer still has to be there;
+        # it moved into the helper along with the rest of the wording.
         row = re.search(r"\['Cable Length',[^\n]*", js).group(0)
-        self.assertIn('see Link Length', row)
+        self.assertIn('cableLengthCell(d)', row)
+        self.assertIn('see Link Length',
+                      js_function_body(js, 'function cableLengthCell('))
 
 
 class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
@@ -18729,6 +18734,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-23': 'Format of Application Descriptor (Flat Memory Modules)',
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
+        '8-33': 'Cable Assembly Link Length (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
         '8-37': 'Cable Assembly Information (Page 00h)',
         '8-38': 'Far End Configurations for Uniform Far End Breakout (Page 00h)',
@@ -20964,6 +20970,113 @@ class TestWhatTheCableBreaksOutInto(CMISTestCase):
             js = f.read()
         self.assertIn('c.far_end.summary', js)
         self.assertIn("'0xD3[4:0]'", js)
+
+
+class TestTheCableLengthByteHasTwoValuesThatAreNotLengths(CMISTestCase):
+    """8.3.4, about 00h:202: "A CableAssemblyLinkLength value of 1111 1111b
+    indicates a link length greater than 6300 m."
+
+    The product of that byte is exactly 6300, so the panel printed "6300 m" -
+    a precise measurement of a cable the module said it could not measure.
+    The one byte that means "longer than I can say" is the one that looked
+    most like an answer.
+
+    And of BaseLength, Table 8-33: "A value of 0 indicates an undefined Link
+    Length, e.g. when the physical media can be disconnected from the module."
+    That is any byte whose low six bits are zero, not only 00h - a multiplier
+    with no base is still undefined. The product is zero either way, so the
+    panel's test for exactly zero caught it by accident and could not say why.
+
+    "Modules with separable optical media shall set the CableAssemblyLinkLength
+    value to 0000 0000b", so on a transceiver the field being absent is the
+    specified behaviour rather than a gap - which is what the panel says."""
+
+    def _info(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def test_the_maximum_byte_is_not_a_measurement(self):
+        import cmis_registers as c
+        d = c.parse_cable_length(0xFF)
+        self.assertTrue(d['over_max'])
+        self.assertIsNone(d['metres'],
+                          'a length greater than 6300 m is not 6300 m')
+        self.assertIn('greater than 6300', d['text'])
+
+    def test_the_byte_below_the_maximum_still_is_one(self):
+        """FEh is multiplier 100, base 62 - an ordinary 6200 m. Only FFh is
+        special, and treating the whole top of the range as unmeasurable would
+        throw away real answers."""
+        import cmis_registers as c
+        d = c.parse_cable_length(0xFE)
+        self.assertFalse(d['over_max'])
+        self.assertAlmostEqual(d['metres'], 6200.0)
+
+    def test_a_zero_base_is_undefined_whatever_the_multiplier(self):
+        """C0h is multiplier 100 with no base. The product is zero, so the old
+        test for zero happened to be right - but it could not tell this from a
+        measured zero, and there is no such thing."""
+        import cmis_registers as c
+        for byte in (0x00, 0x40, 0x80, 0xC0):
+            d = c.parse_cable_length(byte)
+            self.assertTrue(d['undefined'], hex(byte))
+            self.assertIsNone(d['metres'], hex(byte))
+
+    def test_the_undefined_text_says_why(self):
+        import cmis_registers as c
+        self.assertIn('disconnected', c.parse_cable_length(0x00)['text'])
+
+    def test_an_ordinary_length_is_unchanged(self):
+        """The four multipliers, which were right and must stay right."""
+        import cmis_registers as c
+        self.assertAlmostEqual(c.parse_cable_length(0x00 | 50)['metres'], 5.0)
+        self.assertAlmostEqual(c.parse_cable_length(0x40 | 50)['metres'], 50.0)
+        self.assertAlmostEqual(c.parse_cable_length(0x80 | 5)['metres'], 50.0)
+        self.assertAlmostEqual(c.parse_cable_length(0xC0 | 2)['metres'], 200.0)
+
+    def test_the_text_does_not_carry_a_trailing_zero(self):
+        """3 m, not 3.0 m."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_cable_length(0x43)['text'], '3 m')
+        self.assertEqual(c.parse_cable_length(0x05)['text'], '0.5 m')
+
+    def test_the_arithmetic_helper_still_answers_plainly(self):
+        """parse_cable_length_m is the multiplication on its own and several
+        tests rest on it. It keeps its meaning; the special values are the
+        other function's business."""
+        import cmis_registers as c
+        self.assertAlmostEqual(c.parse_cable_length_m(0xC0 | 2), 200.0)
+
+    def test_the_api_sends_both(self):
+        d = self._info('mock_flat_dac')
+        self.assertIn('cable_length', d)
+        self.assertIn('cable_length_m', d)
+
+    def test_a_cable_assembly_advertises_its_length(self):
+        """A passive copper cable with no length is not a cable. Every profile
+        reported zero, which is what a module with separable media says."""
+        d = self._info('mock_flat_dac')
+        self.assertFalse(d['cable_length']['undefined'])
+        self.assertAlmostEqual(d['cable_length']['metres'], 3.0)
+
+    def test_a_transceiver_still_reports_the_cleared_byte(self):
+        d = self._info('mock_dr8')
+        self.assertTrue(d['cable_length']['undefined'])
+
+    def test_the_panel_asks_the_decoded_field(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function cableLengthCell(')
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn('cl.undefined', code)
+        self.assertIn('cl.text', code)
+        self.assertNotIn("d.cable_length_m === 0", code,
+                         'testing the product for zero is what could not tell '
+                         'the two cases apart')
 
 
 if __name__ == '__main__':

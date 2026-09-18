@@ -477,6 +477,9 @@ _FLAT_DAC = dict(
     # the 2x400G breakout a DAC of this shape is usually ordered as, and one
     # of the five uniform codes Table 8-38 singles out.
     far_end_config_211=0x03,
+    # 00h:202: multiplier 1 (01b), base 3 - a 3 m DAC. Zero is what a module
+    # with separable media advertises, and this one is the cable.
+    cable_length_202=0x43,
     config_caps_02=0x80,      # bit 7: flat memory
     flat_memory=True,
 )
@@ -834,7 +837,10 @@ class MockBackend(I2CInterface):
         # Power Class & Max Power
         p00[0xC8] = p['power_class_bits']
         p00[0xC9] = p['max_power_0_25w']
-        p00[0xCA] = 0x00                    # Cable length = 0 (transceiver)
+        # 00h:202 (Table 8-33). Zero is what a module with separable
+        # media advertises, which every optical profile here is; a cable
+        # assembly carries its own length.
+        p00[0xCA] = self._profile.get('cable_length_202', 0x00)
         p00[0xCB] = p['connector_type']
         for a in range(0xCC, 0xD2): p00[a] = 0x00   # Cu attenuation = 0
         # MediaLaneUnsupported (00h:210, Table 8-36): which media lanes the
