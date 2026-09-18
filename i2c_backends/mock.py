@@ -1139,6 +1139,7 @@ class MockBackend(I2CInterface):
         for a in range(0xCA, 0xCE): p11[a] = 0x11
         # DPConfigLane: AppSel=1
         for i in range(8): p11[0xCE + i] = default_sel[i] << 4
+        self._recompute_dpidx(p11)
         # 240-255 (Table 8-107): which wavelength and which fibre each media
         # lane is. Zero means "unknown or undefined", which is the right
         # answer for a parallel module and was the only answer any profile
@@ -1618,6 +1619,31 @@ class MockBackend(I2CInterface):
         (0xE7, 0xAA, True),    # OutputAmplitudeTargetRx
     )
 
+    def _recompute_dpidx(self, p11):
+        """Fill bits 3-1 of every DPConfigLane from the Applications in force.
+
+        A Data Path is the run of lanes carrying one Application, as wide as
+        that Application's host lane count, and its index is the lowest lane
+        it occupies (0 = lane 1). An unused lane - AppSelCode 0 - keeps zero,
+        which the specification says to ignore there.
+        """
+        apps = self._profile['app_descriptors']
+        lane = 0
+        while lane < 8:
+            byte = p11.get(0xCE + lane, 0)
+            sel = (byte >> 4) & 0x0F
+            if not sel:
+                lane += 1
+                continue
+            width = 1
+            if 1 <= sel <= len(apps):
+                width = ((apps[sel - 1][2] >> 4) & 0x0F) or 1
+            width = min(width, 8 - lane)
+            for j in range(lane, lane + width):
+                b = p11.get(0xCE + j, 0)
+                p11[0xCE + j] = (b & 0xF1) | ((lane & 0x07) << 1)
+            lane += width
+
     def _provision_si(self, lane: int, explicit: bool) -> None:
         """Fill this lane's entry in Tables 8-104 and 8-105.
 
@@ -1701,6 +1727,13 @@ class MockBackend(I2CInterface):
             if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
                 self._registers[0x11][0xCE + i] = self._config_staged[i]
                 self._provision_si(i, self._config_staged[i] & 0x01)
+        # DPIDX is RO in the Active Control Set (Table 8-102): "the Data Path
+        # Index (DPIDX) of that Data Path: DPID (lowest numbered lane of Data
+        # Path)". The module works it out from what it provisioned; copying
+        # the host's staged byte through, as this did, reported whatever the
+        # host had put there - which for this tool is zero on every lane, so
+        # a module running two Data Paths said it was running one.
+        self._recompute_dpidx(self._registers[0x11])
         for lane in range(8):
             if not ((self._apply_mask >> lane) & 1):
                 continue                     # unselected lanes keep their status

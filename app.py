@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.83.0'
+__version__ = '2.84.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1574,8 +1574,17 @@ def api_datapath_get():
         # A rejected Apply leaves the two disagreeing, and showing only the
         # staged value made a refused configuration look like the live one.
         active_app_select = []
+        # The whole byte, not just the Application. Table 8-102 makes DPIDX
+        # and ExplicitControl RO and Required in the Active Control Set: the
+        # module states which lanes form a Data Path, and per lane whether the
+        # signal integrity settings in force are the host's or its own. Both
+        # were being discarded, and both were then being guessed at - the Data
+        # Path grouping from Application widths, and ExplicitControl from what
+        # this tool happens to write.
+        active_dpconfig = []
         for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
             active_app_select += cmis.unpack_appselect(raw)
+            active_dpconfig += cmis.unpack_dpconfig(raw)
 
         # Table 8-106: the Active Control Set having been updated is not the
         # same as the hardware running it. DPInitPending says a Provision has
@@ -1605,6 +1614,12 @@ def api_datapath_get():
                 'app_select': app_select[i] if i < len(app_select) else 0,
                 'active_app_select': (active_app_select[i]
                                       if i < len(active_app_select) else 0),
+                # 11h:206-213 bits 3-1 and bit 0 (Table 8-102).
+                'active_dpidx': (active_dpconfig[i]['dpidx']
+                                 if i < len(active_dpconfig) else None),
+                'active_explicit_control': (
+                    active_dpconfig[i]['explicit_control']
+                    if i < len(active_dpconfig) else False),
                 'dp_init_pending': (dp_init_pending[i]
                                     if i < len(dp_init_pending) else False),
                 'tx_polarity_flip': bool((tx_pol_masks[b] >> bit) & 1),
@@ -1703,6 +1718,17 @@ def api_datapath_get():
             'rx_polarity_flip_mask': rx_pol_mask,
             'app_select': app_select,
             'active_app_select': active_app_select,
+            # The module's own grouping, by the lowest lane of each Data Path.
+            # The tool infers one from Application widths because it writes
+            # DPIDX zero into the staged set; this is what the module reports
+            # about the set it is actually running.
+            # Lane numbers, the same way datapath_groups above reports
+            # them: two bases in one payload is a trap for the reader.
+            'active_datapath_groups': [[i + 1 for i in g]
+                                      for g in _groups_from_dpidx(active_dpconfig)],
+            'explicit_control_lanes': [
+                i + 1 for i, d in enumerate(active_dpconfig)
+                if d['explicit_control']],
             'datapath_groups': groups,
             'lanes': lanes,
         })
@@ -1888,6 +1914,31 @@ def _additional_app_descriptors():
         return b''
 
 
+def _groups_from_dpidx(dpconfig: list) -> list:
+    """Lanes grouped the way the module reports them, or [] if it does not.
+
+    Table 8-102: DPIDX holds "the Data Path Index (DPIDX) of that Data Path:
+    DPID (lowest numbered lane of Data Path)", so every lane of one Data Path
+    carries the same value and that value names the lane it starts on. Unused
+    lanes - AppSelCode 0 - are left out, because the specification says their
+    DPIDX is to be ignored.
+
+    Empty when nothing is provisioned, which is the honest answer: an
+    all-zero Active Control Set is a module with no Data Paths, not one Data
+    Path on lane 1.
+    """
+    # Keyed by bank as well as index: DPIDX is three bits and names a lane
+    # within its own Bank, so bank 0's Data Path 0 and bank 1's are two
+    # Data Paths. Grouping by the value alone merged them, and a 16-lane
+    # module reported one Data Path across both banks.
+    groups = {}
+    for i, d in enumerate(dpconfig):
+        if not d['app_sel'] or d['dpidx'] is None:
+            continue
+        groups.setdefault((i // 8, d['dpidx']), []).append(i)
+    return [groups[k] for k in sorted(groups)]
+
+
 def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
     """Split lanes into Data Paths using each Application's host lane width.
 
@@ -1897,6 +1948,10 @@ def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
     Application using H host lanes occupies aligned runs of H lanes. On a
     module carrying two 400G Data Paths that is lanes 1-4 and 5-8, and
     applying to all eight takes down the one nobody touched.
+
+    This is the staged set, where those zeros are the tool's own. What the
+    module is actually running it states itself, at 11h:206-213 bits 3-1
+    (Table 8-102), and _groups_from_dpidx reads that rather than deriving it.
     """
     groups, i = [], 0
     while i < len(app_select):

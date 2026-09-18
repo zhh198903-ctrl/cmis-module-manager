@@ -9981,9 +9981,21 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
                          'the footnote still claims Apply commits the staged '
                          'signal integrity set, which holds only with '
                          'ExplicitControl set')
-        hint = js[js.index("hint.textContent = 'Read-only"):]
-        hint = hint[:hint.index('\n  }')]
+        # Located by the assignment rather than by the sentence it used to
+        # start with: the footnote became a conditional and the old anchor
+        # stopped matching, which reads as the footnote having gone.
+        # Sliced with a pattern rather than a literal newline-brace, which
+        # never occurs in a CRLF checkout.
+        # rindex: there is an earlier 'hint.textContent = '';' on the
+        # empty-table path, and index finds that one.
+        hint = js[js.rindex('hint.textContent ='):]
+        end = re.search(r'\r?\n  \}', hint)
+        self.assertIsNotNone(end, 'the end of the footnote was not found')
+        hint = hint[:end.start()]
         self.assertIn('ExplicitControl', hint)
+        self.assertIn('11h:206-213 bit 0', hint,
+                      'and it now names the register it read rather than '
+                      'reasoning from what the tool writes')
 
 
 
@@ -20536,6 +20548,169 @@ class TestTheMeasurementWindowAsksTheCapability(CMISTestCase):
         self.assertFalse(c.parse_measurement_controls(0x10)['start_stop_is_global'])
         self.assertTrue(c.parse_measurement_controls(0x10)['auto_restart_gating'])
         self.assertFalse(c.parse_measurement_controls(0x80)['auto_restart_gating'])
+
+
+class TestTheModuleStatesItsDataPathsAndTheToolWasGuessing(CMISTestCase):
+    """Table 8-102 gives every DPConfigLane byte three fields, all RO and
+    Required in the Active Control Set:
+
+        7-4  AppSelCode
+        3-1  DPIDX            "the Data Path Index (DPIDX) of that Data Path:
+                              DPID (lowest numbered lane of Data Path)"
+        0    ExplicitControl  0b Application dependent, 1b host defined
+
+    unpack_appselect keeps the first and throws the other two away, so both
+    were being derived instead. The Data Path grouping came from Application
+    widths - correct for the staged set, whose zeros the tool wrote itself,
+    but a derivation where the module has an answer. And the signal integrity
+    panel stated flatly that the module provisions those settings from the
+    Application, reasoning from what this tool writes rather than from the bit
+    the module reports per lane.
+
+    The mock did not model DPIDX either: it copied the host's staged byte into
+    the Active Control Set, so a module running two Data Paths reported one.
+    A real module works the index out from what it provisioned."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def test_the_byte_decodes_into_three_fields(self):
+        import cmis_registers as c
+        got = c.unpack_dpconfig(bytes([0x29] * 8))[0]
+        self.assertEqual(got['app_sel'], 2)
+        self.assertEqual(got['dpidx'], 4)
+        self.assertTrue(got['explicit_control'])
+
+    def test_the_three_fields_do_not_bleed_into_each_other(self):
+        """One byte, three widths. A shift here reads a Data Path index out of
+        an Application number."""
+        import cmis_registers as c
+        self.assertEqual(c.unpack_dpconfig(bytes([0xF0]))[0],
+                         {'app_sel': 15, 'dpidx': 0, 'explicit_control': False})
+        self.assertEqual(c.unpack_dpconfig(bytes([0x1E]))[0],
+                         {'app_sel': 1, 'dpidx': 7, 'explicit_control': False})
+        self.assertEqual(c.unpack_dpconfig(bytes([0x11]))[0],
+                         {'app_sel': 1, 'dpidx': 0, 'explicit_control': True})
+
+    def test_an_unused_lane_has_no_data_path_index(self):
+        """"When host lane <i> is unused, the DPIDX field is to be ignored."
+        Reporting 0 there would read as lane 1."""
+        import cmis_registers as c
+        self.assertIsNone(c.unpack_dpconfig(bytes([0x0E]))[0]['dpidx'])
+
+    def test_the_module_reports_its_own_grouping(self):
+        self._connect('mock_fr4x2')
+        d = self._dp()
+        self.assertEqual(d['active_datapath_groups'],
+                         [[1, 2, 3, 4], [5, 6, 7, 8]])
+
+    def test_the_mock_computes_the_index_rather_than_echoing_it(self):
+        """The fidelity half. It used to copy the host's staged byte, and this
+        tool stages zero, so two Data Paths came back as one."""
+        import app as app_module
+        self._connect('mock_fr4x2')
+        p11 = app_module._state['backend']._registers[0x11]
+        self.assertEqual((p11[0xCE + 0] >> 1) & 0x07, 0)
+        self.assertEqual((p11[0xCE + 4] >> 1) & 0x07, 4,
+                         'the second Data Path starts on lane 5')
+
+    def test_the_index_is_read_per_bank(self):
+        """DPIDX is three bits and names a lane inside its own Bank, so bank
+        0's Data Path 0 and bank 1's are two Data Paths. Grouping by the value
+        alone merged them, and a 16-lane module reported one Data Path across
+        both banks."""
+        self._connect('mock_1600g_16lane')
+        groups = self._dp()['active_datapath_groups']
+        self.assertEqual(len(groups), 2, groups)
+        self.assertEqual(groups[0][0], 1)
+        self.assertEqual(groups[1][0], 9)
+
+    def test_the_groups_are_lane_numbers_like_the_other_list(self):
+        """Two bases in one payload is a trap for the reader."""
+        self._connect('mock_fr4x2')
+        d = self._dp()
+        self.assertEqual(min(min(g) for g in d['active_datapath_groups']), 1)
+        self.assertEqual(min(min(g) for g in d['datapath_groups']), 1)
+
+    def test_every_shipped_profile_agrees_with_the_inference(self):
+        """Where the tool can derive it and the module states it, the two must
+        match - otherwise one of them is wrong and the panel shows both."""
+        for name in paged_mock_backends():
+            self._connect(name)
+            d = self._dp()
+            self.assertEqual(d['active_datapath_groups'], d['datapath_groups'],
+                             name)
+
+    def test_an_unused_lane_is_left_out_of_the_grouping(self):
+        """AppSelCode 0 is "lane <i> is unused (not part of a Data Path)", and
+        its DPIDX is to be ignored. Including it would invent a Data Path on
+        lane 1 out of a field the specification says means nothing."""
+        import app as app_module
+        self._connect('mock_fr4x2')
+        p11 = app_module._state['backend']._registers[0x11]
+        p11[0xCE + 5] = 0x00                      # lane 6 unused
+        groups = self._dp()['active_datapath_groups']
+        flat = [lane for g in groups for lane in g]
+        self.assertNotIn(6, flat, groups)
+        self.assertIn(1, flat)
+        self.assertIn(5, flat, 'the rest of its Data Path is still reported')
+
+    def test_the_index_is_recomputed_after_an_apply(self):
+        """The module works DPIDX out from what it provisioned, so it has to
+        be right after a configuration change and not only at power-on. The
+        mock used to copy the host's staged byte through, and this tool stages
+        zero."""
+        import app as app_module
+        self._connect('mock_fr4x2')
+        deactivated(self.client)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1, 1, 1, 1, 2, 2, 2, 2],
+                             'apply': True}),
+            content_type='application/json'))
+        p11 = app_module._state['backend']._registers[0x11]
+        self.assertEqual((p11[0xCE + 0] >> 1) & 0x07, 0)
+        self.assertEqual((p11[0xCE + 4] >> 1) & 0x07, 4,
+                         'the second Data Path still starts on lane 5')
+
+    def test_the_per_lane_explicit_control_is_reported(self):
+        self._connect()
+        d = self._dp()
+        self.assertIn('explicit_control_lanes', d)
+        self.assertEqual(d['explicit_control_lanes'], [])
+        self.assertIn('active_explicit_control', d['lanes'][0])
+
+    def test_a_host_defined_lane_is_named(self):
+        """11h:206-213 bit 0. The panel said the module provisions these from
+        the Application, which is only true where this bit is clear."""
+        import app as app_module
+        self._connect()
+        p11 = app_module._state['backend']._registers[0x11]
+        p11[0xCE + 2] |= 0x01
+        d = self._dp()
+        self.assertEqual(d['explicit_control_lanes'], [3])
+        self.assertTrue(d['lanes'][2]['active_explicit_control'])
+        self.assertFalse(d['lanes'][0]['active_explicit_control'])
+
+    def test_the_panel_states_the_module_and_not_the_tool(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function renderSignalIntegrity(')
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn('d.explicit_control_lanes', code,
+                      'the hint has to read what the module reported')
+        self.assertNotIn('the tool writes ExplicitControl', code,
+                         'the old wording asserted from the tool, not the '
+                         'module')
+        self.assertIn('11h:206-213 bit 0', code,
+                      'and name the register it read')
 
 
 if __name__ == '__main__':

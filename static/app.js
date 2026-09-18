@@ -2076,9 +2076,23 @@ function renderSignalIntegrity(d) {
     // "Apply commits this set as well" holds only with ExplicitControl set,
     // and this tool writes it clear - so Apply stages these values and the
     // module then provisions its own from the Application.
-    hint.textContent = 'Read-only, and staged: the tool writes ExplicitControl '
-      + 'clear, so the module provisions these from the Application it is '
-      + 'running. A lane where that differs shows the value in force.'
+    // What the module reports, not what this tool writes. 11h:206-213
+    // bit 0 (Table 8-102) is RO and Required and says, per lane, whether
+    // the settings in force are host defined. Asserting it from the
+    // tool's own write was true only while nothing else had provisioned
+    // the module.
+    const hostDefined = Array.isArray(d.explicit_control_lanes)
+      ? d.explicit_control_lanes : [];
+    hint.textContent = (hostDefined.length
+      ? 'Staged. The module reports lane'
+        + (hostDefined.length > 1 ? 's ' : ' ') + hostDefined.join(', ')
+        + ' as host defined (ExplicitControl set, 11h:206-213 bit 0), so '
+        + 'these values are the ones in force there. On the other lanes '
+        + 'the module provisions them from the Application it is running.'
+      : 'Read-only, and staged: the module reports every lane as '
+        + 'Application dependent (ExplicitControl clear, 11h:206-213 '
+        + 'bit 0), so it provisions these from the Application it is '
+        + 'running. A lane where that differs shows the value in force.')
       + (max.length ? '  Module limits: ' + max.join(' \u00b7 ') + '.' : '');
   }
 }

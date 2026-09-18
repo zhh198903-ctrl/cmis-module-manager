@@ -751,6 +751,41 @@ def unpack_appselect(data: bytes) -> list:
     return [(data[i] >> 4) & 0x0F if i < len(data) else 0 for i in range(8)]
 
 
+def unpack_dpconfig(data: bytes) -> list:
+    """The whole of each DPConfigLane byte, not just the Application.
+
+    Table 8-102 gives the byte three fields, all RO and Required in the Active
+    Control Set:
+
+      7-4 AppSelCode      which Application this lane's Data Path runs
+      3-1 DPIDX           "the Data Path Index (DPIDX) of that Data Path:
+                          DPID (lowest numbered lane of Data Path)", 0 = lane 1
+      0   ExplicitControl 0b: this lane's SI settings are Application
+                          dependent; 1b: they are host defined
+
+    unpack_appselect keeps only the first, which is all the staged set needs -
+    the tool writes zeros into the other two. The Active Control Set is the
+    module's own answer, and there DPIDX says which lanes form a Data Path
+    without anybody having to work it out from Application widths, and
+    ExplicitControl says per lane whether the staged signal integrity values
+    are the ones in force.
+
+    "When host lane <i> is unused, the DPIDX field is to be ignored", so an
+    unused lane reports None rather than a Data Path index of zero, which
+    would read as lane 1.
+    """
+    out = []
+    for i in range(8):
+        b = data[i] if i < len(data) else 0
+        app = (b >> 4) & 0x0F
+        out.append({
+            'app_sel': app,
+            'dpidx': ((b >> 1) & 0x07) if app else None,
+            'explicit_control': bool(b & 0x01),
+        })
+    return out
+
+
 def pack_appselect(values: list) -> bytes:
     """Pack 8 AppSelCodes into 8 DPConfigLane bytes.
 

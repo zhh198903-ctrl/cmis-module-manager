@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.83.0<br>
+      <b>版本</b>　2.84.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.83.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.83.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.84.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.84.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,21 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>数据通路的分组,现在读模块自己的说法</h3>
+  <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
+  <table>
+    <tr><th>位</th><th>字段</th><th>含义</th></tr>
+    <tr><td>7-4</td><td>AppSelCode</td><td>该通道所属数据通路跑哪个 Application</td></tr>
+    <tr><td>3-1</td><td>DPIDX</td><td>该数据通路的索引,即<b>它占用的最低通道号</b></td></tr>
+    <tr><td>0</td><td>ExplicitControl</td><td>0=该通道的 SI 设置由 Application 决定;1=由主机定义</td></tr>
+  </table>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具此前只取了第一个字段,<b>后两个直接丢掉</b>,然后又去<b>推断</b>它们:数据通路分组按 Application 的通道宽度推;而信号完整性面板则直接断言「模块按 Application 自行配置这些设置」——这个断言的依据是<b>本工具自己写了什么</b>,而不是模块逐通道报告的那个位。一旦模块是被别的东西(交换机、上一任主机)配置过的,这两处都可能是错的。</span>
+  </div>
+  <p>现在:数据通路面板同时给出<b>模块报告的分组</b>与工具的推断;信号完整性面板改为<b>按模块报告的 ExplicitControl 逐通道陈述</b>,有主机定义的通道时会点名是哪几条。</p>
+  <p class="note"><b>演示模块也改了</b>:此前它把主机暂存的字节原样复制进活动控制集,而本工具暂存的 DPIDX 是 0,于是<b>跑着两个数据通路的模块会报告成一个</b>。真实模块是根据自己配置的结果算出这个索引的,演示模块现在也这样做。另外 DPIDX 只有 3 位、<b>按 Bank 计</b>——16 通道模块上两个 Bank 的 DPIDX 0 是两个不同的数据通路,不能按数值合并。</p>
 
   <h3>测量窗口那一行,现在会先问模块支不支持</h3>
   <p>BER 与误码计数面板下方的「Measurement window」一行,此前读了 13h:177 的两个位,却没读那个决定它们是否有意义的字节。</p>
@@ -3660,7 +3675,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.83.0<br>
+    CMIS Module Manager 操作手册 v2.84.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
