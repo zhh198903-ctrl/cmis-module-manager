@@ -12145,7 +12145,7 @@ class TestTheAuxMonitorsHadNoThresholds(CMISTestCase):
 
 class TestTheWavelengthTheModuleReports(CMISTestCase):
     """Module Info showed "Media Interface: 1310 nm EML" and nothing else
-    about wavelength. That is a Table 8-40 technology code - it names a band,
+    about wavelength. That is a Table 8-41 technology code - it names a band,
     not what this module emits.
 
     01h:138-141 (Table 8-46) is the module's own NominalWavelength and
@@ -18674,7 +18674,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
-        '8-40': 'Media Connector Type (Page 00h)',
+        '8-41': 'Media Interface Technology encodings',
         '8-43': 'Page 01h Overview',
         '8-44': 'Module Inactive Firmware and Hardware Revisions (Page 01h)',
         '8-45': 'Supported Fiber Link Length (Page 01h)',
@@ -19302,6 +19302,164 @@ class TestLoopbackOnAModuleWithoutPerLaneControl(CMISTestCase):
                              'data': '01'}),
             content_type='application/json'))
         self.assertEqual(self._state()['media_side_output'], 0x01)
+
+
+class TestUnknownIsSaidOnlyWhereTheToolDoesNotKnow(CMISTestCase):
+    """"Unknown" is a statement about the tool, not about the module. It tells
+    the reader the tool failed to recognise what it was given, and the
+    reasonable response is to look for a newer tool. So it must not be printed
+    for an encoding the standard the tool implements has already defined.
+
+    An earlier round drew this distinction for the Data Path State encoding,
+    where Table 8-94 names 0h and 8h-Fh Reserved. It was not carried to the
+    siblings. Two of them decode fields on the first panel the operator sees:
+
+    Table 8-20 defines the whole MediaType byte - 06h-3Fh Reserved, 40h-8Fh
+    Custom, 90h-FFh Reserved - and everything above 05h read as Unknown. The
+    Custom range is the one that mattered: a module on a vendor-defined media
+    type is doing something the standard provides for, and its Application
+    Descriptors are read against a vendor ID table.
+
+    Table 8-41 ends at 14h and reserves 15h-FFh, and the table in this code
+    stopped at 11h. Three defined copper cable technologies - near and far end
+    linear active equalizers, far end, near end - read as Unknown on a module
+    that is built on one of them.
+
+    Where the tool genuinely holds no table, Unknown stays: the connector type,
+    the SFF-8024 identifier and the host interface IDs are defined in SFF-8024,
+    which this tool does not carry, and saying Unknown there is true."""
+
+    # Table 8-20, verified against OIF-CMIS-05.4.
+    NAMED_MEDIA_TYPES = {0x00: 'Undefined', 0x01: 'MMF', 0x02: 'SMF',
+                         0x03: 'Passive Copper', 0x04: 'Active Cable',
+                         0x05: 'BASE-T'}
+
+    def test_the_named_media_types_are_untouched(self):
+        """The ranges must not swallow the five the table names."""
+        import cmis_registers as c
+        for code, name in self.NAMED_MEDIA_TYPES.items():
+            self.assertEqual(c.media_type_name(code), name)
+
+    def test_the_custom_media_type_range_says_custom(self):
+        import cmis_registers as c
+        for code in (0x40, 0x55, 0x8F):
+            got = c.media_type_name(code)
+            self.assertIn('Custom', got, '0x%02X' % code)
+            self.assertIn('%02X' % code, got,
+                          'the code has to be printed or the reader cannot '
+                          'take it to the vendor')
+
+    def test_the_reserved_media_type_ranges_say_reserved(self):
+        import cmis_registers as c
+        for code in (0x06, 0x3F, 0x90, 0xFF):
+            self.assertIn('Reserved', c.media_type_name(code), '0x%02X' % code)
+
+    def test_the_media_type_range_boundaries_are_where_the_table_puts_them(self):
+        """3Fh/40h and 8Fh/90h. Off by one either way and a Custom module reads
+        as Reserved, or a reserved encoding reads as a legitimate vendor type."""
+        import cmis_registers as c
+        self.assertIn('Reserved', c.media_type_name(0x3F))
+        self.assertIn('Custom', c.media_type_name(0x40))
+        self.assertIn('Custom', c.media_type_name(0x8F))
+        self.assertIn('Reserved', c.media_type_name(0x90))
+
+    def test_no_media_type_code_reads_as_unknown(self):
+        import cmis_registers as c
+        bad = [n for n in range(256) if 'Unknown' in c.media_type_name(n)]
+        self.assertEqual(bad, [], 'Table 8-20 defines every one of these')
+
+    def test_the_three_copper_technologies_the_table_was_missing(self):
+        """12h-14h in Table 8-41. A module built on one of them read as
+        Unknown, which is the tool blaming itself for the module's answer."""
+        import cmis_registers as c
+        for code in (0x12, 0x13, 0x14):
+            got = c.media_if_tech_name(code)
+            self.assertNotIn('Unknown', got, '0x%02X' % code)
+            self.assertNotIn('Reserved', got, '0x%02X' % code)
+            self.assertIn('linear active equalizers', got, '0x%02X' % code)
+
+    def test_the_three_are_told_apart(self):
+        """Near-far, far, near. One name for all three would pass the check
+        above and still be wrong."""
+        import cmis_registers as c
+        names = [c.media_if_tech_name(n) for n in (0x12, 0x13, 0x14)]
+        self.assertEqual(len(set(names)), 3, names)
+        self.assertIn('near-far end', names[0])
+        self.assertTrue(names[1].startswith('Copper far end'), names[1])
+        self.assertTrue(names[2].startswith('Copper near end'), names[2])
+
+    def test_the_media_if_tech_boundary(self):
+        """14h is the last defined code; 15h-FFh is Reserved."""
+        import cmis_registers as c
+        self.assertNotIn('Reserved', c.media_if_tech_name(0x14))
+        for code in (0x15, 0x80, 0xFF):
+            self.assertIn('Reserved', c.media_if_tech_name(code),
+                          '0x%02X' % code)
+
+    def test_no_media_if_tech_code_reads_as_unknown(self):
+        import cmis_registers as c
+        bad = [n for n in range(256) if 'Unknown' in c.media_if_tech_name(n)]
+        self.assertEqual(bad, [], 'Table 8-41 defines or reserves every one')
+
+    def test_the_deprecated_technology_says_so(self):
+        """CMIS 5.4 marks 0Fh "do not use for new designs". A name that does
+        not carry that reads as an ordinary choice."""
+        import cmis_registers as c
+        self.assertIn('deprecated', c.media_if_tech_name(0x0F))
+
+    def test_unknown_survives_where_the_tool_holds_no_table(self):
+        """The point is not to delete the word. These three are SFF-8024
+        tables this tool does not carry, and Unknown is the true answer."""
+        import cmis_registers as c
+        self.assertIn('Unknown', c.connector_type_name(0xEE))
+        self.assertIn('Unknown', c.module_id_name(0xEE))
+
+    def test_the_panel_prints_the_raw_code_once(self):
+        """The Media Interface row appends the raw code so the reader can take
+        it to Table 8-41. A Reserved name carries the code already, and the
+        two together read as two different facts - "Reserved (0x15) (0x15)".
+
+        The suppression has to match the whole parenthesised form: testing for
+        the bare digits would hide the code behind "1310 nm VCSEL", which
+        contains 13."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function mediaIfTechCell(')
+        self.assertLess(len(body), 800, 'the slice ran past the function')
+        self.assertIn("includes('(' + code + ')')", body,
+                      'matching anything less exact than the parenthesised '
+                      'code would suppress it for a named technology')
+        # Not a bare 'mediaIfTechCell(d)': that also matches the function's
+        # own definition, so the check would pass with the row calling
+        # something else entirely.
+        self.assertIn("['Media Interface', mediaIfTechCell(d)", js,
+                      'the row has to use the helper for any of this to run')
+
+    def test_the_helper_agrees_with_the_decoder(self):
+        """Read as data rather than executed: the two cases the helper splits
+        on are exactly the two shapes the decoder produces."""
+        import cmis_registers as c
+        self.assertIn('(0x15)', c.media_if_tech_name(0x15))
+        self.assertNotIn('(0x', c.media_if_tech_name(0x13))
+
+    def test_a_module_on_a_custom_media_type_reads_that_way_end_to_end(self):
+        """Through the API, not just the decoder: the panel is where this is
+        read, and a value that is right in cmis_registers and lost on the way
+        out is no better."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        lower = app_module._state['backend']._registers[None]
+        original = lower[0x55]
+        try:
+            lower[0x55] = 0x4A
+            d = self.assertOk(self.client.get('/api/module/info'))['data']
+            self.assertIn('Custom', d['media_type'])
+            self.assertIn('4A', d['media_type'])
+        finally:
+            lower[0x55] = original
 
 
 if __name__ == '__main__':

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.76.1<br>
+      <b>版本</b>　2.77.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.76.1 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.76.1</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.77.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.77.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>「Unknown」只在工具真的不知道时才会出现</h3>
+  <p><b>「Unknown」是在说工具,不是在说模块。</b>它告诉你工具没认出模块给的值,你合理的反应是去找个更新的工具。所以对于<b>规范本身已经定义过</b>的编码,它不该出现。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>此前两处正好犯了这个毛病,而且都在你最先看到的那块面板上:<b>Media Type</b>(Lower 85)规范 Table 8-20 把整个字节都定义了——06h–3Fh 保留、<b>40h–8Fh 自定义</b>、90h–FFh 保留——工具却把 05h 以上一律显示成 Unknown;<b>Media Interface</b>(00h:212)规范 Table 8-41 到 14h 为止、15h–FFh 保留,而工具的表<b>只到 11h</b>,于是 12h/13h/14h 这三种已定义的铜缆线性均衡技术在对应模块上全被显示成 Unknown。</span>
+  </div>
+  <p>现在:落在保留区间的显示 <code>Reserved (0x__)</code>,落在自定义区间的显示 <code>Custom (0x__)</code>,并且都<b>带上原始编码</b>——保留编码是关于<b>模块</b>的问题,自定义编码则意味着这块模块的 Application Descriptor 要按<b>厂商自己的 ID 表</b>去读,这件事在动手解读之前就该知道。缺的三种铜缆技术已补齐并各自区分(近端+远端 / 远端 / 近端线性有源均衡);0Fh 在 CMIS 5.4 里标了「不要用于新设计」,名称里现在也写明<b>已弃用</b>。</p>
+  <p><b>工具确实不知道的地方仍然写 Unknown</b>:连接器类型、SFF-8024 标识符、主机接口 ID 这几张表定义在 SFF-8024 里,本工具没有收录,写 Unknown 是实话。</p>
 
   <h3>没有逐通道环回的模块,勾一条不再被拒绝</h3>
   <p>规范 Table 8-131 对四个环回使能字节都写了同一句话:<b>「若『支持逐通道环回』位为 1,环回按通道控制;<u>否则,只要有任何一个使能位置 1,该侧所有通道都进入环回</u>」</b>。</p>
@@ -3586,7 +3595,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.76.1<br>
+    CMIS Module Manager 操作手册 v2.77.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

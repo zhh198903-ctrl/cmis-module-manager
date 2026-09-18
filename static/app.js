@@ -523,7 +523,7 @@ async function loadInfo() {
     ['Reconfiguration', reconfigSummary(d.config_capabilities),                                   'Lower', '0x02[6],[1:0]', 'SteppedConfigOnly and AutoCommissioning — which Apply triggers work'],
     ['MCI Max Speed',   (d.config_capabilities || {}).mci_max_speed_i2c
                           || `Reserved (${(d.config_capabilities || {}).mci_max_speed_code})`,    'Lower', '0x02[5:2]',   'MciMaxSpeed, read on the I2C scale'],
-    ['Media Type',      d.media_type,                                                             'Lower', '0x55',        'Media type code (Table 8-21)'],
+    ['Media Type',      d.media_type,                                                             'Lower', '0x55',        'Media type code (Table 8-21), decoded per Table 8-20'],
     ['Module State',    s.module_state,                                                           'Lower', '0x03[3:1]',   'Current state machine (Table 8-7)'],
     ['Vendor Name',     d.vendor_name,                                                            '00h',   '0x81–0x90',   'Vendor Name, 16-byte ASCII'],
     ['Vendor OUI',      d.vendor_oui,                                                             '00h',   '0x91–0x93',   'IEEE OUI (3 bytes hex)'],
@@ -537,7 +537,11 @@ async function loadInfo() {
     ['Cable Length',    d.cable_length_m === 0 ? '— (transceiver, see Link Length)' : `${d.cable_length_m} m`,    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
     ['Link Length',     linkLengthSummary(d.link_lengths),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
-    ['Media Interface', `${d.media_if_tech} (0x${(d.media_if_tech_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xD4', 'Media Interface Technology (Table 8-40)'],
+    // The raw code is appended so the reader can take it to Table 8-41,
+    // but Reserved codes carry it in the name already and printing it
+    // twice reads as two different facts.
+    ['Media Interface', mediaIfTechCell(d), '00h', '0xD4',
+     'Media Interface Technology (Table 8-41)'],
     // The line above names a technology and therefore a band; 01h:138-141 is
     // what this module says it actually emits, and on a module with a
     // programmable wavelength it is the actual value rather than the
@@ -729,6 +733,16 @@ function moduleRestartCell(s) {
 // real length in 00h:202 instead, so nothing here is not a read failure - it
 // means the length worth knowing is the cable one, and the other way round for
 // a transceiver. Saying "not advertised" keeps those two apart.
+function mediaIfTechCell(d) {
+  const code = '0x' + (d.media_if_tech_code || 0).toString(16)
+    .toUpperCase().padStart(2, '0');
+  const name = String(d.media_if_tech || '');
+  // Reserved (0x15) already says 0x15. Matching the whole parenthesised
+  // form rather than the digits: '13' occurs inside '1310 nm VCSEL'.
+  return name.includes('(' + code + ')') ? esc(name)
+                                         : esc(name + ' (' + code + ')');
+}
+
 function linkLengthSummary(list) {
   if (!list || !list.length) return '— (not advertised)';
   return list.map(x => x.km !== undefined

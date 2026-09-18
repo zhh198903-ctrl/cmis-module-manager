@@ -533,7 +533,7 @@ CONNECTOR_TYPES = {
     0x28: "MPO 1×16",
 }
 
-# Table 8-40 — Media Interface Technology
+# Table 8-41 — Media Interface Technology encodings
 MEDIA_IF_TECH = {
     0x00: "850 nm VCSEL",
     0x01: "1310 nm VCSEL",
@@ -550,9 +550,12 @@ MEDIA_IF_TECH = {
     0x0C: "Copper near-far end limiting active equalizers",
     0x0D: "Copper far end limiting active equalizers",
     0x0E: "Copper near end limiting active equalizers",
-    0x0F: "Copper linear active equalizers",
+    0x0F: "Copper linear active equalizers (deprecated)",
     0x10: "C-band tunable laser",
     0x11: "L-band tunable laser",
+    0x12: "Copper near-far end linear active equalizers",
+    0x13: "Copper far end linear active equalizers",
+    0x14: "Copper near end linear active equalizers",
 }
 
 # Table 8-21 — Media Type (Lower memory byte 85)
@@ -841,11 +844,34 @@ def connector_type_name(code: int) -> str:
 
 
 def media_if_tech_name(code: int) -> str:
-    return MEDIA_IF_TECH.get(code, f"Unknown(0x{code:02X})")
+    """Table 8-41 ends at 14h and reserves 15h-FFh.
+
+    Reporting a reserved code as Unknown says the tool failed to recognise it,
+    which sends the reader after a newer tool. The tool recognises it
+    perfectly well: the standard sets it aside. That is a question about the
+    module.
+    """
+    if code in MEDIA_IF_TECH:
+        return MEDIA_IF_TECH[code]
+    return "Reserved (0x%02X)" % code
 
 
 def media_type_name(code: int) -> str:
-    return MEDIA_TYPES.get(code, f"Unknown(0x{code:02X})")
+    """Table 8-20 defines the whole byte, not just the five named types:
+    06h-3Fh and 90h-FFh Reserved, and 40h-8Fh Custom.
+
+    Custom is the one that mattered. A module on a vendor-defined media type
+    is doing something the standard provides for, and the tool has everything
+    it needs to say so - it was answering "Unknown", which reads as a gap in
+    the tool and tells the operator nothing about where to look next. The
+    Application Descriptors on such a module are read against a vendor ID
+    table, and that is worth knowing before trying to interpret them.
+    """
+    if code in MEDIA_TYPES:
+        return MEDIA_TYPES[code]
+    if 0x40 <= code <= 0x8F:
+        return "Custom (0x%02X)" % code
+    return "Reserved (0x%02X)" % code
 
 
 def module_id_name(mid: int) -> str:
@@ -987,8 +1013,10 @@ NEW_IN_5_4 = frozenset({
 })
 
 # Grid spacing code 1001b was added in CMIS 5.4; 5.3 stopped at 150 GHz.
-# Table 8-115. IDs 13 (reserved), 14 (Custom) and 15 (User Pattern) exist too,
-# but only the named patterns are worth offering by name.
+# Table 8-115. ID 13 is Reserved and is deliberately absent: the dropdown
+# falls back to this table when a module advertises no pattern at all, and an
+# encoding the standard reserves is not something to offer as a choice. 14
+# (Custom) and 15 (User Pattern) are real selections and are listed.
 PATTERN_NAMES = {
     0: 'PRBS31Q', 1: 'PRBS31', 2: 'PRBS23Q', 3: 'PRBS23', 4: 'PRBS15Q',
     5: 'PRBS15', 6: 'PRBS13Q', 7: 'PRBS13', 8: 'PRBS9Q', 9: 'PRBS9',
