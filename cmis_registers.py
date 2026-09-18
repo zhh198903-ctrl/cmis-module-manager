@@ -1320,6 +1320,74 @@ TX_INPUT_CLOCKING = {
 }
 
 
+# Table 8-39, the whole of it: one letter per near end host lane, naming the
+# far end module that lane is cabled to. The letter is "depending on the
+# lowest lane number in the group", so a group starting on lane 3 is 'c' -
+# which is what makes this transcription checkable rather than trusted, and
+# there is a test that checks it.
+#
+# "For modules with more than 8 lanes, the topology defined for 8 lanes
+# repeats in each group of 8 lanes."
+FAR_END_LANE_GROUPS = {
+    1:  'abcdefgh', 2:  'aaaaaaaa', 3:  'aaaaeeee', 4:  'abcdeeee',
+    5:  'abcceeee', 6:  'aacdeeee', 7:  'aacceeee', 8:  'aaaaefgh',
+    9:  'aaaaefgg', 10: 'aaaaeegh', 11: 'aaaaeegg', 12: 'aacceegg',
+    13: 'abcceegg', 14: 'aacdeegg', 15: 'abcdeegg', 16: 'aaccefgg',
+    17: 'abccefgg', 18: 'aacdefgg', 19: 'abcdefgg', 20: 'aacceegh',
+    21: 'abcceegh', 22: 'aacdeegh', 23: 'abcdeegh', 24: 'aaccefgh',
+    25: 'abccefgh', 26: 'aacdefgh',
+}
+
+# Table 8-38 marks five of those codes as a uniform breakout, which is the
+# shape a cable is usually ordered by.
+FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
+                   27: '16-lane'}
+
+
+def parse_far_end_config(byte_211: int) -> dict:
+    """00h:211.4-0 (Table 8-37): how a cable assembly's far end breaks out.
+
+    The byte was declared in this file and never read, sitting between 00h:210
+    and 00h:212, both of which are read. On a breakout cable it is the only
+    place that says which host lanes go to which far end module - the
+    Application descriptors say how the module is configured, not what it is
+    plugged into.
+
+    Code 0 is "Undefined. Module with detachable media", and Table 8-37 says
+    the byte "is cleared" for such a module, so zero is not a missing answer
+    on an optical module - it is the right one.
+    """
+    code = byte_211 & 0x1F
+    out = {'code': code, 'reserved': 28 <= code <= 30, 'custom': code == 31,
+           'groups': None, 'uniform': FAR_END_UNIFORM.get(code)}
+    if code == 0:
+        out['summary'] = 'Undefined - module with detachable media'
+    elif code == 27:
+        out['summary'] = 'Far end breakout with 16-lane connector(s)'
+    elif 28 <= code <= 30:
+        out['summary'] = 'Reserved (%d)' % code
+    elif code == 31:
+        out['summary'] = 'Custom'
+    else:
+        letters = FAR_END_LANE_GROUPS[code]
+        groups = []
+        for i, ch in enumerate(letters):
+            if not groups or letters[i - 1] != ch:
+                groups.append([i + 1])
+            else:
+                groups[-1].append(i + 1)
+        out['groups'] = groups
+        out['summary'] = '%d far end module%s: %s' % (
+            len(groups), '' if len(groups) == 1 else 's',
+            ', '.join(_lane_run(g) for g in groups))
+    return out
+
+
+def _lane_run(lanes: list) -> str:
+    """"3-4" rather than "3, 4"; a single lane stays a number."""
+    return str(lanes[0]) if len(lanes) == 1 else '%d-%d' % (lanes[0], lanes[-1])
+
+
 def parse_aux_observables(byte_val: int) -> dict:
     """01h:145 (Table 8-50), RO and Required: seven fields, not three.
 

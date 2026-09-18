@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.85.0<br>
+      <b>版本</b>　2.86.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.85.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.85.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.86.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.86.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,16 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>这根线的远端分成几路,现在看得到了</h3>
+  <p>00h:211 <code>FarEndConfiguration</code>(Table 8-37)此前<b>在寄存器表里声明了,却从来没有被读过</b>——而它就夹在 00h:210 和 00h:212 之间,这两个工具都在读。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>在线缆组件上,<b>这是唯一说明哪些近端主机通道接到哪个远端模块的地方</b>。Application 描述符说的是这块模块<b>可以怎么配置</b>,不是它<b>插在什么上面</b>。Table 8-39 为编码 1–26 给出每条主机通道所属的分组字母,Table 8-38 另把其中五个编码标为「均匀分支」(1/2/4/8/16 通道)。</span>
+  </div>
+  <p>模块能力面板新增一行,例如 <code>2 far end modules: 1-4, 5-8</code>,属于均匀分支时还会标出规格。<b>编码 0 是「未定义 · 可拆卸介质的模块」</b>,规范规定这类模块该字节清零——所以光模块上显示的 0 是<b>正确答案而不是没读到</b>。</p>
+  <p class="note">这一行在<b>平坦内存模块上同样有效</b>(它在 Page 00h),而线缆组件正是这个字段服务的对象。新增的无源铜缆 DAC 演示模块现在会报告 4 通道均匀分支。</p>
+  <p class="note"><b>关于这 26 行转录</b>:从 PDF 抄 26 行数据是最容易出静默错误的活。规范自己说了字母「取决于该组最低的通道号」,这句话让每一行都可校验:字母必须从它命名的那条通道开始、且必须连续。但这条规则<b>不充分</b>——把某行换成另一个同样合法的排布仍能通过,所以还加了一条:26 行必须两两不同。</p>
 
   <h3>一个必备字节里的七个字段,面板此前只显示三个</h3>
   <p>01h:145(Table 8-50)一共有七个字段,<b>每一个都是 RO / 必备</b>,没有一位是保留位:</p>
@@ -3691,7 +3701,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.85.0<br>
+    CMIS Module Manager 操作手册 v2.86.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

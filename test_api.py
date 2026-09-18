@@ -18730,6 +18730,9 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
+        '8-37': 'Cable Assembly Information (Page 00h)',
+        '8-38': 'Far End Configurations for Uniform Far End Breakout (Page 00h)',
+        '8-39': 'Far End Configurations for up to 8 Near End Lanes (Page 00h)',
         '8-41': 'Media Interface Technology encodings',
         '8-43': 'Page 01h Overview',
         '8-44': 'Module Inactive Firmware and Hardware Revisions (Page 01h)',
@@ -20827,6 +20830,140 @@ class TestTheSevenFieldsOfOneAdvertisementByte(CMISTestCase):
         with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
             js = f.read()
         self.assertIn('this tool does not read Page 15h', js)
+
+
+class TestWhatTheCableBreaksOutInto(CMISTestCase):
+    """00h:211 FarEndConfiguration (Table 8-37) was declared in the register
+    map and never read - sitting between 00h:210 and 00h:212, both of which
+    the tool reads.
+
+    On a cable assembly it is the only place that says which near end host
+    lanes are cabled to which discrete far end module. The Application
+    descriptors say how the module may be configured; they do not say what it
+    is plugged into. Table 8-39 gives one letter per host lane for codes 1-26,
+    the letter naming "the lowest lane number in the group", and Table 8-38
+    singles out five of those codes as a uniform breakout.
+
+    Code 0 is "Undefined. Module with detachable media", and Table 8-37 says
+    the byte "is cleared" for such a module - so zero is the right answer on
+    an optical module rather than a missing one."""
+
+    def _caps(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def test_the_transcription_obeys_the_rule_the_table_states(self):
+        """Twenty-six rows copied out of a PDF is the kind of data that goes
+        wrong quietly. The specification names the letters "depending on the
+        lowest lane number in the group", which makes every row checkable: a
+        letter must first appear at the lane it names, and a group must be
+        contiguous."""
+        import cmis_registers as c
+        for code, letters in c.FAR_END_LANE_GROUPS.items():
+            self.assertEqual(len(letters), 8, code)
+            seen = {}
+            for i, ch in enumerate(letters):
+                seen.setdefault(ch, []).append(i)
+            for ch, pos in seen.items():
+                self.assertEqual(
+                    ord(ch) - ord('a'), pos[0],
+                    'code %d: %s starts at lane %d' % (code, ch, pos[0] + 1))
+                self.assertEqual(
+                    pos, list(range(pos[0], pos[0] + len(pos))),
+                    'code %d: %s is not contiguous' % (code, ch))
+
+    def test_no_two_codes_describe_the_same_cable(self):
+        """The letter rule above is necessary and not sufficient: changing one
+        row to another valid arrangement passes it. The twenty-six rows of
+        Table 8-39 are all different, so a row copied into the wrong slot
+        collides with the row it was copied from."""
+        import cmis_registers as c
+        rows = list(c.FAR_END_LANE_GROUPS.values())
+        self.assertEqual(len(rows), len(set(rows)),
+                         'two codes describe the same breakout')
+
+    def test_every_code_in_the_table_is_present(self):
+        """1 to 26 inclusive. A missing row reads as Reserved, which is a
+        different module."""
+        import cmis_registers as c
+        self.assertEqual(sorted(c.FAR_END_LANE_GROUPS), list(range(1, 27)))
+
+    def test_the_uniform_codes_are_the_ones_the_table_boldfaces(self):
+        import cmis_registers as c
+        self.assertEqual(c.FAR_END_UNIFORM,
+                         {1: '1-lane', 12: '2-lane', 3: '4-lane',
+                          2: '8-lane', 27: '16-lane'})
+
+    def test_a_detachable_module_says_so(self):
+        import cmis_registers as c
+        self.assertIn('detachable', c.parse_far_end_config(0)['summary'])
+        self.assertIsNone(c.parse_far_end_config(0)['groups'])
+
+    def test_the_reserved_and_custom_codes(self):
+        import cmis_registers as c
+        for code in (28, 29, 30):
+            d = c.parse_far_end_config(code)
+            self.assertTrue(d['reserved'], code)
+            self.assertIn('Reserved', d['summary'], code)
+        self.assertTrue(c.parse_far_end_config(31)['custom'])
+        self.assertIn('Custom', c.parse_far_end_config(31)['summary'])
+
+    def test_the_sixteen_lane_code_is_not_a_lane_map(self):
+        """Code 27 describes connectors rather than a grouping of eight near
+        end lanes, so there is nothing to draw."""
+        import cmis_registers as c
+        d = c.parse_far_end_config(27)
+        self.assertIsNone(d['groups'])
+        self.assertIn('16-lane', d['summary'])
+
+    def test_only_the_low_five_bits_are_read(self):
+        """00h:211.7-5 is Reserved. Reading the whole byte would turn a
+        reserved bit into a different cable."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_far_end_config(0xE3)['code'], 3)
+        self.assertEqual(c.parse_far_end_config(0x03)['summary'],
+                         c.parse_far_end_config(0xE3)['summary'])
+
+    def test_the_groups_are_lane_numbers(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_far_end_config(3)['groups'],
+                         [[1, 2, 3, 4], [5, 6, 7, 8]])
+
+    def test_a_run_of_one_lane_is_not_written_as_a_range(self):
+        import cmis_registers as c
+        self.assertIn('1, 2, 3, 4, 5, 6, 7, 8',
+                      c.parse_far_end_config(1)['summary'])
+
+    def test_the_demo_cable_reports_its_breakout(self):
+        caps = self._caps('mock_flat_dac')
+        self.assertEqual(caps['far_end']['groups'],
+                         [[1, 2, 3, 4], [5, 6, 7, 8]])
+        self.assertEqual(caps['far_end']['uniform'], '4-lane')
+
+    def test_an_optical_module_reports_the_cleared_byte(self):
+        """The guard on the one above: if the field were being invented, every
+        module would have a breakout."""
+        caps = self._caps('mock_dr8')
+        self.assertEqual(caps['far_end']['code'], 0)
+        self.assertIsNone(caps['far_end']['groups'])
+
+    def test_it_is_read_on_a_flat_module_too(self):
+        """Page 00h, which a flat memory module has - and a cable assembly is
+        the module class this field is for."""
+        caps = self._caps('mock_flat_dac')
+        self.assertTrue(caps['flat_memory'])
+        self.assertIn('far_end', caps)
+
+    def test_the_panel_shows_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('c.far_end.summary', js)
+        self.assertIn("'0xD3[4:0]'", js)
 
 
 if __name__ == '__main__':

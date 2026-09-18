@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.85.0'
+__version__ = '2.86.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -632,6 +632,8 @@ def _discover_capabilities() -> dict:
             caps['page_checksums'] = _verify_page_checksums(caps)
             caps['media_lane_unsupported_mask'] = _read_upper(
                 *cmis.REG_MEDIA_LANE_INFO)[0]
+            caps['far_end'] = cmis.parse_far_end_config(
+                _read_upper(*cmis.REG_FAR_END_CFG)[0])
             return caps
         # Before anything long is read: everything below asks for more than
         # eight bytes at a time, and whether that is allowed is this byte's
@@ -700,6 +702,11 @@ def _discover_capabilities() -> dict:
         # is inferred beyond them.
         caps['media_lane_unsupported_mask'] = _read_upper(
             *cmis.REG_MEDIA_LANE_INFO)[0]
+        # 00h:211, between the two bytes above and below it that were already
+        # read. On a cable assembly it is the only place that says which host
+        # lanes reach which far end module.
+        caps['far_end'] = cmis.parse_far_end_config(
+            _read_upper(*cmis.REG_FAR_END_CFG)[0])
         lane_count = caps.get('max_lanes', 8)
         caps['media_lane_map'] = cmis.parse_media_lane_mapping(
             b''.join(raw for _b, raw in

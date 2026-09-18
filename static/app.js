@@ -611,6 +611,18 @@ async function loadInfo() {
        'TimingPage15hSupported (Table 8-50) - Data Path latency per lane '
        + 'lives on Page 15h (Table 8-141)'],
     ] : []),
+    ...(c.far_end ? [
+      ['Far End Breakout', esc(c.far_end.summary || '-')
+       + (c.far_end.uniform
+          ? ' <span class="reg-meta">uniform ' + esc(c.far_end.uniform)
+            + ' breakout</span>'
+          : ''),
+       '00h', '0xD3[4:0]',
+       'FarEndConfiguration (Table 8-37, codes in Tables 8-38 and 8-39) - '
+       + 'which near end host lanes are cabled to which discrete far end '
+       + 'module. Cleared on a module with detachable media. Beyond eight '
+       + 'lanes the topology repeats in each group of eight.'],
+    ] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],

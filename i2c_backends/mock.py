@@ -473,6 +473,10 @@ _FLAT_DAC = dict(
     vendor_pn=b"DEMO-DAC-FLAT   ",
     vendor_sn=b"DEMO000000012   ",
     media_type=0x03,          # Passive and Linear Active Copper Cables
+    # Code 3 in Table 8-39: lanes 1-4 to one far end module, 5-8 to another -
+    # the 2x400G breakout a DAC of this shape is usually ordered as, and one
+    # of the five uniform codes Table 8-38 singles out.
+    far_end_config_211=0x03,
     config_caps_02=0x80,      # bit 7: flat memory
     flat_memory=True,
 )
@@ -846,7 +850,11 @@ class MockBackend(I2CInterface):
         # four-lane Applications side by side and so has eight media lanes,
         # which taking the maximum would have marked half absent.
         p00[0xD2] = p.get('media_lane_unsupported', 0x00)
-        p00[0xD3] = 0x00                    # FarEndConfig
+        # 00h:211 (Table 8-37). Zero is not a placeholder here - it is
+        # "Undefined. Module with detachable media", which is the right
+        # answer for every optical profile. A cable assembly says which
+        # host lanes reach which far end module.
+        p00[0xD3] = self._profile.get('far_end_config_211', 0x00)
         p00[0xD4] = p['media_if_tech']      # Media Interface Technology
         lower[0x3C] = p.get('module_subtype', 0x00)          # 60
         lower[0x3D] = p.get('heatsink_fiber', 0x00)          # 61 (5.4 heatsink type)
