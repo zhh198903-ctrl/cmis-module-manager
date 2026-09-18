@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.77.0<br>
+      <b>版本</b>　2.78.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.77.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.77.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.78.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.78.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,16 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Application 的通道数栏:0 不是「0 条」</h3>
+  <p>规范 Table 8-22 把 Application Descriptor 第 3 字节的两个半字节写得很清楚:<b>「0000b:通道数由接口 ID 决定</b>,或显式给出:0001b:1 条 …… 1000b:8 条。<b>1001b–1111b:保留</b>」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>也就是说 <b>0 不是「这个 Application 没有通道」</b>,而是模块<b>不再重复</b>一个它的接口 ID 本来就已确定的宽度;而 9–15 <b>根本不是通道数</b>。此前工具把两者都当数字用:前者在 Application 表里显示成一个破折号、在 Host Lanes 下面的分解里显示成「0H/0M」;后者被当成 9–15 条通道,还<b>加进了模块对外宣称的通道总数</b>。</span>
+  </div>
+  <p>现在这两种情况分别显示 <code>H=per interface ID</code> 和 <code>H=Reserved (Fh)</code>,<b>都不计入通道总数</b>——要把「由接口 ID 决定」解成具体数字,需要 SFF-8024 里接口 ID 对应的通道数,那张表本工具没有收录,所以它<b>说明是哪一种,而不是编一个数字出来</b>。(<code>4H/4M</code> 这种正常宽度显示不变;H/M 只在跟着数字时才当单位用。)</p>
+  <h3>接口 ID 显示 <code>BE</code> 时:去看 NAD</h3>
+  <p>同一张 Table 8-22 对两个接口 ID 字节都写了:<b>「BEh:接口 UID 的 GID 非零,因此必须查阅对应的 NAD」</b>。这是<b>规范定义过的编码</b>,不是 SFF-8024 表里缺的一项,而工具此前显示 <code>Unknown (0xBE)</code>——就在<b>同一块面板上</b>,工具其实已经在告诉你这个模块宣称了几组 Normalized Application Descriptor。现在显示 <code>See NAD (0xBE)</code>。</p>
 
   <h3>「Unknown」只在工具真的不知道时才会出现</h3>
   <p><b>「Unknown」是在说工具,不是在说模块。</b>它告诉你工具没认出模块给的值,你合理的反应是去找个更新的工具。所以对于<b>规范本身已经定义过</b>的编码,它不该出现。</p>
@@ -3595,7 +3605,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.77.0<br>
+    CMIS Module Manager 操作手册 v2.78.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

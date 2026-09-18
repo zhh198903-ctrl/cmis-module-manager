@@ -18671,6 +18671,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-18': 'Extended Module Information (Lower Memory)',
         '8-20': 'Media Type Encodings (Table Selection)',
         '8-21': 'Media Type Register (Lower Memory)',
+        '8-22': 'Format of Application Descriptor Bytes 1-4 (Paged Memory Modules)',
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
@@ -19460,6 +19461,179 @@ class TestUnknownIsSaidOnlyWhereTheToolDoesNotKnow(CMISTestCase):
             self.assertIn('4A', d['media_type'])
         finally:
             lower[0x55] = original
+
+
+class TestTheLaneCountNibblesHoldMoreThanCounts(CMISTestCase):
+    """Table 8-22 byte 2: "0000b: lane count defined by interface ID, or
+    explicit: 0001b: 1 lane ... 1000b: 8 lanes. 1001b-1111b: reserved."
+
+    Zero is not zero lanes. It is the module declining to restate a width its
+    interface ID already fixes, and the tool showed the Application as having
+    no lanes - an em-dash in the table, "0H/0M" in the breakdown under Host
+    Lanes and in the provisioning dropdown. A reserved code is not a width at
+    all, and nine to fifteen were passed on as lane counts and added to the
+    module's advertised total.
+
+    Resolving 0000b needs the lane count behind the SFF-8024 interface ID,
+    which this tool does not carry - so it says which of the two it is and
+    leaves the number out of the arithmetic, rather than inventing one.
+
+    This is the Applications panel, which is what a host reads to decide what
+    to provision."""
+
+    def _apps(self, host_nibble, media_nibble):
+        """One descriptor with the given lane-count nibbles."""
+        import cmis_registers as c
+        desc = bytes([0x1C, 0x1C, (host_nibble << 4) | media_nibble, 0x01])
+        return c.parse_application_descriptors(desc + b'\xff' * 4, b'', 0x02)
+
+    def test_an_ordinary_width_is_unchanged(self):
+        a = self._apps(4, 4)[0]
+        self.assertEqual(a['host_lanes'], 4)
+        self.assertEqual(a['media_lanes'], 4)
+        self.assertEqual(a['host_lanes_text'], '4')
+        self.assertEqual(a['media_lanes_text'], '4')
+
+    def test_the_full_range_of_real_widths(self):
+        """1 to 8. Eight is a width, not the first reserved code."""
+        import cmis_registers as c
+        for n in range(1, 9):
+            self.assertEqual(c.lane_count_field(n), (n, str(n)))
+
+    def test_the_two_nibbles_are_not_interchangeable(self):
+        """Table 8-22 puts HostLaneCount in bits 7-4 and MediaLaneCount in
+        3-0. Every other fixture here gives both sides the same value, which
+        is exactly the shape that hides a swap: reading the wrong nibble, or
+        attaching the wrong text to each side, passes all of them."""
+        a = self._apps(2, 0)[0]
+        self.assertEqual(a['host_lanes'], 2)
+        self.assertEqual(a['host_lanes_text'], '2')
+        self.assertEqual(a['media_lanes'], 0)
+        self.assertIn('interface ID', a['media_lanes_text'])
+
+        b = self._apps(0, 0x0F)[0]
+        self.assertIn('interface ID', b['host_lanes_text'])
+        self.assertIn('Reserved', b['media_lanes_text'])
+
+    def test_zero_says_the_interface_id_decides(self):
+        a = self._apps(0, 0)[0]
+        self.assertIn('interface ID', a['host_lanes_text'])
+        self.assertIn('interface ID', a['media_lanes_text'])
+        self.assertNotIn('0', a['host_lanes_text'],
+                         'printing a zero anywhere in it brings back the '
+                         'reading this replaces')
+
+    def test_a_reserved_code_says_reserved_and_shows_it(self):
+        import cmis_registers as c
+        for n in (9, 0x0C, 0x0F):
+            count, text = c.lane_count_field(n)
+            self.assertEqual(count, 0, 'nibble %X' % n)
+            self.assertIn('Reserved', text, 'nibble %X' % n)
+            self.assertIn('%X' % n, text,
+                          'the code has to be printed or there is nothing to '
+                          'look up')
+
+    def test_a_reserved_code_is_not_counted_as_lanes(self):
+        """Nine to fifteen were summed into the module's advertised capacity,
+        which is a width the standard does not define."""
+        import app as app_module
+        apps = self._apps(0x0F, 0x0F)
+        host, media = app_module._compute_module_capacity(apps)
+        self.assertEqual((host, media), (0, 0))
+
+    def test_an_interface_id_width_is_not_counted_either(self):
+        import app as app_module
+        host, media = app_module._compute_module_capacity(self._apps(0, 0))
+        self.assertEqual((host, media), (0, 0))
+
+    def test_real_widths_still_add_up(self):
+        """The guard on the two above: if the capacity sum had been broken
+        rather than made honest, those would pass and this would not."""
+        import app as app_module
+        host, media = app_module._compute_module_capacity(self._apps(4, 4))
+        self.assertEqual((host, media), (4, 4))
+
+    def test_the_breakdown_prints_the_text(self):
+        import app as app_module
+        apps = self._apps(0, 0) + self._apps(4, 4)
+        apps[1]['app_sel'] = 2
+        detail = app_module._format_lanes_detail(apps, 4, 4)
+        self.assertIn('H=per interface ID', detail)
+        self.assertIn('4H/4M', detail, 'a real width still reads as one')
+        self.assertNotIn('0H/0M', detail)
+
+    def test_the_letter_becomes_a_label_when_the_width_is_not_a_number(self):
+        """"per interface IDH" is what appending the unit produces, and it
+        reads as a word ending in H rather than as a lane count."""
+        import app as app_module
+        apps = self._apps(0, 0) + self._apps(4, 4)
+        apps[1]['app_sel'] = 2
+        detail = app_module._format_lanes_detail(apps, 4, 4)
+        self.assertNotIn('IDH', detail)
+        self.assertNotIn('IDM', detail)
+
+    def test_the_panel_labels_it_the_same_way(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function laneCountPair(')
+        self.assertLess(len(body), 600, 'the slice ran past the function')
+        self.assertIn("letter + '=' + t", body,
+                      'the label form is what stops "per interface IDH"')
+        self.assertIn("esc(laneCountPair(a))", js,
+                      'the dropdown has to use it; a bare name would also '
+                      "match the function's own definition")
+
+    def test_the_panel_has_somewhere_to_print_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function laneCountText(')
+        self.assertLess(len(body), 600, 'the slice ran past the function')
+        self.assertIn("a[side + '_lanes_text']", body)
+        self.assertIn("laneCountText(a, 'host')", js)
+        self.assertIn("laneCountText(a, 'media')", js)
+        self.assertNotIn("${a.host_lanes || '—'}", js,
+                         'the old cell printed an em-dash for both special '
+                         'cases and told them apart from neither')
+
+
+class TestTheInterfaceIdThatPointsAtTheNad(CMISTestCase):
+    """Table 8-22 for both interface ID bytes: "BEh: the GID ... is non-zero
+    and hence the corresponding NAD must be consulted."
+
+    It is a defined encoding, not a code missing from the SFF-8024 tables, and
+    the tool reported it as Unknown - on the same panel where it already tells
+    the operator how many banks of Normalized Application Descriptors the
+    module advertises."""
+
+    def test_the_host_side_says_where_to_look(self):
+        import cmis_registers as c
+        got = c.host_interface_name(0xBE)
+        self.assertNotIn('Unknown', got)
+        self.assertIn('NAD', got)
+        self.assertIn('BE', got)
+
+    def test_the_media_side_says_the_same(self):
+        import cmis_registers as c
+        for media_type in (0x01, 0x02):
+            got = c.media_interface_name(0xBE, media_type)
+            self.assertNotIn('Unknown', got, 'media type 0x%02X' % media_type)
+            self.assertIn('NAD', got, 'media type 0x%02X' % media_type)
+
+    def test_the_tables_still_answer_for_everything_else(self):
+        """The check above would pass with every code answering 'See NAD'."""
+        import cmis_registers as c
+        self.assertEqual(c.host_interface_name(0x1C), '200GBASE-CR4')
+        self.assertIn('Unknown', c.host_interface_name(0xBD))
+        self.assertIn('Unknown', c.host_interface_name(0xBF))
+
+    def test_it_reaches_the_descriptor_list(self):
+        import cmis_registers as c
+        desc = bytes([0xBE, 0xBE, 0x44, 0x01]) + b'\xff' * 4
+        a = c.parse_application_descriptors(desc, b'', 0x02)[0]
+        self.assertIn('NAD', a['host_if_name'])
+        self.assertIn('NAD', a['media_if_name'])
 
 
 if __name__ == '__main__':

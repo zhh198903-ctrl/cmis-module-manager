@@ -733,6 +733,26 @@ function moduleRestartCell(s) {
 // real length in 00h:202 instead, so nothing here is not a read failure - it
 // means the length worth knowing is the cable one, and the other way round for
 // a transceiver. Saying "not advertised" keeps those two apart.
+// Table 8-22 puts three different things in each lane-count nibble: a
+// width of 1-8, 0000b for "defined by the interface ID", and 1001b-1111b
+// reserved. The last two are not counts, so the API sends the text to print
+// beside the number to add up.
+function laneCountText(a, side) {
+  const text = a[side + '_lanes_text'];
+  if (text !== undefined && text !== null && text !== '') return String(text);
+  return a[side + '_lanes'] ? String(a[side + '_lanes']) : '\u2014';
+}
+
+// "4H/4M" reads as units after a digit and as nonsense after anything else,
+// so a width the module did not state takes the letter as a label.
+function laneCountPair(a) {
+  const part = (side, letter) => {
+    const t = laneCountText(a, side);
+    return /^\d+$/.test(t) ? t + letter : letter + '=' + t;
+  };
+  return part('host', 'H') + '/' + part('media', 'M');
+}
+
 function mediaIfTechCell(d) {
   const code = '0x' + (d.media_if_tech_code || 0).toString(16)
     .toUpperCase().padStart(2, '0');
@@ -1736,7 +1756,7 @@ async function loadDatapath() {
       ? _advertisedApps.map(a =>
           `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
           + `App ${a.app_sel} — ${a.media_if_name || hex8(a.media_if_id)} `
-          + `${a.host_lanes}H/${a.media_lanes}M</option>`)
+          + `${esc(laneCountPair(a))}</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
     opts.unshift(`<option value="0" ${lane.app_select === 0 ? 'selected' : ''}>`
@@ -2316,8 +2336,8 @@ async function loadApplications() {
       <td title="AppSelCode ${a.app_sel} (dec), 1-15">${a.app_sel}</td>
       <td title="Host Interface ID ${hostHex} hex = ${a.host_if_id} dec (SFF-8024)">${hostHex}<br><small style="color:var(--text-muted)">${esc(a.host_if_name || '')}</small></td>
       <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec (SFF-8024)">${mediaHex}<br><small style="color:var(--text-muted)">${esc(a.media_if_name || '')}</small></td>
-      <td title="Host lane count (dec)">${a.host_lanes || '—'}</td>
-      <td title="Media lane count (dec)">${a.media_lanes || '—'}</td>
+      <td title="Host lane count (Table 8-22)">${esc(laneCountText(a, 'host'))}</td>
+      <td title="Media lane count (Table 8-22)">${esc(laneCountText(a, 'media'))}</td>
       <td title="${esc(lanesTip)}"><code>${assignBin}</code></td>
       ${mediaAssignCell(a)}
     </tr>`;

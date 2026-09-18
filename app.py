@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.77.0'
+__version__ = '2.78.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -663,7 +663,17 @@ def _format_lanes_detail(apps: list, host_total: int, media_total: int) -> str:
     """Format a friendly lane breakdown string for display."""
     if len(apps) <= 1:
         return ''
-    parts = [f"AppSel#{a['app_sel']}: {a['host_lanes']}H/{a['media_lanes']}M" for a in apps]
+    # The text rather than the number: an Application whose width the module
+    # left to its interface ID reads "0H/0M" otherwise, which is the one thing
+    # it does not mean. The H and M only read as units after a digit, so a
+    # width that is not a number takes them as a label instead.
+    def part(text, letter):
+        return f'{text}{letter}' if text.isdigit() else f'{letter}={text}'
+
+    parts = [f"AppSel#{a['app_sel']}: "
+             f"{part(str(a.get('host_lanes_text', a['host_lanes'])), 'H')}"
+             f"/{part(str(a.get('media_lanes_text', a['media_lanes'])), 'M')}"
+             for a in apps]
     return ' + '.join(parts)
 
 

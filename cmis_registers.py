@@ -920,6 +920,8 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
             break
         media_if = data[off + 1]
         lane_count = data[off + 2]
+        host_lanes, host_lanes_text = lane_count_field((lane_count >> 4) & 0x0F)
+        media_lanes, media_lanes_text = lane_count_field(lane_count & 0x0F)
         host_lane_assign = data[off + 3]
         apps.append({
             'app_sel': i + 1,
@@ -929,8 +931,10 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
             # the whole reason those tables are in this file.
             'host_if_name': host_interface_name(host_if),
             'media_if_name': media_interface_name(media_if, media_type),
-            'host_lanes': (lane_count >> 4) & 0x0F,
-            'media_lanes': lane_count & 0x0F,
+            'host_lanes': host_lanes,
+            'host_lanes_text': host_lanes_text,
+            'media_lanes': media_lanes,
+            'media_lanes_text': media_lanes_text,
             'host_lane_assign_mask': host_lane_assign,
             # Not required of a flat-memory module, which has no Page 01h to
             # put it on, so its absence is a shape of module rather than a
@@ -939,6 +943,32 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
                                        if i < len(media_assign) else None),
         })
     return apps
+
+
+def lane_count_field(nibble: int) -> tuple:
+    """Table 8-22 byte 2: the two lane-count nibbles do not only hold counts.
+
+    "0000b: lane count defined by interface ID, or explicit: 0001b: 1 lane
+    ... 1000b: 8 lanes. 1001b-1111b: reserved."
+
+    So zero is not zero lanes - it is the module declining to state a width
+    that its interface ID already fixes - and a reserved code is not a width
+    at all. Both were being passed on as numbers: an Application the module
+    describes this way showed as having no lanes, and a reserved encoding
+    showed as nine to fifteen of them and was added to the module's
+    advertised total.
+
+    Returns the count to do arithmetic with and the text to print. The count
+    is zero for both special cases, which keeps them out of a total that is
+    supposed to mean lanes; the text says which one it was.
+    """
+    if 1 <= nibble <= 8:
+        return nibble, str(nibble)
+    if nibble == 0:
+        # Resolving it needs the lane count behind the SFF-8024 interface ID,
+        # which is not a table this tool carries.
+        return 0, 'per interface ID'
+    return 0, 'Reserved (%Xh)' % nibble
 
 
 def parse_module_control(byte_val: int) -> dict:
@@ -2407,13 +2437,27 @@ FIBER_FACE_TYPES = {
 }
 
 
+# Table 8-22: "BEh: the GID of the Host Interface UID is non-zero and hence
+# the corresponding NAD must be consulted", and the same for the media side.
+# It is a real encoding, not a gap in the tables below.
+NAD_INTERFACE_ID = 0xBE
+
+
 def host_interface_name(code: int) -> str:
     """SFF-8024 name for a Host Electrical Interface ID, or a marked unknown.
 
     Unknown codes are reported as such rather than blanked: a module using a
     code newer than this table is a fact worth seeing, and an empty cell reads
     like the module said nothing.
+
+    BEh is not one of those. Table 8-22 defines it: the Interface GID is
+    non-zero, so the name is not in any SFF-8024 ID table and the Normalized
+    Application Descriptor has to be read instead. Calling that Unknown hid a
+    fact the tool already reports on the same panel - how many banks of NADs
+    the module advertises.
     """
+    if code == NAD_INTERFACE_ID:
+        return 'See NAD (0xBE)'
     return HOST_INTERFACE_IDS.get(code, f'Unknown (0x{code:02X})')
 
 
@@ -2423,6 +2467,11 @@ def media_interface_name(code: int, media_type: int = 0x02) -> str:
     Which table applies depends on the module's global Media Type - the same
     code means different things on MMF and SMF - so the caller has to say
     which, and 0x01 is the MMF encoding.
+
+    BEh means the same here as on the host side: the GID is non-zero and the
+    Normalized Application Descriptor is where the name lives.
     """
+    if code == NAD_INTERFACE_ID:
+        return 'See NAD (0xBE)'
     table = MEDIA_INTERFACE_IDS_MMF if media_type == 0x01 else MEDIA_INTERFACE_IDS_SMF
     return table.get(code, f'Unknown (0x{code:02X})')
