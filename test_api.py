@@ -4675,7 +4675,12 @@ class TestTheServerStaysSingleThreaded(unittest.TestCase):
                   encoding='utf-8') as f:
             src = f.read()
         idx = src.index('def _set_page(')
-        body = src[idx:idx + 1400]
+        # Not a fixed number of characters: the function grew by a docstring
+        # and the cache assignment fell outside the window, so this reported
+        # the cache gone when it was three lines further down.
+        end = re.search(r'\r?\ndef ', src[idx + 1:])
+        self.assertIsNotNone(end, 'the end of _set_page was not found')
+        body = src[idx:idx + 1 + end.start()]
         self.assertIn("_state['page'] = page", body,
                       'the page cache is gone; if that was deliberate, this '
                       'test and the threading constraint should go together')
@@ -8559,13 +8564,27 @@ class TestWritingLaserSettingsToANonTunableModule(CMISTestCase):
         """Behind the API, so what is tested is the backend rather than the
         guard now standing in front of it. A real module answers a write to an
         unimplemented page without throwing, and the mock has to as well or it
-        turns a module difference into a tool crash."""
+        turns a module difference into a tool crash.
+
+        The page is selected through the backend rather than through
+        _set_page, which now reads the select back and refuses - see
+        TestThePageSelectIsReadBack. That refusal is the tool's behaviour; this
+        is about the module's."""
         self._connect('mock_dr8')
         import cmis_registers as c
-        app_module._set_page(0x12)
+        _state['backend'].write_bytes(c.REG_BANK_SELECT[1], bytes([0, 0x12]))
         _state['backend'].write_bytes(c.REG_TARGET_PWR_TX[1], bytes([0x00, 0x00]))
         app_module._invalidate_page()
         self.assertOk(self.client.get('/api/module/monitoring'))
+
+    def test_the_tool_refuses_that_page_even_though_the_module_does_not(self):
+        """The other half, stated where a reader of the test above will see
+        it: the module says nothing, so the tool has to."""
+        self._connect('mock_dr8')
+        app_module._invalidate_page()
+        with self.assertRaises(IOError) as caught:
+            app_module._set_page(0x12)
+        self.assertIn('Page 12h', str(caught.exception))
 
 
 class TestATransientDataPathIsNotAFault(CMISTestCase):
@@ -20056,6 +20075,248 @@ class TestAFlatModuleHasNoPageToRead(CMISTestCase):
         self.assertLess(model_at, first_upper,
                         'the memory model has to be read before the first '
                         'Page 01h read, not after it')
+
+
+class TestThePageSelectIsReadBack(CMISTestCase):
+    """8.2.15: "When a host write would result in a not supported Page Address
+    in the PageMapping register, the module clears the PageSelect Byte ...
+    such that the resulting PageMapping register selects Page 00h."
+
+    So asking for a page the module does not have fails nowhere. The write is
+    accepted, nothing is reported, and every read after it returns Page 00h -
+    the vendor block - decoded as whatever the caller expected. A read that
+    cannot fail is not a read that succeeded.
+
+    The specification puts the answer in a register, so it is read back. Once
+    per page per connection: what a module supports does not change while it
+    is plugged in, and a read on every page change would double the traffic of
+    every panel refresh."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _read(self, page):
+        return json.loads(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': '0x80', 'length': 4}),
+            content_type='application/json').data)
+
+    def test_a_page_the_module_has_is_read(self):
+        self._connect()
+        self.assertEqual(self._read('0x13')['status'], 'ok')
+
+    def test_a_page_the_module_lacks_is_refused(self):
+        self._connect()
+        r = self._read('0x20')
+        self.assertEqual(r['status'], 'error')
+        self.assertIn('Page 20h', r['message'])
+        self.assertIn('8.2.15', r['message'],
+                      'the message has to say where this behaviour is written')
+
+    def test_the_refusal_names_what_came_back(self):
+        """"it answered the page select with 00h" is the evidence. Without it
+        the reader cannot tell this from a bus fault."""
+        self._connect()
+        self.assertIn('00h', self._read('0x20')['message'])
+
+    def test_the_module_really_did_redirect(self):
+        """The mock records it, so the test is not asserting against its own
+        expectation of what a module does."""
+        import app as app_module
+        self._connect()
+        self._read('0x20')
+        self.assertIn(0x20, app_module._state['backend']._page_redirects)
+
+    def test_a_verified_page_is_not_verified_again(self):
+        """Once per page. A read-back on every page change would double the
+        bus traffic of every panel that walks several pages."""
+        import app as app_module
+        self._connect()
+        backend = app_module._state['backend']
+        reads = []
+        original = backend.read_bytes
+
+        def traced(addr, length):
+            reads.append(addr)
+            return original(addr, length)
+
+        self.assertOk(self.client.get('/api/module/thresholds'))
+        backend.read_bytes = traced
+        try:
+            for _ in range(3):
+                app_module._invalidate_page()
+                app_module._set_page(0x02)
+        finally:
+            backend.read_bytes = original
+        self.assertEqual(reads.count(0x7F), 0,
+                         'a page already confirmed was read back again')
+
+    def test_an_unverified_page_is_checked_once(self):
+        """The guard on the test above: if nothing were ever read back, that
+        one would pass with the check deleted."""
+        import app as app_module
+        self._connect()
+        backend = app_module._state['backend']
+        reads = []
+        original = backend.read_bytes
+
+        def traced(addr, length):
+            reads.append(addr)
+            return original(addr, length)
+
+        # Connecting already walked Pages 01h, 02h and 11h, so the cache
+        # has to be emptied for this to be the first selection of one.
+        app_module._state['pages_ok'] = set()
+        backend.read_bytes = traced
+        try:
+            app_module._invalidate_page()
+            app_module._set_page(0x11)
+        finally:
+            backend.read_bytes = original
+        self.assertEqual(reads.count(0x7F), 1)
+
+    def test_page_00h_is_never_checked(self):
+        """Page 00h is what an unsupported page falls back to, so it is always
+        supported and reading the byte back would say nothing."""
+        import app as app_module
+        self._connect()
+        backend = app_module._state['backend']
+        reads = []
+        original = backend.read_bytes
+
+        def traced(addr, length):
+            reads.append(addr)
+            return original(addr, length)
+
+        # Emptied first, or this would only be showing that a page already
+        # in the cache is not looked at twice - which is the other test.
+        app_module._state['pages_ok'] = set()
+        backend.read_bytes = traced
+        try:
+            app_module._invalidate_page()
+            app_module._set_page(0x00)
+        finally:
+            backend.read_bytes = original
+        self.assertEqual(reads.count(0x7F), 0)
+
+    def test_connecting_forgets_what_the_last_module_had(self):
+        """A different module may be on the bus, and its pages are its own.
+
+        Connecting reads several pages itself, so the cache is not empty
+        afterwards - what matters is that nothing carried over. A page the
+        previous module was confirmed to have is the thing that must not
+        survive, because trusting it would skip the check on a module that
+        does not have it."""
+        import app as app_module
+        self._connect()
+        app_module._state['pages_ok'].add(0x20)
+        self._connect('mock_sr8')
+        self.assertNotIn(0x20, app_module._state['pages_ok'],
+                         'a page confirmed on the previous module carried '
+                         'over to this one')
+        self.assertTrue(app_module._state['pages_ok'],
+                        'the new connection confirms its own pages')
+
+
+class TestTheDiagnosticPagesAreAdvertisedToo(CMISTestCase):
+    """01h:142.5 DiagnosticPagesSupported - "Banked Pages 13h-14h supported" -
+    was parsed at connect and never asked.
+
+    Every other optional page in app.py gates its reads on its own
+    advertisement: 0Ch, 60h, 61h and 62h each have one, three lines apart in
+    the same function. The diagnostics family - loopback, pattern generation
+    and checking, SNR, BER, the bit and error counters - did not. On a module
+    without those pages the page select is cleared, Page 00h stays mapped, and
+    the vendor block is decoded as loopback capabilities and error counts.
+
+    The standing sweep over "every mock, every endpoint, no page redirects"
+    could not catch this: every demo module implements Pages 13h and 14h."""
+
+    ENDPOINTS = ('/api/module/loopback', '/api/module/prbs',
+                 '/api/module/snr', '/api/module/ber',
+                 '/api/module/counters')
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _without_diagnostics(self):
+        import app as app_module
+        app_module._state['caps']['diagnostic_pages_supported'] = False
+
+    def test_the_advertisement_is_parsed_at_all(self):
+        """It always was; it was simply never read. If the key were dropped
+        the gate below would default to permitting everything."""
+        import app as app_module
+        self._connect()
+        self.assertIn('diagnostic_pages_supported', app_module._state['caps'])
+
+    def test_a_module_that_advertises_them_is_unaffected(self):
+        self._connect()
+        for ep in self.ENDPOINTS:
+            self.assertEqual(self.client.get(ep).status_code, 200, ep)
+
+    def test_a_module_without_them_is_refused(self):
+        self._connect()
+        self._without_diagnostics()
+        for ep in self.ENDPOINTS:
+            r = self.client.get(ep)
+            self.assertEqual(r.status_code, 409, ep)
+            msg = json.loads(r.data)['message']
+            self.assertIn('01h:142.5', msg, ep)
+            self.assertIn('13h-14h', msg, ep)
+
+    def test_the_writes_are_refused_as_well(self):
+        """A write walks the same pages, and refusing only reads would let the
+        panel configure a pattern generator that is not there."""
+        self._connect()
+        self._without_diagnostics()
+        for ep, body in (('/api/module/loopback', {'media_side_output': 0x01}),
+                         ('/api/module/prbs', {'host_gen': {'enable_mask': 1}})):
+            r = self.client.post(ep, data=json.dumps(body),
+                                 content_type='application/json')
+            self.assertEqual(r.status_code, 409, ep)
+
+    def test_nothing_reaches_the_page(self):
+        """The point of the gate: the refusal must come before the page select,
+        or the module has already been redirected to Page 00h."""
+        import app as app_module
+        self._connect()
+        self._without_diagnostics()
+        app_module._state['backend']._page_redirects.clear()
+        for ep in self.ENDPOINTS:
+            self.client.get(ep)
+        self.assertEqual(app_module._state['backend']._page_redirects, [])
+
+    def test_an_unreadable_capability_block_does_not_refuse(self):
+        """The default matters only when discovery failed, and this file has
+        a settled answer for that: "A module that cannot answer the capability
+        block is still usable at the default eight lanes; failing the whole
+        connection over an optional advertisement would be worse." Refusing
+        the diagnostics panels there would be the same mistake one layer up -
+        the module may well have the pages."""
+        import app as app_module
+        self._connect()
+        app_module._state['caps'].pop('diagnostic_pages_supported', None)
+        for ep in self.ENDPOINTS:
+            self.assertEqual(self.client.get(ep).status_code, 200, ep)
+
+    def test_the_other_optional_pages_keep_their_gates(self):
+        """The precedent this follows. If one of those were removed the sweep
+        that checks for page redirects would catch it, but only on a profile
+        that lacks the page - so it is stated here too."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            src = f.read()
+        for key in ('page_0ch_supported', 'page_60h_supported',
+                    'page_61h_supported', 'page_62h_supported',
+                    'diagnostic_pages_supported'):
+            self.assertIn(key, src, key)
 
 
 if __name__ == '__main__':

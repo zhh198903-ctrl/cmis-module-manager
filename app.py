@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.80.0'
+__version__ = '2.81.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -50,6 +50,11 @@ _state = {
     'lanes': 8,
     # The 5.4 advertisement block, read once at connect.
     'caps': {},
+    # Pages this module has been seen to accept. 8.2.15 says a module clears
+    # PageSelect rather than refuse a page it does not have, so the only way
+    # to find out is to read the byte back - once per page is enough, since
+    # what a module supports does not change while it is plugged in.
+    'pages_ok': set(),
     # Section 5.2.2.1: "A host may read N bytes ... 1 <= N <= Nmax. By
     # default, Nmax = 8. When full page read is supported ... then Nmax =
     # 128." Eight until 01h:251 says otherwise, so the reads made while
@@ -187,6 +192,28 @@ def _require_connected():
 # So these panels were not reading a module that had nothing to say. They were
 # reading its vendor name and serial number and decoding them as lane states,
 # Flags and monitor values. A refusal that says why is the only honest answer.
+def _require_diagnostics(what: str):
+    """Return an error response when Pages 13h-14h are not advertised.
+
+    01h:142.5 DiagnosticPagesSupported - "Banked Pages 13h-14h supported" -
+    was parsed at connect and never asked. Every other optional page in this
+    file gates its reads on its own advertisement: 0Ch, 60h, 61h and 62h each
+    have one, three lines apart. The diagnostics family did not, so on a
+    module without them the page select is cleared, Page 00h stays mapped, and
+    the vendor block is decoded as loopback capabilities, pattern support and
+    bit error counts.
+
+    Every demo module implements these pages, which is why the standing sweep
+    over "every mock, every endpoint, no page redirects" has never caught it.
+    """
+    if not (_state.get('caps') or {}).get('diagnostic_pages_supported', True):
+        return _err(
+            '%s lives on Pages 13h-14h, which this module does not advertise '
+            '(01h:142.5 is clear). A module clears the page select rather '
+            'than refuse it, so reading on would return Page 00h' % what, 409)
+    return None
+
+
 def _require_paged(what: str):
     """Return an error response on a flat memory module, else None."""
     if (_state.get('caps') or {}).get('flat_memory'):
@@ -270,6 +297,11 @@ def _invalidate_page():
     _state['bank'] = None
 
 
+def _forget_verified_pages():
+    """After a connect or a reset: a different module may be on the bus."""
+    _state['pages_ok'] = set()
+
+
 def _set_page(page: int, bank: int = 0):
     """Select an upper-memory page and bank, waiting out the access hold-off.
 
@@ -288,6 +320,17 @@ def _set_page(page: int, bank: int = 0):
     BankSelect until PageSelect is written (CMIS 8.2.15), so writing only the
     bank would leave the change pending and the next read would come from the
     old one.
+
+    And then read it back. 8.2.15 again: "When a host write would result in a
+    not supported Page Address in the PageMapping register, the module clears
+    the PageSelect Byte ... such that the resulting PageMapping register
+    selects Page 00h". So asking for a page the module does not have is not an
+    error anywhere - it silently leaves Page 00h mapped, and every read after
+    it returns the vendor block decoded as whatever was expected.
+
+    The specification puts the answer in a register, so it is read: once per
+    page per connection, because what a module supports does not change while
+    it is plugged in.
     """
     if _state['page'] == page and _state['bank'] == bank:
         return
@@ -295,6 +338,16 @@ def _set_page(page: int, bank: int = 0):
     _state['bank'] = None
     _state['backend'].write_bytes(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
     time.sleep(_state.get('bpc_sleep') or 0.010)
+    if page and page not in _state['pages_ok']:
+        got = _state['backend'].read_bytes(cmis.REG_PAGE_SELECT[1], 1)
+        if len(got) == 1 and got[0] != page:
+            raise IOError(
+                'this module does not have Page %02Xh: it answered the page '
+                'select with %02Xh. CMIS 8.2.15 has a module clear PageSelect '
+                'rather than refuse, so reading on would have returned Page '
+                '00h - the vendor block - decoded as Page %02Xh'
+                % (page, got[0], page))
+        _state['pages_ok'].add(page)
     _state['page'] = page
     _state['bank'] = bank
 
@@ -824,6 +877,7 @@ def api_connect():
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()
+    _forget_verified_pages()
     caps = _discover_capabilities()
     _state['lanes'] = caps.get('max_lanes', 8)
     _state['caps'] = caps
@@ -849,6 +903,7 @@ def api_disconnect():
     _state['flag_history'] = {}
     _state['flag_history_since'] = None
     _invalidate_page()
+    _forget_verified_pages()
     return _ok({'message': 'Disconnected'})
 
 
@@ -2419,6 +2474,9 @@ def api_loopback_get():
     err = _require_paged('Loopback')
     if err:
         return err
+    err = _require_diagnostics('Loopback')
+    if err:
+        return err
     try:
         # Four contiguous bitmask bytes, one bit per lane, so a wider module
         # has the same four again in the next bank.
@@ -2446,6 +2504,9 @@ def api_loopback_set():
     if err:
         return err
     err = _require_paged('Loopback')
+    if err:
+        return err
+    err = _require_diagnostics('Loopback')
     if err:
         return err
     try:
@@ -2693,6 +2754,9 @@ def api_prbs_get():
     err = _require_paged('Pattern generation and checking')
     if err:
         return err
+    err = _require_diagnostics('Pattern generation and checking')
+    if err:
+        return err
     try:
         banks = (_state['lanes'] + 7) // 8
         # Table 8-138. The checker pair says whether the far end has locked
@@ -2836,6 +2900,9 @@ def api_prbs_set():
     err = _require_paged('Pattern generation and checking')
     if err:
         return err
+    err = _require_diagnostics('Pattern generation and checking')
+    if err:
+        return err
     try:
         body = request.get_json(silent=True) or {}
         bad = _reject_unknown(body, ('host_gen', 'media_gen', 'host_chk',
@@ -2975,6 +3042,9 @@ def api_module_snr():
     err = _require_paged('SNR reporting')
     if err:
         return err
+    err = _require_diagnostics('SNR reporting')
+    if err:
+        return err
     try:
         # 13h:130.5 and .4 (Table 8-113) advertise the two sides separately.
         # A module that supports neither still answers a read of the selector
@@ -3012,6 +3082,9 @@ def api_module_ber():
     if err:
         return err
     err = _require_paged('BER reporting')
+    if err:
+        return err
+    err = _require_diagnostics('BER reporting')
     if err:
         return err
     try:
@@ -3390,6 +3463,9 @@ def api_module_counters():
     if err:
         return err
     err = _require_paged('Acquisition counters')
+    if err:
+        return err
+    err = _require_diagnostics('Bit and error counters')
     if err:
         return err
     try:

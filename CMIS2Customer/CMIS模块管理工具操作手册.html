@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.80.0<br>
+      <b>版本</b>　2.81.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.80.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.80.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.81.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.81.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,18 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>换页之后读回来核对一下</h3>
+  <p>规范 8.2.15 写得很明确:<b>「当主机写入会让 PageMapping 寄存器指向一个不受支持的页地址时,模块会<u>清零 PageSelect 字节</u>……使得 PageMapping 最终选中 Page 00h」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>也就是说,<b>请求一个模块没有的页,任何一步都不会报错</b>:写入被接受,没有任何提示,而之后每一次读都落在 Page 00h——厂商标识信息——并被按调用方期待的格式解码。<b>一次不会失败的读取,不等于一次成功的读取。</b></span>
+  </div>
+  <p>规范把答案放在了寄存器里,所以现在<b>读回来核对</b>:每个页在一次连接中只核一次(模块插着不动时,它支持什么不会变;若每次换页都读回,会让每次面板刷新的总线流量翻倍)。页不对就<b>明确报错</b>,并写清模块回了什么。</p>
+  <h3>诊断页也要先看广告</h3>
+  <p>01h:142.5 <code>DiagnosticPagesSupported</code>(「支持 Banked Pages 13h-14h」)在连接时就解析了,<b>却从来没有人去问它</b>。本工具里其它每一个可选页都按各自的广告门控——0Ch、60h、61h、62h 各有一条,就写在同一个函数里相隔三行的地方——<b>唯独诊断这一族没有</b>。</p>
+  <p>于是在没有这两页的模块上,页选择被清零、Page 00h 一直映射着,厂商信息被解码成<b>环回能力、图案支持情况和误码计数</b>。现在环回、PRBS、SNR、BER、比特与错误计数这几个面板会在<b>触碰页之前</b>就明确拒绝,并点名 01h:142.5。</p>
+  <p class="note">为什么一直没被发现:内置的演示模块<b>全都实现了 13h/14h</b>,而那条「每个演示模块、每个端点,都不许读到不存在的页」的巡检,力度只能到夹具为止。</p>
 
   <h3>平坦内存模块:工具不再读一个它没有的页</h3>
   <p>规范:<b>「与分页内存模块不同,平坦内存模块不支持动态换页进入上层内存」</b>。而工具在连接时读取的<b>全部通告</b>——有哪些监控、多少条通道、各瞬态最长多久、标称波长是多少——<b>统统住在 Page 01h</b>。</p>
@@ -3624,7 +3636,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.80.0<br>
+    CMIS Module Manager 操作手册 v2.81.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
