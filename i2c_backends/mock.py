@@ -2099,6 +2099,22 @@ class MockBackend(I2CInterface):
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
                 self._prbs_enable_times[prbs_map[register]] = time.time()
+            # Table 8-131: "If the Per-lane ... Loopback Supported field=1,
+            # loopback control is per lane. Otherwise, if any loopback enable
+            # bit is set to 1, all ... lanes are in ... loopback." So a module
+            # without per-lane support does not hold the byte it was given -
+            # it engages every lane. Storing the byte verbatim let a host set
+            # one lane and read one lane back from a module that had just
+            # looped all eight.
+            data = bytearray(data)
+            caps13 = self._registers.get(0x13, {}).get(0x80, 0x7F)
+            for i, addr in enumerate(range(register, register + len(data))):
+                if addr not in (0xB4, 0xB5, 0xB6, 0xB7):
+                    continue
+                per_lane = caps13 & (0x20 if addr in (0xB4, 0xB5) else 0x10)
+                if not per_lane and data[i]:
+                    data[i] = 0xFF
+            data = bytes(data)
         elif self._current_page == 0x60:
             # 60h:192-193 are write-only bitmasks that zero the per-lane
             # acquisition counters on Page 61h. Storing the mask and leaving

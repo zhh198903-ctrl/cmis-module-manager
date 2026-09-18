@@ -2835,7 +2835,11 @@ class TestTheModuleSaysWhatDiagnosticsItHas(CMISTestCase):
         self.assertEqual(rv.status_code, 400)
         self.assertIn('13h:128', json.loads(rv.data)['message'])
 
-    def test_a_module_without_per_lane_loopback_takes_all_or_none(self):
+    def test_a_module_without_per_lane_loopback_moves_them_together(self):
+        """This used to assert a 400 for a partial mask, which was the tool
+        inventing a restriction: Table 8-131 says that on such a module "if
+        any loopback enable bit is set to 1, all ... lanes are in ...
+        loopback". Four of eight is a legal request whose effect is eight."""
         self._connect('mock_sr8')
         caps = self._loopback()['capabilities']
         self.assertFalse(caps['per_lane_host'],
@@ -2844,9 +2848,10 @@ class TestTheModuleSaysWhatDiagnosticsItHas(CMISTestCase):
             '/api/module/loopback',
             data=json.dumps({'host_side_input': 0x0F}),
             content_type='application/json')
-        self.assertEqual(rv.status_code, 400,
-                         'four of eight lanes were accepted by a module that '
-                         'moves them together')
+        self.assertEqual(rv.status_code, 200, rv.data)
+        self.assertEqual(self._loopback()['host_side_input'], 0xFF,
+                         'the module moves them together, so the register has '
+                         'to say so')
         self.assertOk(self.client.post(
             '/api/module/loopback',
             data=json.dumps({'host_side_input': 0xFF}),
@@ -18707,6 +18712,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-121',
         '8-126',
         '8-127',
+        '8-131',
         '8-134',
         '8-138',
         '8-139',
@@ -18970,6 +18976,179 @@ class TestTheApplyTriggersAreWrittenOnTheirOwn(CMISTestCase):
             content_type='application/json').data)
         self.assertEqual(r['status'], 'error')
         self.assertIn('one Apply trigger', r['message'])
+
+
+class TestLoopbackOnAModuleWithoutPerLaneControl(CMISTestCase):
+    """Table 8-131 says what such a module does, for each of the four
+    loopback enable bytes: "If the Per-lane ... Loopback Supported field=1,
+    loopback control is per lane. Otherwise, if any loopback enable bit is set
+    to 1, all ... lanes are in ... loopback."
+
+    So asking for one lane on a module without per-lane control is not an
+    error - the module loops all of them back. The tool refused it, inventing
+    a restriction the module does not have and leaving the operator unable to
+    ask for loopback at all until they worked out for themselves that only an
+    all-lanes mask would be taken.
+
+    The mask is widened to what the module will do rather than written through
+    as sent, because this register is read back into the same panel: a byte
+    reading 0x01 beside eight lanes in loopback would be the tool reporting
+    one lane looped when all eight are."""
+
+    ALL = 0xFF
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        return json.loads(self.client.post(
+            '/api/module/loopback', data=json.dumps(body),
+            content_type='application/json').data)
+
+    def _state(self):
+        return self.assertOk(self.client.get('/api/module/loopback'))['data']
+
+    def test_the_profile_this_rests_on_has_no_per_lane_control(self):
+        """If mock_sr8 ever advertised per-lane loopback the tests below would
+        be exercising the other branch and still passing."""
+        self._connect('mock_sr8')
+        caps = self._state()['capabilities']
+        self.assertFalse(caps['per_lane_media'])
+        self.assertFalse(caps['per_lane_host'])
+
+    def test_one_lane_is_accepted_not_refused(self):
+        self._connect('mock_sr8')
+        r = self._post({'media_side_output': 0x01})
+        self.assertEqual(r['status'], 'ok',
+                         'the specification defines this request; refusing it '
+                         'invents a restriction: %s' % r.get('message'))
+
+    def test_it_is_applied_to_every_lane_and_says_so(self):
+        self._connect('mock_sr8')
+        r = self._post({'media_side_output': 0x01})
+        self.assertEqual(self._state()['media_side_output'], self.ALL)
+        self.assertIn('every lane', r['data']['message'])
+        self.assertEqual(r['data']['widened_to_all_lanes'],
+                         ['media_side_output'])
+
+    def test_clearing_it_is_not_widened(self):
+        """Zero means no loopback, and widening that would turn an off switch
+        into an on one."""
+        self._connect('mock_sr8')
+        self._post({'media_side_output': 0x01})
+        r = self._post({'media_side_output': 0x00})
+        self.assertEqual(self._state()['media_side_output'], 0)
+        self.assertNotIn('widened_to_all_lanes', r['data'])
+
+    def test_an_all_lanes_request_is_not_reported_as_widened(self):
+        """It was already what the module will do, so saying it was changed
+        would be noise."""
+        self._connect('mock_sr8')
+        r = self._post({'media_side_output': self.ALL})
+        self.assertEqual(self._state()['media_side_output'], self.ALL)
+        self.assertNotIn('widened_to_all_lanes', r['data'])
+
+    def test_the_widened_mask_is_what_reaches_the_module(self):
+        """Asserting the read-back is not enough: the module widens the byte
+        too, so leaving the mask as sent would still read back as all lanes.
+        What the tool actually put on the wire has to be checked."""
+        import app as app_module
+        self._connect('mock_sr8')
+        backend = app_module._state['backend']
+        written = []
+        original = backend.write_bytes
+
+        def traced(addr, data):
+            if addr == 0xB4:
+                written.append(tuple(data))
+            return original(addr, data)
+
+        backend.write_bytes = traced
+        try:
+            self._post({'media_side_output': 0x01})
+        finally:
+            backend.write_bytes = original
+        self.assertTrue(written, 'the request wrote nothing to 13h:180')
+        self.assertEqual(
+            written[0][0], self.ALL,
+            'the tool sent 0x%02X for a module that engages every lane; the '
+            'register it reads back would then disagree with what it asked '
+            'for' % written[0][0])
+
+    def test_each_side_follows_its_own_advertisement(self):
+        """13h:128.5 is per-lane media and .4 per-lane host. A module with one
+        and not the other must widen only that side - and mock_sr8 has both
+        clear, so swapping the two bits is invisible on it."""
+        import app as app_module
+        self._connect('mock_sr8')
+        backend = app_module._state['backend']
+        # Per-lane host (0x10) only: media must widen, host must not.
+        caps = backend._registers[0x13][0x80]
+        backend._registers[0x13][0x80] = (caps & ~0x20) | 0x10
+        try:
+            app_module._state['caps'].pop('diag', None)
+            # One side at a time: this profile also forbids holding a host
+            # and a media loopback together (13h:128.6).
+            r = self._post({'media_side_output': 0x01})
+            self.assertEqual(r['status'], 'ok', r.get('message'))
+            self.assertEqual(r['data'].get('widened_to_all_lanes'),
+                             ['media_side_output'],
+                             'the side without per-lane control should widen')
+            self.assertEqual(self._state()['media_side_output'], self.ALL)
+            self._post({'media_side_output': 0x00})
+            r = self._post({'host_side_output': 0x01})
+            self.assertEqual(r['status'], 'ok', r.get('message'))
+            self.assertNotIn('widened_to_all_lanes', r['data'],
+                             'the side with per-lane control must be left as '
+                             'asked')
+            self.assertEqual(self._state()['host_side_output'], 0x01)
+        finally:
+            backend._registers[0x13][0x80] = caps
+
+    def test_a_per_lane_module_still_gets_the_lane_it_asked_for(self):
+        self._connect('mock_coherent')
+        self.assertTrue(self._state()['capabilities']['per_lane_media'])
+        r = self._post({'media_side_output': 0x01})
+        self.assertEqual(r['status'], 'ok')
+        self.assertEqual(self._state()['media_side_output'], 0x01)
+        self.assertNotIn('widened_to_all_lanes', r['data'])
+
+    def test_the_unsupported_direction_is_still_refused(self):
+        """Widening is for a module that has the loopback and controls it
+        whole; one that does not have it at all is a different answer."""
+        self._connect('mock_sr8')
+        caps = self._state()['capabilities']
+        for name in ('media_side_output', 'media_side_input',
+                     'host_side_output', 'host_side_input'):
+            if caps[name]:
+                continue
+            r = self._post({name: 0x01})
+            self.assertEqual(r['status'], 'error', name)
+            self.assertIn('does not support', r['message'])
+
+    def test_the_module_itself_engages_every_lane(self):
+        """The demo module models the clause, so the widening above is
+        visible rather than merely asserted: a raw write of one lane reads
+        back as all of them."""
+        self._connect('mock_sr8')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': '0x13', 'address': '0xB4',
+                             'data': '01'}),
+            content_type='application/json'))
+        self.assertEqual(self._state()['media_side_output'], self.ALL)
+
+    def test_a_per_lane_module_holds_the_byte_it_was_given(self):
+        self._connect('mock_coherent')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': '0x13', 'address': '0xB4',
+                             'data': '01'}),
+            content_type='application/json'))
+        self.assertEqual(self._state()['media_side_output'], 0x01)
 
 
 if __name__ == '__main__':

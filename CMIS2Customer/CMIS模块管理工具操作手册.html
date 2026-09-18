@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.75.5<br>
+      <b>版本</b>　2.76.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.75.5 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.75.5</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.76.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.76.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>没有逐通道环回的模块,勾一条不再被拒绝</h3>
+  <p>规范 Table 8-131 对四个环回使能字节都写了同一句话:<b>「若『支持逐通道环回』位为 1,环回按通道控制;<u>否则,只要有任何一个使能位置 1,该侧所有通道都进入环回</u>」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>也就是说,在不支持逐通道环回的模块上只勾一条通道<b>并不是错误</b>——模块会把该侧全部通道都环回。工具此前<b>直接拒绝</b>了这种请求,等于<b>凭空造了一条模块并没有的限制</b>,而且操作员在自己想明白「必须全选」之前根本没法用环回。</span>
+  </div>
+  <p>现在这种请求<b>照做</b>,并且<b>把掩码扩成全通道再下发</b>、在返回里说明「已应用到全部通道」。<b>为什么要扩而不是原样写</b>:这个寄存器会被读回到同一个面板——写 0x01 而模块实际环回了 8 条,面板就会显示「1 条在环回」,而真相是 8 条。<br>
+     清零不会被扩(那是关环回,扩了就变成开);支持逐通道的模块照旧按你勾的来;模块<b>压根没有</b>某个方向的环回时,仍然明确拒绝——那是另一个答案。</p>
 
   <h3>Page 62h 的阈值也是每条媒体侧通道一套</h3>
   <p>Table 8-192 对 <code>62h:128–191</code> 的描述就是<b>「每条媒体侧通道的告警和警告阈值」</b>。工具此前把这份列表<b>按主机侧通道数截断</b>,于是相干模块拿到 8 套阈值,其中 7 套属于它根本没有的媒体侧通道。</p>
@@ -3577,7 +3586,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.75.5<br>
+    CMIS Module Manager 操作手册 v2.76.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

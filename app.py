@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.75.5'
+__version__ = '2.76.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2358,19 +2358,35 @@ def api_loopback_set():
                                ('media_side_output', 'media_side_input',
                                 'host_side_output', 'host_side_input').index(name)),
                             400)
-        # A module without per-lane loopback engages all its lanes or none.
+        # Table 8-131 spells out what a module without per-lane loopback
+        # does: "If the Per-lane ... Loopback Supported field=1, loopback
+        # control is per lane. Otherwise, if any loopback enable bit is set to
+        # 1, all ... lanes are in ... loopback."
+        #
+        # So one lane requested on such a module is not an error - the module
+        # loops all of them back. Refusing it invented a restriction the
+        # module does not have, and left the operator unable to ask for
+        # loopback at all without first working out that only an all-lanes
+        # mask would be accepted.
+        #
+        # The mask is widened to what the module will actually do rather than
+        # written through as sent: the register is read back into this panel,
+        # and a byte reading 0x01 beside eight lanes in loopback would be the
+        # tool reporting one lane looped when all eight are.
         all_lanes = (1 << min(_state['lanes'], 8)) - 1
+        widened = []
         for side, names in (('media', ('media_side_output', 'media_side_input')),
                             ('host', ('host_side_output', 'host_side_input'))):
             if caps['per_lane_%s' % side]:
                 continue
             for name, masks in requested:
-                if name in names and any(masks) and any(
-                        m not in (0, all_lanes) for m in masks):
-                    return _err('This module has no per-lane %s side loopback '
-                                '(13h:128 bit %d is clear): it takes all lanes '
-                                'or none' % (side, 5 if side == 'media' else 4),
-                                400)
+                if name not in names or not any(masks):
+                    continue
+                for b, m in enumerate(masks):
+                    if m not in (0, all_lanes):
+                        masks[b] = all_lanes
+                        if name not in widened:
+                            widened.append(name)
         if not caps['simultaneous_host_and_media'] and \
                 any(any(m) for n, m in requested if n.startswith('media')) and \
                 any(any(m) for n, m in requested if n.startswith('host')):
@@ -2381,7 +2397,13 @@ def api_loopback_set():
             _set_page(0x13, b)
             _state['backend'].write_bytes(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
                                                        host_out[b], host_in[b]]))
-        return _ok({'message': 'Loopback configuration written'})
+        out = {'message': 'Loopback configuration written'}
+        if widened:
+            out['message'] = ('Loopback configuration written; %s applied to '
+                              'every lane' % ', '.join(
+                                  n.replace('_', ' ') for n in widened))
+            out['widened_to_all_lanes'] = widened
+        return _ok(out)
     except Exception as e:
         return _err(str(e), 500)
 
