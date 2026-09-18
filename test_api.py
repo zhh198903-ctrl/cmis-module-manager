@@ -18672,6 +18672,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-20': 'Media Type Encodings (Table Selection)',
         '8-21': 'Media Type Register (Lower Memory)',
         '8-22': 'Format of Application Descriptor Bytes 1-4 (Paged Memory Modules)',
+        '8-23': 'Format of Application Descriptor (Flat Memory Modules)',
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
@@ -19634,6 +19635,189 @@ class TestTheInterfaceIdThatPointsAtTheNad(CMISTestCase):
         a = c.parse_application_descriptors(desc, b'', 0x02)[0]
         self.assertIn('NAD', a['host_if_name'])
         self.assertIn('NAD', a['media_if_name'])
+
+
+class TestTheFourthDescriptorByteIsNotTheSameFieldOnBothModules(CMISTestCase):
+    """Table 8-22 (Paged Memory Modules) gives byte 3 of every Application
+    Descriptor to HostLaneAssignmentOptions, a bitmap of the host lanes an
+    Application may begin on. Table 8-23 (Flat Memory Modules) gives the same
+    byte to HostInterfaceGID, "the Group ID of the table in [5] defining the
+    HostInterfaceID".
+
+    The tool read it as a bitmap on both. On a flat module a GID of 1 then
+    says the Application may begin on host lane 1 and a GID of 2 says lane 2 -
+    plausible answers to a question the module was never asked, fed into the
+    panel and into the greedy packing that works out the module's advertised
+    capacity.
+
+    A flat module now gets no lane-assignment mask at all rather than a
+    fabricated one, and the byte is reported as what it is."""
+
+    DESC = bytes([0x1C, 0x1C, 0x44, 0x10]) + b'\xff' * 4
+
+    def _apps(self, flat):
+        import cmis_registers as c
+        return c.parse_application_descriptors(self.DESC, 0x02, b'', b'', flat)
+
+    def test_a_paged_module_is_unchanged(self):
+        a = self._apps(False)[0]
+        self.assertEqual(a['host_lane_assign_mask'], 0x10)
+        self.assertIsNone(a['host_interface_gid'])
+
+    def test_a_flat_module_has_no_lane_assignment(self):
+        """None rather than zero: zero is a bitmap that says "no lane", and
+        this module did not give a bitmap at all."""
+        a = self._apps(True)[0]
+        self.assertIsNone(a['host_lane_assign_mask'])
+
+    def test_a_flat_module_reports_the_gid(self):
+        a = self._apps(True)[0]
+        self.assertEqual(a['host_interface_gid'], 0x10)
+
+    def test_the_default_is_the_paged_reading(self):
+        """Every existing caller that does not say gets the format that the
+        overwhelming majority of modules use."""
+        import cmis_registers as c
+        a = c.parse_application_descriptors(self.DESC, 0x02)[0]
+        self.assertEqual(a['host_lane_assign_mask'], 0x10)
+
+    def test_a_gid_is_not_packed_as_a_starting_lane(self):
+        """_compute_module_capacity starts each Application at the lowest set
+        bit of the mask. With a GID of 10h that is lane 5, so two Applications
+        that overlap in reality would look disjoint and their widths would be
+        added together."""
+        import app as app_module
+        flat = self._apps(True)
+        self.assertEqual(app_module._compute_module_capacity(flat), (4, 4))
+
+    def test_the_capacity_sum_still_works_on_a_paged_module(self):
+        """The guard on the test above: if capacity had been broken rather
+        than made safe against None, both would report the same thing."""
+        import app as app_module
+        self.assertEqual(
+            app_module._compute_module_capacity(self._apps(False)), (4, 4))
+
+    def test_two_flat_applications_do_not_pack_as_disjoint(self):
+        """The failure this prevents, stated as arithmetic. Two 4-lane
+        Applications with GIDs 01h and 02h read as bitmaps start on lanes 1
+        and 2, overlap, and only the first counts - which is right by
+        accident. With GIDs 01h and 10h they read as lanes 1 and 5, look
+        disjoint, and the module is credited with eight host lanes it never
+        advertised."""
+        import cmis_registers as c
+        import app as app_module
+        desc = (bytes([0x1C, 0x1C, 0x44, 0x01])
+                + bytes([0x1C, 0x1C, 0x44, 0x10]) + b'\xff' * 4)
+        as_paged = c.parse_application_descriptors(desc, 0x02, b'', b'', False)
+        self.assertEqual(app_module._compute_module_capacity(as_paged), (8, 8),
+                         'the two GIDs really would have looked disjoint')
+        as_flat = c.parse_application_descriptors(desc, 0x02, b'', b'', True)
+        self.assertEqual(app_module._compute_module_capacity(as_flat), (4, 4))
+
+    def test_the_panel_draws_no_bitmap_it_was_not_given(self):
+        """The old cell called .toString(2) on the mask, which throws on null
+        and takes the whole Applications table down with it."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'async function loadApplications(')
+        self.assertLess(len(body), 6000, 'the slice ran past the function')
+        # Comments removed first. The comment above this cell explains the
+        # difference and names both the GID and Table 8-23, so asserting on
+        # the body as written passes with the cell itself emptied out.
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertNotIn('never asked', code, 'comments were not stripped')
+        self.assertIn('host_lane_assign_mask === null', code,
+                      'null has to be tested for before the bitmap is built')
+        self.assertIn('`GID ${gid', code,
+                      'the flat cell has to print the GID it is showing')
+        self.assertIn('(Table 8-23)', code,
+                      'the tooltip has to name the table that governs it')
+
+
+class TestAFlatMemoryModuleReadsItsOwnDescriptorFormat(CMISTestCase):
+    """The parser takes the flag; this is the wiring. Every path that reads
+    Application Descriptors has to pass it, and it has to come from the memory
+    model the module advertises rather than from a guess."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _say_flat(self):
+        import app as app_module
+        app_module._state['caps'].setdefault('config', {})['memory_model'] = 'Flat'
+
+    def test_the_register_bit_is_what_says_flat(self):
+        """00h:2.7, so the flag below is not reading something unrelated."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_config_capabilities(0x80)['memory_model'],
+                         'Flat')
+        self.assertEqual(c.parse_config_capabilities(0x00)['memory_model'],
+                         'Paged')
+
+    def test_the_flag_follows_the_advertised_memory_model(self):
+        import app as app_module
+        self._connect()
+        self.assertFalse(app_module._flat_memory())
+        self._say_flat()
+        self.assertTrue(app_module._flat_memory())
+
+    def test_a_paged_module_keeps_its_bitmap(self):
+        self._connect()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertTrue(apps)
+        self.assertIsNotNone(apps[0]['host_lane_assign_mask'])
+        self.assertIsNone(apps[0]['host_interface_gid'])
+
+    def test_a_flat_module_gets_the_gid_through_the_api(self):
+        self._connect()
+        self._say_flat()
+        apps = self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+        self.assertTrue(apps)
+        for a in apps:
+            self.assertIsNone(a['host_lane_assign_mask'], 'AppSel %d' % a['app_sel'])
+            self.assertIsNotNone(a['host_interface_gid'], 'AppSel %d' % a['app_sel'])
+
+    def test_the_advertised_capacity_changes_with_the_reading(self):
+        """mock_dr8 packs to the same total either way, which is why the
+        endpoint has to be checked on a module where it does not. mock_fr4x2
+        runs two 4-lane Applications: read as a bitmap the fourth byte makes
+        them disjoint and the module is credited with eight host lanes; on a
+        flat module there is no such advertisement and the honest answer is
+        four."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_fr4x2', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        paged = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual((paged['host_lanes'], paged['media_lanes']), (8, 8))
+        self._say_flat()
+        flat = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual(
+            (flat['host_lanes'], flat['media_lanes']), (4, 4),
+            'a GID read as a lane assignment credits the module with lanes '
+            'it never advertised')
+
+    def test_module_info_survives_a_flat_module(self):
+        """Lane assignment feeds the capacity sum, which feeds the Host Lanes
+        row. A mask that is not there must not raise."""
+        self._connect()
+        self._say_flat()
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertIn('host_lanes', d)
+
+    def test_the_data_path_panel_survives_it_too(self):
+        """The other two call sites read descriptors to work out how wide each
+        Data Path is."""
+        self._connect()
+        self._say_flat()
+        self.assertOk(self.client.get('/api/module/datapath'))
 
 
 if __name__ == '__main__':

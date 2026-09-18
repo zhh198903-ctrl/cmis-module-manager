@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.78.0'
+__version__ = '2.79.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -621,6 +621,13 @@ def _discover_capabilities() -> dict:
     return caps
 
 
+def _flat_memory() -> bool:
+    """00h:2.7. Read once on connect, because the fourth byte of every
+    Application Descriptor means a different thing on each kind of module."""
+    config = (_state.get('caps') or {}).get('config') or {}
+    return config.get('memory_model') == 'Flat'
+
+
 def _compute_module_capacity(apps: list) -> tuple:
     """Compute maximum concurrent host/media lanes across all Application Descriptors.
 
@@ -634,7 +641,10 @@ def _compute_module_capacity(apps: list) -> tuple:
 
     parsed = []
     for a in apps:
-        mask = a.get('host_lane_assign_mask', 0)
+        # None on a flat memory module, whose fourth descriptor byte is
+        # the HostInterfaceGID and says nothing about where an Application may
+        # start.
+        mask = a.get('host_lane_assign_mask') or 0
         if mask == 0:
             start = 0
         else:
@@ -830,7 +840,7 @@ def api_module_info():
         # so the module's global media type picks the table.
         apps = cmis.parse_application_descriptors(
             appdesc_raw, media_type_raw[0], _additional_app_descriptors(),
-            _media_lane_assignments())
+            _media_lane_assignments(), _flat_memory())
         host_lanes_app1 = apps[0]['host_lanes'] if apps else 0
         media_lanes_app1 = apps[0]['media_lanes'] if apps else 0
         host_total, media_total = _compute_module_capacity(apps)
@@ -1554,7 +1564,7 @@ def api_datapath_get():
         try:
             for a in cmis.parse_application_descriptors(
                     _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-                    _additional_app_descriptors()):
+                    _additional_app_descriptors(), b'', _flat_memory()):
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
             pass
@@ -1590,7 +1600,7 @@ def api_applications():
         media_type = _read_lower(0x55, 1)[0]
         apps = cmis.parse_application_descriptors(
             data, media_type, _additional_app_descriptors(),
-            _media_lane_assignments())
+            _media_lane_assignments(), _flat_memory())
         # 01h:175: a module with Normalized Application Descriptors keeps
         # the rest of its Applications on Page 1Ch, so this list is a prefix
         # rather than the set. Saying so beats showing fifteen of hundreds
@@ -1896,7 +1906,7 @@ def api_datapath_set():
         try:
             _apps = cmis.parse_application_descriptors(
                 _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-                _additional_app_descriptors())
+                _additional_app_descriptors(), b'', _flat_memory())
             for a in _apps:
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:

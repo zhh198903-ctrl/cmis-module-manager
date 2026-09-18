@@ -887,7 +887,8 @@ def cmis_revision_str(rev: int) -> str:
 
 def parse_application_descriptors(data: bytes, media_type: int = 0x02,
                                   extra: bytes = b'',
-                                  media_assign: bytes = b'') -> list:
+                                  media_assign: bytes = b'',
+                                  flat_memory: bool = False) -> list:
     """Parse Application Descriptors from lower memory bytes 86-117 and,
     where the module has them, the additional ones on Page 01h.
 
@@ -895,7 +896,24 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
       +0: HostInterfaceID (0xFF = unused/end)
       +1: MediaInterfaceID
       +2: bits[7:4]=HostLaneCount, bits[3:0]=MediaLaneCount
-      +3: HostLaneAssignmentOptions (bitmap)
+      +3: HostLaneAssignmentOptions (bitmap) - paged modules only
+
+    The fourth byte is where the two descriptor formats part company, and the
+    difference is not cosmetic. Table 8-22 (Paged Memory Modules) gives it to
+    HostLaneAssignmentOptions, a bitmap of the host lanes an Application may
+    begin on. Table 8-23 (Flat Memory Modules) gives the same byte to
+    HostInterfaceGID, "the Group ID of the table in [5] defining the
+    HostInterfaceID".
+
+    Read as a bitmap, a GID of 1 says the Application may begin on host lane
+    1, and a GID of 2 says lane 2 - plausible-looking answers to a question
+    the module was not asked. So the caller has to say which kind of module
+    this is, and a flat one gets no lane-assignment mask at all rather than a
+    fabricated one.
+
+    (The specification prints the GID row as bits 7-0 and then reserves bits
+    3-0 of the same byte, which cannot both be true. The whole byte is
+    reported rather than picking a shift the specification does not settle.)
 
     6.2.1.6 calls MediaLaneAssignmentOptions "the fifth byte" of the
     descriptor, and notes that its registers "are located on Memory Map Page
@@ -922,7 +940,12 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
         lane_count = data[off + 2]
         host_lanes, host_lanes_text = lane_count_field((lane_count >> 4) & 0x0F)
         media_lanes, media_lanes_text = lane_count_field(lane_count & 0x0F)
-        host_lane_assign = data[off + 3]
+        if flat_memory:
+            host_lane_assign = None
+            host_if_gid = data[off + 3]
+        else:
+            host_lane_assign = data[off + 3]
+            host_if_gid = None
         apps.append({
             'app_sel': i + 1,
             'host_if_id': host_if,
@@ -936,6 +959,7 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
             'media_lanes': media_lanes,
             'media_lanes_text': media_lanes_text,
             'host_lane_assign_mask': host_lane_assign,
+            'host_interface_gid': host_if_gid,
             # Not required of a flat-memory module, which has no Page 01h to
             # put it on, so its absence is a shape of module rather than a
             # read that failed.

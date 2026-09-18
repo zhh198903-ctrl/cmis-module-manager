@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.78.0<br>
+      <b>版本</b>　2.79.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.78.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.78.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.79.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.79.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>平坦内存模块:描述符第 4 字节不是通道分配位图</h3>
+  <p>Application Descriptor 的第 4 字节,<b>两种模块上是两个完全不同的字段</b>:<b>Table 8-22(分页内存模块)</b>把它给了 <code>HostLaneAssignmentOptions</code>——一张位图,说明这个 Application 可以从哪些主机侧通道开始;而 <b>Table 8-23(平坦内存模块)</b>把同一个字节给了 <code>HostInterfaceGID</code>,即定义 HostInterfaceID 的那张 SFF-8024 表的组号。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具此前<b>对两种模块都按位图读</b>。于是在平坦内存模块上,GID 为 1 就成了「可从主机通道 1 开始」,GID 为 2 就成了「通道 2」——<b>看起来很像样的答案,回答的却是模块根本没被问到的问题</b>,而且这个假位图还会进入计算模块通道容量的贪心装箱。实测影响:两个各 4 通道的 Application,GID 分别是 01h 和 10h 时,按位图读会被当成互不重叠,模块因此被记成 <b>8 条主机通道</b>——而它从未宣称过。</span>
+  </div>
+  <p>现在:平坦内存模块<b>根本没有通道分配掩码</b>(是「没有这个字段」,不是「掩码为 0」),该字节按本来面目显示为 <code>GID 0x__</code>,鼠标悬停会说明这是 Table 8-23 的 HostInterfaceGID、不是通道分配;分页模块一切照旧。容量计算也不再把它当成起始通道。</p>
+  <p class="note">规范在这一处自己有个小矛盾:GID 那一行写的是 bit 7-0,紧接着又把同一字节的 bit 3-0 标为保留。工具<b>原样显示整个字节</b>,不去替规范决定该怎么移位。</p>
 
   <h3>Application 的通道数栏:0 不是「0 条」</h3>
   <p>规范 Table 8-22 把 Application Descriptor 第 3 字节的两个半字节写得很清楚:<b>「0000b:通道数由接口 ID 决定</b>,或显式给出:0001b:1 条 …… 1000b:8 条。<b>1001b–1111b:保留</b>」。</p>
@@ -3605,7 +3614,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.78.0<br>
+    CMIS Module Manager 操作手册 v2.79.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

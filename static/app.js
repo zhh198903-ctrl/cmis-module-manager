@@ -2326,10 +2326,25 @@ async function loadApplications() {
   tbody.innerHTML = apps.map(a => {
     const hostHex = `0x${a.host_if_id.toString(16).toUpperCase().padStart(2,'0')}`;
     const mediaHex = `0x${a.media_if_id.toString(16).toUpperCase().padStart(2,'0')}`;
+    // Table 8-23 gives this byte to HostInterfaceGID on a flat memory
+    // module, so there is no bitmap to draw - and reading one out of a GID
+    // would answer a question the module was never asked.
+    const flat = a.host_lane_assign_mask === null
+              || a.host_lane_assign_mask === undefined;
     // Prefix the bitmap: a bare "00000001" reads as decimal one to anyone
     // scanning the table.
-    const assignBin = '0b' + a.host_lane_assign_mask.toString(2).padStart(8, '0');
-    const lanesTip = `Host Lane Assignment: ${assignBin} bin = `
+    const assignBin = flat ? ''
+      : '0b' + a.host_lane_assign_mask.toString(2).padStart(8, '0');
+    const gid = a.host_interface_gid;
+    const assignCell = flat
+      ? `GID ${gid === null || gid === undefined ? '?' : hex8(gid)}`
+      : assignBin;
+    const lanesTip = flat
+      ? `Flat memory module: this byte is the HostInterfaceGID (Table 8-23),\n`
+        + 'the Group ID of the SFF-8024 table that defines the Host Interface '
+        + 'ID.\nIt is not a host lane assignment; a paged module puts one here '
+        + '(Table 8-22).'
+      : `Host Lane Assignment: ${assignBin} bin = `
       + `${hex8(a.host_lane_assign_mask)} hex = ${a.host_lane_assign_mask} dec\n`
       + 'Bit n set = this Application may start on host lane n+1';
     return `<tr>
@@ -2338,7 +2353,7 @@ async function loadApplications() {
       <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec (SFF-8024)">${mediaHex}<br><small style="color:var(--text-muted)">${esc(a.media_if_name || '')}</small></td>
       <td title="Host lane count (Table 8-22)">${esc(laneCountText(a, 'host'))}</td>
       <td title="Media lane count (Table 8-22)">${esc(laneCountText(a, 'media'))}</td>
-      <td title="${esc(lanesTip)}"><code>${assignBin}</code></td>
+      <td title="${esc(lanesTip)}"><code>${esc(assignCell)}</code></td>
       ${mediaAssignCell(a)}
     </tr>`;
   }).join('');
