@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.79.0'
+__version__ = '2.80.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -175,6 +175,26 @@ def _require_connected():
     """Return error response if not connected, else None."""
     if not _state['connected'] or _state['backend'] is None:
         return _err("Not connected to any module", 503)
+    return None
+
+
+# Everything this tool shows beyond the vendor block lives on a page: the
+# monitors and Flags on 11h, the controls on 10h, tuning on 12h, diagnostics
+# on 13h and 14h. "Unlike a Paged Memory module, a Flat Memory module does not
+# support dynamic Paging into Upper Memory" - it has Lower Memory and Page
+# 00h, and a read of any other page is answered from Page 00h.
+#
+# So these panels were not reading a module that had nothing to say. They were
+# reading its vendor name and serial number and decoding them as lane states,
+# Flags and monitor values. A refusal that says why is the only honest answer.
+def _require_paged(what: str):
+    """Return an error response on a flat memory module, else None."""
+    if (_state.get('caps') or {}).get('flat_memory'):
+        return _err(
+            '%s lives on a page this module does not have: 00h:2.7 says flat '
+            'memory, and a flat memory module supports only Lower Memory and '
+            'Page 00h. Reading it would return Page 00h - the vendor block - '
+            'decoded as something else' % what, 409)
     return None
 
 
@@ -530,6 +550,36 @@ def _discover_capabilities() -> dict:
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
+        # First, and from Lower Memory, which every module has: whether this
+        # module has an Upper Memory to page into at all.
+        #
+        # "Unlike a Paged Memory module, a Flat Memory module does not support
+        # dynamic Paging into Upper Memory", and every advertisement below
+        # lives on Page 01h. A flat module answers a read of those addresses
+        # from Page 00h - vendor name, part number, serial number - so what
+        # came back was ASCII, decoded as capability bits and presented as
+        # this module's advertisements: which monitors it has, how many lanes,
+        # how long its transient states take, what wavelength it emits.
+        #
+        # None of it was true, and none of it looked wrong. The lane count in
+        # particular sizes every per-lane panel in the tool.
+        caps['config'] = cmis.parse_config_capabilities(
+            _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
+        caps['flat_memory'] = caps['config'].get('memory_model') == 'Flat'
+        if caps['flat_memory']:
+            # 8.2: a flat memory module is a static memory module, "supporting
+            # only constant read-only, i.e. immutable data". Tables 8-9 and
+            # 8-10 are titled "not for static memory modules", so the Flags
+            # and the module-level monitors are not absent-because-unreadable
+            # but absent because this kind of module does not have them. Said
+            # as an advertisement of nothing rather than left unknown, because
+            # unknown means "show everything" everywhere downstream.
+            caps['monitors'] = cmis.parse_supported_monitors(b'\x00\x00')
+            caps['flags_supported'] = cmis.parse_supported_flags(b'\x00\x00')
+            caps['page_checksums'] = _verify_page_checksums(caps)
+            caps['media_lane_unsupported_mask'] = _read_upper(
+                *cmis.REG_MEDIA_LANE_INFO)[0]
+            return caps
         # Before anything long is read: everything below asks for more than
         # eight bytes at a time, and whether that is allowed is this byte's
         # answer to give.
@@ -554,8 +604,6 @@ def _discover_capabilities() -> dict:
         caps['durations'] = cmis.parse_durations(
             dur[0], dur[1], _read_upper(*cmis.REG_DURATIONS_EXT))
         _state['bpc_sleep'] = caps['durations'].get('bpc_seconds') or 0.010
-        caps['config'] = cmis.parse_config_capabilities(
-            _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         b142 = _read_upper(*cmis.REG_BANKS_SUPPORTED)[0]
         ext = _read_upper(*cmis.REG_PAGES_EXT)
         caps.update(cmis.parse_supported_pages(b142, ext))
@@ -912,6 +960,9 @@ def api_module_status():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('The module state machine')
+    if err:
+        return err
     try:
         state_raw = _read_lower(0x03, 1)             # CORRECT: byte 3, bits[3:1]
         temp_raw  = _read_lower(0x0E, 2)
@@ -1022,6 +1073,9 @@ def api_module_ext54():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('The CMIS 5.4 extended status')
+    if err:
+        return err
     caps = _state.get('caps') or {}
     out = {'available': {}}
     try:
@@ -1094,6 +1148,9 @@ def api_reset_acq_counters():
     command sent to the wrong address clears counters nobody asked about.
     """
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Acquisition counter control')
     if err:
         return err
     caps = _state.get('caps') or {}
@@ -1174,6 +1231,9 @@ def api_media_lane_switching():
     anyway - after the host had already been told the write succeeded.
     """
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Media lane switching')
     if err:
         return err
     caps = _state.get('caps') or {}
@@ -1292,6 +1352,9 @@ def _dp_state_overruns(lanes) -> None:
 @app.route('/api/module/monitoring', methods=['GET'])
 def api_module_monitoring():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Lane monitoring')
     if err:
         return err
     try:
@@ -1427,6 +1490,9 @@ def api_module_monitoring():
 @app.route('/api/module/datapath', methods=['GET'])
 def api_datapath_get():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Data Path state')
     if err:
         return err
     try:
@@ -1617,6 +1683,9 @@ def api_module_control_get():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Lane controls')
+    if err:
+        return err
     try:
         ctrl_raw = _read_lower(0x1A, 1)
         # 'raw' backs the UI hover tooltips, which quote the byte a control maps to
@@ -1629,6 +1698,9 @@ def api_module_control_get():
 def api_module_control_set():
     """Write Module Control register (software reset / low power)."""
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Lane controls')
     if err:
         return err
     try:
@@ -1824,6 +1896,9 @@ def _lanes_needing_apply(old_sel: list, new_sel: list,
 @app.route('/api/module/datapath', methods=['POST'])
 def api_datapath_set():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Data Path control')
     if err:
         return err
     try:
@@ -2049,6 +2124,9 @@ def api_module_flags():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Flags')
+    if err:
+        return err
     try:
         # 11h:134-153 are contiguous lane flag bytes; one burst read beats 20
         # page-select + 5 ms settle cycles on real hardware. It starts one byte
@@ -2161,6 +2239,9 @@ def api_clear_flag_history():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Flags')
+    if err:
+        return err
     _state['flag_history'] = {}
     _state['flag_history_since'] = time.time()
     return _ok({'history_since': _state['flag_history_since']})
@@ -2169,6 +2250,9 @@ def api_clear_flag_history():
 @app.route('/api/module/thresholds', methods=['GET'])
 def api_module_thresholds():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Alarm and warning thresholds')
     if err:
         return err
     try:
@@ -2244,6 +2328,9 @@ def api_squelch_get():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Squelch controls')
+    if err:
+        return err
     try:
         # 131-132 contiguous, 138-139 contiguous; one byte covers eight lanes
         # so a wider module has the same registers again in the next bank.
@@ -2270,6 +2357,9 @@ def api_squelch_get():
 @app.route('/api/module/squelch', methods=['POST'])
 def api_squelch_set():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Squelch controls')
     if err:
         return err
     try:
@@ -2326,6 +2416,9 @@ def api_loopback_get():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Loopback')
+    if err:
+        return err
     try:
         # Four contiguous bitmask bytes, one bit per lane, so a wider module
         # has the same four again in the next bank.
@@ -2350,6 +2443,9 @@ def api_loopback_get():
 @app.route('/api/module/loopback', methods=['POST'])
 def api_loopback_set():
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Loopback')
     if err:
         return err
     try:
@@ -2594,6 +2690,9 @@ def api_prbs_get():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Pattern generation and checking')
+    if err:
+        return err
     try:
         banks = (_state['lanes'] + 7) // 8
         # Table 8-138. The checker pair says whether the far end has locked
@@ -2734,6 +2833,9 @@ def api_prbs_set():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('Pattern generation and checking')
+    if err:
+        return err
     try:
         body = request.get_json(silent=True) or {}
         bad = _reject_unknown(body, ('host_gen', 'media_gen', 'host_chk',
@@ -2870,6 +2972,9 @@ def api_module_snr():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('SNR reporting')
+    if err:
+        return err
     try:
         # 13h:130.5 and .4 (Table 8-113) advertise the two sides separately.
         # A module that supports neither still answers a read of the selector
@@ -2906,6 +3011,9 @@ def api_module_ber():
     err = _require_connected()
     if err:
         return err
+    err = _require_paged('BER reporting')
+    if err:
+        return err
     try:
         # 13h:130.0 advertises whether selector 01h means anything here.
         if not _diag_caps()['reporting']['bit_error_ratio']:
@@ -2932,6 +3040,9 @@ def api_module_ber():
 def api_laser_get():
     """Read laser tuning capabilities (Page 04h) and current state (Page 12h)."""
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Laser tuning')
     if err:
         return err
     try:
@@ -3089,6 +3200,9 @@ def api_laser_get():
 def api_laser_set():
     """Write laser tuning parameters to Page 12h."""
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Laser tuning')
     if err:
         return err
     try:
@@ -3273,6 +3387,9 @@ def api_laser_set():
 def api_module_counters():
     """Read error/bit counters using diagnostic selectors 0x02-0x05."""
     err = _require_connected()
+    if err:
+        return err
+    err = _require_paged('Acquisition counters')
     if err:
         return err
     try:

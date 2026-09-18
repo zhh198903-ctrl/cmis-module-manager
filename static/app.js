@@ -519,7 +519,10 @@ async function loadInfo() {
     ['Module Type',     d.module_type,                                                            'Lower', '0x00',        'SFF-8024 Identifier (Table 8-5)'],
     ['Module ID',       `0x${(d.module_id||0).toString(16).toUpperCase().padStart(2,'0')}`,      'Lower', '0x00',        'Identifier byte (raw hex)'],
     ['CMIS Revision',   d.cmis_revision,                                                          'Lower', '0x01',        'Upper nibble=major, lower=minor (0x53=5.3)'],
-    ['Memory Model',    d.memory_model,                                                           'Lower', '0x02[7]',     '0=Paged, 1=Flat'],
+    // A flat module has no Upper Memory to page into, so none of the Page
+    // 01h advertisements exist on it. Saying so here is the difference
+    // between a panel that looks half-read and one that is complete.
+    ['Memory Model',    memoryModelCell(d),                                                      'Lower', '0x02[7]',     '0=Paged, 1=Flat (no Page 01h/02h)'],
     ['Reconfiguration', reconfigSummary(d.config_capabilities),                                   'Lower', '0x02[6],[1:0]', 'SteppedConfigOnly and AutoCommissioning — which Apply triggers work'],
     ['MCI Max Speed',   (d.config_capabilities || {}).mci_max_speed_i2c
                           || `Reserved (${(d.config_capabilities || {}).mci_max_speed_code})`,    'Lower', '0x02[5:2]',   'MciMaxSpeed, read on the I2C scale'],
@@ -751,6 +754,13 @@ function laneCountPair(a) {
     return /^\d+$/.test(t) ? t + letter : letter + '=' + t;
   };
   return part('host', 'H') + '/' + part('media', 'M');
+}
+
+function memoryModelCell(d) {
+  if (d.memory_model !== 'Flat') return esc(String(d.memory_model || ''));
+  return esc('Flat') + ' <span class="reg-meta">no Page 01h/02h &mdash; '
+    + 'a static memory module has no advertisements, monitors or Flags'
+    + '</span>';
 }
 
 function mediaIfTechCell(d) {

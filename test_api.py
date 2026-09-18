@@ -123,6 +123,31 @@ def connect_mock(client):
 # Test helpers / fixture
 # ============================================================
 
+def paged_mock_backends(names=None):
+    """The mock profiles that have Upper Memory pages to read.
+
+    A flat memory module has Lower Memory and Page 00h and nothing else, so
+    every sweep that asserts something about Pages 10h-14h - monitors, Flags,
+    Data Path states, lane controls - is asserting a property of paged
+    modules. Including a flat one there does not find a bug; it asks the tool
+    to read a page the module does not have.
+
+    Derived from the profile rather than from a list of names, so a second
+    flat profile is left out without anybody remembering to.
+    """
+    import i2c_interface
+    import i2c_backends            # noqa: F401 - triggers registration
+    if names is None:
+        names = [n for n in i2c_interface._BACKENDS if n.startswith('mock')]
+    out = []
+    for n in names:
+        cls = i2c_interface._BACKENDS.get(n)
+        if getattr(cls, 'PROFILE', {}).get('flat_memory'):
+            continue
+        out.append(n)
+    return sorted(out)
+
+
 def js_function_body(js, header):
     """The body of a JS function, whichever line ending the file has.
 
@@ -3897,7 +3922,7 @@ class TestFlagsFollowTheReadings(CMISTestCase):
         sweep only compared against alarms, which is how that survived."""
         import i2c_interface
         import i2c_backends            # noqa: F401
-        for name in sorted(n for n in i2c_interface._BACKENDS if n.startswith('mock')):
+        for name in paged_mock_backends():
             self.assertOk(self.client.post(
                 '/api/connect',
                 data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
@@ -7974,7 +7999,7 @@ class TestAShippedProfileDemonstratesTheLaneEscape(CMISTestCase):
     def _shipped(self):
         import i2c_interface
         import i2c_backends            # noqa: F401 - triggers registration
-        return sorted(n for n in i2c_interface._BACKENDS if n.startswith('mock'))
+        return paged_mock_backends()
 
     def test_some_shipped_profile_uses_the_escape(self):
         using = []
@@ -8109,8 +8134,7 @@ class TestWhichDiagnosticsAModuleActuallyReports(CMISTestCase):
         modules means - and it is what they all used to give."""
         import i2c_interface
         import i2c_backends            # noqa: F401
-        for name in sorted(n for n in i2c_interface._BACKENDS
-                           if n.startswith('mock')):
+        for name in paged_mock_backends():
             self._connect(name)
             raw = app_module._read_upper(0x13, 0x82, 1)[0]
             self.assertNotEqual(raw, 0x00,
@@ -8247,8 +8271,7 @@ class TestBankBroadcastChangesWhatAWriteMeans(CMISTestCase):
         import i2c_interface
         import i2c_backends            # noqa: F401
         advertising = []
-        for name in sorted(n for n in i2c_interface._BACKENDS
-                           if n.startswith('mock')):
+        for name in paged_mock_backends():
             self._connect(name)
             caps = self.assertOk(
                 self.client.get('/api/module/capabilities'))['data']
@@ -8424,8 +8447,7 @@ class TestWhoChoosesTheSquelchMethod(CMISTestCase):
         import i2c_interface
         import i2c_backends            # noqa: F401
         codes = set()
-        for name in sorted(n for n in i2c_interface._BACKENDS
-                           if n.startswith('mock')):
+        for name in paged_mock_backends():
             self._connect(name)
             codes.add(self._method())
         self.assertIn(3, codes, 'no profile lets the host choose the method')
@@ -8859,7 +8881,8 @@ class TestWhyTheModuleRefusedTheConfiguration(CMISTestCase):
         module any host would ship against - and until the validation step
         existed, nothing here could tell."""
         names = self.assertOk(self.client.get('/api/backends'))['data']
-        mocks = [b['name'] for b in names if b['name'].startswith('mock')]
+        mocks = paged_mock_backends(
+            [b['name'] for b in names if b['name'].startswith('mock')])
         self.assertGreaterEqual(len(mocks), 7)
         for backend in mocks:
             with self.subTest(backend=backend):
@@ -9903,6 +9926,7 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
         names = [b['name'] for b in self.assertOk(
             self.client.get('/api/backends'))['data']
             if b['name'].startswith('mock')]
+        names = paged_mock_backends(names)
         for name in names:
             with self.subTest(backend=name):
                 self._connect(name)
@@ -15672,8 +15696,9 @@ class TestAMonitorTheModuleDoesNotHave(CMISTestCase):
         """One profile deliberately omits monitors; the rest must not have
         picked the behaviour up by accident."""
         import i2c_interface
-        for name in sorted(n for n in i2c_interface._BACKENDS
-                           if n.startswith('mock') and n != 'mock_fewmon'):
+        for name in paged_mock_backends():
+            if name == 'mock_fewmon':
+                continue
             self.client.post('/api/disconnect')
             self._connect(name)
             lane = self._monitoring()['lanes'][0]
@@ -16564,8 +16589,7 @@ class TestTheLaserPanelAsksWhetherThereIsALaser(CMISTestCase):
         profile that does not advertise it has to come back empty."""
         import i2c_interface
         import i2c_backends            # noqa: F401
-        for name in sorted(n for n in i2c_interface._BACKENDS
-                           if n.startswith('mock')):
+        for name in paged_mock_backends():
             self.client.post('/api/disconnect')
             self._connect(name)
             caps = self.assertOk(
@@ -18099,8 +18123,7 @@ class TestTheInterruptLineIsReportedAndModelled(CMISTestCase):
         """A line stuck asserted is as useless as one stuck clear."""
         import i2c_interface
         import i2c_backends            # noqa: F401
-        for backend in sorted(n for n in i2c_interface._BACKENDS
-                              if n.startswith('mock')):
+        for backend in paged_mock_backends():
             with self.subTest(backend=backend):
                 self._connect(backend)
                 self._settle()
@@ -18225,8 +18248,7 @@ class TestAMediaLaneTheModuleDoesNotHave(CMISTestCase):
         correct."""
         import i2c_interface
         import i2c_backends            # noqa: F401
-        for backend in sorted(n for n in i2c_interface._BACKENDS
-                              if n.startswith('mock')):
+        for backend in paged_mock_backends():
             with self.subTest(backend=backend):
                 self._connect(backend)
                 info = self._info()
@@ -19818,6 +19840,222 @@ class TestAFlatMemoryModuleReadsItsOwnDescriptorFormat(CMISTestCase):
         self._connect()
         self._say_flat()
         self.assertOk(self.client.get('/api/module/datapath'))
+
+
+class TestAFlatModuleHasNoPageToRead(CMISTestCase):
+    """"Unlike a Paged Memory module, a Flat Memory module does not support
+    dynamic Paging into Upper Memory."
+
+    Every advertisement the tool reads at connect - which monitors the module
+    has, how many lanes, how long its transient states take, what wavelength
+    it emits - lives on Page 01h. A flat module answers a read of those
+    addresses from Page 00h, which is vendor name, part number and serial
+    number. So what came back was ASCII, and it was decoded as capability bits
+    and presented as this module's advertisements.
+
+    Measured on the passive copper DAC profile, before this was fixed: a
+    nominal transmitter wavelength of 873.85 nm on a copper cable, an Rx
+    optical power monitor advertised on a copper cable, and a page-change hold
+    of 0.3 microseconds where the specification's default is 10 ms.
+
+    None of it looked wrong. The memory model is in Lower Memory, which every
+    module has, so it is read first now and Page 01h is not read at all when
+    the module says there is none."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _caps(self):
+        import app as app_module
+        return app_module._state['caps']
+
+    def test_the_profile_this_rests_on_is_really_flat(self):
+        """If the demo module ever advertised paged memory the tests below
+        would be exercising the other branch and still passing."""
+        self._connect('mock_flat_dac')
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual(d['memory_model'], 'Flat')
+        self.assertTrue(self._caps()['flat_memory'])
+
+    def test_its_upper_memory_answers_from_page_00h(self):
+        """The module behaviour the host has to cope with: selecting Page 01h
+        changes nothing, so 01h:159 reads back a character of the part
+        number. Without this the fix would be guarding against nothing."""
+        import app as app_module
+        self._connect('mock_flat_dac')
+        app_module._set_page(0x01)
+        from_01h = app_module._state['backend'].read_bytes(0x9F, 2)
+        app_module._invalidate_page()
+        app_module._set_page(0x00)
+        from_00h = app_module._state['backend'].read_bytes(0x9F, 2)
+        self.assertEqual(from_01h, from_00h)
+
+    def test_no_page_01h_advertisement_is_recorded(self):
+        """Absent, not zeroed: there is nothing to record, and a zero would be
+        a claim the module never made."""
+        self._connect('mock_flat_dac')
+        caps = self._caps()
+        for key in ('limits', 'wavelength', 'durations', 'si', 'controls',
+                    'rx_tx', 'aux', 'default_polarity', 'nad', 'features'):
+            self.assertNotIn(key, caps, key)
+
+    def test_no_wavelength_is_invented_for_a_copper_cable(self):
+        """The vivid one: 873.85 nm, decoded from the vendor part number."""
+        self._connect('mock_flat_dac')
+        self.assertIsNone((self._caps().get('wavelength') or {}).get('nominal_nm'))
+
+    def test_no_optical_power_monitor_is_advertised_on_copper(self):
+        """Tables 8-9 and 8-10 are titled "not for static memory modules", and
+        8.2 says a flat memory module is one. So this is not merely unread -
+        the module does not have it."""
+        self._connect('mock_flat_dac')
+        mons = self._caps()['monitors']
+        self.assertTrue(mons, 'an empty dict means "assume everything"')
+        for name in ('temperature', 'vcc', 'rx_optical_power',
+                     'tx_optical_power', 'tx_bias', 'aux1', 'aux2', 'aux3',
+                     'custom'):
+            self.assertFalse(mons[name], name)
+
+    def test_no_lane_flag_is_advertised_either(self):
+        self._connect('mock_flat_dac')
+        flags = self._caps()['flags_supported']
+        self.assertTrue(flags)
+        self.assertFalse(any(flags.values()), flags)
+
+    def test_the_page_change_hold_keeps_the_specified_default(self):
+        """10 ms, not the 0.3 microseconds the part number decoded to. A host
+        that stops waiting tBPC reads the page it had selected before."""
+        import app as app_module
+        self._connect('mock_flat_dac')
+        self.assertAlmostEqual(app_module._state['bpc_sleep'], 0.010)
+
+    def test_the_lane_count_falls_back_to_one_bank(self):
+        """01h:142 is where the bank count lives, so a flat module has none to
+        read and eight is what a single bank holds."""
+        self._connect('mock_flat_dac')
+        self.assertEqual(self._caps()['max_lanes'], 8)
+        self.assertEqual(app_module._state['lanes'], 8)
+
+    def test_page_00h_is_still_read(self):
+        """The guard on all of the above: skipping Page 01h must not skip the
+        page a flat module does have."""
+        self._connect('mock_flat_dac')
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual(d['media_type'], 'Passive Copper')
+        self.assertTrue(d['vendor_pn'].strip())
+        self.assertIn('media_lane_unsupported_mask', self._caps())
+
+    def test_the_panel_says_why_the_advertisements_are_missing(self):
+        """A panel with a dozen empty rows and no reason reads as a failed
+        read. The Memory Model row is where the reason belongs."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        body = js_function_body(js, 'function memoryModelCell(')
+        self.assertLess(len(body), 600, 'the slice ran past the function')
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn("d.memory_model !== 'Flat'", code,
+                      'a paged module must be left alone')
+        self.assertIn('no Page 01h', code)
+        self.assertIn('memoryModelCell(d)', js.split('function memoryModelCell(')[0],
+                      'the row has to call it')
+
+    def test_the_filter_actually_excludes_the_flat_profile(self):
+        """The nine sweeps rely on it. Counting call sites says they use it,
+        not that it does anything."""
+        every = paged_mock_backends(['mock_dr8', 'mock_flat_dac'])
+        self.assertIn('mock_dr8', every)
+        self.assertNotIn('mock_flat_dac', every)
+        self.assertNotIn('mock_flat_dac', paged_mock_backends())
+
+    def test_no_sweep_enumerates_backends_without_the_filter(self):
+        """Nine sweeps asserted a paged-module property over every registered
+        profile, and adding one flat module broke all nine at once. The filter
+        exists so the tenth is written with it; this is what notices when it
+        is not.
+
+        Counted rather than forbidden: two places legitimately want every
+        backend - the registry checks themselves."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'test_api.py'), encoding='utf-8') as f:
+            src = f.read()
+        raw_filters = len(re.findall(r"startswith\('mock'\)", src))
+        wrapped = len(re.findall(r'paged_mock_backends\(', src))
+        self.assertGreaterEqual(
+            wrapped, 9,
+            'the paged-only sweeps should be going through the filter')
+        self.assertLessEqual(
+            raw_filters, 8,
+            'a new sweep enumerates every backend directly; if it asserts '
+            'anything about Pages 10h-14h it has to use paged_mock_backends()')
+
+    def test_every_paged_panel_refuses_and_says_why(self):
+        """Not one panel: the same clause covers all of them. Each reads a
+        page a flat module does not have, so each would have been decoding the
+        vendor block."""
+        self._connect('mock_flat_dac')
+        for ep in ('/api/module/monitoring', '/api/module/datapath',
+                   '/api/module/flags', '/api/module/thresholds',
+                   '/api/module/control', '/api/module/squelch',
+                   '/api/module/loopback', '/api/module/prbs',
+                   '/api/module/snr', '/api/module/ber',
+                   '/api/module/laser', '/api/module/counters',
+                   '/api/module/status', '/api/module/ext54'):
+            r = self.client.get(ep)
+            self.assertEqual(r.status_code, 409, ep)
+            msg = json.loads(r.data)['message']
+            self.assertIn('flat memory', msg, ep)
+            self.assertIn('00h:2.7', msg,
+                          'the message has to say where that is written')
+
+    def test_the_page_00h_panels_still_answer(self):
+        """The guard on the refusals: a flat module still has Lower Memory and
+        Page 00h, and everything that lives there must keep working."""
+        self._connect('mock_flat_dac')
+        for ep in ('/api/module/info', '/api/module/applications',
+                   '/api/module/capabilities'):
+            self.assertEqual(self.client.get(ep).status_code, 200, ep)
+
+    def test_a_paged_module_is_refused_nothing(self):
+        self._connect('mock_dr8')
+        for ep in ('/api/module/monitoring', '/api/module/datapath',
+                   '/api/module/flags', '/api/module/prbs'):
+            self.assertEqual(self.client.get(ep).status_code, 200, ep)
+
+    def test_a_paged_module_still_reads_everything(self):
+        """The other half: this must not have turned the advertisements off
+        for the modules that do have them."""
+        self._connect('mock_dr8')
+        caps = self._caps()
+        self.assertFalse(caps['flat_memory'])
+        for key in ('limits', 'wavelength', 'durations', 'si', 'controls'):
+            self.assertIn(key, caps, key)
+        self.assertTrue(caps['monitors']['temperature'])
+
+    def test_the_memory_model_is_read_before_any_upper_page(self):
+        """The ordering is the fix. Reading it halfway down meant a dozen
+        Page 01h reads had already happened and been believed."""
+        import app as app_module
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            src = f.read()
+        # Whichever line ending the checkout has: a literal newline-def
+        # never occurs in a CRLF file, and slicing on it would take the
+        # rest of the file - which contains both names and passes either
+        # way.
+        body = src[src.index('def _discover_capabilities('):]
+        end = re.search(r'\r?\ndef ', body[1:])
+        self.assertIsNotNone(end, 'the function end was not found')
+        body = body[:end.start() + 1]
+        model_at = body.index('REG_MEMORY_MODEL')
+        first_upper = min(body.index('REG_MISC_FEATURES'),
+                          body.index('REG_MODULE_LIMITS'))
+        self.assertLess(model_at, first_upper,
+                        'the memory model has to be read before the first '
+                        'Page 01h read, not after it')
 
 
 if __name__ == '__main__':

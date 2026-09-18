@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.79.0<br>
+      <b>版本</b>　2.80.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -531,7 +531,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>10 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），以及一块只实现了部分监控项的模块，可用于不同场景演示与培训。</span>
+    <span>11 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），一块只实现了部分监控项的模块，以及一块<b>平坦内存的无源铜缆 DAC</b>（只有 Lower Memory 与 Page 00h，用来暴露「读一个模块没有的页」这类问题），可用于不同场景演示与培训。</span>
   </div>
 </div>
 
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.79.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.79.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.80.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.80.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1489,7 +1489,7 @@
     <span class="callout-icon">⚠</span>
     <span><b>点「进入低功耗」之后，面板以前显示的是<u>按下之前</u>那个状态。</b>
     模块在 <code>01h:167</code> 里<b>自己声明</b>了两个上电 / 下电过渡最长要多久，
-    本工具内置的 10 种演示模块，<b>全都声明「下电最长 1–5 秒」</b>。
+    本工具内置的分页演示模块，<b>全都声明「下电最长 1–5 秒」</b>。
     可工具写完控制字节只等了 <b>50 毫秒</b>，页面再过 <b>200 毫秒</b> 就去读状态——
     对任何真按自己声明的时间来走的模块，这时读回来的<b>还是按下之前的状态</b>，
     却被当作这次操作的结果显示出来。
@@ -1687,6 +1687,16 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>平坦内存模块:工具不再读一个它没有的页</h3>
+  <p>规范:<b>「与分页内存模块不同,平坦内存模块不支持动态换页进入上层内存」</b>。而工具在连接时读取的<b>全部通告</b>——有哪些监控、多少条通道、各瞬态最长多久、标称波长是多少——<b>统统住在 Page 01h</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>平坦模块对这些地址的读取<b>会从 Page 00h 作答</b>,而 Page 00h 那一段是<b>厂商名、料号、序列号</b>。于是读回来的是 ASCII,却被当成能力位解码,并作为「这个模块的通告」显示出来。在新增的无源铜缆 DAC 演示模块上实测,修复前:一根<b>铜缆</b>被解出 <b>873.85 nm 的标称发射波长</b>、被宣称<b>带 Rx 光功率监控</b>,换页保持时间被解成 <b>0.3 微秒</b>(规范默认 10 毫秒)。<b>没有一条是真的,也没有一条看起来不对。</b></span>
+  </div>
+  <p>内存模型本身在 <b>Lower Memory</b>(每个模块都有),所以现在<b>先读它</b>;模块说自己是平坦的,就<b>根本不去读 Page 01h</b>,那些通告<b>缺席</b>而不是被捏造。</p>
+  <p>再进一步:规范 8.2 说平坦内存模块就是<b>静态内存模块</b>(「只提供只读的、不可变的数据」),而 Table 8-9 与 Table 8-10 的标题写着<b>「not for static memory modules」</b>——也就是说模块级标志与监控值<b>本来就不存在于这类模块</b>。所以工具把它们记为「通告为无」,而不是「未知」:未知在下游一律等于「全都显示」。Memory Model 那一行现在会直接说明这一点,免得满屏空行看起来像读取失败。</p>
+  <p class="note">新增演示模块 <code>mock_flat_dac</code>(无源铜缆 DAC,平坦内存)。此前所有演示模块都是分页的,没有任何东西能暴露这个问题。</p>
 
   <h3>平坦内存模块:描述符第 4 字节不是通道分配位图</h3>
   <p>Application Descriptor 的第 4 字节,<b>两种模块上是两个完全不同的字段</b>:<b>Table 8-22(分页内存模块)</b>把它给了 <code>HostLaneAssignmentOptions</code>——一张位图,说明这个 Application 可以从哪些主机侧通道开始;而 <b>Table 8-23(平坦内存模块)</b>把同一个字节给了 <code>HostInterfaceGID</code>,即定义 HostInterfaceID 的那张 SFF-8024 表的组号。</p>
@@ -3434,7 +3444,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 10 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），以及 <code>mock_fewmon</code>（只实现部分监控项）。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 11 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），以及 <code>mock_fewmon</code>（只实现部分监控项）。</div>
   </div>
 
   <div class="faq-item">
@@ -3614,7 +3624,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.79.0<br>
+    CMIS Module Manager 操作手册 v2.80.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

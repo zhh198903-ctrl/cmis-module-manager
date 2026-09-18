@@ -456,6 +456,28 @@ _FEW_MONITORS = dict(
 # nothing exercised the escape - neither the mock branch that writes it nor
 # the host decode that reads it. Twenty-four lanes is the smallest count that
 # has no legacy spelling, which is exactly what the escape exists for.
+# "Unlike a Paged Memory module, a Flat Memory module does not support
+# dynamic Paging into Upper Memory", and every other profile here is paged.
+# Nothing exercised what a host sees when a page it asks for does not exist:
+# the module answers from Page 00h, so a read of 01h:159 comes back as a
+# character of the vendor part number, and a host that does not check the
+# memory model decodes ASCII as a capability advertisement.
+#
+# A passive copper cable assembly is the everyday form of this module, and the
+# specification recommends exactly this shape for one: "For passive copper
+# cables (MediaType= 03h) it is recommended to set all Application Descriptor
+# fields except the HostInterfaceID and the HostInterfaceGID field to zero."
+_FLAT_DAC = dict(
+    _DR8_800G,
+    display='Passive copper DAC, flat memory (no Page 01h)',
+    vendor_pn=b"DEMO-DAC-FLAT   ",
+    vendor_sn=b"DEMO000000012   ",
+    media_type=0x03,          # Passive and Linear Active Copper Cables
+    config_caps_02=0x80,      # bit 7: flat memory
+    flat_memory=True,
+)
+
+
 _XD24 = {
     'display':         '24 host lanes, three banks (CMIS 5.4 bank escape)',
     # This profile already exists to exercise a CMIS 5.4 escape past a legacy
@@ -673,6 +695,9 @@ class MockBackend(I2CInterface):
         # Nmax for a READ (section 5.2.2.1), from this profile's 01h:251.1-0.
         self._max_read = 128 if (
             (self.PROFILE.get('misc_features_251', 0xAA) & 0x03) == 2) else 8
+        # A flat memory module has no Upper Memory to page into, so the
+        # Page Select byte changes nothing about what a read returns.
+        self._flat_memory = bool(self.PROFILE.get('flat_memory'))
         self._current_page = 0x00
         self._current_bank = 0x00
         self._prev_selected = None
@@ -2651,6 +2676,12 @@ class MockBackend(I2CInterface):
             # honours tBPC from one that does not, so the one timing rule
             # this tool most needs to get right was the one nothing checked.
             page, bank = self._current_page, self._current_bank
+            if self._flat_memory:
+                # There is no Upper Memory to page into, so the Page Select
+                # byte changes nothing and every upper read comes back from
+                # Page 00h. A mock that honoured the selection anyway could
+                # not show a host what it gets wrong by not checking.
+                page, bank = 0x00, 0
             # perf_counter, not monotonic: on Windows before Python 3.13
             # time.monotonic() is GetTickCount64, which ticks every 15.6 ms.
             # Measuring a 10 ms hold with it reports zero elapsed about a
@@ -2782,6 +2813,11 @@ class MockCoherentZRBackend(MockBackend):
 @register_backend("mock_zr16")
 class MockZR16LaneBackend(MockBackend):
     PROFILE = _ZR_16LANE
+
+
+@register_backend("mock_flat_dac")
+class MockFlatDacBackend(MockBackend):
+    PROFILE = _FLAT_DAC
 
 
 @register_backend("mock_fewmon")
