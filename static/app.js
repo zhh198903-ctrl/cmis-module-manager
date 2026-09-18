@@ -3315,8 +3315,33 @@ function _renderMeasurementWindow(elId, data) {
   } else if (ctl.custom_gate) {
     parts.push('<b>Vendor-defined gate time</b> ' + reg('13h:177.3-1 = 111b'));
   } else {
+    // 13h:129.2 names the control it governs in so many words -
+    // "AutoRestartGating control (13h:177.4) not supported" - and the line
+    // read the control without it. A module that does not implement the bit
+    // was reported as restarting its gate automatically because the byte
+    // happened to have it set.
+    const restart = ctl.auto_restart_gating
+      ? (caps.auto_restart_gating === false
+          ? ', and the byte asks for automatic restart, which this module '
+            + 'does not implement ' + reg('13h:129.2')
+          : ', restarting automatically')
+      : '';
     parts.push(`<b>${ctl.gate_seconds} s gate</b> ` + reg('13h:177.3-1')
-      + (ctl.auto_restart_gating ? ', restarting automatically' : ''));
+      + restart);
+  }
+  // 13h:177.7 was read and dropped. It decides whether starting or stopping a
+  // measurement in one Bank does so in all of them, which is the difference
+  // between one result and thirty-two on a banked module - and Table 8-129
+  // makes it inert where the module has only the two global gating timers.
+  // Said only when the bit is set: the other way round is the default and
+  // stating it on every module would be noise.
+  if (ctl.start_stop_is_global) {
+    parts.push(caps.per_lane_gating_timers === false
+      ? 'the byte asks for start/stop across all Banks, which is ignored on '
+        + 'a module with only the two global gating timers '
+        + reg('13h:129.3 = 0')
+      : 'starting or stopping a measurement acts on <b>all Banks</b> '
+        + reg('13h:177.7'));
   }
   if (caps.periodic_updates === false) {
     parts.push('these values do not move while a measurement is running '

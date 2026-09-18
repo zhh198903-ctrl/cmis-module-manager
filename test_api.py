@@ -18779,6 +18779,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-123': 'Host Side Pattern Checker Controls (Page 13h)',
         '8-125': 'Media Side Pattern Checker Controls (Page 13h)',
         '8-127': 'Clocking and Measurement Controls (Page 13h)',
+        '8-129': 'PRBS Checker Behavior Single Gate Timer',
         '8-131': 'Loopback Controls (Page 13h)',
         '8-134': 'User Pattern (Page 13h)',
         '8-135': 'Page 14h Overview',
@@ -20423,6 +20424,118 @@ class TestAnEqualizationTargetTheModuleIgnores(CMISTestCase):
             self.client.get('/api/module/datapath'))['data']['signal_integrity']
         self.assertFalse(si['tx_adaptive_eq'][0])
         self.assertTrue(all(si['tx_adaptive_eq'][1:]))
+
+
+class TestTheMeasurementWindowAsksTheCapability(CMISTestCase):
+    """Two bits on 13h:177 were read without the byte that says whether they
+    mean anything.
+
+    13h:129.2 names the control it governs in so many words: "AutoRestartGating
+    control (13h:177.4) not supported". The measurement line read 177.4 and
+    reported "restarting automatically" for any module whose byte happened to
+    have it set, implemented or not.
+
+    13h:177.7 StartStopIsGlobal was parsed and dropped. It decides whether
+    starting or stopping a measurement in one Bank does so in all of them -
+    one result or thirty-two on a banked module - and Table 8-129 makes it
+    inert where the module has only the two global gating timers
+    ("Since 13h:129.3=0 the control 13h:177.7 is ignored")."""
+
+    def _body(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        return js_function_body(js, 'function _renderMeasurementWindow(')
+
+    def _code(self):
+        return re.sub('//[^' + chr(10) + ']*', '', self._body())
+
+    def test_the_api_sends_both_halves(self):
+        """The fix is only possible because the capability travels with the
+        control. If either stopped being sent the panel would fall back to
+        reporting the bit alone."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        m = self.assertOk(self.client.get('/api/module/ber'))['data']['measurement']
+        self.assertIn('auto_restart_gating', m['capabilities'])
+        self.assertIn('per_lane_gating_timers', m['capabilities'])
+        self.assertIn('auto_restart_gating', m['controls'])
+        self.assertIn('start_stop_is_global', m['controls'])
+
+    def test_auto_restart_is_reported_against_its_capability(self):
+        code = self._code()
+        self.assertIn('caps.auto_restart_gating === false', code,
+                      'the control has to be read against 13h:129.2')
+        self.assertIn('13h:129.2', code,
+                      'and the line has to name the bit it consulted')
+
+    def test_an_unsupported_auto_restart_is_not_silently_dropped(self):
+        """Saying nothing would be the other easy mistake: the byte does ask
+        for it, and a reader comparing the register against the panel needs to
+        see that the tool noticed."""
+        code = self._code()
+        self.assertIn('does not implement', code)
+
+    def test_a_supported_auto_restart_still_reads_plainly(self):
+        code = self._code()
+        self.assertIn("', restarting automatically'", code)
+
+    def test_the_global_start_stop_bit_is_reported_at_all(self):
+        """It was parsed and thrown away."""
+        code = self._code()
+        self.assertIn('ctl.start_stop_is_global', code)
+
+    def test_it_is_reported_as_inert_where_the_table_says_so(self):
+        code = self._code()
+        self.assertIn('caps.per_lane_gating_timers === false', code,
+                      'Table 8-129 conditions 177.7 on 129.3')
+        self.assertIn('13h:129.3 = 0', code,
+                      'the reader has to be able to check the condition')
+
+    def test_nothing_is_said_when_the_bit_is_clear(self):
+        """The default - a start/stop acting on the current Bank - is
+        unremarkable, and printing it on every module would bury the two
+        sentences that matter."""
+        code = self._code()
+        self.assertIn('if (ctl.start_stop_is_global) {', code)
+
+    def test_the_periodic_update_gate_is_untouched(self):
+        """It was already asking its capability, and is the precedent the two
+        above now follow."""
+        code = self._code()
+        self.assertIn('caps.periodic_updates === false', code)
+
+    def test_the_demo_module_supports_both(self):
+        """Which is why neither branch showed: there was no module on which
+        the capability was clear."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        caps = self.assertOk(
+            self.client.get('/api/module/ber'))['data']['measurement']['capabilities']
+        self.assertTrue(caps['auto_restart_gating'])
+        self.assertTrue(caps['per_lane_gating_timers'])
+
+    def test_the_capability_byte_decodes_the_way_the_table_says(self):
+        """13h:129: bit 2 AutoRestartGatingSupported, bit 3
+        PerLaneGatingTimersSupported. The panel's two conditions rest on
+        these, so a shift here would silence both."""
+        import cmis_registers as c
+        self.assertTrue(c.parse_diag_meas_caps(0x04)['auto_restart_gating'])
+        self.assertFalse(c.parse_diag_meas_caps(0x08)['auto_restart_gating'])
+        self.assertTrue(c.parse_diag_meas_caps(0x08)['per_lane_gating_timers'])
+        self.assertFalse(c.parse_diag_meas_caps(0x04)['per_lane_gating_timers'])
+
+    def test_the_control_byte_decodes_the_way_the_table_says(self):
+        """13h:177: bit 7 StartStopIsGlobal, bit 4 AutoRestartGating."""
+        import cmis_registers as c
+        self.assertTrue(c.parse_measurement_controls(0x80)['start_stop_is_global'])
+        self.assertFalse(c.parse_measurement_controls(0x10)['start_stop_is_global'])
+        self.assertTrue(c.parse_measurement_controls(0x10)['auto_restart_gating'])
+        self.assertFalse(c.parse_measurement_controls(0x80)['auto_restart_gating'])
 
 
 if __name__ == '__main__':

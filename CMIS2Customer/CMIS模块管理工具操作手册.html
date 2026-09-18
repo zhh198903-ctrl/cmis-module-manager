@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.82.0<br>
+      <b>版本</b>　2.83.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.82.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.82.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.83.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.83.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>测量窗口那一行,现在会先问模块支不支持</h3>
+  <p>BER 与误码计数面板下方的「Measurement window」一行,此前读了 13h:177 的两个位,却没读那个决定它们是否有意义的字节。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>13h:129.2</b> 的说明里直接点了名:「AutoRestartGating 控制(13h:177.4)<b>不支持</b>」。而这一行只看 177.4,于是<b>任何一块该位恰好置 1 的模块</b>都会被写成「gate 到期后自动重启」——不管它实现没实现。</span>
+  </div>
+  <p>现在:模块宣称支持时照旧写「restarting automatically」;宣称不支持而该位又置着时,明确写出「寄存器要求自动重启,但本模块未实现」并标注 13h:129.2 —— <b>不是默默不显示</b>,因为寄存器里确实写着,拿寄存器对照面板的人需要看到工具注意到了这件事。</p>
+  <p>另外,<b>13h:177.7(StartStopIsGlobal)</b>此前解析出来就丢掉了。它决定在一个 Bank 上启停测量是否等同于在所有 Bank 上启停——在多 Bank 模块上,这是「一个结果」和「三十二个结果」的区别。现在该位置 1 时会说明;而按 Table 8-129,模块只有两个全局 gate 定时器(13h:129.3 = 0)时这个位是被忽略的,那种情况下会直接说明它无效。该位为 0 是默认行为,不再赘述。</p>
 
   <h3>被模块忽略的均衡目标值,现在会标出来</h3>
   <p>规范 Table 6-5 按类型把 Tx 输入均衡的控制分成两组,并写明模块看哪一个:</p>
@@ -3651,7 +3660,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.82.0<br>
+    CMIS Module Manager 操作手册 v2.83.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
