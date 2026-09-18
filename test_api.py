@@ -18611,6 +18611,164 @@ class TestAReservedDataPathEncodingIsNamedAsOne(CMISTestCase):
             self.assertFalse(c.dp_monitors_assured(c.dp_state_name(n)))
 
 
+class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
+    """Table numbers drift between CMIS revisions, and a citation is only as
+    useful as it is correct: a wrong one sends the next reader - or the next
+    audit - to the wrong page, where they may change the code to match a table
+    that governs something else.
+
+    Two were found stale this way. "Table 8-91: ConfigStatus codes" named
+    Lane-Specific Masks on Page 10h; the codes are Table 8-101, which the very
+    next function cited correctly. "PRBS pattern IDs (Table 8-105)" named the
+    Active Control Set's provisioned Rx controls; the IDs are Table 8-115,
+    cited correctly further down the same file. An earlier round found
+    "Table 8-84" for the Data Path State encoding, which is Table 8-94.
+
+    Every number below was looked up in OIF-CMIS-05.4 and its title matched
+    against what the code says it is. This cannot check that a *new* citation
+    is right - nothing here can, without the specification, which is not
+    distributed with the source - but it does stop one being added without
+    somebody going to look."""
+
+    # Verified against OIF-CMIS-05.4 on 2026-09-18.
+    VERIFIED_CMIS = frozenset([
+    '8-4',
+    '8-5',
+    '8-6',
+    '8-7',
+    '8-9',
+    '8-10',
+    '8-11',
+    '8-12',
+    '8-15',
+    '8-18',
+    '8-20',
+    '8-21',
+    '8-26',
+    '8-36',
+    '8-40',
+    '8-43',
+    '8-44',
+    '8-45',
+    '8-46',
+    '8-47',
+    '8-48',
+    '8-49',
+    '8-50',
+    '8-51',
+    '8-52',
+    '8-53',
+    '8-54',
+    '8-56',
+    '8-57',
+    '8-58',
+    '8-59',
+    '8-60',
+    '8-61',
+    '8-62',
+    '8-64',
+    '8-66',
+    '8-67',
+    '8-69',
+    '8-70',
+    '8-71',
+    '8-77',
+    '8-78',
+    '8-82',
+    '8-83',
+    '8-84',
+    '8-92',
+    '8-93',
+    '8-94',
+    '8-95',
+    '8-96',
+    '8-99',
+    '8-101',
+    '8-104',
+    '8-105',
+    '8-106',
+    '8-107',
+    '8-108',
+    '8-109',
+    '8-111',
+    '8-112',
+    '8-113',
+    '8-114',
+    '8-115',
+    '8-116',
+    '8-117',
+    '8-118',
+    '8-126',
+    '8-127',
+    '8-134',
+    '8-138',
+    '8-188',
+    '8-189',
+    '8-191',
+    '8-192',
+    '8-193',
+    '8-196',
+    ])
+
+    # Cited as SFF-8024 in the source, and correctly so: connector type, fiber
+    # face type and heatsink type live in that document, not in CMIS.
+    VERIFIED_OTHER = frozenset(['4-3', '4-12', '4-13'])
+
+    SOURCES = ('cmis_registers.py', 'app.py', 'static/app.js')
+
+    def _cited(self):
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        found = {}
+        for name in self.SOURCES:
+            with open(os.path.join(here, *name.split('/')),
+                      encoding='utf-8') as f:
+                src = f.read()
+            for m in re.finditer(
+                    r'Tables?\s+(\d+-\d+)(?:\s+and\s+(\d+-\d+))?', src):
+                for num in (m.group(1), m.group(2)):
+                    if num:
+                        found.setdefault(num, set()).add(name)
+        return found
+
+    def test_the_scan_finds_the_citations(self):
+        """If this came back empty the check below would pass by looking at
+        nothing."""
+        self.assertGreater(len(self._cited()), 50)
+
+    def test_no_table_is_cited_without_having_been_looked_up(self):
+        cited = self._cited()
+        known = self.VERIFIED_CMIS | self.VERIFIED_OTHER
+        unknown = sorted(set(cited) - known,
+                         key=lambda n: tuple(int(x) for x in n.split('-')))
+        detail = ', '.join(
+            '{0} ({1})'.format(n, ', '.join(sorted(cited[n]))) for n in unknown)
+        self.assertEqual(
+            unknown, [],
+            'cited but not on the verified list: ' + detail + '. Look each up '
+            'in OIF-CMIS-05.4, check the title matches what the code says it '
+            'is, and add it here.')
+
+    def test_the_two_that_were_wrong_stay_fixed(self):
+        """Both had the right number in the same file for the same subject,
+        which is what made them easy to miss."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'cmis_registers.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        self.assertNotIn('Table 8-91: ConfigStatus', src)
+        self.assertIn('Table 8-101', src)
+        self.assertNotIn('(Table 8-105)', src)
+        self.assertIn('Table 8-115 Pattern IDs', src)
+
+    def test_the_list_is_not_padded(self):
+        """A verified entry nothing cites is a number somebody stopped using;
+        leaving it invites the list to drift into a junk drawer."""
+        cited = set(self._cited())
+        stale = sorted(self.VERIFIED_CMIS - cited)
+        self.assertEqual(stale, [], 'no longer cited: {0}'.format(stale))
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

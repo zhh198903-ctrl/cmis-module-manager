@@ -458,7 +458,8 @@ def dp_state_kind(name: str) -> str:
     return DP_STATE_KIND.get(name, 'unknown')
 
 
-# Table 8-91: ConfigStatus codes (4 bits per lane)
+# Table 8-101 (Configuration Command Execution and Result Status Codes),
+# 4 bits per lane. 8-91 is Lane-Specific Masks on Page 10h.
 CONFIG_STATUS_NAMES = {
     0x0: "ConfigUndefined",
     0x1: "ConfigSuccess",
@@ -563,7 +564,8 @@ MEDIA_TYPES = {
     0x05: "BASE-T",
 }
 
-# PRBS pattern IDs (Table 8-105)
+# PRBS pattern IDs (Table 8-115 Pattern IDs). 8-105 is the Active Control
+# Set's provisioned Rx controls.
 PRBS_PATTERN_NAMES = [
     'PRBS31Q', 'PRBS31', 'PRBS23Q', 'PRBS23', 'PRBS15Q', 'PRBS15',
     'PRBS13Q', 'PRBS13', 'PRBS9Q', 'PRBS9', 'PRBS7Q', 'PRBS7', 'SSPRQ',
