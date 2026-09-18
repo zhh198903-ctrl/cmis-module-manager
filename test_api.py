@@ -18797,6 +18797,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-135': 'Page 14h Overview',
         '8-138': 'Latched Diagnostics Flags (Page 14h)',
         '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
+        '8-141': 'Data Path Rx and Tx Latency, per lane (Page 15h)',
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-191': 'Acquisition Counters (Page 61h)',
@@ -20711,6 +20712,121 @@ class TestTheModuleStatesItsDataPathsAndTheToolWasGuessing(CMISTestCase):
                          'module')
         self.assertIn('11h:206-213 bit 0', code,
                       'and name the register it read')
+
+
+class TestTheSevenFieldsOfOneAdvertisementByte(CMISTestCase):
+    """01h:145 (Table 8-50) carries seven fields, every one RO and Required:
+
+      7    CoolingImplemented
+      6-5  TxInputClockingCapabilities
+      4    ePPSSupported
+      3    TimingPage15hSupported
+      2    Aux3MonObservable
+      1    Aux2MonObservable
+      0    Aux1MonObservable
+
+    The parser decoded four of them and the panel showed three. Nothing in
+    this byte is Reserved, and the byte is read at connect either way - so the
+    missing four were dropped at the parser rather than skipped to save a
+    transaction.
+
+    TxInputClockingCapabilities is the one with consequences: it says which Tx
+    input lanes must be frequency synchronous, in groups, which constrains how
+    a host may lay Data Paths out - and the Data Path panel is next door."""
+
+    def _caps(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def test_all_four_clocking_codes_are_named(self):
+        """00b to 11b, all defined by the table. An unnamed code would be the
+        one case a module actually uses."""
+        import cmis_registers as c
+        seen = {c.parse_aux_observables(code << 5)['tx_input_clocking']
+                for code in range(4)}
+        self.assertEqual(len(seen), 4, seen)
+
+    def test_the_clocking_codes_say_what_the_table_says(self):
+        import cmis_registers as c
+        self.assertIn('1-8', c.parse_aux_observables(0x00)['tx_input_clocking'])
+        self.assertIn('1-4', c.parse_aux_observables(0x20)['tx_input_clocking'])
+        self.assertIn('1-2', c.parse_aux_observables(0x40)['tx_input_clocking'])
+        self.assertIn('asynchronous',
+                      c.parse_aux_observables(0x60)['tx_input_clocking'])
+
+    def test_the_raw_code_travels_with_the_text(self):
+        """So a reader can check it against the register without parsing
+        English."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.parse_aux_observables(0x40)['tx_input_clocking_code'], 2)
+
+    def test_the_two_single_bits_are_read(self):
+        import cmis_registers as c
+        self.assertTrue(c.parse_aux_observables(0x10)['epps_supported'])
+        self.assertFalse(c.parse_aux_observables(0x08)['epps_supported'])
+        self.assertTrue(c.parse_aux_observables(0x08)['timing_page_15h'])
+        self.assertFalse(c.parse_aux_observables(0x10)['timing_page_15h'])
+
+    def test_the_fields_do_not_bleed_into_each_other(self):
+        """Seven fields in one byte. A shift here reads a clocking group out
+        of an Aux observable."""
+        import cmis_registers as c
+        d = c.parse_aux_observables(0xFF)
+        self.assertTrue(d['cooled_transmitter'])
+        self.assertEqual(d['tx_input_clocking_code'], 3)
+        self.assertTrue(d['epps_supported'])
+        self.assertTrue(d['timing_page_15h'])
+        self.assertEqual(d['aux1'], 'tec_current')
+        self.assertEqual(d['aux2'], 'tec_current')
+        self.assertEqual(d['aux3'], 'vcc2')
+
+    def test_the_aux_observables_still_decode_as_before(self):
+        """The part this parser was written for. Adding four fields must not
+        move the three that were already right."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_aux_observables(0x00)['aux1'], 'custom')
+        self.assertEqual(c.parse_aux_observables(0x00)['aux2'],
+                         'laser_temperature')
+        self.assertEqual(c.parse_aux_observables(0x00)['aux3'],
+                         'laser_temperature')
+
+    def test_the_api_carries_them(self):
+        aux = self._caps()['aux']
+        for key in ('tx_input_clocking', 'tx_input_clocking_code',
+                    'epps_supported', 'timing_page_15h',
+                    'cooled_transmitter'):
+            self.assertIn(key, aux, key)
+
+    def test_the_panel_shows_all_four(self):
+        """Parsed and not displayed is where cooled_transmitter already was:
+        decoded since the beginning and on no panel."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        for key in ('c.aux.tx_input_clocking', 'c.aux.cooled_transmitter',
+                    'c.aux.epps_supported', 'c.aux.timing_page_15h'):
+            self.assertIn(key, js, key)
+
+    def test_the_rows_name_the_bits_they_came_from(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        for addr in ("'0x91[6:5]'", "'0x91[7]'", "'0x91[4]'", "'0x91[3]'"):
+            self.assertIn(addr, js, addr)
+
+    def test_the_page_15h_row_does_not_promise_what_the_tool_lacks(self):
+        """The bit advertises a page this tool does not read. Showing it as
+        plain 'Supported' would send the operator looking for a panel that is
+        not there."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('this tool does not read Page 15h', js)
 
 
 if __name__ == '__main__':

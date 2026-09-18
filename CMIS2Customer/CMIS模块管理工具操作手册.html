@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.84.0<br>
+      <b>版本</b>　2.85.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.84.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.84.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.85.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.85.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,22 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>一个必备字节里的七个字段,面板此前只显示三个</h3>
+  <p>01h:145(Table 8-50)一共有七个字段,<b>每一个都是 RO / 必备</b>,没有一位是保留位:</p>
+  <table>
+    <tr><th>位</th><th>字段</th><th>此前</th></tr>
+    <tr><td>7</td><td>CoolingImplemented</td><td>解析了,但没有任何面板显示</td></tr>
+    <tr><td>6-5</td><td>TxInputClockingCapabilities</td><td>未解析</td></tr>
+    <tr><td>4</td><td>ePPSSupported</td><td>未解析</td></tr>
+    <tr><td>3</td><td>TimingPage15hSupported</td><td>未解析</td></tr>
+    <tr><td>2-0</td><td>Aux3 / Aux2 / Aux1 观测对象</td><td>已显示</td></tr>
+  </table>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
+  </div>
+  <p>现在模块能力面板新增四行,并各自标注来源位。<b>Page 15h 那一行如实写明</b>:该位是模块宣称支持,而<b>本工具并不读 Page 15h</b>——写成单纯的「支持」会让人去找一个并不存在的面板。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -3675,7 +3691,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.84.0<br>
+    CMIS Module Manager 操作手册 v2.85.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

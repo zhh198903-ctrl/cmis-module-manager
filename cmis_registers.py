@@ -1310,15 +1310,42 @@ def parse_rx_tx_characteristics(byte_val: int) -> dict:
     }
 
 
-def parse_aux_observables(byte_val: int) -> dict:
-    """01h:145 (Table 8-50): what each Aux monitor actually measures.
+# 01h:145.6-5, all four codes defined and all RO/Required. The grouping
+# "applies to each group of 8 lanes (each Bank)" on a wider module.
+TX_INPUT_CLOCKING = {
+    0: 'lanes 1-8 synchronous',
+    1: 'lanes 1-4 and 5-8 synchronous',
+    2: 'lanes 1-2, 3-4, 5-6, 7-8 synchronous',
+    3: 'lanes may be asynchronous',
+}
 
-    The value registers are plain S16. Without this advertisement the number
-    has no unit and no meaning - Aux2 is degrees Celsius or a percentage of
-    the maximum TEC current depending on one bit.
+
+def parse_aux_observables(byte_val: int) -> dict:
+    """01h:145 (Table 8-50), RO and Required: seven fields, not three.
+
+    What each Aux monitor measures is the part this was written for - the
+    value registers are plain S16, and without the advertisement the number
+    has no unit: Aux2 is degrees Celsius or a percentage of the maximum TEC
+    current depending on one bit.
+
+    The rest of the byte was being dropped, and none of it is Reserved:
+
+      7    CoolingImplemented          parsed, and then never shown
+      6-5  TxInputClockingCapabilities which Tx input lanes must be frequency
+                                       synchronous, in groups - a constraint
+                                       on how a host may lay Data Paths out
+      4    ePPSSupported               the Enhanced Pulse Per Second signal
+      3    TimingPage15hSupported      whether Page 15h exists at all
+
+    The byte is already read at connect, so none of this costs a transaction.
     """
+    clocking = (byte_val >> 5) & 0x03
     return {
         'cooled_transmitter': bool(byte_val & 0x80),
+        'tx_input_clocking_code': clocking,
+        'tx_input_clocking': TX_INPUT_CLOCKING[clocking],
+        'epps_supported': bool(byte_val & 0x10),
+        'timing_page_15h': bool(byte_val & 0x08),
         'aux1': 'tec_current'       if byte_val & 0x01 else 'custom',
         'aux2': 'tec_current'       if byte_val & 0x02 else 'laser_temperature',
         'aux3': 'vcc2'              if byte_val & 0x04 else 'laser_temperature',

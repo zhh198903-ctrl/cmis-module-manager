@@ -586,6 +586,31 @@ async function loadInfo() {
            + 'several, and Table 8-46 does not uniquely define what the '
            + 'field means then'
          : '')]] : []),
+    // 01h:145 carries seven RO/Required fields and this panel showed the
+    // three Aux observables. The byte is read at connect either way, so
+    // none of these cost a transaction - they were dropped at the parser.
+    // The clocking one is a constraint on how a host may lay Data Paths
+    // out, which is the panel next door.
+    ...(c.aux ? [
+      ['Tx Input Clocking', esc(c.aux.tx_input_clocking || '-'),
+       '01h', '0x91[6:5]',
+       'TxInputClockingCapabilities (Table 8-50) - which Tx input lanes '
+       + 'must be frequency synchronous. On a module with more than eight '
+       + 'lanes the grouping applies within each Bank.'],
+      ['Transmitter', c.aux.cooled_transmitter ? 'Cooled' : 'Uncooled',
+       '01h', '0x91[7]', 'CoolingImplemented (Table 8-50)'],
+      ['ePPS', c.aux.epps_supported ? 'Supported' : 'Not supported',
+       '01h', '0x91[4]',
+       'ePPSSupported (Table 8-50) - Enhanced Pulse Per Second timing '
+       + 'signal'],
+      ['Timing (Page 15h)',
+       c.aux.timing_page_15h
+         ? 'Advertised - this tool does not read Page 15h'
+         : 'Not supported',
+       '01h', '0x91[3]',
+       'TimingPage15hSupported (Table 8-50) - Data Path latency per lane '
+       + 'lives on Page 15h (Table 8-141)'],
+    ] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],
