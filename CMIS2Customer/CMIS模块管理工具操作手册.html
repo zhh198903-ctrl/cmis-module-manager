@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.81.0<br>
+      <b>版本</b>　2.82.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.81.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.81.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.82.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.82.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,21 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>被模块忽略的均衡目标值,现在会标出来</h3>
+  <p>规范 Table 6-5 按类型把 Tx 输入均衡的控制分成两组,并写明模块看哪一个:</p>
+  <table>
+    <tr><th>类型</th><th>控制</th><th>AdaptiveInputEqEnableTx</th></tr>
+    <tr><td>自适应</td><td>AdaptiveInputEqFreezeTx / StoreTx / RecallTx</td><td><b>1</b></td></tr>
+    <tr><td>非自适应</td><td>HostControlledInputEqTargetTx</td><td><b>0</b></td></tr>
+  </table>
+  <p>6.2.5.1 又对本面板显示的那个字段重申了一遍:<b>「若该通道的 AdaptiveInputEqEnableTx 置位,HostControlledInputEqTargetTx 会被模块忽略」</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>信号完整性表此前只按 01h:161 的广告门控这两列,<b>再没有别的判断</b>。于是在跑自适应均衡的通道上,那个目标值被当成一项设置显示出来——<b>一个模块根本不看的数字,挨着五个它确实会看的数字</b>。而内置演示模块<b>每条通道都跑自适应</b>,也就是说开箱即见的那一列全都是这种情况。</span>
+  </div>
+  <p>现在这种格子会<b>置灰并标注「ignored」</b>,悬停说明原因与出处。<b>按通道判断</b>,不是按模块——使能位是每通道一位,模块可以一部分通道跑自适应、另一部分由主机控制。</p>
+  <p class="note"><b>不是拒绝写入。</b>主机完全可以在同一次 Apply 里既清掉自适应位、又下发目标值,那时这个目标值正是模块要用的。面板只说明它在哪些通道上生效,不替主机做决定。</p>
 
   <h3>换页之后读回来核对一下</h3>
   <p>规范 8.2.15 写得很明确:<b>「当主机写入会让 PageMapping 寄存器指向一个不受支持的页地址时,模块会<u>清零 PageSelect 字节</u>……使得 PageMapping 最终选中 Page 00h」</b>。</p>
@@ -3636,7 +3651,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.81.0<br>
+    CMIS Module Manager 操作手册 v2.82.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

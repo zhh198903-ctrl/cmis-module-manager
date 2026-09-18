@@ -1990,6 +1990,20 @@ function renderSignalIntegrity(d) {
     if (key === 'rx_eq_post_cursor') return adv.rx_output_eq_post_cursor_max;
     return undefined;
   };
+  // Table 6-5 splits the Tx input equalization controls by type and says
+  // which one the module reads: HostControlledInputEqTargetTx is
+  // non-adaptive and "is ignored by the module if AdaptiveInputEqEnableTx<i>
+  // is set for that lane". The advertisement was the only gate here, so on a
+  // lane running adaptive equalization the target was printed as a setting -
+  // a number the module never looks at, beside five that it does.
+  //
+  // Per lane, not per module: the enable is one bit per lane, and a module
+  // may run adaptive on some lanes and host-controlled on others.
+  const ignoredOnLane = (key, i) => {
+    if (key !== 'tx_input_eq_target') return false;
+    const adaptive = si['tx_adaptive_eq'];
+    return Array.isArray(adaptive) && adaptive[i] === true;
+  };
   const cell = (key, v) => {
     if (typeof v === 'boolean') {
       return v ? '<span class="flag-ok">On</span>'
@@ -2027,10 +2041,20 @@ function renderSignalIntegrity(d) {
       + 'settings from the Application it is running.')}">in force ${esc(text)}</div>`;
   };
   const lanes = (si[cols[0][0]] || []).length;
+  const ignoredTip = esc('Ignored on this lane: Tx Adaptive EQ is on, and '
+    + 'Table 6-5 makes HostControlledInputEqTargetTx the non-adaptive '
+    + 'control - "it is ignored by the module if AdaptiveInputEqEnableTx is '
+    + 'set for that lane". Clear Tx Adaptive EQ for this lane to make it '
+    + 'take effect.');
   body.innerHTML = Array.from({length: lanes}, (_, i) =>
-    `<tr><td>${i + 1}</td>` + cols.map(([key]) =>
-      `<td>${cell(key, si[key][i])}${inForce(key, i, si[key][i])}</td>`).join('')
-    + '</tr>').join('');
+    `<tr><td>${i + 1}</td>` + cols.map(([key]) => {
+      if (ignoredOnLane(key, i)) {
+        return `<td class="control-unavailable" title="${ignoredTip}">`
+          + `${cell(key, si[key][i])}`
+          + '<div class="appsel-pending">ignored</div></td>';
+      }
+      return `<td>${cell(key, si[key][i])}${inForce(key, i, si[key][i])}</td>`;
+    }).join('') + '</tr>').join('');
 
   if (note) {
     // Only pre-cursor advertised means the post-cursor bytes hold the

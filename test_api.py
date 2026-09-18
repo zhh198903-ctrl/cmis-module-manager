@@ -18700,6 +18700,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     VERIFIED_CMIS = {
         '6-3': 'Configuration Commands (Intervention-Free Reconfiguration Procedures Supported)',
         '6-4': 'Configuration Commands (Intervention-Free Reconfigurations Not Supported)',
+        '6-5': 'Tx Input Eq control relationship to AdaptiveInputEqEnableTx',
         '8-4': 'Lower Memory Overview',
         '8-5': 'Management Characteristics (Lower Memory)',
         '8-6': 'Global Status Information (Lower Memory)',
@@ -20317,6 +20318,111 @@ class TestTheDiagnosticPagesAreAdvertisedToo(CMISTestCase):
                     'page_61h_supported', 'page_62h_supported',
                     'diagnostic_pages_supported'):
             self.assertIn(key, src, key)
+
+
+class TestAnEqualizationTargetTheModuleIgnores(CMISTestCase):
+    """Table 6-5 splits the Tx input equalization controls by type and says
+    which one the module reads:
+
+        Adaptive      AdaptiveInputEqFreezeTx / StoreTx / RecallTx   Enable = 1
+        Non-Adaptive  HostControlledInputEqTargetTx                  Enable = 0
+
+    and 6.2.5.1 states it again for the field this panel shows:
+    "HostControlledInputEqTargetTx<i> ... is ignored by the module if
+    AdaptiveInputEqEnableTx<i> is set for that lane."
+
+    The signal integrity table gated both columns on the advertisement in
+    01h:161 and on nothing else, so on a lane running adaptive equalization
+    the target was printed as a setting - a number the module never looks at,
+    beside five that it does. Every demo module runs adaptive on every lane,
+    which is what the column looked like out of the box.
+
+    Per lane, because the enable is one bit per lane and a module may run
+    adaptive on some and host-controlled on others.
+
+    Not a refusal: a host may stage a target in the same Apply that clears the
+    adaptive bit, and then the target is exactly what the module will use. The
+    panel says which lanes it applies to; it does not decide for the host."""
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _body(self):
+        return js_function_body(self._js(), 'function renderSignalIntegrity(')
+
+    def test_the_two_columns_are_both_there_to_begin_with(self):
+        """If either row were dropped the check below would pass by having
+        nothing to mark."""
+        js = self._js()
+        self.assertIn("'tx_adaptive_eq'", js)
+        self.assertIn("'tx_input_eq_target'", js)
+
+    def test_the_rule_is_applied_to_the_target_only(self):
+        """The other direction - the adaptive controls being ignored when the
+        enable is clear - is not shown here, because this panel does not offer
+        Freeze, Store or Recall."""
+        body = self._body()
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn("key !== 'tx_input_eq_target'", code,
+                      'the rule has to name the field it governs')
+        self.assertNotIn('never asked', code, 'comments were not stripped')
+
+    def test_it_reads_the_lane_and_not_the_module(self):
+        """A module may run adaptive on some lanes and not others, so the
+        marking has to index the array."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        self.assertIn('adaptive[i] === true', code,
+                      'the enable is one bit per lane')
+
+    def test_the_cell_is_marked_and_says_why(self):
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        self.assertIn('control-unavailable', code,
+                      'an ignored value has to look different from a live one')
+        # The exact markup, not the word: 'ignored' also occurs in the helper
+        # name and in the tooltip, so a cell with the label deleted still has
+        # it three times over.
+        self.assertIn('>ignored</div>', code,
+                      'the cell has to carry the label, not just the style')
+        # Comment-stripped: the comment above this code names the table too.
+        self.assertIn('Table 6-5', code,
+                      'the tooltip has to name the table that governs it')
+
+    def test_the_other_columns_are_untouched(self):
+        """Only this one field is governed by the adaptive bit. Marking the Rx
+        cursors or the amplitude would be inventing a rule."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        self.assertNotIn("key !== 'rx_eq_pre_cursor'", code)
+        self.assertNotIn("key !== 'rx_output_amplitude'", code)
+
+    def test_the_demo_module_really_is_adaptive_on_every_lane(self):
+        """What the column looked like out of the box, and the reason this
+        went unseen: there was no lane on which the target was live."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        si = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['signal_integrity']
+        self.assertTrue(all(si['tx_adaptive_eq']), si['tx_adaptive_eq'])
+        self.assertEqual(len(si['tx_input_eq_target']),
+                         len(si['tx_adaptive_eq']),
+                         'the two arrays have to line up lane for lane')
+
+    def test_a_lane_with_adaptive_cleared_has_a_live_target(self):
+        """The other branch, so the marking is not simply always on. 10h:153
+        is AdaptiveInputEqEnableTx, one bit per lane."""
+        import app as app_module
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        poke(0x10, 0x99, 0xFE)          # lane 1 non-adaptive, 2-8 adaptive
+        si = self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['signal_integrity']
+        self.assertFalse(si['tx_adaptive_eq'][0])
+        self.assertTrue(all(si['tx_adaptive_eq'][1:]))
 
 
 if __name__ == '__main__':
