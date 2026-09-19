@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.88.0<br>
+      <b>版本</b>　2.89.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.88.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.88.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.89.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.89.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,20 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Rx LOS 是对着哪个量报的</h3>
+  <p>规范 Table 8-50 的 01h:151 里有两个相邻的位:</p>
+  <table>
+    <tr><th>位</th><th>字段</th><th>含义</th></tr>
+    <tr><td>.4</td><td>RxPowerMeasurementType</td><td>0=OMA,1=平均功率</td></tr>
+    <tr><td>.3</td><td>RxLOSType</td><td>0=Rx LOS 对 OMA 响应,1=对 Pav 响应</td></tr>
+  </table>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>Rx 功率那一列从一开始就在表头标明自己报的是哪个量,并提示「OMA 与平均功率不可互换」;而<b>对同样这两个量之一触发的 LOS 标志,却什么也不说</b>——151.3 解析出来就被丢掉了。「<b>LOS 报了,可功率看着正常</b>」正是这一位能回答的问题,而且规范自己注明 LOS 的类型取决于所支持的接口标准,<b>未必与功率列报的是同一个量</b>。</span>
+  </div>
+  <p>现在 Rx LOS 表头会像功率列一样标出基准(· OMA / · Pav),悬停给出出处。</p>
+  <p class="note">01h:151 一共七个字段,此前只有两个到达界面。其余的已补进模块能力面板:光电探测器类型、Rx 输出均衡保持的是哪个幅度、以及两个「快速模式」时序位(模块多快报出 Rx LOS、多快响应 Tx 关断)——这两个尤其不是标签,而是决定读者该对模块有什么预期。</p>
 
   <h3>固件版本:有两个取值不是版本号</h3>
   <p>规范 8.2.9 规定了固件主/次版本号的编码,其中两种组合<b>不是版本号</b>:</p>
@@ -3726,7 +3740,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.88.0<br>
+    CMIS Module Manager 操作手册 v2.89.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

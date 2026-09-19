@@ -21189,6 +21189,122 @@ class TestTwoFirmwareRevisionsThatAreNotRevisions(CMISTestCase):
                          'the hardware revision is still a pair of numbers')
 
 
+class TestWhatRxLOSRespondsTo(CMISTestCase):
+    """Table 8-50, byte 01h:151, two adjacent bits:
+
+        .4 RxPowerMeasurementType  0b OMA, 1b average power
+        .3 RxLOSType               0b Rx LOS responds to OMA, 1b to Pav
+
+    The Rx power column has carried its answer since the reading was first put
+    on screen - the heading says which quantity it shows, with a tooltip that
+    OMA and average power are not interchangeable. The flag that fires on one
+    of the same two quantities said nothing, and 151.3 was parsed and dropped.
+
+    "Rx LOS is raised but the power reading looks fine" is exactly the question
+    this answers, and the specification's own note says the LOS type depends on
+    the interface standards supported - so it need not be the quantity the
+    power column reports.
+
+    Of the seven fields in that byte, two reached the interface. The rest are
+    on the capabilities panel now: the byte is read at connect either way, and
+    the two timing bits change what a reader should expect of the module
+    rather than merely labelling it."""
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_two_bits_decode_to_the_two_quantities(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_rx_tx_characteristics(0x00)['rx_los_type'],
+                         'OMA')
+        self.assertEqual(c.parse_rx_tx_characteristics(0x08)['rx_los_type'],
+                         'Pav')
+
+    def test_the_los_bit_is_not_the_power_bit(self):
+        """They are adjacent, and a module may well answer differently to
+        each. Reading one for the other would put a confident wrong label on
+        the flag."""
+        import cmis_registers as c
+        d = c.parse_rx_tx_characteristics(0x10)      # power average, LOS OMA
+        self.assertEqual(d['rx_power_type'], 'Average power')
+        self.assertEqual(d['rx_los_type'], 'OMA')
+        d = c.parse_rx_tx_characteristics(0x08)      # power OMA, LOS Pav
+        self.assertEqual(d['rx_power_type'], 'OMA')
+        self.assertEqual(d['rx_los_type'], 'Pav')
+
+    def test_the_api_carries_it(self):
+        self.assertIn('rx_los_type', self._caps()['rx_tx'])
+
+    def test_the_flag_column_states_it(self):
+        js = self._js()
+        self.assertIn("getElementById('th-rx-los-type')", js,
+                      'the Rx LOS heading needs somewhere to say it')
+        # The assignment, not the name: t.rx_los_type also appears in
+        # the tooltip below, so the bare name passes with the visible
+        # text emptied out.
+        self.assertIn('losHead.textContent = t.rx_los_type', js)
+        # Comment-stripped: the comment above this code names the bit too, so
+        # asserting on the file as written passes with the tooltip gutted.
+        code = re.sub('//[^' + chr(10) + ']*', '', js)
+        self.assertIn('01h:151.3', code, 'and name the bit it read')
+
+    def test_the_heading_element_exists_in_the_page(self):
+        """The script fills an element the template has to provide, or the
+        heading silently stays empty."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="th-rx-los-type"', html)
+
+    def test_the_power_heading_is_untouched(self):
+        """The precedent this follows. If it had been rewritten instead of
+        copied, the two would drift."""
+        js = self._js()
+        self.assertIn("getElementById('th-rx-power-type')", js)
+        self.assertIn('01h:151.4', js)
+
+    def test_the_rest_of_the_byte_reaches_the_capabilities_panel(self):
+        js = self._js()
+        for key in ('c.rx_tx.detector_type', 'c.rx_tx.rx_output_eq_name',
+                    'c.rx_tx.rx_los_is_fast', 'c.rx_tx.tx_disable_is_fast'):
+            self.assertIn(key, js, key)
+
+    def test_those_rows_name_their_bits(self):
+        js = self._js()
+        for addr in ("'0x97[7]'", "'0x97[6:5]'", "'0x97[2]'", "'0x97[1]'"):
+            self.assertIn(addr, js, addr)
+
+    def test_the_timing_rows_say_which_mode(self):
+        """"Fast mode" and "Regular" are the specification's own words, and
+        the difference is how quickly the module reacts - not a label.
+
+        Both rows, counted: there are two timing bits, and asserting the
+        wording exists anywhere passes with one of them reworded."""
+        js = self._js()
+        self.assertEqual(js.count("'Fast mode' : 'Regular'"), 2,
+                         'both timing rows have to say which mode it is')
+
+    def test_the_seven_fields_are_all_decoded(self):
+        """The parser had them all along; this is the half that was missing."""
+        import cmis_registers as c
+        d = c.parse_rx_tx_characteristics(0xFF)
+        for key in ('detector_type', 'rx_output_eq_name', 'rx_power_type',
+                    'rx_los_type', 'rx_los_is_fast', 'tx_disable_is_fast',
+                    'tx_disable_module_wide'):
+            self.assertIn(key, d, key)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

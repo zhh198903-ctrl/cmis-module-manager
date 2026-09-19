@@ -623,6 +623,28 @@ async function loadInfo() {
        + 'module. Cleared on a module with detachable media. Beyond eight '
        + 'lanes the topology repeats in each group of eight.'],
     ] : []),
+    // 01h:151 has seven fields; two reached the interface. The byte is read
+    // at connect either way, and the two timing bits in particular change
+    // what a reader should expect from the module rather than merely
+    // labelling it.
+    ...(c.rx_tx ? [
+      ['Optical Detector', esc(c.rx_tx.detector_type || '-'),
+       '01h', '0x97[7]', 'OpticalDetectorType (Table 8-50)'],
+      ['Rx Output EQ Type', esc(c.rx_tx.rx_output_eq_name || '-'),
+       '01h', '0x97[6:5]',
+       'RxOutputEqType (Table 8-50) - which amplitude the Rx output '
+       + 'equalizer holds constant'],
+      ['Rx LOS Timing',
+       c.rx_tx.rx_los_is_fast ? 'Fast mode' : 'Regular',
+       '01h', '0x97[2]',
+       'RxLOSIsFast (Table 8-50) - whether the module raises Rx LOS within '
+       + 'the form factor\u2019s fast mode timing limits or the regular ones'],
+      ['Tx Disable Timing',
+       c.rx_tx.tx_disable_is_fast ? 'Fast mode' : 'Regular',
+       '01h', '0x97[1]',
+       'TxDisableIsFast (Table 8-50) - how quickly the module responds to Tx '
+       + 'Output Disable'],
+    ] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],
@@ -1579,6 +1601,23 @@ async function _loadMonitoringOnce() {
     rxHead.title = t.rx_power_type
       ? 'RxPowerMeasurementType (01h:151.4): the module reports '
         + t.rx_power_type + '. OMA and average power are not interchangeable.'
+      : '';
+  }
+
+  // 01h:151.3 is the bit beside it and says what Rx LOS responds to - OMA
+  // or average power. The power column has said which quantity it shows since
+  // the reading was first put on screen; the flag that fires on a different
+  // one of the two said nothing, and "LOS raised but the power looks fine" is
+  // exactly the question this answers.
+  const losHead = document.getElementById('th-rx-los-type');
+  if (losHead) {
+    const t = (AppState.caps && AppState.caps.rx_tx) || {};
+    losHead.textContent = t.rx_los_type ? ' \u00b7 ' + t.rx_los_type : '';
+    losHead.title = t.rx_los_type
+      ? 'RxLOSType (01h:151.3): this module raises Rx LOS on '
+        + t.rx_los_type + '. The specification notes that the LOS type '
+        + 'depends on the interface standards supported, and it need not be '
+        + 'the quantity the Rx power column reports.'
       : '';
   }
 
