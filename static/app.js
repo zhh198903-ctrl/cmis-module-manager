@@ -639,6 +639,13 @@ async function loadInfo() {
       ['Rx CDR', cdrCell(c.si, 'rx'),
        '01h', '0xA2[1:0]',
        'RxCDRSupported and RxCDRBypassControlSupported (Table 8-54).'],
+      ['CDR Bypass Saves', cdrPowerCell(c.cdr_power),
+       '01h', '0x98',
+       'CDRPowerSavedPerLane (Table 8-50) - "minimum power consumption '
+       + 'saved per CDR per lane when placed in CDR bypass", in multiples '
+       + 'of 0.01 W. Minimum, so the module is promising at least this '
+       + 'much. The total is this figure across every lane and every side '
+       + 'the module will let the host bypass.'],
       ['Tx Input EQ Freeze', c.si.tx_input_eq_freeze ? 'Supported' : 'Not supported',
        '01h', '0xA1[4]', 'TxInputEqFreezeSupported (Table 8-54)'],
       ['Tx Input EQ Recall', recallBuffersText(c.si.tx_input_eq_recall_buffers),
@@ -1021,6 +1028,25 @@ const PAGE_GROUP_BITS = [
    + 'a write takes at most 8 bytes and the module rejects register '
    + 'access until it has completed internally.', 'Page03hSupported'],
 ];
+
+
+// 01h:152. The per-lane figure on its own is not what a power budget is
+// decided on, so the total across every bypassable CDR is shown beside it -
+// and labelled as what it is, an all-bypassed figure rather than a reading.
+function cdrPowerCell(p) {
+  if (!p) return '-';
+  if (!p.stated) {
+    return 'Not stated <span class="reg-meta">the module reports 0, and a '
+      + 'real saving rounds up to at least 0.01 W</span>';
+  }
+  const per = p.per_cdr_w.toFixed(2) + ' W '
+    + '<span class="reg-meta">per CDR, per lane</span>';
+  if (!p.all_bypassed_w) return per;
+  return per + ' <span class="reg-meta">\u00b7</span> <b>'
+    + p.all_bypassed_w.toFixed(2) + ' W</b> <span class="reg-meta">with all '
+    + p.lanes + ' lanes bypassed on '
+    + (p.sides === 2 ? 'both sides' : 'the one bypassable side') + '</span>';
+}
 
 
 function cdbBusyCell(cdb) {

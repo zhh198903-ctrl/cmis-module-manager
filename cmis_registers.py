@@ -161,6 +161,9 @@ REG_TX_OUTPUT_DIS    = (0x10, 0x82, 1)   # 130  OutputDisableTx
 REG_SUPPORTED_CONTROLS = (0x01, 0x9B, 2)  # 155-156
 REG_AUX_OBSERVABLE     = (0x01, 0x91, 1)  # 145 (Table 8-50)
 REG_RX_TX_CHARACTER    = (0x01, 0x97, 1)  # 151 (Table 8-50)
+# 152 (Table 8-50), the one byte of the Module Characteristics block
+# 145-154 that was never read.
+REG_CDR_POWER_SAVED    = (0x01, 0x98, 1)  # 152 CDRPowerSavedPerLane
 REG_SI_MAXIMA          = (0x01, 0x99, 2)  # 153-154 (Table 8-50 continuation)
 REG_SI_CONTROLS_ADV    = (0x01, 0xA1, 2)  # 161-162 (Table 8-54)
 
@@ -1330,6 +1333,42 @@ def parse_si_controls_adv(data: bytes) -> dict:
         # while its Tx twin at 161.0 was. The asymmetry mattered: see
         # cdr_host_controllable.
         'rx_cdr':                  bool(b162 & 0x01),
+    }
+
+
+def parse_cdr_power_saved(byte_152: int, lanes: int, tx: bool,
+                          rx: bool) -> dict:
+    """01h:152 (Table 8-50), what bypassing a CDR actually buys.
+
+    "U8 Minimum power consumption saved per CDR per lane when placed in CDR
+    bypass, in multiples of 0.01 W rounded up to the next whole multiple of
+    0.01 W."
+
+    It is the number behind the decision the CDR columns present. Minimum, so
+    the module is promising at least this much, and per CDR per lane, so a
+    module with both CDRs bypassable on eight lanes is offering sixteen times
+    it.
+
+    Zero is not a saving of nothing. Unlike its neighbours at 148-150, this
+    row does not define zero as "not specified" - but a real saving rounds
+    *up* to the next whole 0.01 W, so it can never round to zero. A module
+    reporting zero has declined to state a figure rather than measured one.
+    Reasoned from this field's own rounding rule, not carried over from the
+    rows above it.
+    """
+    sides = (1 if tx else 0) + (1 if rx else 0)
+    return {
+        'raw': byte_152,
+        'stated': byte_152 > 0,
+        'per_cdr_w': byte_152 / 100.0 if byte_152 else None,
+        'sides': sides,
+        'lanes': lanes,
+        # What the module would save with every bypassable CDR bypassed. The
+        # per-lane figure alone is not the number a power budget is decided
+        # on, and multiplying it is arithmetic over two things the panel
+        # already knows.
+        'all_bypassed_w': (byte_152 / 100.0 * lanes * sides
+                           if byte_152 and sides else None),
     }
 
 

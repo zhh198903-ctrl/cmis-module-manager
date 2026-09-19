@@ -23274,6 +23274,189 @@ class TestWhichStateMachinesTheModuleRuns(CMISTestCase):
         self.assertIn('0x38', body)
 
 
+class TestWhatBypassingACDRIsWorth(CMISTestCase):
+    """01h:152 CDRPowerSavedPerLane (Table 8-50), the one byte of the Module
+    Characteristics block 145-154 that was never read.
+
+    "U8 Minimum power consumption saved per CDR per lane when placed in CDR
+    bypass, in multiples of 0.01 W rounded up to the next whole multiple of
+    0.01 W."
+
+    The previous release gave the panel a Tx CDR column and fixed the Rx one's
+    gate - the ability to see and set CDR bypass. This is the number behind
+    that decision, and it was sitting one byte away from three fields the tool
+    already read out of the same table.
+
+    Zero is the interesting part, and it is the opposite of the neighbouring
+    rows. 148-150 each say "or zero for 'not specified'"; this row says no
+    such thing - so importing their rule would be the mistake this audit made
+    once already. But a real saving rounds *up* to the next whole 0.01 W and
+    therefore can never round to zero, so a module reporting zero has
+    declined to state a figure. Reasoned from this field's own rounding rule.
+
+    Found by asking which bytes of Page 01h the tool never reads. The rest of
+    the answer was Reserved (170, 253-254), Custom (191-222), the page
+    checksum, and a block read the detector could not see - which is the
+    sweep working, not failing."""
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _cell(self):
+        js = self._js()
+        i = js.index('function cdrPowerCell')
+        return re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function cdbBusyCell')])
+
+    # ---- the decode -------------------------------------------------------
+
+    def test_the_unit_is_a_hundredth_of_a_watt(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_cdr_power_saved(1, 8, True, True)['per_cdr_w'],
+                         0.01)
+        self.assertEqual(c.parse_cdr_power_saved(15, 8, True, True)['per_cdr_w'],
+                         0.15)
+        self.assertEqual(c.parse_cdr_power_saved(255, 8, True, True)['per_cdr_w'],
+                         2.55)
+
+    def test_zero_is_not_a_saving_of_nothing(self):
+        """A real saving rounds up to at least 0.01 W, so zero cannot be a
+        measurement."""
+        import cmis_registers as c
+        d = c.parse_cdr_power_saved(0, 8, True, True)
+        self.assertFalse(d['stated'])
+        self.assertIsNone(d['per_cdr_w'])
+        self.assertIsNone(d['all_bypassed_w'])
+
+    def test_one_is_stated_and_zero_is_not(self):
+        """The boundary, because the smallest real value is 1."""
+        import cmis_registers as c
+        self.assertTrue(c.parse_cdr_power_saved(1, 8, True, True)['stated'])
+        self.assertFalse(c.parse_cdr_power_saved(0, 8, True, True)['stated'])
+
+    def test_the_total_counts_lanes_and_sides(self):
+        """Per CDR per lane, so a module with both sides bypassable on eight
+        lanes is offering sixteen times it."""
+        import cmis_registers as c
+        self.assertAlmostEqual(
+            c.parse_cdr_power_saved(15, 8, True, True)['all_bypassed_w'], 2.4)
+        self.assertAlmostEqual(
+            c.parse_cdr_power_saved(15, 8, True, False)['all_bypassed_w'], 1.2)
+        self.assertAlmostEqual(
+            c.parse_cdr_power_saved(15, 16, True, True)['all_bypassed_w'], 4.8)
+
+    def test_a_module_with_nothing_bypassable_has_no_total(self):
+        """Nothing to bypass is not a saving of zero watts; it is a figure
+        that does not apply."""
+        import cmis_registers as c
+        d = c.parse_cdr_power_saved(15, 8, False, False)
+        self.assertEqual(d['sides'], 0)
+        self.assertIsNone(d['all_bypassed_w'])
+        self.assertEqual(d['per_cdr_w'], 0.15,
+                         'the module still stated the per-CDR figure')
+
+    def test_the_two_sides_are_counted_separately(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.parse_cdr_power_saved(15, 8, True, False)['sides'], 1)
+        self.assertEqual(
+            c.parse_cdr_power_saved(15, 8, False, True)['sides'], 1)
+        self.assertEqual(
+            c.parse_cdr_power_saved(15, 8, True, True)['sides'], 2)
+
+    # ---- the read ----------------------------------------------------------
+
+    def test_the_register_is_the_byte_between_the_two_already_read(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_CDR_POWER_SAVED, (0x01, 152, 1))
+        self.assertEqual(c.REG_RX_TX_CHARACTER[1], 151)
+        self.assertEqual(c.REG_SI_MAXIMA[1], 153)
+
+    def test_the_module_reports_it(self):
+        d = self._caps()['cdr_power']
+        self.assertTrue(d['stated'])
+        self.assertEqual(d['per_cdr_w'], 0.15)
+
+    def test_the_total_tracks_what_the_module_will_let_be_bypassed(self):
+        """mock_sr8 advertises no Rx CDR, so only one side counts - the same
+        pair of bits the Rx column is gated on."""
+        self.assertEqual(self._caps('mock_dr8')['cdr_power']['sides'], 2)
+        self.assertEqual(self._caps('mock_sr8')['cdr_power']['sides'], 1)
+
+    def test_the_total_tracks_the_lane_count(self):
+        self.assertEqual(self._caps('mock_dr8')['cdr_power']['lanes'], 8)
+        self.assertEqual(self._caps('mock_zr16')['cdr_power']['lanes'], 16)
+        self.assertAlmostEqual(
+            self._caps('mock_zr16')['cdr_power']['all_bypassed_w'], 4.8)
+
+    def test_it_is_read_after_the_advertisement_it_depends_on(self):
+        """The sides come from 01h:161-162, so reading 152 first would count
+        them before they are known."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
+            src = f.read()
+        self.assertLess(src.index('REG_SI_CONTROLS_ADV'),
+                        src.index('REG_CDR_POWER_SAVED'))
+
+    # ---- the panel ----------------------------------------------------------
+
+    def test_the_panel_has_the_row(self):
+        js = self._js()
+        self.assertIn("'CDR Bypass Saves'", js)
+        self.assertIn("cdrPowerCell(c.cdr_power)", js)
+        self.assertIn("'0x98'", js)
+
+    def test_the_row_says_the_figure_is_a_minimum(self):
+        """The module promises at least this much, which is not the same as
+        promising this much.
+
+        The spec quotation in the same tooltip contains the word "minimum"
+        too, so looking for the word passes with the gloss deleted. This
+        looks for the gloss."""
+        js = self._js()
+        i = js.index("'CDR Bypass Saves'")
+        row = js[i:js.index('],', i)]
+        self.assertIn('at least this ', row)
+
+    def test_the_cell_says_why_zero_is_not_a_measurement(self):
+        """Asserting the wording proves the wording is in the file, not that
+        anything reaches it: making the branch unreachable leaves every
+        string in place. So the condition is checked as well as the text -
+        the same trap this suite caught one release ago on the CDR cell."""
+        body = self._cell()
+        guard = body[body.index('if (!p.stated)'):]
+        guard = guard[:guard.index('  }')]
+        self.assertIn('Not stated', guard)
+        self.assertIn('rounds up', guard)
+
+    def test_the_cell_labels_the_total_as_an_all_bypassed_figure(self):
+        """It is arithmetic, not a reading, and an unlabelled watt figure on
+        a capabilities panel reads as something the module reported."""
+        body = self._cell()
+        self.assertIn('all', body)
+        self.assertIn('bypassed', body)
+        self.assertIn('p.lanes', body)
+
+    def test_the_cell_does_not_invent_a_total_without_a_side(self):
+        body = self._cell()
+        self.assertIn('if (!p.all_bypassed_w) return per;', body)
+
+    def test_the_cell_prints_two_decimals(self):
+        """0.01 W is the unit; a figure printed to one decimal loses it."""
+        body = self._cell()
+        self.assertEqual(body.count('toFixed(2)'), 2)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

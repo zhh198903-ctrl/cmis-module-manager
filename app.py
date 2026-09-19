@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.96.0'
+__version__ = '2.97.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -757,6 +757,15 @@ def _discover_capabilities() -> dict:
             _read_upper(*cmis.REG_SI_CONTROLS_ADV))
         caps['si'].update(cmis.parse_si_maxima(
             _read_upper(*cmis.REG_SI_MAXIMA)))
+        # 152, read after the two bytes above because what it is worth
+        # depends on which CDRs this module will let the host bypass. It is
+        # the number behind the decision the CDR columns present, and the one
+        # byte of 145-154 that had never been read.
+        caps['cdr_power'] = cmis.parse_cdr_power_saved(
+            _read_upper(*cmis.REG_CDR_POWER_SAVED)[0],
+            caps.get('max_lanes', 8),
+            cmis.cdr_host_controllable(caps['si'], 'tx'),
+            cmis.cdr_host_controllable(caps['si'], 'rx'))
         caps['rx_tx'] = cmis.parse_rx_tx_characteristics(
             _read_upper(*cmis.REG_RX_TX_CHARACTER)[0])
         caps['aux'] = cmis.parse_aux_observables(

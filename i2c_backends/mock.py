@@ -1144,6 +1144,11 @@ class MockBackend(I2CInterface):
         p01[0x99] = p.get('si_153', 0xF7)       # all four Rx output levels,
                                                 # Tx input eq max 7
         p01[0x9A] = p.get('si_154', 0x77)       # pre/post cursor max 7
+        # 152 CDRPowerSavedPerLane (Table 8-50), multiples of 0.01 W. A
+        # retimer CDR at this class costs a fraction of a watt per lane, and
+        # the figure is what makes bypassing one a decision rather than a
+        # switch. Zero would be the module declining to say.
+        p01[0x98] = p.get('cdr_power_saved_152', 15)   # 0.15 W per CDR/lane
         p01[0xA1] = p.get('si_161', 0x0F)       # adaptive + host-controlled
                                                 # Tx input eq, Tx CDR + bypass
         p01[0xA2] = p.get('si_162', 0x1F)       # both cursors, amplitude,
