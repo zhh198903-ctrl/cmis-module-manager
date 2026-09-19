@@ -35,6 +35,8 @@ REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
 # Lower 56-57 (Table 8-18), both RO and Required, and both in the same
 # table as the subtype byte below that this already reads.
+# Lower 31-36 (Table 8-12), the Masks for the module-level Flags at 8-13.
+REG_MODULE_FLAG_MASKS = (None, 0x1F, 6)
 REG_CMIS_SM_SUPPORT  = (None, 0x38, 2)   # 56 CmisSmSupport, 57 FunctionType
 REG_MODULE_SUBTYPE   = (None, 0x3C, 1)   # Lower 60: [3:0] SFF8024ModuleSubtype
 REG_HEATSINK_FIBER   = (None, 0x3D, 1)   # Lower 61: [7:4] HeatsinkType (5.4), [1:0] FiberFaceType

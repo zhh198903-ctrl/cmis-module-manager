@@ -477,6 +477,18 @@ _ZR_16LANE = dict(
 _FEW_MONITORS = dict(
     _DR8_800G,
     display='800G DR8 implementing only some monitors (01h:159-160)',
+    # A module found with two alarms masked by whoever had it last: Rx LOS
+    # on lane 3 and the Rx power low alarm on lanes 1 and 2. The module will
+    # not assert Interrupt for either, and until the Masks were read the
+    # panel had no way to say that the alarm was off rather than quiet.
+    # 10h:213 + (flag address - 11h:134): Rx LOS is 11h:147 -> 10h:226,
+    # Rx power low alarm is 11h:150 -> 10h:229.
+    flag_masks_10h={0xE2: 0x04, 0xE5: 0x03},
+    # And a module-level alarm turned off too. The Mask block at Lower 31-36
+    # mirrors the Flag block at Lower 8-13 byte for byte, so the Masks for
+    # the temperature Flags at Lower 9 are at Lower 32 - not 31, which masks
+    # the byte the monitor Flags do not live in.
+    module_flag_masks={0x20: 0x02},   # temp_low_alarm
     vendor_pn=b"DEMO-DR8-FEWMON ",
     vendor_sn=b"DEMO000000010   ",
     monitors_159=0x1D,        # temp + aux1-3; no Vcc monitor
@@ -973,6 +985,11 @@ class MockBackend(I2CInterface):
         # model rather than declared beside it: a flat memory module has no
         # Page 10h, so no Data Path to run a state machine over, and a module
         # claiming a DPSM it has no registers for is a module bug.
+        # 31-36 Masks for the module-level Flags at 8-13 (Table 8-12).
+        # Zero is "not masked", the default; a profile that names one is
+        # modelling a module whose previous host turned that alarm off.
+        for addr, value in (p.get('module_flag_masks') or {}).items():
+            lower[addr] = value
         lower[0x38] = p.get('cmis_sm_support',
                             1 if p.get('flat_memory') else 3)
         lower[0x39] = p.get('module_function_type', 0x00)   # 57
@@ -1274,6 +1291,13 @@ class MockBackend(I2CInterface):
         for a in range(0xA2, 0xAA): p10[a] = 0x00       # 162-169 eq targets
         for a in range(0xAA, 0xAE):                     # 170-173 amplitude
             p10[a] = p.get('scs_rx_amplitude', 0x22)    # code 2 on every lane
+        # 213-232 Masks for the Flags at 11h:134-153 (Table 8-83). Zero is
+        # "not masked", which is the default and what every profile without
+        # an explicit setting gets. A profile that names one is modelling a
+        # module found with an alarm already turned off by a previous host -
+        # the state this tool could not previously report.
+        for addr, value in (p.get('flag_masks_10h') or {}).items():
+            p10[addr] = value
         regs[0x10] = p10
 
         # ==== Page 11h — DataPath Status & Monitoring ====

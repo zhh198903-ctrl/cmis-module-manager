@@ -797,6 +797,17 @@ async function loadInfo() {
     // cleared" - which makes the interesting case the disagreement: a
     // Flag on screen with no Interrupt is a Flag whose Mask is set, and
     // the host is never told about it.
+    ...(s.module_flags_masked_set && s.module_flags_masked_set.length ? [
+      ['Masked module alarms',
+       '<span class="flag-warn">\u25b2</span> ' + s.module_flags_masked_set.length
+       + ' set <span class="reg-meta">' + esc(s.module_flags_masked_set.join(', '))
+       + '</span>',
+       'Lower', '0x1F\u20130x24',
+       'Masks for the module-level Flags (Table 8-12). These conditions are '
+       + 'being reported and the module will not raise the Interrupt line '
+       + 'for them - which is why Flags can stand while Interrupt is '
+       + 'deasserted.'],
+    ] : []),
     ['Interrupt',       s.interrupt_asserted
         ? '<span class="text-danger">Asserted</span>'
         : '<span class="text-success">Not asserted</span>',
@@ -1771,7 +1782,8 @@ async function _loadMonitoringOnce() {
     return;
   }
   if (flagsRes.status === 'ok') {
-    renderFlags(flagsRes.data.lanes, flagsRes.data.supported);
+    renderFlags(flagsRes.data.lanes, flagsRes.data.supported,
+                flagsRes.data.masks);
     clearMonitoringStale();
     // A module that was pulled and put back must not leave the page frozen
     // with a clear banner, which reads as live.
@@ -3112,15 +3124,20 @@ function formatBer(ber) {
 // ---------------------------------------------------------------------------
 // Flags (Monitoring tab)
 // ---------------------------------------------------------------------------
-function renderFlags(lanes, supported) {
+function renderFlags(lanes, supported, masks) {
   // 01h:157-158 (Table 8-52) says which of these the module implements. One it
   // does not reads 0, the same as a healthy lane.
   const has = (name) => !supported || supported[name] !== false;
   const tbody = document.getElementById('tbl-flags');
   if (!tbody || !lanes) return;
 
-  tbody.innerHTML = lanes.map(lane => {
+  tbody.innerHTML = lanes.map((lane, li) => {
     const seen = new Set(lane.seen || []);
+    // 10h:213-232 (Table 8-83). A Flag whose Mask is set is one the module
+    // will not assert the Interrupt line for, so the condition is still
+    // reported here and the alarm behind it is off. Without this the panel
+    // could not tell an alarm that is quiet from one that was turned off.
+    const mask = (masks && masks[li]) || {};
     // A CMIS Flag is cleared by the read that reports it, so "not set right
     // now" and "never happened" look identical in the register. They are not
     // the same thing to whoever is chasing an intermittent link, so a lane
@@ -3131,16 +3148,28 @@ function renderFlags(lanes, supported) {
              + 'this Flag (01h:157-158), so the register reads 0 whatever the '
              + 'lane is doing">n/a</span>';
       }
+      const off = name && mask[name];
+      const why = off
+        ? ' <span class="flag-none" title="Masked in 10h:213-232: the module '
+          + 'reports this condition but will not assert the Interrupt line '
+          + 'for it">masked</span>'
+        : '';
       if (val) {
-        return isAlarm
+        return (isAlarm
           ? '<span class="flag-active">&#9632; ALARM</span>'
-          : '<span class="flag-warn">&#9650; WARN</span>';
+          : '<span class="flag-warn">&#9650; WARN</span>') + why;
       }
       if (name && seen.has(name)) {
+        // The history marker comes first: a masked alarm that fired earlier
+        // is still a lane that fired, and swallowing that to say "masked"
+        // would lose the more urgent half.
         return '<span class="flag-was" title="Cleared now, but this flag has '
-             + 'fired since the history was last cleared">&#9679;<sup>!</sup></span>';
+             + 'fired since the history was last cleared">&#9679;<sup>!</sup></span>'
+             + why;
       }
-      return '<span class="flag-ok">&#9679;</span>';
+      // Nothing wrong and nothing seen, but the alarm is off - worth saying
+      // on a quiet lane, because that is when nobody would think to look.
+      return '<span class="flag-ok">&#9679;</span>' + why;
     }
     // A bounce is not a fault, so it is marked rather than alarmed - but it is
     // the first thing worth seeing on a link that misbehaves intermittently.
@@ -3192,6 +3221,17 @@ function renderFlags(lanes, supported) {
       ? '<span class="flag-was" title="Cleared now, but fired earlier">'
         + '&#9679;<sup>!</sup></span>'
       : '<span class="flag-ok">&#9679;</span>';
+    // These twelve share one cell, so a Mask on any of them has nowhere else
+    // to appear. Named rather than counted: "one of these alarms is off" is
+    // not actionable without knowing which.
+    const maskedHere = live.flatMap(
+      k => ['_high_alarm', '_low_alarm', '_high_warn', '_low_warn']
+             .map(s => k + s)).filter(n => mask[n]);
+    const summaryCell = summary + (maskedHere.length
+      ? ' <span class="flag-none" title="Masked in 10h:213–232, so the '
+        + 'module will not assert Interrupt for ' + esc(maskedHere.join(', '))
+        + '">masked</span>'
+      : '');
 
     return `<tr>
       <td>${lane.lane}</td>
@@ -3203,7 +3243,7 @@ function renderFlags(lanes, supported) {
       <td>${rxLos}</td>
       <td>${rxCdrLol}</td>
       <td>${rxOutCh}</td>
-      <td>${summary}</td>
+      <td>${summaryCell}</td>
     </tr>`;
   }).join('');
 }

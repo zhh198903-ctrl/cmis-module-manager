@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.97.0'
+__version__ = '2.98.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1150,6 +1150,13 @@ def api_module_status():
         temp_raw  = _read_lower(0x0E, 2)
         volt_raw  = _read_lower(0x10, 2)
         mod_flags_raw = _read_lower(0x08, 6)         # Module-Level Flags 0x08-0x0D
+        # The Masks for exactly those bytes, Lower 31-36 (Table 8-12). A
+        # Flag whose Mask is set is one the module will not raise the
+        # Interrupt line for, so a panel showing Flags without them cannot
+        # explain the one state that confuses a reader: Flags standing while
+        # Interrupt stays deasserted. The Mask bytes mirror the Flag bytes
+        # one for one, so the same decoder names them.
+        mod_masks_raw = _read_lower(*cmis.REG_MODULE_FLAG_MASKS[1:])
         aux1_raw  = _read_lower(0x12, 2)
         aux2_raw  = _read_lower(0x14, 2)
         aux3_raw  = _read_lower(0x16, 2)
@@ -1168,6 +1175,7 @@ def api_module_status():
         # at byte 9 did not leave the Aux alarms for anyone else to find - it
         # consumed them and reported none.
         temp_alarms = cmis.parse_module_monitor_flags(mod_flags_raw)
+        module_flag_masks = cmis.parse_module_monitor_flags(mod_masks_raw)
         # 8.14.1: a threshold Flag belongs to a monitor, and every one of these
         # monitors is optional (Table 8-53). An absent one reads zero, which is
         # indistinguishable from healthy, so it is reported as unknown instead.
@@ -1213,6 +1221,12 @@ def api_module_status():
         return _ok({
             'module_state': cmis.parse_module_state(state_raw[0]),
             'interrupt_asserted': cmis.parse_interrupt_asserted(state_raw[0]),
+            'module_flag_masks': module_flag_masks,
+            # Set, and masked: the module is reporting the condition and has
+            # been told not to interrupt about it.
+            'module_flags_masked_set': sorted(
+                k for k, v in temp_alarms.items()
+                if v and module_flag_masks.get(k)),
             'temperature_c': (round(cmis.parse_temperature(temp_raw), 4)
                               if _monitor_present('temperature') else None),
             'voltage_v': (round(cmis.parse_voltage(volt_raw), 4)
@@ -2418,11 +2432,23 @@ def api_module_flags():
         first = cmis.REG_DP_STATE_CHANGED[1]
         blocks = [raw for _bank, raw in
                   _read_banks(cmis.REG_DP_STATE_CHANGED[0], first, 20)]
+        # The Masks for the same twenty bytes, 10h:213-232, banked the same
+        # way (Table 8-83). Same burst shape, and the byte at mask_first + k
+        # masks the Flag at first + k.
+        _fp, _ff, mask_page, mask_first, _n = cmis.FLAG_MASK_BLOCKS[1]
+        mask_blocks = [raw for _bank, raw in
+                       _read_banks(mask_page, mask_first, 20)]
 
         def flags(addr):
             # One bit per lane, so each bank contributes its own eight.
             out = []
             for blk in blocks:
+                out += cmis.parse_lane_flags(blk[addr - first])
+            return out[:_state['lanes']]
+
+        def masked(addr):
+            out = []
+            for blk in mask_blocks:
                 out += cmis.parse_lane_flags(blk[addr - first])
             return out[:_state['lanes']]
 
@@ -2465,7 +2491,36 @@ def api_module_flags():
         for flag, monitor in _THRESHOLD_FLAG_MONITOR.items():
             supported_flags[flag] = _monitor_present(monitor)
 
+        # Which Mask byte belongs to each Flag the rows above report.
+        # Kept as one table rather than repeating the addresses beside the
+        # Flag reads: two lists of twenty addresses is how a Mask comes to be
+        # paired with the wrong Flag. A test checks it covers every key.
+        mask_of = {
+            'dp_state_changed':    cmis.REG_DP_STATE_CHANGED[1],
+            'tx_fault':            0x87,
+            'tx_los':              0x88,
+            'tx_cdr_lol':          0x89,
+            'tx_adaptive_eq_fail': cmis.REG_TX_AEQ_FAIL[1],
+            'tx_power_high_alarm': 0x8B,
+            'tx_power_low_alarm':  0x8C,
+            'tx_power_high_warn':  0x8D,
+            'tx_power_low_warn':   0x8E,
+            'tx_bias_high_alarm':  0x8F,
+            'tx_bias_low_alarm':   0x90,
+            'tx_bias_high_warn':   0x91,
+            'tx_bias_low_warn':    0x92,
+            'rx_los':              0x93,
+            'rx_cdr_lol':          0x94,
+            'rx_power_high_alarm': 0x95,
+            'rx_power_low_alarm':  0x96,
+            'rx_power_high_warn':  0x97,
+            'rx_power_low_warn':   0x98,
+            'rx_output_changed':   cmis.REG_RX_OUTPUT_CHANGED[1],
+        }
+        masked_by_flag = {k: masked(a) for k, a in mask_of.items()}
+
         lanes = []
+        masks = []
         history = _state['flag_history']
         for i in range(_state['lanes']):
             lanes.append({
@@ -2494,6 +2549,9 @@ def api_module_flags():
             # Fold this read into what has been seen. The read just cleared
             # these bits on the module, so if this is not kept the event is
             # gone the moment the reply is rendered.
+            masks.append(dict(
+                {'lane': i + 1},
+                **{k: v[i] for k, v in masked_by_flag.items()}))
             seen = history.setdefault(i + 1, set())
             for name, value in list(lanes[-1].items()):
                 if name != 'lane' and value:
@@ -2502,6 +2560,11 @@ def api_module_flags():
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
         return _ok({'lanes': lanes,
+                    # 10h:213-232 (Table 8-83). A Flag whose Mask is set is
+                    # one the module will not assert the Interrupt line for -
+                    # the panel showed the Flag and could not say the alarm
+                    # behind it had been turned off.
+                    'masks': masks,
                     'supported': supported_flags,
                     'history_since': _state['flag_history_since']})
     except Exception as e:

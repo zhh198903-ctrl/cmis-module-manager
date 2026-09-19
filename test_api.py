@@ -3880,8 +3880,10 @@ class TestLatchedFlagsSurviveBeingRead(CMISTestCase):
         """Not set now and never happened look identical in the register. They
         are not the same thing to anyone chasing an intermittent link."""
         js = self._read('static', 'app.js')
-        idx = js.index('function renderFlags(')
-        body = js[idx:idx + 2000]
+        # The whole function, not a fixed 2000 characters of it: a slice by
+        # byte count silently stops covering what it was written to check the
+        # moment the function grows, and reports the feature as missing.
+        body = js_function_body(js, 'function renderFlags(')
         self.assertIn('lane.seen', body, 'the render ignores the history')
         self.assertIn('flag-was', body,
                       'a flag that fired earlier looks like one that never did')
@@ -23455,6 +23457,234 @@ class TestWhatBypassingACDRIsWorth(CMISTestCase):
         """0.01 W is the unit; a figure printed to one decimal loses it."""
         body = self._cell()
         self.assertEqual(body.count('toFixed(2)'), 2)
+
+
+class TestTheAlarmsSomebodyTurnedOff(CMISTestCase):
+    """Every Flag in CMIS has a Mask, and a Flag whose Mask is set is one the
+    module reports without asserting the Interrupt line.
+
+    FLAG_MASK_BLOCKS has paired them since it was written. The mock uses it to
+    decide whether Interrupt asserts - "any Flag set whose Mask is clear",
+    the specification's own definition - and a test checks the three blocks
+    line up. app.py never read a single Mask byte.
+
+    So the tool showed Flags, showed the Interrupt state, and could not
+    explain the one combination that puzzles a reader: Flags standing while
+    Interrupt is deasserted. Nor could it say the quieter thing - that an
+    alarm on a lane has been turned off by whoever had the module last, and
+    will never interrupt again.
+
+    Two of the three blocks feed panels: Lower 8-13 <- Lower 31-36 for the
+    module-level Flags beside the Interrupt row, and 11h:134-153 <-
+    10h:213-232 for the per-lane Flags. The third pairs 14h:132-149 with
+    13h:206-223, and the tool reads one bit of that Flag block and has no
+    panel for it, so there is nothing there to annotate yet."""
+
+    def _connect(self, backend='mock_fewmon'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _flags(self, backend='mock_fewmon'):
+        self._connect(backend)
+        return self.assertOk(self.client.get('/api/module/flags'))['data']
+
+    def _status(self, backend='mock_fewmon'):
+        self._connect(backend)
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the blocks are actually read now ---------------------------------
+
+    def test_the_lane_masks_reach_the_payload(self):
+        d = self._flags()
+        self.assertIn('masks', d)
+        self.assertEqual(len(d['masks']), len(d['lanes']))
+
+    def test_every_flag_has_a_mask_beside_it(self):
+        """Twenty Flags and twenty Masks. A key in one and not the other is a
+        Flag whose alarm state the panel cannot report."""
+        d = self._flags()
+        flags = set(d['lanes'][0]) - {'lane', 'seen'}
+        masks = set(d['masks'][0]) - {'lane'}
+        self.assertEqual(flags, masks)
+        self.assertEqual(len(flags), 20)
+
+    def test_the_module_level_masks_reach_the_payload(self):
+        s = self._status()
+        self.assertIn('module_flag_masks', s)
+        self.assertIn('module_flags_masked_set', s)
+        self.assertEqual(set(s['module_flag_masks']),
+                         set(cmis_module_flag_keys(self)))
+
+    # ---- what they say ------------------------------------------------------
+
+    def test_a_masked_alarm_is_reported(self):
+        """mock_fewmon is a module found with two alarms already turned off."""
+        d = self._flags()
+        by_lane = {m['lane']: sorted(k for k, v in m.items()
+                                     if k != 'lane' and v)
+                   for m in d['masks']}
+        self.assertEqual(by_lane[1], ['rx_power_low_alarm'])
+        self.assertEqual(by_lane[2], ['rx_power_low_alarm'])
+        self.assertEqual(by_lane[3], ['rx_los'])
+
+    def test_the_other_lanes_are_not_masked(self):
+        d = self._flags()
+        for m in d['masks']:
+            if m['lane'] > 3:
+                self.assertEqual(
+                    [k for k, v in m.items() if k != 'lane' and v], [],
+                    'lane %d' % m['lane'])
+
+    def test_a_module_level_alarm_can_be_masked_too(self):
+        """Lower 31-36 mirrors Lower 8-13 byte for byte, so the Masks for the
+        temperature Flags at Lower 9 are at Lower 32. Masking Lower 31 would
+        mask the byte the monitor Flags do not live in, which is a mistake
+        the fixture itself made first."""
+        s = self._status()
+        on = sorted(k for k, v in s['module_flag_masks'].items() if v)
+        self.assertEqual(on, ['temp_low_alarm'])
+
+    def test_a_flag_that_is_set_and_masked_is_called_out(self):
+        """The combination the Interrupt row exists to explain. No shipped
+        profile has a module-level Flag standing, so this drives one."""
+        import app as appmod
+        self._connect()
+        orig = appmod._read_lower
+
+        def fake(addr, length):
+            if (addr, length) == (0x08, 6):
+                return bytes([0, 0x02, 0, 0, 0, 0])    # temp_low_alarm set
+            return orig(addr, length)
+
+        appmod._read_lower = fake
+        try:
+            s = self.assertOk(self.client.get('/api/module/status'))['data']
+        finally:
+            appmod._read_lower = orig
+        self.assertEqual(s['module_flags_masked_set'], ['temp_low_alarm'])
+
+    def test_a_flag_that_is_set_and_not_masked_is_not_called_out(self):
+        """Otherwise the row fires on every ordinary alarm and stops meaning
+        anything."""
+        import app as appmod
+        self._connect('mock_dr8')
+        orig = appmod._read_lower
+
+        def fake(addr, length):
+            if (addr, length) == (0x08, 6):
+                return bytes([0, 0x02, 0, 0, 0, 0])
+            return orig(addr, length)
+
+        appmod._read_lower = fake
+        try:
+            s = self.assertOk(self.client.get('/api/module/status'))['data']
+        finally:
+            appmod._read_lower = orig
+        self.assertEqual(s['module_flags_masked_set'], [])
+
+    def test_a_module_with_nothing_masked_says_nothing(self):
+        """Zero is "not masked", the default, and must not read as masked."""
+        d = self._flags('mock_dr8')
+        self.assertFalse(any(v for m in d['masks']
+                             for k, v in m.items() if k != 'lane'))
+        self.assertEqual(self._status('mock_dr8')['module_flags_masked_set'],
+                         [])
+
+    def test_the_masks_are_a_different_read_from_the_flags(self):
+        """10h:213-232 against 11h:134-153. Reading the Flag block twice
+        would report every masked alarm as whatever the Flag happens to be."""
+        d = self._flags()
+        flagged = [sorted(k for k, v in l.items()
+                          if k not in ('lane', 'seen') and v)
+                   for l in d['lanes']]
+        maskd = [sorted(k for k, v in m.items() if k != 'lane' and v)
+                 for m in d['masks']]
+        self.assertNotEqual(flagged, maskd)
+
+    def test_the_mask_block_is_the_one_the_table_names(self):
+        import cmis_registers as c
+        flag_page, flag_first, mask_page, mask_first, n = c.FLAG_MASK_BLOCKS[1]
+        self.assertEqual((flag_page, flag_first), (0x11, 0x86))
+        self.assertEqual((mask_page, mask_first, n), (0x10, 0xD5, 20))
+
+    def test_the_masks_are_banked_like_the_flags(self):
+        """Both blocks are lane-banked, so a sixteen lane module needs both
+        banks of each. Reading bank 0 of the Masks would report lanes 9-16's
+        alarms as whatever lanes 1-8's are."""
+        d = self._flags('mock_zr16')
+        self.assertEqual(len(d['masks']), 16)
+
+    # ---- the panel -----------------------------------------------------------
+
+    def test_the_renderer_is_given_the_masks(self):
+        js = self._js()
+        self.assertIn('function renderFlags(lanes, supported, masks)', js)
+        self.assertIn('flagsRes.data.masks', js)
+
+    def test_a_masked_flag_cell_says_so(self):
+        js = self._js()
+        i = js.index('function flagCell(')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('const dpChanged', i)])
+        self.assertIn('mask[name]', body)
+        self.assertIn('masked', body)
+        self.assertIn('Interrupt', body,
+                      'say what a Mask actually stops, not just that it is on')
+
+    def test_a_masked_alarm_shows_on_a_quiet_lane_too(self):
+        """An alarm that is off matters most when nothing is wrong - that is
+        when nobody would think to look."""
+        js = self._js()
+        i = js.index('function flagCell(')
+        body = js[i:js.index('const dpChanged', i)]
+        # The default return carries the marker, so a lane with nothing set
+        # and nothing seen still says the alarm is off. Pinned on the last
+        # return rather than a branch, because there is no branch: every path
+        # out of the cell appends it.
+        tail = body[body.rindex('return '):]
+        self.assertIn("flag-ok", tail)
+        self.assertIn("+ why", tail)
+
+    def test_the_summarised_threshold_flags_carry_their_masks(self):
+        """Twelve of the twenty share one cell, so a Mask on any of them has
+        nowhere else to appear."""
+        js = self._js()
+        i = js.index('const maskedHere')
+        body = js[i:js.index('return `<tr>', i)]
+        self.assertIn("mask[n]", body)
+        self.assertIn('summaryCell', body)
+        self.assertIn('maskedHere.join', body,
+                      'name them: "one of these is off" is not actionable')
+
+    def test_the_summary_cell_is_the_one_rendered(self):
+        js = self._js()
+        self.assertIn('${summaryCell}', js)
+        self.assertNotIn('${summary}</td>', js)
+
+    def test_the_interrupt_row_explains_itself(self):
+        js = self._js()
+        i = js.index('Masked module alarms')
+        row = js[i:js.index('] : []),', i)]
+        self.assertIn('0x1F', row, 'name the bytes it read')
+        self.assertIn('Interrupt', row)
+        self.assertIn('deasserted', row)
+
+    def test_the_masked_row_only_appears_when_something_is_masked(self):
+        js = self._js()
+        i = js.index('s.module_flags_masked_set')
+        self.assertIn('.length ? [', js[i:i + 120])
+
+
+def cmis_module_flag_keys(case):
+    import cmis_registers as c
+    return c.parse_module_monitor_flags(bytes(6)).keys()
 
 
 if __name__ == '__main__':
