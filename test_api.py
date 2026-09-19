@@ -22607,6 +22607,191 @@ class TestHowLongTheModuleMayStayBusy(CMISTestCase):
         self.assertIn('does no ', no)
 
 
+class TestWhichOptionalPageGroupsTheModuleHas(CMISTestCase):
+    """01h:142 (Table 8-47) has six bits naming optional page groups and a
+    two-bit bank count. The parser decoded all six at connect; five of them
+    reached nothing at all.
+
+    The shape is the odd part. The capabilities panel already reports Page
+    0Ch, Page 0Dh and Pages 60h-62h, which come from 01h:173-174 - the bytes
+    that *extend* this one. It showed the footnote and not the headline, and
+    the headline includes whether the module has VDM at all.
+
+    Found by sweeping the parsers mechanically: for every key a parse_*
+    function returns, is the name referenced anywhere in app.py, app.js or
+    index.html? Most survivors are internal codes behind a _text field. These
+    five were not."""
+
+    BITS = [
+        ('network_path_pages_supported', 7),
+        ('vdm_pages_supported', 6),
+        ('diagnostic_pages_supported', 5),
+        ('coherent_pages_supported', 4),
+        ('cmis_ff_supported', 3),
+        ('page_03h_supported', 2),
+    ]
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _table(self):
+        js = self._js()
+        i = js.index('const PAGE_GROUP_BITS')
+        return js[i:js.index('function cdbBusyCell')]
+
+    # ---- the decode ----------------------------------------------------
+
+    def test_each_bit_is_its_own_bit(self):
+        """One byte, six flags: set each alone and nothing else may move."""
+        import cmis_registers as c
+        for key, bit in self.BITS:
+            d = c.parse_supported_pages(1 << bit)
+            self.assertTrue(d[key], key)
+            for other, _b in self.BITS:
+                if other != key:
+                    self.assertFalse(d[other], '%s moved with %s' % (other, key))
+
+    def test_the_bank_count_is_not_one_of_the_flags(self):
+        import cmis_registers as c
+        d = c.parse_supported_pages(0x03, bytes([0, 0]))
+        for key, _bit in self.BITS:
+            self.assertFalse(d[key], key)
+
+    # ---- the panel ------------------------------------------------------
+
+    def test_the_panel_has_a_row_for_every_bit(self):
+        table = self._table()
+        for key, bit in self.BITS:
+            self.assertIn("'%s'" % key, table, key)
+            self.assertIn("%d," % bit, table, 'bit %d' % bit)
+
+    def test_the_rows_are_built_from_the_table(self):
+        js = self._js()
+        self.assertIn('PAGE_GROUP_BITS.map(', js)
+        self.assertIn("'0x8E[' + bit + ']'", js,
+                      'each row names the bit it read')
+
+    def test_every_row_names_the_pages_it_is_about(self):
+        """A row saying "VDM" leaves the reader to look up which pages that
+        is before they can go and read them."""
+        table = self._table()
+        for pages in ('Page 16h', '20h-2Fh', '13h-14h', '30h-4Fh',
+                      'Page 05h', 'EEPROM'):
+            self.assertIn(pages, table, pages)
+
+    def test_the_row_reads_its_own_entry(self):
+        """The table is right and the row can still be wrong. Both of these
+        survived a sweep that only checked the constant: a row built from
+        c.diagnostic_pages_supported instead of c[key] shows one answer six
+        times, and a row that drops `pages` leaves every description ending
+        at "(Table 8-47)."."""
+        js = self._js()
+        i = js.index('PAGE_GROUP_BITS.map(')
+        body = js[i:js.index('),', i)]
+        self.assertIn('c[key]', body, 'each row reads its own key')
+        self.assertIn('+ pages', body, 'and prints its own page range')
+        self.assertIn('label,', body, 'and its own label')
+
+    def test_every_row_carries_its_specification_name(self):
+        table = self._table()
+        for name in ('NetworkPathPagesSupported', 'VDMPagesSupported',
+                     'DiagnosticPagesSupported', 'CoherentPagesSupported',
+                     'CmisFfSupported', 'Page03hSupported'):
+            self.assertIn(name, table, name)
+
+    def test_the_table_is_exactly_the_six_flag_bits(self):
+        """Seven would mean the two-bit bank count crept in as a flag; five
+        that one went back to being dropped. Bits 1-0 are BanksSupported and
+        belong to the lane-count machinery, not here."""
+        table = self._table()
+        bits = sorted(int(b) for b in re.findall(
+            r"\['[a-z0-9_]+', '[^']+', (\d+),", table))
+        self.assertEqual(bits, [2, 3, 4, 5, 6, 7])
+
+    def test_the_diagnostic_row_says_what_the_tool_does_with_it(self):
+        """That bit is not only an advertisement here - it gates the
+        loopback, pattern and counter endpoints."""
+        table = self._table()
+        i = table.index('DiagnosticPagesSupported')
+        self.assertIn('refuses', table[max(0, i - 400):i + 200])
+
+    # ---- the module ------------------------------------------------------
+
+    def test_the_bits_reach_the_payload(self):
+        caps = self._caps()
+        for key, _bit in self.BITS:
+            self.assertIn(key, caps, key)
+
+    def test_a_profile_carries_each_answer(self):
+        """Both branches want a real fixture, or the supported rendering is
+        never exercised against an actual read."""
+        self.assertTrue(self._caps('mock_dr8')['page_03h_supported'])
+        self.assertFalse(self._caps('mock_coherent')['page_03h_supported'])
+
+    def test_no_profile_advertises_a_page_group_it_does_not_serve(self):
+        """A module advertising Pages 20h-2Fh and then answering the page
+        select with Page 00h is a module bug; a mock that does it is a
+        fixture that makes the tool look wrong."""
+        for name in paged_mock_backends():
+            caps = self._caps(name)
+            for key in ('network_path_pages_supported', 'vdm_pages_supported',
+                        'coherent_pages_supported', 'cmis_ff_supported'):
+                self.assertFalse(caps.get(key),
+                                 '%s advertises %s and serves no such page'
+                                 % (name, key))
+
+    # ---- Page 03h --------------------------------------------------------
+
+    def test_the_advertised_page_actually_answers(self):
+        """8.6: "an optional Page that allows the module to provide access to
+        a host writeable EEPROM". Advertising it and then not having it is
+        the drift this profile exists to not have."""
+        self._caps('mock_dr8')
+        d = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 3, 'address': 128, 'length': 32}),
+            content_type='application/json'))['data']
+        self.assertEqual(len(d['data']), 32)
+        self.assertNotEqual(d['data'], [0] * 32,
+                            'the page answered, but with nothing in it')
+
+    def test_page_03h_is_not_the_vendor_block_in_disguise(self):
+        """8.2.15 has a module clear PageSelect rather than refuse a page it
+        does not have, so a read of an absent Page 03h comes back as Page
+        00h. This checks the bytes are the page asked for."""
+        self._caps('mock_dr8')
+        got = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 3, 'address': 128, 'length': 16}),
+            content_type='application/json'))['data']['data']
+        page00 = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0, 'address': 128, 'length': 16}),
+            content_type='application/json'))['data']['data']
+        self.assertNotEqual(got, page00)
+
+    def test_the_advertisement_follows_the_page_in_the_mock(self):
+        """Derived rather than declared beside it, the same way 145.3 and
+        01h:175 are, so the two cannot drift apart."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'i2c_backends', 'mock.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        i = src.index('p01[0x8E] |= 0x04')
+        self.assertIn("p.get('user_eeprom') is not None",
+                      src[max(0, i - 300):i])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

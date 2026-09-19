@@ -273,6 +273,11 @@ _DR8_800G = {
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
     'link_lengths': {'smf_len_byte': 0x05},   # 5 × 0.1 km = 500 m
+    # 01h:142.2 / Page 03h (8.6). A host-writeable EEPROM whose contents
+    # CMIS deliberately does not standardise, so this is only a marker a
+    # reader can recognise when they go and look at the page.
+    'user_eeprom': b'CMIS demo user EEPROM - Page 03h is host writeable and '
+                   b'its contents are not standardised.',
     # 01h:163-166 CDB Advertisement (Table 8-55):
     #   163 = 0x62  one instance, background mode, no auto paging,
     #               CdbMaxPagesEPL 2 -> A0h-A1h, 256 bytes
@@ -1007,6 +1012,13 @@ class MockBackend(I2CInterface):
         # 142.5 DiagnosticPagesSupported: every profile builds and serves
         # Pages 13h and 14h, so every profile has to say so.
         p01[0x8E] |= 0x20
+        # 142.2 Page03hSupported, derived from whether this profile actually
+        # builds the page. The other four bits of Table 8-47 stay clear on
+        # every profile here because none of them serves Pages 16h-17h,
+        # 20h-2Fh, 30h-4Fh or 05h - advertising a page group the module does
+        # not have is a module bug, and not one to model by accident.
+        if p.get('user_eeprom') is not None:
+            p01[0x8E] |= 0x04
         # 143-144 and 167-169 (Tables 8-48, 8-56), all RO and Required: how
         # long this module's transient states take, and how much of tBPC it
         # actually needs after a page change. Left at zero these said every
@@ -1377,6 +1389,19 @@ class MockBackend(I2CInterface):
             p14[0xD0 + lane * 2] = (w >> 8) & 0xFF
             p14[0xD0 + lane * 2 + 1] = w & 0xFF
         regs[0x14] = p14
+
+        # ==== Page 03h - User EEPROM (8.6) ====
+        # "An optional Page that allows the module to provide access to a
+        # host writeable EEPROM ... the host may read or write this memory
+        # for any purpose", and "actual usage of the EEPROM is not
+        # standardized by CMIS". So the contents are arbitrary by design;
+        # what matters is that the page exists and answers.
+        eeprom = p.get('user_eeprom')
+        if eeprom is not None:
+            p03 = {a: 0x00 for a in range(0x80, 0x100)}
+            for i, b in enumerate(eeprom[:128]):
+                p03[0x80 + i] = b
+            regs[0x03] = p03
 
         # ==== Page 1Ch - Normalized Application Descriptors (8.24) ====
         # 128-247 is fifteen 8-byte NADs (Table 8-174); 248-255 Reserved.

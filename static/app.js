@@ -611,6 +611,16 @@ async function loadInfo() {
        'TimingPage15hSupported (Table 8-50) - Data Path latency per lane '
        + 'lives on Page 15h (Table 8-141)'],
     ] : []),
+    // 01h:142 (Table 8-47) has six bits saying which optional page groups
+    // the module has, and one two-bit bank count. The panel has been showing
+    // the answers from 01h:173-174 - the bytes that extend this one - and
+    // nothing from the byte itself: five of the six were decoded at connect
+    // and thrown away, including whether the module has VDM at all.
+    ...PAGE_GROUP_BITS.map(([key, label, bit, pages, note]) => [
+      label, c[key] ? 'Supported' : 'Not supported',
+      '01h', '0x8E[' + bit + ']',
+      note + ' (Table 8-47). ' + pages],
+    ),
     ...(c.cdb ? (c.cdb.supported ? [
       ['CDB Messaging',
        esc(c.cdb.instances_text) + ' instance'
@@ -898,6 +908,33 @@ function memoryModelCell(d) {
 // media can be disconnected from the module", which is what a transceiver is.
 // Testing the product for zero caught the second by accident and printed the
 // first as a measurement.
+// Table 8-47, 01h:142. The page ranges are the specification's own: a row
+// saying "VDM" and nothing else leaves the reader to look up which pages
+// that is before they can go and read them.
+const PAGE_GROUP_BITS = [
+  ['network_path_pages_supported', 'Network Path Pages', 7,
+   'Page 16h and the NP-related parts of Page 17h.',
+   'NetworkPathPagesSupported'],
+  ['vdm_pages_supported', 'VDM Pages', 6,
+   'VDM Pages 20h-2Fh, partially; the advertisement details are on '
+   + 'Page 2Fh.', 'VDMPagesSupported'],
+  ['diagnostic_pages_supported', 'Diagnostic Pages', 5,
+   'Banked Pages 13h-14h - loopback, pattern generation and checking, '
+   + 'SNR, BER and the bit counters. This tool refuses those controls '
+   + 'when the bit is clear.', 'DiagnosticPagesSupported'],
+  ['coherent_pages_supported', 'Coherent Pages', 4,
+   'Banked Pages 30h-4Fh, partially; the details are in C-CMIS.',
+   'CoherentPagesSupported'],
+  ['cmis_ff_supported', 'CMIS-FF (Page 05h)', 3,
+   'Form factor specific functionality on Page 05h, as specified in the '
+   + 'CMIS-FF supplement.', 'CmisFfSupported'],
+  ['page_03h_supported', 'User EEPROM (Page 03h)', 2,
+   'A host-writeable EEPROM. CMIS does not standardise what it holds; '
+   + 'a write takes at most 8 bytes and the module rejects register '
+   + 'access until it has completed internally.', 'Page03hSupported'],
+];
+
+
 function cdbBusyCell(cdb) {
   // Table 8-55 gives two encodings for TCDBB and a bit to choose between
   // them, and its three rows do not agree on which value of the bit chooses
