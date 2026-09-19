@@ -830,6 +830,17 @@ class MockBackend(I2CInterface):
         self._last_counter_time = 0.0
         self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
+        # 6.2.3.3: "the module populates both Staged Control Set 0 and the
+        # Active Control Set registers with the module-defined default
+        # Application and signal integrity settings before exiting the
+        # MgmtInit state". The Active Control Set was left blank until the
+        # host applied something, so the panel's Active column read as every
+        # equalizer at zero and every CDR bypassed on a module that had just
+        # come up running - which is what these registers exist to deny.
+        # ExplicitControl is clear by default, so the values are the ones the
+        # module chose for the Application, not the staged ones.
+        for _bank_lane in range(8):
+            self._provision_si(_bank_lane, False)
 
     @classmethod
     def probe_availability(cls) -> dict:
@@ -1240,7 +1251,13 @@ class MockBackend(I2CInterface):
         # a module that advertises having one, and that is not a default any
         # retimed module ships with.
         p10[0x99] = p.get('scs_adaptive_eq_tx', 0xFF)   # 153 adaptive Tx eq on
-        for a in range(0x9A, 0xA1): p10[a] = 0x00       # 154-160 recall, targets
+        for a in range(0x9A, 0xA0): p10[a] = 0x00       # 154-159 recall, targets
+        # 160 CDREnableTx. This used to fall inside the blanket zero fill
+        # above, which is "every Tx CDR bypassed" - a reading no retimed
+        # module ships with, and one nothing could see because the byte was
+        # never read. Lane 4 bypassed so the byte is not a solid pattern and
+        # is not the Rx byte either.
+        p10[0xA0] = p.get('scs_cdr_enable_tx', 0xF7)    # 160 Tx CDRs enabled
         p10[0xA1] = p.get('scs_cdr_enable_rx', 0xFF)    # 161 Rx CDRs enabled
         for a in range(0xA2, 0xAA): p10[a] = 0x00       # 162-169 eq targets
         for a in range(0xAA, 0xAE):                     # 170-173 amplitude
@@ -1817,6 +1834,7 @@ class MockBackend(I2CInterface):
     _ACS_SI_MAP = (
         (0xD6, 0x99, False),   # AdaptiveInputEqEnableTx, 1 bit per lane
         (0xD9, 0x9C, True),    # HostControlledInputEqTargetTx
+        (0xDD, 0xA0, False),   # CDREnableTx
         (0xDE, 0xA1, False),   # CDREnableRx
         (0xDF, 0xA2, True),    # OutputEqPreCursorTargetRx
         (0xE3, 0xA6, True),    # OutputEqPostCursorTargetRx
@@ -1875,6 +1893,8 @@ class MockBackend(I2CInterface):
         return self._profile.get('acs_si', {
             0xD6: 1,      # adaptive Tx equalization on
             0xD9: 0,      # so the host-controlled target is not in use
+            0xDD: 1,      # Tx CDR enabled on every lane - the staged set
+                          # asks for one lane bypassed, so the two differ
             0xDE: 1,      # Rx CDR enabled
             0xDF: 1,      # a pre-cursor the Application asks for
             0xE3: 0,

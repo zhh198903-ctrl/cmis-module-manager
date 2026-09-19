@@ -616,6 +616,41 @@ async function loadInfo() {
     // the answers from 01h:173-174 - the bytes that extend this one - and
     // nothing from the byte itself: five of the six were decoded at connect
     // and thrown away, including whether the module has VDM at all.
+    ...(c.si ? [
+      // 161.0-1 and 162.0-1. The Flags panel has reported Tx CDR loss of
+      // lock since it was written; whether that CDR is in circuit is this
+      // pair, and the pair is also what says the column on the DataPath tab
+      // is a control rather than a switch for something not there.
+      ['Tx CDR', cdrCell(c.si, 'tx'),
+       '01h', '0xA1[1:0]',
+       'TxCDRSupported and TxCDRBypassControlSupported (Table 8-54). The '
+       + 'bypass bit is written conditionally - "if a Tx CDR is supported, '
+       + 'it can be bypassed" - so on its own it is not a control.'],
+      ['Rx CDR', cdrCell(c.si, 'rx'),
+       '01h', '0xA2[1:0]',
+       'RxCDRSupported and RxCDRBypassControlSupported (Table 8-54).'],
+      ['Tx Input EQ Freeze', c.si.tx_input_eq_freeze ? 'Supported' : 'Not supported',
+       '01h', '0xA1[4]', 'TxInputEqFreezeSupported (Table 8-54)'],
+      ['Tx Input EQ Recall', recallBuffersText(c.si.tx_input_eq_recall_buffers),
+       '01h', '0xA1[6:5]',
+       'TxInputEqRecallBuffersSupported (Table 8-54) - stored Tx input '
+       + 'equalizer adaptation settings a Staged Control Set can recall. '
+       + '11b is Reserved.'],
+      ['Staged Control Set 1', c.si.staged_set_1 ? 'Supported' : 'Not supported',
+       '01h', '0xA2[5]',
+       'StagedSet1Supported (Table 8-54) - a second Staged Control Set on '
+       + 'Page 10h, so the host can hold two prepared configurations. This '
+       + 'tool writes Set 0.'],
+      ['Unidirectional Reconfig', c.si.unidir_reconfig ? 'Supported' : 'Not supported',
+       '01h', '0xA2[6]',
+       'UnidirReconfigSupported (Table 8-54) - ApplyImmediateTx/Rx on '
+       + 'Page 10h and DPConfigTx/Rx on Page 19h, which reconfigure one '
+       + 'direction without taking the other down.'],
+      ['Versatile Control Set', c.si.versatile_control_set ? 'Supported' : 'Not supported',
+       '01h', '0xA2[7]',
+       'VersatileControlSetSupported (Table 8-54) - CMIS-VCS, whose '
+       + 'parameter space extends onto Pages 18h and 19h.'],
+    ] : []),
     ...PAGE_GROUP_BITS.map(([key, label, bit, pages, note]) => [
       label, c[key] ? 'Supported' : 'Not supported',
       '01h', '0x8E[' + bit + ']',
@@ -911,6 +946,33 @@ function memoryModelCell(d) {
 // Table 8-47, 01h:142. The page ranges are the specification's own: a row
 // saying "VDM" and nothing else leaves the reader to look up which pages
 // that is before they can go and read them.
+// Table 8-54, 01h:161.6-5. "11b: reserved" is not a buffer count.
+function recallBuffersText(code) {
+  if (code === 3) return 'Reserved (11b)';
+  return code ? code + ' buffer' + (code === 1 ? '' : 's') : 'Not supported';
+}
+
+
+// One cell for the pair of bits that decides whether CDREnable<side> is a
+// control the host has. Split across two rows the reader has to combine them
+// themselves, and the interesting case - a bypass bit set on a module with no
+// CDR - looks like a supported feature in the row above.
+function cdrCell(si, side) {
+  const has = si[side + '_cdr'];
+  const bypass = si[side + '_cdr_bypass_control'];
+  if (!has) {
+    return bypass
+      ? 'No CDR <span class="reg-meta">bypass control advertised, but the '
+        + 'module reports no ' + esc(side === 'tx' ? 'Tx' : 'Rx')
+        + ' CDR to bypass</span>'
+      : 'No CDR';
+  }
+  return bypass
+    ? 'Present <span class="reg-meta">host can bypass it</span>'
+    : 'Present <span class="reg-meta">always in circuit</span>';
+}
+
+
 const PAGE_GROUP_BITS = [
   ['network_path_pages_supported', 'Network Path Pages', 7,
    'Page 16h and the NP-related parts of Page 17h.',
@@ -2191,7 +2253,8 @@ async function loadDatapath() {
 const SI_COLUMNS = [
   ['tx_adaptive_eq',      'Tx Adaptive EQ',  '10h / 0x99',        'AdaptiveInputEqEnableTx (01h:161.3)'],
   ['tx_input_eq_target',  'Tx Input EQ',     '10h / 0x9C\u20130x9F', 'HostControlledInputEqTargetTx (01h:161.2)'],
-  ['rx_cdr_enable',       'Rx CDR',          '10h / 0xA1',        'CDREnableRx \u2014 clear means bypassed (01h:162.1)'],
+  ['tx_cdr_enable',       'Tx CDR',          '10h / 0xA0',        'CDREnableTx \u2014 clear means bypassed. Advertised by 01h:161.0-1, both bits: a CDR that exists and can be taken out of circuit'],
+  ['rx_cdr_enable',       'Rx CDR',          '10h / 0xA1',        'CDREnableRx \u2014 clear means bypassed. Advertised by 01h:162.0-1, both bits'],
   ['rx_eq_pre_cursor',    'Rx EQ Pre',       '10h / 0xA2\u20130xA5', 'OutputEqPreCursorTargetRx (01h:162.4-3)'],
   ['rx_eq_post_cursor',   'Rx EQ Post',      '10h / 0xA6\u20130xA9', 'OutputEqPostCursorTargetRx (01h:162.4-3)'],
   ['rx_output_amplitude', 'Rx Amplitude',    '10h / 0xAA\u20130xAD', 'OutputAmplitudeTargetRx (01h:162.2)'],

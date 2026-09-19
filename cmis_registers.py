@@ -166,6 +166,9 @@ REG_SI_CONTROLS_ADV    = (0x01, 0xA1, 2)  # 161-162 (Table 8-54)
 # whether or not anyone looked at it.
 REG_SCS_TX_ADAPT_EQ    = (0x10, 0x99, 1)  # 153 AdaptiveInputEqEnableTx, 1b/lane
 REG_SCS_TX_EQ_TARGET   = (0x10, 0x9C, 4)  # 156-159 HostControlledInputEqTargetTx
+# 160 CDREnableTx, the byte immediately before the Rx one. Advertised
+# together by 01h:161.0-1, the same way 10h:161 is by 01h:162.0-1.
+REG_SCS_TX_CDR         = (0x10, 0xA0, 1)  # 160 CDREnableTx, 1b/lane
 REG_SCS_RX_CDR         = (0x10, 0xA1, 1)  # 161 CDREnableRx, 1b/lane
 REG_SCS_RX_EQ_PRE      = (0x10, 0xA2, 4)  # 162-165 OutputEqPreCursorTargetRx
 REG_SCS_RX_EQ_POST     = (0x10, 0xA6, 4)  # 166-169 OutputEqPostCursorTargetRx
@@ -1320,7 +1323,31 @@ def parse_si_controls_adv(data: bytes) -> dict:
         'rx_output_eq_control_name': RX_OUTPUT_EQ_CONTROL[rx_eq],
         'rx_output_amplitude_control': bool(b162 & 0x04),
         'rx_cdr_bypass_control':   bool(b162 & 0x02),
+        # 162.0 RxCDRSupported was the one bit of this byte not decoded,
+        # while its Tx twin at 161.0 was. The asymmetry mattered: see
+        # cdr_host_controllable.
+        'rx_cdr':                  bool(b162 & 0x01),
     }
+
+
+def cdr_host_controllable(adv: dict, side: str) -> bool:
+    """Whether CDREnable<side> is a control the host actually has.
+
+    Both Staged Control Set bytes name a two-bit advertisement rather than
+    one bit: 10h:160 CDREnableTx says "Advertisement: 01h:161.0-1", and
+    10h:161 CDREnableRx says "Advertisement: 01h:162.0-1".
+
+    Table 8-54 splits each of those pairs into a CDR and a bypass control,
+    and writes the second one conditionally:
+    "0b: If a Tx CDR is supported, it cannot be bypassed".
+
+    So a bypass-control bit on its own is not a control. A module with no CDR
+    may set it, because the sentence is about a CDR that may not exist, and
+    the panel was gating the Rx column on that bit alone - offering a switch
+    for a retimer the module had just said it does not have. mock_sr8
+    advertises exactly that pair.
+    """
+    return bool(adv.get(side + '_cdr') and adv.get(side + '_cdr_bypass_control'))
 
 
 def parse_si_maxima(data: bytes) -> dict:

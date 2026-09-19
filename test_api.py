@@ -2195,14 +2195,26 @@ class TestTheStagedSetHasASignalIntegrityHalf(CMISTestCase):
                          'this module advertises pre-cursor control only')
 
     def test_a_retimed_module_does_not_ship_with_its_cdrs_bypassed(self):
-        """CDREnableRx clear means bypassed. Left unset in the mock the whole
-        byte reads zero, which says every Rx CDR is off on a module that
-        advertises having one."""
+        """CDREnable<side> clear means bypassed. Left unset in the mock the
+        whole byte reads zero, which says every CDR is off on a module that
+        advertises having one.
+
+        Both sides now: 10h:160 used to sit inside a blanket zero fill and
+        was never read, so nothing noticed. And the column is only present
+        where the module advertises a CDR it can take out of circuit -
+        mock_sr8 advertises no Rx CDR, so asserting one there would be
+        asserting the bug this replaced."""
         for backend in ('mock_dr8', 'mock_sr8', 'mock_coherent'):
             with self.subTest(backend=backend):
                 self._connect(backend)
-                self.assertTrue(all(self._dp()['signal_integrity']['rx_cdr_enable']),
-                                '%s ships with every Rx CDR bypassed' % backend)
+                si = self._dp()['signal_integrity']
+                for side in ('tx', 'rx'):
+                    key = side + '_cdr_enable'
+                    if key not in si:
+                        continue        # no such CDR on this module
+                    self.assertTrue(any(si[key]),
+                                    '%s ships with every %s CDR bypassed'
+                                    % (backend, side.upper()))
 
     def test_the_nibbles_are_unpacked_lane_one_first(self):
         """Lane 1 is the low nibble of the first byte. Reading it the other
@@ -22790,6 +22802,239 @@ class TestWhichOptionalPageGroupsTheModuleHas(CMISTestCase):
         i = src.index('p01[0x8E] |= 0x04')
         self.assertIn("p.get('user_eeprom') is not None",
                       src[max(0, i - 300):i])
+
+
+class TestTheCDRTheToolCouldNotSee(CMISTestCase):
+    """01h:161-162 (Table 8-54) advertises two CDRs and the tool knew about
+    one of them.
+
+    10h:160 CDREnableTx and 10h:161 CDREnableRx are adjacent bytes with the
+    same encoding - "1b: CDR enabled, 0b: CDR bypassed". The Signal Integrity
+    panel had a column for the Rx one and none for the Tx one; the Tx staged
+    register was not even declared and REG_ACS_TX_CDR (11h:221) was declared
+    and never read.
+
+    Which left the Flags panel reporting Tx CDR loss of lock with nothing
+    anywhere saying whether that CDR is in circuit. A bypassed CDR cannot
+    lock, and the flag reads the same either way.
+
+    And a real wrong answer in the gate. Each register names a two-bit
+    advertisement - 10h:161 says "Advertisement: 01h:162.0-1" - which Table
+    8-54 splits into RxCDRSupported (162.0) and RxCDRBypassControlSupported
+    (162.1), the second written conditionally: "0b: Rx CDR Bypass control not
+    supported (if a CDR is supported, it cannot be bypassed)". The panel
+    gated its column on the bypass bit alone. 162.0 was the one bit of that
+    byte the parser did not decode at all, while its Tx twin at 161.0 was.
+
+    mock_sr8 advertises 162 = 0x0A: bypass control set, no Rx CDR. The panel
+    offered a switch for a retimer the module had just said it does not
+    have."""
+
+    def _dp(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the advertisement ----------------------------------------------
+
+    def test_both_cdr_bits_of_both_bytes_are_decoded(self):
+        import cmis_registers as c
+        d = c.parse_si_controls_adv(bytes([0x01, 0x01]))
+        self.assertTrue(d['tx_cdr'])
+        self.assertTrue(d['rx_cdr'])
+        self.assertFalse(d['tx_cdr_bypass_control'])
+        self.assertFalse(d['rx_cdr_bypass_control'])
+        d = c.parse_si_controls_adv(bytes([0x02, 0x02]))
+        self.assertFalse(d['tx_cdr'])
+        self.assertFalse(d['rx_cdr'])
+        self.assertTrue(d['tx_cdr_bypass_control'])
+        self.assertTrue(d['rx_cdr_bypass_control'])
+
+    def test_the_two_sides_are_two_different_bytes(self):
+        """161 is the Tx side and 162 the Rx side. Reading one for the other
+        would put the wrong module's answer on both rows."""
+        import cmis_registers as c
+        d = c.parse_si_controls_adv(bytes([0x03, 0x00]))
+        self.assertTrue(d['tx_cdr'])
+        self.assertFalse(d['rx_cdr'])
+
+    def test_a_control_needs_both_bits(self):
+        """The bypass bit is written conditionally on a CDR existing, so on
+        its own it is not a control."""
+        import cmis_registers as c
+        for side in ('tx', 'rx'):
+            both = {side + '_cdr': True, side + '_cdr_bypass_control': True}
+            self.assertTrue(c.cdr_host_controllable(both, side))
+            for adv in ({side + '_cdr': True, side + '_cdr_bypass_control': False},
+                        {side + '_cdr': False, side + '_cdr_bypass_control': True},
+                        {}):
+                self.assertFalse(c.cdr_host_controllable(adv, side), adv)
+
+    def test_the_gate_reads_the_side_it_was_asked_about(self):
+        import cmis_registers as c
+        adv = {'tx_cdr': True, 'tx_cdr_bypass_control': True,
+               'rx_cdr': False, 'rx_cdr_bypass_control': True}
+        self.assertTrue(c.cdr_host_controllable(adv, 'tx'))
+        self.assertFalse(c.cdr_host_controllable(adv, 'rx'))
+
+    # ---- the columns ------------------------------------------------------
+
+    def test_the_tx_cdr_has_a_column_now(self):
+        d = self._dp()
+        self.assertIn('tx_cdr_enable', d['signal_integrity'])
+        self.assertIn('tx_cdr_enable', d['signal_integrity_active'])
+
+    def test_the_two_columns_are_two_different_registers(self):
+        """10h:160 and 10h:161 are adjacent. A column reading the wrong one
+        shows the other side's answer, which is a plausible eight booleans."""
+        d = self._dp()
+        self.assertNotEqual(d['signal_integrity']['tx_cdr_enable'],
+                            d['signal_integrity']['rx_cdr_enable'])
+
+    def test_the_staged_tx_cdr_is_not_every_lane_bypassed(self):
+        """10h:160 used to fall inside a blanket zero fill, which reads as
+        every Tx CDR out of circuit - not a state a retimed module advertising
+        a Tx CDR ships in, and nothing could see it because the byte was
+        never read. A mixed byte also makes a read of the wrong one visible:
+        a solid pattern matches whatever else is solid."""
+        staged = self._dp()['signal_integrity']['tx_cdr_enable']
+        self.assertTrue(any(staged), 'every Tx CDR bypassed at power-up')
+        self.assertIn(False, staged, 'a solid byte hides a wrong-byte read')
+
+    def test_the_staged_and_active_tx_columns_are_different_registers(self):
+        """10h:160 is what the host asked for and 11h:221 what the module is
+        running; 6.2.5 makes them different things."""
+        d = self._dp()
+        self.assertNotEqual(d['signal_integrity']['tx_cdr_enable'],
+                            d['signal_integrity_active']['tx_cdr_enable'])
+
+    def test_a_module_with_no_rx_cdr_gets_no_rx_cdr_column(self):
+        """mock_sr8 advertises the bypass bit with no CDR behind it."""
+        d = self._dp('mock_sr8')
+        self.assertNotIn('rx_cdr_enable', d['signal_integrity'])
+        self.assertNotIn('rx_cdr_enable', d['signal_integrity_active'])
+        self.assertIn('tx_cdr_enable', d['signal_integrity'],
+                      'it does have a Tx CDR, and that column stays')
+
+    def test_the_advertisement_that_hid_it_is_still_what_it_was(self):
+        """If the fixture ever loses that pair the test above passes for the
+        wrong reason."""
+        adv = self._dp('mock_sr8')['si_advertised']
+        self.assertTrue(adv['rx_cdr_bypass_control'])
+        self.assertFalse(adv['rx_cdr'])
+
+    def test_the_registers_are_the_ones_the_table_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_SCS_TX_CDR, (0x10, 160, 1))
+        self.assertEqual(c.REG_SCS_RX_CDR, (0x10, 161, 1))
+        self.assertEqual(c.REG_ACS_TX_CDR, (0x11, 221, 1))
+        self.assertEqual(c.REG_ACS_RX_CDR, (0x11, 222, 1))
+
+    # ---- the Active Control Set at connect --------------------------------
+
+    def test_the_active_control_set_is_not_blank_at_connect(self):
+        """6.2.3.3: "the module populates both Staged Control Set 0 and the
+        Active Control Set registers with the module-defined default
+        Application and signal integrity settings before exiting the MgmtInit
+        state". The mock left it blank until the host applied something, so
+        the Active column read as every equalizer at zero and every CDR
+        bypassed on a module that had just come up running."""
+        active = self._dp()['signal_integrity_active']
+        self.assertTrue(active['tx_cdr_enable'][0])
+        self.assertTrue(active['rx_cdr_enable'][0])
+        self.assertTrue(any(active['rx_eq_pre_cursor']),
+                        'the whole Active set was zero, not just the CDRs')
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_si_table_has_a_tx_cdr_column(self):
+        js = self._js()
+        i = js.index('SI_COLUMNS')
+        block = js[i:js.index('];', i)]
+        self.assertIn("'tx_cdr_enable'", block)
+        self.assertIn("'10h / 0xA0'", block)
+        self.assertIn("'10h / 0xA1'", block)
+
+    def test_both_si_headings_name_the_whole_advertisement(self):
+        """They used to cite 01h:162.1 alone, which is the half that is not a
+        control on its own."""
+        js = self._js()
+        i = js.index('SI_COLUMNS')
+        block = js[i:js.index('];', i)]
+        self.assertIn('01h:161.0-1', block)
+        self.assertIn('01h:162.0-1', block)
+        self.assertNotIn('(01h:162.1)', block)
+
+    def test_the_capability_rows_pair_the_two_bits(self):
+        js = self._js()
+        i = js.index('function cdrCell')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('const PAGE_GROUP_BITS')])
+        self.assertIn("_cdr'", body)
+        self.assertIn("_cdr_bypass_control'", body)
+        self.assertIn('No CDR', body)
+
+    def test_the_odd_pair_is_called_out_rather_than_shown_as_a_feature(self):
+        """Bypass control advertised with no CDR behind it is the module
+        contradicting itself, and a row reading "Supported" would pass it on
+        as a feature.
+
+        Asserting the wording alone is not enough: the branch that carries it
+        can be made unreachable and the strings stay in the file. This checks
+        the no-CDR case still branches on the bypass bit."""
+        js = self._js()
+        i = js.index('function cdrCell')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('const PAGE_GROUP_BITS')])
+        nocdr = body[body.index('if (!has)'):]
+        nocdr = nocdr[:nocdr.index('  }')]
+        self.assertIn('return bypass', nocdr,
+                      'the no-CDR branch has to look at the bypass bit')
+        self.assertIn('to bypass', nocdr)
+
+    def test_the_recall_buffer_count_is_not_a_count_at_three(self):
+        js = self._js()
+        i = js.index('function recallBuffersText')
+        body = js[i:js.index('function cdrCell')]
+        self.assertIn('Reserved', body)
+        self.assertIn('=== 3', body)
+
+    def test_the_rest_of_the_two_bytes_reaches_the_panel(self):
+        js = self._js()
+        for key in ('c.si.tx_input_eq_freeze', 'c.si.tx_input_eq_recall_buffers',
+                    'c.si.staged_set_1', 'c.si.unidir_reconfig',
+                    'c.si.versatile_control_set'):
+            self.assertIn(key, js, key)
+
+    def test_those_rows_name_their_bits(self):
+        js = self._js()
+        for addr in ("'0xA1[4]'", "'0xA1[6:5]'", "'0xA2[5]'", "'0xA2[6]'",
+                     "'0xA2[7]'", "'0xA1[1:0]'", "'0xA2[1:0]'"):
+            self.assertIn(addr, js, addr)
+
+    def test_the_staged_set_row_says_which_set_the_tool_writes(self):
+        """A module with two of them and a tool that only ever writes one is
+        worth saying out loud."""
+        js = self._js()
+        i = js.index("'Staged Control Set 1'")
+        row = js[i:js.index('],', i)]
+        self.assertIn('writes Set 0', row)
 
 
 if __name__ == '__main__':

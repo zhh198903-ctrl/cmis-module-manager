@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.94.0'
+__version__ = '2.95.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1752,7 +1752,17 @@ def api_datapath_get():
             if si_adv.get('tx_input_eq_host_control'):
                 si['tx_input_eq_target'] = _si_nibbles(
                     cmis.REG_SCS_TX_EQ_TARGET)
-            if si_adv.get('rx_cdr_bypass_control'):
+            # 10h:160, the byte before the Rx one, and advertised the
+            # same way. The Flags panel has been reporting Tx CDR loss of
+            # lock all along with no way to see whether that CDR is even in
+            # circuit - a bypassed CDR cannot lock, and the flag says the
+            # same thing either way.
+            if cmis.cdr_host_controllable(si_adv, 'tx'):
+                si['tx_cdr_enable'] = _si_lane_flags(
+                    cmis.REG_SCS_TX_CDR)
+            # Both bits, not just the bypass one: 10h:161 says
+            # "Advertisement: 01h:162.0-1".
+            if cmis.cdr_host_controllable(si_adv, 'rx'):
                 si['rx_cdr_enable'] = _si_lane_flags(
                     cmis.REG_SCS_RX_CDR)
             eq = si_adv.get('rx_output_eq_control', 0)
@@ -1786,7 +1796,10 @@ def api_datapath_get():
             if si_adv.get('tx_input_eq_host_control'):
                 si_active['tx_input_eq_target'] = _si_nibbles(
                     cmis.REG_ACS_TX_EQ_TARGET)
-            if si_adv.get('rx_cdr_bypass_control'):
+            if cmis.cdr_host_controllable(si_adv, 'tx'):
+                si_active['tx_cdr_enable'] = _si_lane_flags(
+                    cmis.REG_ACS_TX_CDR)
+            if cmis.cdr_host_controllable(si_adv, 'rx'):
                 si_active['rx_cdr_enable'] = _si_lane_flags(
                     cmis.REG_ACS_RX_CDR)
             eq = si_adv.get('rx_output_eq_control', 0)
