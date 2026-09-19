@@ -18162,12 +18162,36 @@ class TestTheInterruptLineIsReportedAndModelled(CMISTestCase):
             c.FLAG_MASK_BLOCKS,
             ((None, 0x08, None, 0x1F, 6),
              (0x11, 0x86, 0x10, 0xD5, 20),
-             (0x14, 0x84, 0x13, 0xCE, 18)))
+             (0x14, 0x84, 0x13, 0xCE, 18),
+             (0x12, 0xE7, 0x12, 0xEF, 8)))
         # Lower: Flags 8-13 (Table 8-9) against Masks 31-36 (Table 8-12).
         self.assertEqual(0x1F - 0x08, 23)
         # 11h:134-153 against 10h:213-232, and 14h:132-149 against 13h:206-223.
         self.assertEqual((0x86, 0xD5, 20), (134, 213, 20))
         self.assertEqual((0x84, 0xCE, 18), (132, 206, 18))
+        # 12h:231-238 against 12h:239-246 - the one pair that shares a page
+        # with its Flags rather than living on the paired control page.
+        self.assertEqual((0xE7, 0xEF, 8), (231, 239, 8))
+
+    def test_every_block_pairs_equal_length_runs(self):
+        """Stated as a property rather than as four literals, so a fifth
+        block cannot be added with a Mask run that does not cover its
+        Flags."""
+        import cmis_registers as c
+        for fp, ff, mp, mf, n in c.FLAG_MASK_BLOCKS:
+            self.assertGreater(n, 0)
+            # Both runs have to fit the page they are on. A Lower Memory
+            # block (page None) lives below 0x80; an upper page block above.
+            for page, first in ((fp, ff), (mp, mf)):
+                if page is None:
+                    self.assertLessEqual(first + n, 0x80)
+                else:
+                    self.assertGreaterEqual(first, 0x80)
+                    self.assertLessEqual(first + n, 0x100)
+            # Flags and Masks never overlap, wherever they live.
+            if fp == mp:
+                self.assertTrue(ff + n <= mf or mf + n <= ff,
+                                'the Mask run overlaps the Flags it masks')
 
     # ---- the module drives the line ----------------------------------------
 
@@ -24840,6 +24864,355 @@ class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
         hint = hint[:hint.index('const max = [];')]
         self.assertEqual(hint.count('Array.isArray(si.tx_eq_freeze)'), 1)
         self.assertEqual(hint.count('Array.isArray(si.tx_eq_recall)'), 1)
+
+
+def _ZR_PROFILE():
+    """The shipped tunable profile, for tests that need to vary one key."""
+    from i2c_backends.mock import MockCoherentZRBackend
+    return MockCoherentZRBackend.PROFILE
+
+
+class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
+    """8.2.1 defines the Interrupt line in one sentence: it "is asserted as
+    long as any Flag is set with its associated Mask cleared". CMIS has four
+    Flag/Mask pairs and this tool reported three of them that way:
+
+        Lower 8-13   <- Lower 31-36      (Table 8-12)
+        11h:134-153  <- 10h:213-232      (Table 8-91)
+        14h:132-149  <- 13h:206-223
+        12h:231-238  <- 12h:239-246      <- not read at all
+
+    The laser tuning block was the one left out, and it is the one that
+    matters most, because Table 8-109 gives every bit of 12h:239-246
+    "Default: 1". Every other Mask block in the specification starts cleared.
+    So on a module nobody has configured, every tuning Flag on the panel is a
+    condition that will never reach the host - and the tuning panel was the
+    only one of the four that could not say so.
+
+    Two further things came off the same page:
+
+    - 12h:230 LaserTuningFlagSummaryTx had a register constant in this tool
+      and no reader anywhere. Its own note is the host's procedure: "The host
+      should react to an interrupt by reading this Byte to indicate which
+      Lane(s) are responsible ... then read the corresponding Lane Byte".
+    - That summary is defined as exact, not advisory - bit <n>-1 is set "if
+      and only if" a Flag is set for lane <n> - so a module can contradict
+      itself here, in two directions that fail differently.
+
+    The demo module was also wrong in a way nothing could see: it never wrote
+    239-246 at all, so the Masks read 0 and the only tunable profile was the
+    one kind of module that cannot come out of reset."""
+
+    PROFILE = 'mock_coherent_zr'
+
+    def _connect(self, backend=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend or self.PROFILE,
+                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _cell(self):
+        return js_function_body(self._js(), 'function tuningFlagCell(')
+
+    # ---- the register --------------------------------------------------
+    def test_the_mask_block_is_where_the_table_puts_it(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_TUNING_FLAG_MASKS, (0x12, 239, 8))
+        self.assertEqual(c.REG_TUNING_FLAGS_TX, (0x12, 231, 8))
+
+    def test_the_masks_share_a_page_with_their_flags(self):
+        """The other three blocks keep Masks on the paired control page. A
+        reader who assumed that pattern would go looking on Page 11h for a
+        register that is eight bytes further down the page it is already on.
+        """
+        import cmis_registers as c
+        block = [b for b in c.FLAG_MASK_BLOCKS if b[0] == 0x12]
+        self.assertEqual(len(block), 1)
+        flag_page, _ff, mask_page, _mf, _n = block[0]
+        self.assertEqual(flag_page, mask_page)
+        for other in c.FLAG_MASK_BLOCKS:
+            # The Lower Memory block is on no page at all, so "same page" is
+            # not a question that can be asked of it.
+            if other[0] != 0x12 and other[0] is not None:
+                self.assertNotEqual(other[0], other[2],
+                                    'this block does not share a page, so '
+                                    'the tuning one is not the special case '
+                                    'this test says it is')
+
+    def test_masks_decode_through_the_flag_bit_table(self):
+        """Table 8-109 gives the Masks the same names and the same bits as
+        the Flags. Two tables would be two things to keep aligned."""
+        import cmis_registers as c
+        self.assertEqual(sorted(c.parse_tuning_masks(0x3F)),
+                         sorted(c.parse_tuning_flags(0x3F)))
+        self.assertTrue(all(c.parse_tuning_masks(0x3F).values()))
+        self.assertFalse(any(c.parse_tuning_masks(0x00).values()))
+
+    def test_one_bit_masks_one_flag(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_tuning_masks(1 << 3)['tuning_not_accepted'],
+                         True)
+        self.assertEqual(c.parse_tuning_masks(1 << 3)['invalid_channel_number'],
+                         False)
+
+    # ---- the demo module can come out of reset -------------------------
+    def test_the_demo_module_ships_with_its_masks_set(self):
+        """"Default: 1" on every bit. A tunable profile reading 0 here was a
+        module in a state no real one starts in, and it made the whole point
+        of this column invisible."""
+        self._connect()
+        lanes = self._laser()['lanes']
+        self.assertTrue(lanes, 'the profile reports no tunable lane')
+        masked = [k for k, v in lanes[0]['tuning_masks'].items() if v]
+        self.assertTrue(masked, 'every tuning Flag on this lane can interrupt')
+
+    def test_and_a_host_can_have_cleared_some(self):
+        """The other branch: without a lane where a Mask is clear, the panel
+        could print "masked" on everything and still look right."""
+        self._connect()
+        m = self._laser()['lanes'][0]['tuning_masks']
+        self.assertFalse(m['tuning_not_accepted'],
+                         'nothing on this module can raise an interrupt, so '
+                         'the unmasked branch is never rendered')
+        self.assertFalse(m['invalid_channel_number'])
+        self.assertTrue(m['wavelength_unlocked'],
+                        'and nothing is left masked, so the other branch '
+                        'is never rendered either')
+
+    def test_the_shipped_default_is_the_masked_one(self):
+        """The profile above sets its own Masks, so the fallback this build
+        uses for a profile that says nothing is never exercised by a shipped
+        module. It is the value that matters most - a tunable profile added
+        later inherits it, and inheriting zero would put that module in a
+        state no real one starts in."""
+        from i2c_backends.mock import MockBackend
+
+        class _AsShipped(MockBackend):
+            PROFILE = {k: v for k, v in _ZR_PROFILE().items()
+                       if k != 'tuning_masks'}
+
+        b = _AsShipped()
+        b.connect(0, 0x50)
+        b.write_bytes(0x7F, bytes([0x12]))
+        # tBPC. The mock honours the 10 ms bank/page change time, so a read
+        # issued straight after the page select still answers from the old
+        # page - which here is a block of zeroes, i.e. the exact wrong answer
+        # this test is looking for.
+        time.sleep(0.02)
+        got = b.read_bytes(239, 8)
+        self.assertEqual(list(got), [0x3F] * 8,
+                         'a profile that says nothing about its Masks comes '
+                         'up unmasked, which no module does')
+
+    # ---- every lane, not just the first ---------------------------------
+
+    def test_each_lane_gets_its_own_mask_byte(self):
+        """The only tunable profile is a coherent module: eight host lanes
+        into one optical carrier, so the laser table has exactly one row and
+        every per-lane index in this endpoint is right by having nothing to
+        be wrong about. Widened here rather than by inventing an eight-lane
+        tunable module, which is a fixture of its own."""
+        self._connect()
+        real = app_module._media_lane_present
+        app_module._media_lane_present = lambda lane: lane <= 8
+        try:
+            lanes = self._laser()['lanes']
+        finally:
+            app_module._media_lane_present = real
+        self.assertEqual(len(lanes), 8, 'the widening did not take')
+        # 0x33 on lane 1 and 0x3F on the rest, from the profile.
+        self.assertFalse(lanes[0]['tuning_masks']['tuning_not_accepted'])
+        for lane in lanes[1:]:
+            self.assertTrue(lane['tuning_masks']['tuning_not_accepted'],
+                            'lane %d reads lane 1\u2019s Mask byte'
+                            % lane['lane'])
+
+    def test_each_lane_gets_its_own_summary_bit(self):
+        """One byte per bank with one bit per lane - not one byte per lane,
+        and not lane 1 for everyone."""
+        self._connect()
+        real_lane = app_module._media_lane_present
+        real_banks = app_module._read_banks
+        app_module._media_lane_present = lambda lane: lane <= 8
+
+        def patched(page, addr, length, *a, **kw):
+            out = real_banks(page, addr, length, *a, **kw)
+            if (page, addr) == (0x12, 230):
+                return [(bank, bytes([0b00100010]) + raw[1:])
+                        for bank, raw in out]
+            return out
+
+        app_module._read_banks = patched
+        try:
+            lanes = self._laser()['lanes']
+        finally:
+            app_module._media_lane_present = real_lane
+            app_module._read_banks = real_banks
+        self.assertEqual([l['tuning_flag_summary'] for l in lanes],
+                         [False, True, False, False, False, True,
+                          False, False])
+
+    def test_the_summary_bit_helper_walks_banks(self):
+        """Media lane 9 is bit 0 of the second bank's byte, not bit 8 of a
+        wider number."""
+        import cmis_registers as c
+        self.assertTrue(c.tuning_summary_bit([0x01, 0x00], 0))
+        self.assertFalse(c.tuning_summary_bit([0x01, 0x00], 8))
+        self.assertTrue(c.tuning_summary_bit([0x00, 0x01], 8))
+        self.assertTrue(c.tuning_summary_bit([0x00, 0x80], 15))
+        self.assertFalse(c.tuning_summary_bit([0xFF], 8),
+                         'a lane past the last bank read as set')
+        self.assertFalse(c.tuning_summary_bit([], 0))
+
+    # ---- the summary ----------------------------------------------------
+    def test_the_summary_bit_reaches_the_lane_that_owns_it(self):
+        self._connect()
+        d = self._laser()
+        for lane in d['lanes']:
+            self.assertIn('tuning_flag_summary', lane)
+            self.assertIsInstance(lane['tuning_flag_summary'], bool)
+
+    def test_a_quiet_module_names_no_lane(self):
+        self._connect()
+        d = self._laser()
+        self.assertFalse(any(l['tuning_flag_summary'] for l in d['lanes']))
+        self.assertEqual(d['tuning_summary_conflicts'], [])
+
+    def test_the_summary_follows_a_flag_that_fires(self):
+        """The module sets the summary bit as it sets the Flag, so a request
+        the module refuses shows up in both."""
+        self._connect()
+        d = self._laser()
+        lane = d['lanes'][0]
+        # Grid 0 has no advertised channel plan, so the host has nothing to
+        # check against and the module is the one that has to refuse.
+        self.assertOk(self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [{
+                'lane': lane['lane'], 'grid_code': 0, 'channel': 7,
+                'target_power_dbm': lane['target_power_dbm'],
+            }]}),
+            content_type='application/json'))
+        time.sleep(0.4)
+        after = self._laser()['lanes'][0]
+        self.assertIn('tuning_not_accepted', after['tuning_flags_seen'],
+                      'the module did not refuse, so there is no Flag for '
+                      'the summary to name')
+        self.assertTrue(after['tuning_flag_summary'],
+                        'a Flag fired and 12h:230 does not name the lane')
+
+    def test_both_directions_of_the_disagreement_are_reported(self):
+        """"if and only if" fails two ways and they are different faults, so
+        a check that only looked for one of them would pass on half the
+        broken modules. No shipped profile disagrees - it would not be a
+        conformant module - so the reads are patched under the endpoint."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.tuning_summary_disagreements(0b0001, bytes([0, 0, 0, 0])),
+            [{'lane': 1, 'summary': True, 'flags': False}])
+        self.assertEqual(
+            c.tuning_summary_disagreements(0b0000, bytes([0, 2, 0, 0])),
+            [{'lane': 2, 'summary': False, 'flags': True}])
+        self.assertEqual(
+            c.tuning_summary_disagreements(0b0010, bytes([0, 2, 0, 0])), [])
+
+    def test_a_short_flag_read_does_not_invent_a_disagreement(self):
+        import cmis_registers as c
+        self.assertEqual(c.tuning_summary_disagreements(0xFF, b''), [])
+
+    def test_the_endpoint_reports_a_module_that_contradicts_itself(self):
+        self._connect()
+        real = app_module._read_banked
+
+        def patched(page, addr, per_lane, lanes=0):
+            out = real(page, addr, per_lane, lanes)
+            if (page, addr) == (0x12, 231):
+                out = bytes([0x02]) + out[1:]     # lane 1 wavelength unlocked
+            return out
+
+        app_module._read_banked = patched
+        try:
+            d = self._laser()
+        finally:
+            app_module._read_banked = real
+        self.assertEqual(
+            d['tuning_summary_conflicts'],
+            [{'lane': 1, 'summary': False, 'flags': True}],
+            'a Flag is set on lane 1 and 12h:230 does not name it')
+
+    # ---- the panel -------------------------------------------------------
+    def test_a_masked_flag_is_marked_on_the_chip(self):
+        """The exact line that decides, not the substring: "mask[k] === true"
+        also appears in the quiet-lane branch, so asserting the phrase alone
+        passes with the chip's own gate deleted."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._cell())
+        self.assertIn('lane.tuning_masks', code,
+                      'the cell never looks at the Masks')
+        self.assertIn(
+            "const off = mask[k] === true ? maskNote + 'masked</span>' : '';",
+            code, 'the chip is not gated on this lane\u2019s own Mask')
+
+    def test_the_marker_names_the_register_and_the_default(self):
+        """A reader told "masked" has to be able to find the byte, and the
+        default is the part that is surprising - every other Mask block in
+        CMIS starts cleared."""
+        js = self._js()
+        tip = js[js.index('const TUNING_MASK_TIP'):]
+        tip = tip[:tip.index(';')]
+        self.assertIn('12h:239-246', tip)
+        self.assertIn('Default: 1', tip)
+        self.assertIn('Interrupt', tip)
+
+    def test_a_quiet_lane_says_when_nothing_can_reach_the_host(self):
+        """The one place it is worth saying, because a lane with no Flags up
+        is exactly the lane nobody would think to check."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._cell())
+        self.assertIn('allMasked', code)
+        self.assertIn("every(k => mask[k] === true)", code,
+                      'one masked Flag is not every Flag masked')
+        self.assertIn('all masked', code)
+
+    def test_the_quiet_branch_still_reports_being_tuned(self):
+        """The marker is appended, not substituted: a tuned lane whose Flags
+        are all masked is still a tuned lane."""
+        code = self._cell()
+        self.assertIn('return quiet + (allMasked', code)
+
+    def test_the_summary_disagreement_reaches_the_screen(self):
+        """Including the guard itself. Asserting only the sentence proves
+        the words exist, not that anything renders them - the standing
+        dead-code trap in this codebase."""
+        js = self._js()
+        body = js[js.index('tuning_summary_conflicts'):]
+        body = body[:body.index('async function applyLaser')]
+        self.assertIn('12h:230', body)
+        self.assertIn('12h:231-238', body)
+        self.assertIn('callout-warn', body)
+        self.assertIn('if (capsEl && Array.isArray(d.tuning_summary_conflicts)',
+                      js, 'the block is built and never entered')
+        self.assertIn('capsEl.innerHTML +=', body,
+                      'the callout is assembled and never placed')
+
+    def test_it_says_which_way_round_the_disagreement_goes(self):
+        """A summary naming a lane with nothing behind it and a Flag the
+        summary does not name are different faults for the operator: one
+        sends them looking for nothing, the other hides a real condition."""
+        js = self._js()
+        body = js[js.index('tuning_summary_conflicts'):]
+        body = body[:body.index('async function applyLaser')]
+        self.assertIn('c.summary', body, 'both cases get the same sentence')
+        self.assertIn('with no Flag set behind it', body)
+        self.assertIn('the summary does not name', body)
 
 
 if __name__ == '__main__':

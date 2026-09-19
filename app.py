@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.102.0'
+__version__ = '2.103.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3527,6 +3527,21 @@ def api_laser_get():
         target_pwr   = _read_banked(*cmis.REG_TARGET_PWR_TX[:2], 2)
         tuning_status= _read_banked(*cmis.REG_TUNING_STATUS_TX[:2], 1)
         tuning_flags = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
+        # The fourth Flag/Mask pair in the specification, and the one this
+        # tool had not paired. 8.2.1 defines Interrupt in one sentence - it
+        # "is asserted as long as any Flag is set with its associated Mask
+        # cleared" - and Table 8-109 gives every bit of 12h:239-246
+        # "Default: 1", so on a module out of reset none of these Flags
+        # reaches the host at all.
+        tuning_masks = _read_banked(*cmis.REG_TUNING_FLAG_MASKS[:2], 1)
+        # 12h:230. Defined as exact rather than advisory - bit <n>-1 is set
+        # "if and only if" a Flag is set for that lane - and the note under
+        # it is the host's own procedure: read this byte to find the lane,
+        # then read that lane's Flag byte. The register had a name in this
+        # tool and no reader.
+        # One byte per bank, not per lane: eight lanes to a byte.
+        tuning_summary = [raw[0] for _bank, raw in _read_banks(
+            *cmis.REG_TUNING_FLAG_SUM)]
 
         grid_codes = cmis.GRID_CODES
 
@@ -3552,6 +3567,7 @@ def api_laser_get():
             tgt_pwr = struct.unpack(">h", target_pwr[i*2:i*2+2])[0] * 0.01
             st = tuning_status[i]
             flags = cmis.parse_tuning_flags(tuning_flags[i])
+            masks = cmis.parse_tuning_masks(tuning_masks[i])
             # Latched and clear-on-read like every other Flag, so the read that
             # reports a refused tuning is the read that erases it.
             seen = _state['flag_history'].setdefault('tuning_%d' % (i + 1), set())
@@ -3568,6 +3584,12 @@ def api_laser_get():
                 'channel': ch,
                 'tuning_flags': flags,
                 'tuning_flags_seen': sorted(seen),
+                'tuning_masks': masks,
+                # Per lane, because the summary is per lane and a host that
+                # read the module-wide byte alone would still have to come
+                # back here to find out whether the lane can interrupt.
+                'tuning_flag_summary': cmis.tuning_summary_bit(
+                    tuning_summary, i),
                 'channel_range': grid_channel_ranges.get(gc),
                 'fine_tuning_enabled': fine_en,
                 'fine_offset_ghz': ft * 0.001,
@@ -3597,6 +3619,16 @@ def api_laser_get():
                 struct.unpack(">h", pwr_max)[0] * 0.01,
             ],
             'tunable': True,
+            # Both halves of the "if and only if" - a summary bit with no
+            # Flag behind it and a Flag with no summary bit are different
+            # faults, and the module is wrong either way.
+            'tuning_summary_conflicts': [
+                c for bank in range((_state['lanes'] + 7) // 8)
+                for c in ({'lane': x['lane'] + bank * 8,
+                           'summary': x['summary'], 'flags': x['flags']}
+                          for x in cmis.tuning_summary_disagreements(
+                              tuning_summary[bank],
+                              tuning_flags[bank * 8:bank * 8 + 8]))],
             'grid_channel_ranges': grid_channel_ranges,
             # Table 8-109 names every grid code, 1111b included ("Not
             # available"). The panel kept its own copy of that table and the

@@ -4183,16 +4183,39 @@ function supervisionCell(l, offsets) {
        + `+${offsets.hi_alarm_offset_db} dB, so ${lo} to ${hi} dBm">Relative</span>`;
 }
 
+// 8.2.1 defines the Interrupt line in one sentence: it "is asserted as long
+// as any Flag is set with its associated Mask cleared". Three of the four
+// Flag blocks in CMIS were already reported that way; this is the fourth,
+// and it is the one where masked is the module's shipped state - Table 8-109
+// gives every bit of 12h:239-246 "Default: 1". So on a module nobody has
+// configured, every chip in this column is a condition the host will never
+// be told about, and saying nothing about that is the misleading half.
+const TUNING_MASK_TIP = 'Masked in 12h:239-246, so the module reports this '
+  + 'condition here but will not assert the Interrupt line for it. Every bit '
+  + 'of that register is "Default: 1" in Table 8-109 - unlike every other '
+  + 'Mask block in CMIS - so this is how a module ships unless a host clears '
+  + 'it.';
+
 function tuningFlagCell(lane) {
   const live = Object.keys(TUNING_FLAG_LABELS).filter(k => lane.tuning_flags && lane.tuning_flags[k]);
   const seen = (lane.tuning_flags_seen || []).filter(k => !live.includes(k));
+  const mask = lane.tuning_masks || {};
+  const maskNote = ` <span class="flag-none" title="${esc(TUNING_MASK_TIP)}">`;
   if (!live.length && !seen.length) {
-    return lane.tuning_flags && lane.tuning_flags.tuning_complete
+    // Nothing has fired, which is exactly when nobody would think to ask
+    // whether anything could. Every reportable condition masked is worth a
+    // word here and nowhere else.
+    const reportable = Object.keys(TUNING_FLAG_LABELS);
+    const allMasked = reportable.length
+      && reportable.every(k => mask[k] === true);
+    const quiet = lane.tuning_flags && lane.tuning_flags.tuning_complete
       ? '<span class="flag-ok">Tuned</span>' : '<span class="flag-ok">—</span>';
+    return quiet + (allMasked ? maskNote + 'all masked</span>' : '');
   }
   const chip = (k, cls) => {
     const [label, tip] = TUNING_FLAG_LABELS[k];
-    return `<div class="${cls}" title="${esc(tip)}">${esc(label)}</div>`;
+    const off = mask[k] === true ? maskNote + 'masked</span>' : '';
+    return `<div class="${cls}" title="${esc(tip)}">${esc(label)}${off}</div>`;
   };
   return live.map(k => chip(k, 'flag-active')).join('')
        + seen.map(k => chip(k, 'flag-was')).join('');
@@ -4298,6 +4321,25 @@ async function loadLaser() {
       <td>${tuningFlagCell(l)}</td>
     </tr>`;
   }).join('');
+
+  // 12h:230. Table 8-109 defines it as exact - bit <n>-1 is set "if and only
+  // if" a Flag is set for lane <n> - and the note under it is the host's own
+  // procedure: read this byte to find the lane, then read that lane's Flag
+  // byte to find the condition. A module that gets it wrong breaks that
+  // procedure in one of two ways, and they are not the same mistake.
+  if (capsEl && Array.isArray(d.tuning_summary_conflicts)
+      && d.tuning_summary_conflicts.length) {
+    const say = d.tuning_summary_conflicts.map(c => c.summary
+      ? `lane ${c.lane} is named by the summary with no Flag set behind it`
+      : `lane ${c.lane} has a Flag set that the summary does not name`);
+    capsEl.innerHTML += `<div class="callout callout-warn" title="${esc(
+      'Table 8-109: the bit is set if and only if any Flag in 12h:231-238 is '
+      + 'set for that lane. A summary bit with nothing behind it sends a host '
+      + 'looking for a condition that is not there; a Flag the summary does '
+      + 'not name is a condition the procedure in that note never reaches.'
+    )}">⚠ The laser tuning Flag summary (12h:230) disagrees with the `
+      + `Flags it summarises: ${esc(say.join('; '))}.</div>`;
+  }
 }
 
 async function applyLaser() {

@@ -291,6 +291,10 @@ REG_REL_THRESHOLDS   = (0x12, 0xD8, 2)   # 216-217: relative Tx power thresholds
 REG_TUNING_STATUS_TX = (0x12, 0xDE, 8)   # 222-229: 1B/lane [1]=TuningInProgress [0]=Unlocked
 REG_TUNING_FLAG_SUM  = (0x12, 0xE6, 1)   # 230: one bit per lane, summary
 REG_TUNING_FLAGS_TX  = (0x12, 0xE7, 8)   # 231-238: 1B/lane latched flags
+# 239-246, the Masks for those Flags. The only Mask block in CMIS whose
+# bits are "Default: 1" - every other one starts cleared - so on a module
+# out of reset every laser tuning Flag is set to not reach the host.
+REG_TUNING_FLAG_MASKS= (0x12, 0xEF, 8)   # 239-246: 1B/lane, RW, default 1
 
 # Table 8-109. All RO/COR: the module answers a tuning request here, and the
 # read that reports the answer is the read that clears it.
@@ -310,6 +314,51 @@ def parse_tuning_flags(byte_val: int) -> dict:
     """Decode one lane's Page 12h:231-238 tuning Flag byte."""
     return {name: bool((byte_val >> bit) & 1)
             for bit, name, _desc in TUNING_FLAG_BITS}
+
+
+def parse_tuning_masks(byte_val: int) -> dict:
+    """Decode one lane's Page 12h:239-246 Mask byte.
+
+    Table 8-109 gives the Masks the same bit positions and the same names as
+    the Flags they suppress, so the two decode through one table - a Mask
+    read with a table of its own is a table that can drift from the Flags it
+    is supposed to line up with.
+    """
+    return parse_tuning_flags(byte_val)
+
+
+def tuning_summary_bit(summary_bytes, lane_index: int) -> bool:
+    """12h:230 for one media lane, across banks.
+
+    One byte per bank and one bit per lane within it, lane 1 in bit 0 - so
+    media lane 9 is bit 0 of the next bank's byte, not bit 8 of a wider
+    number. Inline in the caller this is three index expressions that all
+    look alike and fail silently on a module with one media lane.
+    """
+    idx = lane_index // 8
+    if idx < 0 or idx >= len(summary_bytes):
+        return False
+    return bool((summary_bytes[idx] >> (lane_index % 8)) & 1)
+
+
+def tuning_summary_disagreements(summary: int, flag_bytes: bytes,
+                                 lanes: int = 8) -> list:
+    """Lanes where 12h:230 and 12h:231-238 contradict each other.
+
+    Table 8-109 defines the summary as exact, not advisory: bit <n>-1 "is set
+    if and only if any of the Flags in Bytes 231-238 are 1 for the particular
+    Lane <n>". Both directions are a fault, and they fail differently - a
+    summary bit with no Flag behind it sends the host looking for a condition
+    that is not there, and a Flag with no summary bit is a condition the
+    procedure in that same note never arrives at.
+    """
+    out = []
+    for i in range(min(lanes, len(flag_bytes))):
+        said = bool((summary >> i) & 1)
+        has = bool(flag_bytes[i])
+        if said != has:
+            out.append({'lane': i + 1, 'summary': said, 'flags': has})
+    return out
 
 
 def parse_grid_channel_ranges(data: bytes) -> dict:
@@ -1997,6 +2046,13 @@ FLAG_MASK_BLOCKS = (
     (None, 0x08, None, 0x1F, 6),    # Lower 8-13 <- Lower 31-36 (Table 8-12)
     (0x11, 0x86, 0x10, 0xD5, 20),   # 11h:134-153 <- 10h:213-232
     (0x14, 0x84, 0x13, 0xCE, 18),   # 14h:132-149 <- 13h:206-223
+    # 12h:231-238 <- 12h:239-246, the laser tuning Flags. The odd one out
+    # twice over: the Masks share the page with their Flags rather than
+    # living on the paired control page, and Table 8-109 gives every bit
+    # "Default: 1", so this is the one block where a Flag that never reaches
+    # the Interrupt line is the module's shipped behaviour rather than
+    # something a host chose.
+    (0x12, 0xE7, 0x12, 0xEF, 8),    # 12h:231-238 <- 12h:239-246
 )
 
 

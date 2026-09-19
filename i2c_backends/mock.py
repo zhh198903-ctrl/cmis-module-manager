@@ -206,6 +206,12 @@ _ZR_800G = {
     'media_type':          0x02,             # SMF
     'connector_type':      0x07,             # LC
     'media_if_tech':       0x10,             # C-band tunable laser
+    # 12h:239-246. Every bit is "Default: 1" in Table 8-109, so a module
+    # that has never been told otherwise reports its tuning Flags to
+    # nobody. This one has had two cleared on lane 1 - a host that cares
+    # whether a tuning request was refused - and the rest left as shipped,
+    # which is the only way both branches appear on one module.
+    'tuning_masks':        [0x33] + [0x3F] * 7,
     'power_class_bits':    0x80,             # Class 5
     'max_power_0_25w':     0x40,             # 64 x 0.25 = 16.0 W
     'tunable':             True,
@@ -1445,6 +1451,13 @@ class MockBackend(I2CInterface):
                     p12[0x80 + i] |= 0x02
             for i in range(8): p12[0xDE + i] = 0x00    # status: locked, not tuning
             for i in range(8): p12[0xE7 + i] = 0x00    # flags clear
+            # 239-246. Table 8-109 gives every bit of these "Default: 1",
+            # which is the opposite of every other Mask block in CMIS -
+            # leaving them zero made the demo module the one kind of
+            # module that cannot exist straight out of reset.
+            tun_masks = p.get('tuning_masks', [0x3F] * 8)
+            for i in range(8):
+                p12[0xEF + i] = tun_masks[i] & 0x3F
             regs[0x12] = p12
 
         # ==== Page 13h — Diagnostic Controls ====
