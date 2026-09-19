@@ -175,6 +175,37 @@ Table 8-99 的标题就是「Media Lane-Specific Monitors」。而 Monitoring �
 
 DataPath State / Config Status 是**主机侧**的,每行照常。
 
+## 「自适应均衡失败」之前,先看那条通道在不在自适应
+
+规范 Table 6-5 把发送端输入均衡的控制分成互斥的两组,模块按 `AdaptiveInputEqEnableTx` 决定读哪一组:
+
+| 类型 | 控制 | 使能位 |
+|---|---|---|
+| 自适应 | Freeze(`10h:134`)/ Store(`10h:135-136`)/ Recall(`10h:154-155`) | 1 |
+| 非自适应 | HostControlledInputEqTargetTx(`10h:156-159`) | 0 |
+
+**6.2.5.1:模块「忽略与当前设置无关的控制字段值」——两个方向都算。**
+Signal Integrity 表按通道把无关的那一格置灰并说明原因,
+所以排查 `▲`(Tx 自适应均衡没收敛,`11h:0x8A`)时顺序是:
+
+1. **那条通道的 Tx Adaptive EQ 是不是 On** —— 关着就没有自适应可谈,标志说的是别的事
+2. **Tx EQ Adaptation 是 Adapting 还是 Frozen** —— 冻结了就不会再收敛,这是主机自己要的
+3. **Tx EQ Recall 调了哪个缓冲** —— 调回来的设置不合当前链路,一样收敛不了
+
+三格都在 Signal Integrity 表上,按通道一行。
+
+**两条别照搬其余列的规矩:**
+
+- `10h:134` 在 Table 8-77 的 Lane-Specific Control 段(129-142,「独立于 Data Path
+  状态机**或控制集**」),**写下去即刻生效,不需要 Apply**。这张表其余各列都是暂存的。
+- **Recall 不受 ExplicitControl 约束**:6.2.5 明文「在 ExplicitControl 位未置位时同样有效」。
+  本工具写入的正是未置位,所以面板上别的暂存值都会被模块自己的值替换,唯独它不会。
+
+Store 是**只写**寄存器,读不回来,表上没有它这一列。
+
+字段能不能用看 `01h:161`:bit 4 是 Freeze,bit 6-5 是可调用的缓冲数(**11b 保留**)。
+模块没通告,表上就没有这两列——不是工具漏读。
+
 ## 标志亮着但中断没来 = 被屏蔽了
 
 规范一句话定义中断线：**「只要有任何一个标志置位、且它对应的屏蔽位是清零的，Interrupt 就保持有效」**。

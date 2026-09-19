@@ -401,6 +401,16 @@ _XD16_1600G = {
     'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-1600G-XD16 ",
+    # The adaptive half of Table 6-5, on a module with two banks: freeze
+    # (161.4) and two recall buffers (161.6-5) on top of the default set.
+    # Every per-lane read has a second bank to get wrong, and these are the
+    # newest two.
+    'si_161':              0x5F,
+    # Lanes 1 and 4. Lane 1 because the per-bank nudge clears bit (bank-1),
+    # so a profile that freezes only a high lane repeats itself in bank 1 and
+    # the fixture stops distinguishing the banks it exists to distinguish.
+    'tx_eq_freeze':        0x09,
+    'scs_eq_recall':       (0x06, 0x00),     # lane 2 buffer 2, lane 3 buffer 1
     'vendor_sn':       b"DEMO000000006   ",
     'vendor_rev':      b"A0",
     'vendor_oui':      (0x00, 0x00, 0x00),
@@ -689,7 +699,18 @@ _SR8_800G = {
     # A simpler retimer throughout: no host-controlled Tx input EQ target and
     # only pre-cursor Rx equalization, so the signal integrity table has to
     # drop columns rather than show controls this module does not have.
-    'si_161':          0x0B,
+    # It does have the adaptive half of Table 6-5 though - freeze (161.4) and
+    # two recall buffers (161.6-5) - which no profile advertised before, so
+    # both capability rows only ever rendered their "not supported" branch.
+    'si_161':          0x5B,
+    # Lane 3 runs non-adaptive. With no host-controlled target on this module
+    # that means the module picks the setting, which 6.2.5.1 allows, and it
+    # makes lane 3 the lane whose staged recall the module has to ignore.
+    'scs_adaptive_eq_tx': 0xFB,
+    'tx_eq_freeze':    0x02,        # lane 2 frozen at its adapted value
+    # Lane 1 buffer 1, lane 2 buffer 2, lane 5 the reserved code 11b - which
+    # the module declines, so lane 5 is where the two halves differ.
+    'scs_eq_recall':   (0x09, 0x03),
     'si_162':          0x0A,
     # No Tx adaptive input EQ fail Flag and no Rx CDR LOL Flag: a VCSEL module
     # with a simpler retimer, and something for the table to mark as not
@@ -1322,6 +1343,9 @@ class MockBackend(I2CInterface):
         p10 = {}
         p10[0x80] = 0x00                            # 128 DataPathDeinit all clear
         for a in range(0x81, 0x91): p10[a] = 0x00   # 129-144 lane controls + Apply*
+        # 134 AdaptiveInputEqFreezeTx. In the Lane-Specific Control block, so
+        # it is in force as written rather than staged for an Apply.
+        p10[0x86] = p.get('tx_eq_freeze', 0x00)
         # 145-152 DPConfigLane. AppSel 1 on all eight lanes is only a legal
         # set where App 1 is eight lanes wide: on a module carrying two 4-lane
         # ports, App 1 advertises lane 1 as its only starting lane, so lanes
@@ -1335,6 +1359,9 @@ class MockBackend(I2CInterface):
         # retimed module ships with.
         p10[0x99] = p.get('scs_adaptive_eq_tx', 0xFF)   # 153 adaptive Tx eq on
         for a in range(0x9A, 0xA0): p10[a] = 0x00       # 154-159 recall, targets
+        # 154-155 AdaptiveInputEqRecallTx, two bits per lane
+        recall = p.get('scs_eq_recall', (0x00, 0x00))
+        p10[0x9A], p10[0x9B] = recall[0], recall[1]
         # 160 CDREnableTx. This used to fall inside the blanket zero fill
         # above, which is "every Tx CDR bypassed" - a reading no retimed
         # module ships with, and one nothing could see because the byte was
@@ -1685,7 +1712,26 @@ class MockBackend(I2CInterface):
                                   if (b153 >> (4 + i)) & 1] or [0]
                         caps = ((b153 & 0x0F), (b154 & 0x0F),
                                 ((b154 >> 4) & 0x0F))
-                        flags, blocks = ((0x99, 0xA1),
+                        # 10h:134 is one bit per lane like the enables,
+                        # and 154-155 / 215-216 are two bits per lane - a
+                        # width nothing else on these pages uses, so a helper
+                        # that quietly reads one bank looks right until a
+                        # module has two.
+                        pairs = (0x9A,) if page == 0x10 else (0xD7,)
+                        for a in pairs:
+                            if a not in copy:
+                                continue
+                            byte = 0
+                            for li in range(4):
+                                v = (copy[a] >> (2 * li)) & 0x03
+                                # 11b stays 11b: it is there to be marked
+                                # reserved, and rotating it into a real
+                                # buffer would take the mark away.
+                                if v != 3:
+                                    v = (v + bank) % 3
+                                byte |= v << (2 * li)
+                            copy[a] = byte
+                        flags, blocks = ((0x86, 0x99, 0xA1),
                                          ((0x9C, caps[0]), (0xA2, caps[1]),
                                           (0xA6, caps[2]), (0xAA, None)))                             if page == 0x10 else                                 ((0xD6, 0xDE),
                                  ((0xD9, caps[0]), (0xDF, caps[1]),
@@ -1939,14 +1985,16 @@ class MockBackend(I2CInterface):
 
     # Where each Active Control Set signal integrity register comes from:
     # (active address, staged address, nibble-packed).
+    # (Active base, Staged base, bits per lane)
     _ACS_SI_MAP = (
-        (0xD6, 0x99, False),   # AdaptiveInputEqEnableTx, 1 bit per lane
-        (0xD9, 0x9C, True),    # HostControlledInputEqTargetTx
-        (0xDD, 0xA0, False),   # CDREnableTx
-        (0xDE, 0xA1, False),   # CDREnableRx
-        (0xDF, 0xA2, True),    # OutputEqPreCursorTargetRx
-        (0xE3, 0xA6, True),    # OutputEqPostCursorTargetRx
-        (0xE7, 0xAA, True),    # OutputAmplitudeTargetRx
+        (0xD6, 0x99, 1),    # AdaptiveInputEqEnableTx
+        (0xD7, 0x9A, 2),    # AdaptiveInputEqRecalledTx <- AdaptiveInputEqRecallTx
+        (0xD9, 0x9C, 4),    # HostControlledInputEqTargetTx
+        (0xDD, 0xA0, 1),    # CDREnableTx
+        (0xDE, 0xA1, 1),    # CDREnableRx
+        (0xDF, 0xA2, 4),    # OutputEqPreCursorTargetRx
+        (0xE3, 0xA6, 4),    # OutputEqPostCursorTargetRx
+        (0xE7, 0xAA, 4),    # OutputAmplitudeTargetRx
     )
 
     def _recompute_dpidx(self, p11):
@@ -1984,12 +2032,34 @@ class MockBackend(I2CInterface):
         is what this tool does - is therefore not running the numbers it
         staged, and only these registers say what it is running.
         """
-        for active, staged, nibble in self._ACS_SI_MAP:
-            if explicit:
-                value = self._lane_value(0x10, staged, lane, nibble)
+        for active, staged, bits in self._ACS_SI_MAP:
+            if active == 0xD7:
+                value = self._recalled_buffer(lane)
+            elif explicit:
+                value = self._lane_value(0x10, staged, lane, bits)
             else:
                 value = self._application_si(active, lane)
-            self._set_lane_value(0x11, active, lane, nibble, value)
+            self._set_lane_value(0x11, active, lane, bits, value)
+
+    def _recalled_buffer(self, lane: int) -> int:
+        """11h:215-216 AdaptiveInputEqRecalledTx: which buffer was recalled.
+
+        Section 6.2.5 makes this the one staged signal integrity field that
+        still takes effect with ExplicitControl clear - "the
+        AdaptiveInputEqRecallTx recall, if supported, works also when the
+        ExplicitControl bit is not set" - so it is carried across either way.
+        Only the two buffers Table 8-83 defines are: 11b is reserved in this
+        register too, so no value here could report a recall from it.
+
+        Deliberately not modelled: 6.2.5.1 has the module ignore control
+        values "not relevant for the current AdaptiveInputEqEnableTx
+        setting", and with ExplicitControl clear the staged enable and the
+        one in force can differ. Which of them governs a recall is not
+        stated, and a demo module that picked one would be teaching a rule
+        the specification does not have.
+        """
+        want = self._lane_value(0x10, 0x9A, lane, 2)
+        return want if want in (1, 2) else 0
 
     def _application_si(self, active: int, lane: int) -> int:
         """What this module picks for a lane it was left to configure itself.
@@ -2009,24 +2079,25 @@ class MockBackend(I2CInterface):
             0xE7: 1,      # amplitude code 1
         }).get(active, 0)
 
-    def _lane_value(self, page: int, base: int, lane: int, nibble: bool) -> int:
-        regs = self._registers.get(page, {})
-        if not nibble:
-            return (regs.get(base, 0) >> lane) & 1
-        raw = regs.get(base + lane // 2, 0)
-        return (raw >> 4) & 0x0F if lane % 2 else raw & 0x0F
+    def _lane_value(self, page: int, base: int, lane: int, bits: int) -> int:
+        """One lane's field, for the 1, 2 and 4 bit widths CMIS packs per lane.
 
-    def _set_lane_value(self, page: int, base: int, lane: int, nibble: bool,
+        Lane 1 occupies the low bits of the first byte in all three widths,
+        so the same arithmetic covers them.
+        """
+        per = 8 // bits
+        raw = self._registers.get(page, {}).get(base + lane // per, 0)
+        return (raw >> (bits * (lane % per))) & ((1 << bits) - 1)
+
+    def _set_lane_value(self, page: int, base: int, lane: int, bits: int,
                         value: int) -> None:
         regs = self._registers.setdefault(page, {})
-        if not nibble:
-            regs[base] = (regs.get(base, 0) & ~(1 << lane)) | (
-                (value & 1) << lane)
-            return
-        addr = base + lane // 2
-        shift = 4 if lane % 2 else 0
-        regs[addr] = (regs.get(addr, 0) & ~(0x0F << shift)) | (
-            (value & 0x0F) << shift)
+        per = 8 // bits
+        addr = base + lane // per
+        shift = bits * (lane % per)
+        mask = (1 << bits) - 1
+        regs[addr] = (regs.get(addr, 0) & ~(mask << shift)) | (
+            (value & mask) << shift)
 
     def _clear_dp_init_pending(self) -> None:
         """8.14.7: "the module clears all DPInitPendingLane<i> bits of a Data

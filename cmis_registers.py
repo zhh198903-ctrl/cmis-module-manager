@@ -173,6 +173,10 @@ REG_SI_CONTROLS_ADV    = (0x01, 0xA1, 2)  # 161-162 (Table 8-54)
 # set every time somebody presses Apply, so what is in here is committed
 # whether or not anyone looked at it.
 REG_SCS_TX_ADAPT_EQ    = (0x10, 0x99, 1)  # 153 AdaptiveInputEqEnableTx, 1b/lane
+# 154-155. Table 6-5 groups this with Freeze and Store as the controls
+# that apply when AdaptiveInputEqEnableTx is set; the target four bytes
+# later is the one that applies when it is clear.
+REG_SCS_TX_EQ_RECALL   = (0x10, 0x9A, 2)  # 154-155 AdaptiveInputEqRecallTx
 REG_SCS_TX_EQ_TARGET   = (0x10, 0x9C, 4)  # 156-159 HostControlledInputEqTargetTx
 # 160 CDREnableTx, the byte immediately before the Rx one. Advertised
 # together by 01h:161.0-1, the same way 10h:161 is by 01h:162.0-1.
@@ -184,6 +188,11 @@ REG_SCS_RX_AMPLITUDE   = (0x10, 0xAA, 4)  # 170-173 OutputAmplitudeTargetRx
 REG_SUPPORTED_FLAGS    = (0x01, 0x9D, 2)  # 157-158 (Table 8-52)
 REG_SUPPORTED_MONITORS = (0x01, 0x9F, 2)  # 159-160 (Table 8-53)
 REG_TX_SQUELCH_DIS   = (0x10, 0x83, 1)   # 131  AutoSquelchDisableTx
+# 134. Table 8-77 puts 129-142 under Lane-Specific Control, "independent
+# of the Data Path State machine or control sets" - so unlike the two
+# equalizer fields twenty bytes further on, this one is in force as read
+# and needs no Apply.
+REG_TX_ADAPT_EQ_FREEZE = (0x10, 0x86, 1)  # 134 AdaptiveInputEqFreezeTx
 REG_TX_FORCE_SQUELCH = (0x10, 0x84, 1)   # 132  OutputSquelchForceTx
 REG_RX_POL_FLIP      = (0x10, 0x89, 1)   # 137  OutputPolarityFlipRx
 REG_RX_OUTPUT_DIS    = (0x10, 0x8A, 1)   # 138  OutputDisableRx
@@ -248,6 +257,7 @@ REG_ADDITIONAL_APPS    = (0x01, 0xDF, 28)  # 223-250 App 9-15, Table 8-61
 REG_NAD_BANKS          = (0x01, 0xAF, 1)   # 175 NADBanksSupported
 REG_MEDIA_LANE_ASSIGN  = (0x01, 0xB0, 15)  # 176-190 App 1-15, Table 8-60
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
+REG_ACS_TX_EQ_RECALLED = (0x11, 0xD7, 2)  # 215-216 AdaptiveInputEqRecalledTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
 REG_ACS_TX_CDR         = (0x11, 0xDD, 1)  # 221 CDREnableTx
 REG_ACS_RX_CDR         = (0x11, 0xDE, 1)  # 222 CDREnableRx
@@ -1308,6 +1318,30 @@ def unpack_nibbles(data: bytes, lanes: int = 8) -> list:
         byte = data[i // 2] if i // 2 < len(data) else 0
         out.append((byte >> 4) & 0x0F if i % 2 else byte & 0x0F)
     return out
+
+
+def unpack_pairs(data: bytes, lanes: int = 8) -> list:
+    """One 2-bit value per lane, lane 1 in the low pair of the first byte.
+
+    Four lanes to a byte, packed low-first like unpack_nibbles - so the
+    same trap applies, reading the high pair first reverses each group
+    of four lanes rather than swapping pairs.
+    """
+    out = []
+    for i in range(lanes):
+        byte = data[i // 4] if i // 4 < len(data) else 0
+        out.append((byte >> (2 * (i % 4))) & 0x03)
+    return out
+
+
+# 10h:154-155 and 11h:215-216. Value 3 is reserved in both, so a module
+# reporting it is saying something the specification does not define.
+EQ_RECALL_NAMES = {
+    0: 'no recall',
+    1: 'buffer 1',
+    2: 'buffer 2',
+    3: 'reserved',
+}
 
 
 def parse_si_controls_adv(data: bytes) -> dict:

@@ -2371,6 +2371,8 @@ async function loadDatapath() {
 // interface to look it up.
 const SI_COLUMNS = [
   ['tx_adaptive_eq',      'Tx Adaptive EQ',  '10h / 0x99',        'AdaptiveInputEqEnableTx (01h:161.3)'],
+  ['tx_eq_freeze',        'Tx EQ Adaptation', '10h / 0x86',       'AdaptiveInputEqFreezeTx (01h:161.4). A Lane-Specific Control rather than part of the Staged Control Set, so this column is what is in force now and needs no Apply'],
+  ['tx_eq_recall',        'Tx EQ Recall',    '10h / 0x9A\u20130x9B', 'AdaptiveInputEqRecallTx (01h:161.6-5): which stored equalizer buffer the module loads when this set is applied. Store is write-only (10h:135-136) and has nothing to report'],
   ['tx_input_eq_target',  'Tx Input EQ',     '10h / 0x9C\u20130x9F', 'HostControlledInputEqTargetTx (01h:161.2)'],
   ['tx_cdr_enable',       'Tx CDR',          '10h / 0xA0',        'CDREnableTx \u2014 clear means bypassed. Advertised by 01h:161.0-1, both bits: a CDR that exists and can be taken out of circuit'],
   ['rx_cdr_enable',       'Rx CDR',          '10h / 0xA1',        'CDREnableRx \u2014 clear means bypassed. Advertised by 01h:162.0-1, both bits'],
@@ -2589,21 +2591,79 @@ function renderSignalIntegrity(d) {
     if (key === 'rx_eq_post_cursor') return adv.rx_output_eq_post_cursor_max;
     return undefined;
   };
-  // Table 6-5 splits the Tx input equalization controls by type and says
-  // which one the module reads: HostControlledInputEqTargetTx is
-  // non-adaptive and "is ignored by the module if AdaptiveInputEqEnableTx<i>
-  // is set for that lane". The advertisement was the only gate here, so on a
-  // lane running adaptive equalization the target was printed as a setting -
-  // a number the module never looks at, beside five that it does.
+  // Table 6-5 splits the Tx input equalization controls into an adaptive
+  // group - freeze, store and recall - and a non-adaptive one, the target.
+  // 6.2.5.1: the module "ignores control field values that are not relevant
+  // for the current AdaptiveInputEqEnableTx setting", which cuts both ways.
+  // Only the non-adaptive half was gated, because it was the only half read.
   //
   // Per lane, not per module: the enable is one bit per lane, and a module
   // may run adaptive on some lanes and host-controlled on others.
+  // Each column is judged against the enable of its own scope, because
+  // 6.2.5.1 says "the current AdaptiveInputEqEnableTx setting" and the
+  // staged one and the one in force are not the same thing while
+  // ExplicitControl is clear. The staged columns go with the staged enable,
+  // since an Apply commits them together. Freeze does not: 10h:134 is acting
+  // now, on the configuration the module is running now, so the enable that
+  // governs it is the module's own (11h:214). Judging it by the staged
+  // request would grey out a live control on a lane that is adapting.
+  const ADAPTIVE_ONLY = ['tx_eq_freeze', 'tx_eq_recall'];
+  const enableFor = (key) => (key === 'tx_eq_freeze'
+    ? siLive['tx_adaptive_eq'] : si['tx_adaptive_eq']);
   const ignoredOnLane = (key, i) => {
-    if (key !== 'tx_input_eq_target') return false;
-    const adaptive = si['tx_adaptive_eq'];
-    return Array.isArray(adaptive) && adaptive[i] === true;
+    const adaptive = enableFor(key);
+    if (!Array.isArray(adaptive)) return '';
+    if (key === 'tx_input_eq_target' && adaptive[i] === true) {
+      return 'Ignored on this lane: Tx Adaptive EQ is on, and Table 6-5 makes '
+        + 'HostControlledInputEqTargetTx the non-adaptive control - "it is '
+        + 'ignored by the module if AdaptiveInputEqEnableTx is set for that '
+        + 'lane". Clear Tx Adaptive EQ for this lane to make it take effect.';
+    }
+    if (key === 'tx_eq_recall' && adaptive[i] === false) {
+      return 'Ignored on this lane: this staged set pairs a recall with a '
+        + 'lane it stages non-adaptive, and Table 6-5 groups the recall with '
+        + 'the controls that apply to adaptive equalization. Set Tx Adaptive '
+        + 'EQ for this lane in the same set to make it take effect.';
+    }
+    if (key === 'tx_eq_freeze' && adaptive[i] === false) {
+      return 'Ignored on this lane: the module reports it is running '
+        + 'non-adaptive equalization here (Active Control Set, 11h:214), and '
+        + 'Table 6-5 groups the freeze with the controls that apply to '
+        + 'adaptive equalization. There is no adaptation to freeze. This is '
+        + 'the enable in force, not the staged one - 10h:134 acts on the '
+        + 'configuration the module is running.';
+    }
+    return '';
+  };
+  // Two columns the generic cell would report backwards or bare. Adaptation
+  // running is the ordinary state and frozen is the one worth seeing, so the
+  // "Off" this table gives a cleared bit would colour the healthy case as a
+  // fault. And a recall value is a code, not a magnitude: 1 and 2 name
+  // buffers, and there is no buffer 3.
+  const RECALL_NAMES = ['no recall', 'buffer 1', 'buffer 2', 'reserved'];
+  const TX_EQ_CELL = {
+    // Amber, not the red this table gives an out-of-range value: freezing
+    // adaptation is a thing the host asked for, not a setting the module
+    // will reject, and red here is the colour that means ConfigRejected.
+    tx_eq_freeze: (v) => (v
+      ? `<span class="flag-warn" title="${esc(
+          'Adaptation is frozen at its last value on this lane (10h:134). '
+          + 'The equalizer is no longer tracking the host signal.')}"`
+        + '>Frozen</span>'
+      : '<span class="flag-ok">Adapting</span>'),
+    tx_eq_recall: (v) => {
+      if (v === 3) {
+        return `<span class="flag-active" title="${esc(
+          'Table 8-83 defines 11b as reserved - there is no third buffer to '
+          + 'recall from. An Apply carrying this earns '
+          + 'ConfigRejectedInvalidSI.')}">reserved (11b)</span>`;
+      }
+      return v ? `<span class="flag-ok">${esc(RECALL_NAMES[v])}</span>`
+               : `<span class="reg-meta">${esc(RECALL_NAMES[0])}</span>`;
+    },
   };
   const cell = (key, v) => {
+    if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v);
     if (typeof v === 'boolean') {
       return v ? '<span class="flag-ok">On</span>'
                : `<span class="flag-warn">${key === 'rx_cdr_enable' ? 'Bypassed' : 'Off'}</span>`;
@@ -2630,6 +2690,18 @@ function renderSignalIntegrity(d) {
   const inForce = (key, i, staged) => {
     const live = (siLive[key] || [])[i];
     if (live === undefined || live === staged) return '';
+    // 11h:215-216 answers in a different tense - which buffer was recalled,
+    // not which to recall - and it is the one setting 6.2.5 exempts from
+    // ExplicitControl, so the note below would be wrong about it twice.
+    if (key === 'tx_eq_recall') {
+      return `<div class="appsel-pending" title="${esc(
+        'AdaptiveInputEqRecalledTx (11h:215-216) is the module reporting what '
+        + 'it actually recalled. Section 6.2.5 exempts the recall from '
+        + 'ExplicitControl - it "works also when the ExplicitControl bit is '
+        + 'not set" - so a difference here is the module declining the '
+        + 'staged buffer, not the Application supplying its own.'
+      )}">recalled ${esc(RECALL_NAMES[live & 3])}</div>`;
+    }
     const text = typeof live === 'boolean'
       ? (live ? 'on' : (key === 'rx_cdr_enable' ? 'bypassed' : 'off'))
       : String(live);
@@ -2640,15 +2712,11 @@ function renderSignalIntegrity(d) {
       + 'settings from the Application it is running.')}">in force ${esc(text)}</div>`;
   };
   const lanes = (si[cols[0][0]] || []).length;
-  const ignoredTip = esc('Ignored on this lane: Tx Adaptive EQ is on, and '
-    + 'Table 6-5 makes HostControlledInputEqTargetTx the non-adaptive '
-    + 'control - "it is ignored by the module if AdaptiveInputEqEnableTx is '
-    + 'set for that lane". Clear Tx Adaptive EQ for this lane to make it '
-    + 'take effect.');
   body.innerHTML = Array.from({length: lanes}, (_, i) =>
     `<tr><td>${i + 1}</td>` + cols.map(([key]) => {
-      if (ignoredOnLane(key, i)) {
-        return `<td class="control-unavailable" title="${ignoredTip}">`
+      const why = ignoredOnLane(key, i);
+      if (why) {
+        return `<td class="control-unavailable" title="${esc(why)}">`
           + `${cell(key, si[key][i])}`
           + '<div class="appsel-pending">ignored</div></td>';
       }
@@ -2665,6 +2733,15 @@ function renderSignalIntegrity(d) {
       : '';
   }
   if (hint) {
+    const exempt = [];
+    if (Array.isArray(si.tx_eq_freeze)) {
+      exempt.push('Tx EQ Adaptation is a Lane-Specific Control (10h:134), not '
+        + 'part of this set, and is in force as shown');
+    }
+    if (Array.isArray(si.tx_eq_recall)) {
+      exempt.push('the recall takes effect with ExplicitControl clear as well '
+        + '(section 6.2.5)');
+    }
     const max = [];
     if (adv.tx_input_eq_max !== undefined) max.push('Tx input EQ max ' + adv.tx_input_eq_max);
     if (adv.rx_output_eq_pre_cursor_max !== undefined)
@@ -2692,6 +2769,10 @@ function renderSignalIntegrity(d) {
         + 'Application dependent (ExplicitControl clear, 11h:206-213 '
         + 'bit 0), so it provisions these from the Application it is '
         + 'running. A lane where that differs shows the value in force.')
+      // That sentence is about the Staged Control Set, and two of these
+      // columns are not governed by it. Saying so once here is cheaper than
+      // a reader concluding the freeze they can see is only a request.
+      + (exempt.length ? '  Except: ' + exempt.join('; ') + '.' : '')
       + (max.length ? '  Module limits: ' + max.join(' \u00b7 ') + '.' : '');
   }
 }

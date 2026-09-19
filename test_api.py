@@ -9585,14 +9585,22 @@ class TestSignalIntegrityTheModuleCannotCarryOut(CMISTestCase):
             self.assertIn(key, body, '%s is never consulted' % key)
 
     def test_the_mark_says_what_the_module_would_answer(self):
+        """Every value this table marks in the rejection colour earns the
+        same answer from the module, so every one of them has to name it.
+        Counting the tooltips was exact while there were two marks and
+        silently admitted a third that explained nothing."""
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
         body = js[js.index('const siLimit = (key) =>'):]
         body = body[:body.index('const lanes =')]
-        self.assertEqual(body.count('ConfigRejectedInvalidSI'), 2,
-                         'the tooltip does not name the rejection this earns')
+        marks = body.count('class="flag-active"')
+        self.assertGreaterEqual(marks, 3,
+                                'the out-of-range marks have left this slice')
+        self.assertEqual(body.count('ConfigRejectedInvalidSI'), marks,
+                         'a value is marked out of range without naming the '
+                         'rejection it earns')
 
 
 
@@ -9975,6 +9983,12 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
                          'this test needs a module without amplitude control')
         self.assertNotIn('rx_output_amplitude', d['signal_integrity_active'])
 
+    # Table 8-77 puts 129-142 under Lane-Specific Control, "independent of
+    # the Data Path State machine or control sets", so Tables 8-104 and
+    # 8-105 have nothing to mirror AdaptiveInputEqFreezeTx against. There is
+    # no staged-versus-active question to ask about a field never staged.
+    _NOT_IN_A_CONTROL_SET = frozenset({'tx_eq_freeze'})
+
     def test_every_shipped_profile_reports_both_halves(self):
         names = [b['name'] for b in self.assertOk(
             self.client.get('/api/backends'))['data']
@@ -9985,9 +9999,24 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
                 self._connect(name)
                 d = self._apply()
                 self.assertEqual(sorted(d['signal_integrity_active']),
-                                 sorted(d['signal_integrity']),
+                                 sorted(set(d['signal_integrity'])
+                                        - self._NOT_IN_A_CONTROL_SET),
                                  '%s reports one half and not the other'
                                  % name)
+
+    def test_the_exempt_column_is_the_one_outside_the_control_set(self):
+        """A name in that set has to earn its place. The Staged Control Set
+        starts at 143, so a field below it is not staged and has no Active
+        Control Set counterpart to differ from; a field at or above it does,
+        and exempting one would be a place to hide a half the tool forgot
+        to read."""
+        import cmis_registers as c
+        self.assertEqual(set(self._NOT_IN_A_CONTROL_SET), {'tx_eq_freeze'})
+        page, addr, _ = c.REG_TX_ADAPT_EQ_FREEZE
+        self.assertEqual(page, 0x10)
+        self.assertLess(addr, 143,
+                        'this address is inside the Staged Control Set, so '
+                        'it does have an Active Control Set counterpart')
 
     # ---- and the table stops presenting a request as an answer ------------
 
@@ -12864,12 +12893,19 @@ class TestSignalIntegrityPastTheFirstBank(CMISTestCase):
                          ['tx_input_eq_target'],
                          [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 0, 0])
 
-    def test_all_six_staged_fields_moved_off_bank_zero(self):
-        """Fixing one and leaving five is the same bug with fewer columns."""
+    def test_all_eight_staged_fields_moved_off_bank_zero(self):
+        """Fixing one and leaving seven is the same bug with fewer columns.
+
+        The two-bit field is the one to watch: four lanes to a byte rather
+        than two, so a helper written by copying the nibble one lands on the
+        right answer for bank 0 and the wrong byte for bank 1."""
         self._connect()
         for addr, key, poke, want in (
                 (0x99, 'tx_adaptive_eq', [0xFF, 0x00], [True] * 8 + [False] * 8),
                 (0xA1, 'rx_cdr_enable', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0x86, 'tx_eq_freeze', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0x9A, 'tx_eq_recall', [[0x00, 0x00], [0x55, 0xAA]],
+                 [0] * 8 + [1, 1, 1, 1, 2, 2, 2, 2]),
                 (0x9C, 'tx_input_eq_target', [[0] * 4, [0x11] * 4],
                  [0] * 8 + [1] * 8),
                 (0xA2, 'rx_eq_pre_cursor', [[0] * 4, [0x22] * 4],
@@ -12882,11 +12918,16 @@ class TestSignalIntegrityPastTheFirstBank(CMISTestCase):
             self.assertEqual(self._si()[key], want,
                              '%s still reads bank 0 for lanes 9-16' % key)
 
-    def test_all_six_active_fields_moved_off_bank_zero(self):
+    def test_all_seven_active_fields_moved_off_bank_zero(self):
+        """One fewer than the staged half: 10h:134 is a Lane-Specific
+        Control rather than part of a control set, so Tables 8-104 and 8-105
+        have no counterpart to it."""
         self._connect()
         for addr, key, poke, want in (
                 (0xD6, 'tx_adaptive_eq', [0xFF, 0x00], [True] * 8 + [False] * 8),
                 (0xDE, 'rx_cdr_enable', [0xFF, 0x00], [True] * 8 + [False] * 8),
+                (0xD7, 'tx_eq_recall', [[0x00, 0x00], [0x55, 0xAA]],
+                 [0] * 8 + [1, 1, 1, 1, 2, 2, 2, 2]),
                 (0xD9, 'tx_input_eq_target', [[0] * 4, [0x11] * 4],
                  [0] * 8 + [1] * 8),
                 (0xDF, 'rx_eq_pre_cursor', [[0] * 4, [0x22] * 4],
@@ -20412,6 +20453,9 @@ class TestAnEqualizationTargetTheModuleIgnores(CMISTestCase):
     beside five that it does. Every demo module runs adaptive on every lane,
     which is what the column looked like out of the box.
 
+    The rule runs both ways, and gating only the target was correct only
+    while the panel had no adaptive control on it. It has two now.
+
     Per lane, because the enable is one bit per lane and a module may run
     adaptive on some and host-controlled on others.
 
@@ -20427,22 +20471,81 @@ class TestAnEqualizationTargetTheModuleIgnores(CMISTestCase):
     def _body(self):
         return js_function_body(self._js(), 'function renderSignalIntegrity(')
 
-    def test_the_two_columns_are_both_there_to_begin_with(self):
-        """If either row were dropped the check below would pass by having
+    def test_the_columns_of_table_6_5_are_all_there_to_begin_with(self):
+        """If a row were dropped the checks below would pass by having
         nothing to mark."""
         js = self._js()
         self.assertIn("'tx_adaptive_eq'", js)
         self.assertIn("'tx_input_eq_target'", js)
+        self.assertIn("'tx_eq_freeze'", js)
+        self.assertIn("'tx_eq_recall'", js)
 
-    def test_the_rule_is_applied_to_the_target_only(self):
-        """The other direction - the adaptive controls being ignored when the
-        enable is clear - is not shown here, because this panel does not offer
-        Freeze, Store or Recall."""
+    def test_the_rule_is_applied_in_both_directions(self):
+        """Table 6-5 has two columns, so the gate has two directions. The
+        target is ignored where the enable is set; the adaptive controls are
+        ignored where it is clear. Half a rule marks the wrong cells now
+        that the adaptive half is on the panel."""
         body = self._body()
         code = re.sub('//[^' + chr(10) + ']*', '', body)
-        self.assertIn("key !== 'tx_input_eq_target'", code,
-                      'the rule has to name the field it governs')
+        self.assertIn("key === 'tx_input_eq_target' && adaptive[i] === true",
+                      code,
+                      'the non-adaptive control has to be marked where '
+                      'adaptive equalization is running')
+        self.assertIn('ADAPTIVE_ONLY', code,
+                      'the adaptive controls need the opposite gate')
+        for key in ('tx_eq_recall', 'tx_eq_freeze'):
+            self.assertIn("key === '%s' && adaptive[i] === false" % key, code,
+                          '%s is not marked where the enable is clear' % key)
         self.assertNotIn('never asked', code, 'comments were not stripped')
+
+    def test_the_freeze_is_judged_against_the_enable_in_force(self):
+        """10h:134 is not staged - Table 8-77 puts it in the Lane-Specific
+        Control block. It acts on the configuration the module is running, so
+        the enable that governs it is the module's own (11h:214). Judging it
+        by the staged request greys out a live control on a lane that is
+        adapting."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        self.assertIn('const enableFor', code,
+                      'both columns are judged against one enable')
+        gate = code[code.index('const enableFor'):]
+        gate = gate[:gate.index('const ignoredOnLane')]
+        self.assertIn("key === 'tx_eq_freeze'", gate)
+        self.assertIn("siLive['tx_adaptive_eq']", gate,
+                      'the freeze is judged against the staged enable')
+        self.assertIn("si['tx_adaptive_eq']", gate,
+                      'the staged columns lost their own enable')
+
+    def test_the_two_reasons_name_the_register_each_one_read(self):
+        """A reader told "Tx Adaptive EQ is off" has to know which of the two
+        the panel means, or the fix they try is the one that changes the
+        other one."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        gate = code[code.index('const ignoredOnLane'):]
+        gate = gate[:gate.index('const RECALL_NAMES')]
+        freeze = gate[gate.index("key === 'tx_eq_freeze'"):]
+        self.assertIn('11h:214', freeze)
+        self.assertIn('in force', freeze)
+        recall = gate[gate.index("key === 'tx_eq_recall'"):]
+        recall = recall[:recall.index("key === 'tx_eq_freeze'")]
+        self.assertIn('staged set', recall)
+        self.assertNotIn('11h:214', recall)
+
+    def test_the_adaptive_gate_names_the_adaptive_controls_only(self):
+        """The list is what decides which cells get the opposite rule, so a
+        column landing in it by accident would be marked ignored on every
+        adaptive lane - the exact fault this class exists to catch, in the
+        other direction."""
+        code = re.sub('//[^' + chr(10) + ']*', '', self._body())
+        line = code[code.index('const ADAPTIVE_ONLY'):]
+        line = line[:line.index(chr(59))]
+        for key in ('tx_eq_freeze', 'tx_eq_recall'):
+            self.assertIn(key, line)
+        for key in ('tx_input_eq_target', 'tx_adaptive_eq', 'tx_cdr_enable',
+                    'rx_cdr_enable', 'rx_eq_pre_cursor', 'rx_eq_post_cursor',
+                    'rx_output_amplitude'):
+            self.assertNotIn(key, line,
+                             '%s is not one of the adaptive equalization '
+                             'controls in Table 6-5' % key)
 
     def test_it_reads_the_lane_and_not_the_module(self):
         """A module may run adaptive on some lanes and not others, so the
@@ -24362,6 +24465,381 @@ class TestHowLongTheCableItselfTakes(CMISTestCase):
     def test_the_flag_only_fires_on_the_odd_pair(self):
         body = self._row_body()
         self.assertIn('ns != null && !cableAssembly', body)
+
+
+class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
+    """Table 6-5 splits the Tx input equalization controls into two groups and
+    says which one the module reads:
+
+        Adaptive      AdaptiveInputEqFreezeTx / StoreTx / RecallTx   Enable 1
+        Non-Adaptive  HostControlledInputEqTargetTx                  Enable 0
+
+    The tool implemented the non-adaptive column completely: it reads the
+    staged target (10h:156-159) and the active one (11h:217-220), checks both
+    against the advertised maximum, and greys the cell out on a lane where
+    the enable is set, because there the module ignores it. Of the adaptive
+    column it read the enable bit and nothing else.
+
+    So on a lane reporting adaptive equalization the panel took away the one
+    number it had and put nothing in its place. Three registers said what was
+    happening there and none was read:
+
+      10h:134   AdaptiveInputEqFreezeTx   is adaptation still running
+      10h:154-155 AdaptiveInputEqRecallTx which stored buffer an Apply loads
+      11h:215-216 AdaptiveInputEqRecalledTx which buffer the module loaded
+
+    The capabilities panel has advertised both since the round that added it
+    - "Tx Input EQ Freeze" and "Tx Input EQ Recall" - and no shipped profile
+    ever set 01h:161.4 or 161.6-5, so both rows had only ever rendered their
+    not-supported branch. An advertisement no fixture carries is an
+    advertisement nothing was ever built behind.
+
+    Two details the specification is explicit about and a naive column would
+    get wrong:
+
+    - 134 is in the Lane-Specific Control block, which Table 8-77 describes
+      as "independent of the Data Path State machine or control sets". It is
+      in force as read. The rest of this table is staged.
+    - 6.2.5 exempts one field from ExplicitControl: "the
+      AdaptiveInputEqRecallTx recall, if supported, works also when the
+      ExplicitControl bit is not set". This tool always writes that bit
+      clear, so every other staged value on the panel is a request the module
+      replaces - and this one is not.
+
+    Store (10h:135-136) is write-only and has nothing to report."""
+
+    PROFILE = 'mock_sr8'
+
+    def _connect(self, backend=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend or self.PROFILE,
+                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _body(self):
+        return js_function_body(self._js(), 'function renderSignalIntegrity(')
+
+    # ---- the decode ------------------------------------------------------
+    def test_two_bit_fields_unpack_lane_one_from_the_low_pair(self):
+        """Table 8-83 puts RecallTx1 in bits 1-0 of 154 and RecallTx4 in bits
+        7-6, the same low-first order as the nibble fields. Reading the high
+        pair first reverses each group of four lanes."""
+        import cmis_registers as c
+        self.assertEqual(c.unpack_pairs(bytes([0b11100100, 0x00])),
+                         [0, 1, 2, 3, 0, 0, 0, 0])
+
+    def test_the_second_byte_carries_lanes_five_to_eight(self):
+        import cmis_registers as c
+        self.assertEqual(c.unpack_pairs(bytes([0x00, 0b00000110])),
+                         [0, 0, 0, 0, 2, 1, 0, 0])
+
+    def test_a_short_read_does_not_invent_lanes(self):
+        import cmis_registers as c
+        self.assertEqual(c.unpack_pairs(b''), [0] * 8)
+
+    def test_the_reserved_code_is_named_rather_than_printed(self):
+        """11b is reserved in both the staged and the active register."""
+        import cmis_registers as c
+        self.assertEqual(c.EQ_RECALL_NAMES[3], 'reserved')
+        self.assertEqual(c.EQ_RECALL_NAMES[1], 'buffer 1')
+        self.assertEqual(c.EQ_RECALL_NAMES[2], 'buffer 2')
+
+    # ---- the addresses ---------------------------------------------------
+    def test_the_registers_are_the_ones_the_tables_name(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_TX_ADAPT_EQ_FREEZE, (0x10, 134, 1))
+        self.assertEqual(c.REG_SCS_TX_EQ_RECALL, (0x10, 154, 2))
+        self.assertEqual(c.REG_ACS_TX_EQ_RECALLED, (0x11, 215, 2))
+
+    def test_the_freeze_byte_is_outside_every_control_set(self):
+        """Table 8-77: 129-142 Lane-Specific Control, 143-177 Staged Control
+        Set 0. The distinction is the whole reason this column is labelled
+        differently from the rest."""
+        import cmis_registers as c
+        self.assertLess(c.REG_TX_ADAPT_EQ_FREEZE[1], 143)
+        self.assertGreaterEqual(c.REG_SCS_TX_EQ_RECALL[1], 143)
+        self.assertLess(c.REG_SCS_TX_EQ_RECALL[1] + 1, 178)
+
+    # ---- a module that actually advertises them --------------------------
+    def test_a_shipped_profile_advertises_the_adaptive_controls(self):
+        """Without this the two capability rows have only ever rendered
+        their not-supported branch, and every check below would pass by
+        having nothing to look at."""
+        self._connect()
+        adv = self._dp()['si_advertised']
+        self.assertTrue(adv['tx_input_eq_freeze'],
+                        '01h:161.4 is clear on every profile')
+        self.assertEqual(adv['tx_input_eq_recall_buffers'], 2,
+                         '01h:161.6-5 is clear on every profile')
+
+    def test_the_panel_reports_the_frozen_lane(self):
+        self._connect()
+        si = self._dp()['signal_integrity']
+        self.assertEqual(si['tx_eq_freeze'][:4],
+                         [False, True, False, False])
+
+    def test_the_panel_reports_which_buffer_each_lane_recalls(self):
+        self._connect()
+        si = self._dp()['signal_integrity']
+        self.assertEqual(si['tx_eq_recall'], [1, 2, 0, 0, 3, 0, 0, 0])
+
+    def test_the_two_enables_disagree_so_the_scopes_can_be_told_apart(self):
+        """The whole reason each column is judged against its own enable. The
+        staged set leaves lane 3 non-adaptive; the module, left to configure
+        itself because ExplicitControl is clear, runs adaptive there. A panel
+        that used one array for both columns would be right about one of them
+        by luck."""
+        self._connect()
+        d = self._dp()
+        self.assertFalse(d['signal_integrity']['tx_adaptive_eq'][2],
+                         'the staged set has to stage lane 3 non-adaptive')
+        self.assertTrue(d['signal_integrity_active']['tx_adaptive_eq'][2],
+                        'and the module has to be adapting there anyway')
+
+    # ---- what the module says it did -------------------------------------
+    def test_the_module_reports_the_buffer_it_recalled(self):
+        """11h:215-216 answers in a different tense from 10h:154-155."""
+        self._connect()
+        live = self._dp()['signal_integrity_active']
+        self.assertEqual(live['tx_eq_recall'][:2], [1, 2])
+
+    def test_it_declines_the_reserved_buffer(self):
+        """There is no third buffer for lane 5 to recall from, and 11b is
+        reserved in the active register as well - no value there could report
+        a recall from it."""
+        self._connect()
+        d = self._dp()
+        self.assertEqual(d['signal_integrity']['tx_eq_recall'][4], 3)
+        self.assertEqual(d['signal_integrity_active']['tx_eq_recall'][4], 0)
+
+    def test_writing_one_lane_leaves_the_lanes_beside_it_alone(self):
+        """Four lanes share a byte at two bits each, and a Provision writes
+        only the lanes it is applying - so a setter that clears more than its
+        own field takes its neighbours with it. Ascending order hides it,
+        because every lane a wide mask clears is written again right after;
+        writing one lane on its own does not."""
+        from i2c_backends.mock import MockBackend
+
+        class _Probe(MockBackend):
+            PROFILE = dict(MockBackend.PROFILE)
+
+        b = _Probe.__new__(_Probe)
+        b._registers = {0x11: {0xD7: 0b11100100}}   # lanes 1-4 = 0,1,2,3
+        b._set_lane_value(0x11, 0xD7, 1, 2, 0)
+        self.assertEqual(b._registers[0x11][0xD7], 0b11100000,
+                         'writing lane 2 changed a lane beside it')
+
+    def test_the_demo_module_leaves_the_open_question_open(self):
+        """Which enable governs a recall when ExplicitControl is clear is not
+        stated anywhere in 5.4: 6.2.5 says the recall still works, 6.2.5.1
+        says irrelevant fields are ignored, and the staged enable and the one
+        in force differ. A mock that picked an answer would be teaching a
+        rule the specification does not have, and every panel built against
+        it would inherit the invention."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'i2c_backends', 'mock.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        body = src[src.index('def _recalled_buffer('):]
+        body = body[:body.index('return want if')]
+        self.assertIn('not modelled', body,
+                      'the mock has to say it is leaving this open')
+        code = body[body.index('want = self._lane_value'):]
+        self.assertNotIn('0x99', code,
+                         'the mock consults an enable to decide the recall, '
+                         'which resolves a question 5.4 leaves open')
+
+    def test_the_module_reports_declining_the_reserved_code(self):
+        """Lane 5 is the lane where the two halves differ, so the caption
+        that reports what the module actually did has something to render."""
+        self._connect()
+        d = self._dp()
+        self.assertNotEqual(d['signal_integrity']['tx_eq_recall'][4],
+                            d['signal_integrity_active']['tx_eq_recall'][4])
+
+    def test_the_recall_survives_explicit_control_being_clear(self):
+        """The exception in 6.2.5, and the reason this column cannot carry
+        the footnote the others do: this tool writes ExplicitControl clear,
+        which replaces every other staged value with the module's own - and
+        the recall still happens."""
+        self._connect()
+        d = self._dp()
+        self.assertEqual(d['explicit_control_lanes'], [],
+                         'the premise is that no lane is host defined')
+        self.assertEqual(d['signal_integrity_active']['tx_eq_recall'][:2],
+                         d['signal_integrity']['tx_eq_recall'][:2],
+                         'the recall did not survive ExplicitControl clear')
+
+    def test_the_other_staged_settings_do_not_survive_it(self):
+        """The contrast that makes the exception worth stating. With no lane
+        host defined, at least one other staged value is replaced by the
+        module's own."""
+        self._connect()
+        d = self._dp()
+        staged, live = d['signal_integrity'], d['signal_integrity_active']
+        shared = [k for k in staged if k in live and k != 'tx_eq_recall']
+        self.assertTrue(shared, 'no other column to compare against')
+        self.assertTrue(any(staged[k] != live[k] for k in shared),
+                        'every staged value survived, so ExplicitControl '
+                        'clear is doing nothing in this fixture')
+
+    # ---- a module that advertises neither --------------------------------
+    def test_a_wide_module_does_not_repeat_bank_zero(self):
+        """A demo module whose banks hold the same bytes lets a reader stuck
+        on bank 0 produce exactly the right answer, so the build deliberately
+        moves the per-lane settings along per bank. Both of these had to be
+        added to it - the freeze byte and the two-bit recall were not among
+        the fields it was written for."""
+        self._connect('mock_1600g_16lane')
+        si = self._dp()['signal_integrity']
+        self.assertEqual(len(si['tx_eq_recall']), 16,
+                         'the wide module does not advertise the recall')
+        self.assertEqual(len(si['tx_eq_freeze']), 16,
+                         'the wide module does not advertise the freeze')
+        self.assertNotEqual(si['tx_eq_recall'][:8], si['tx_eq_recall'][8:],
+                            'both banks stage the same recall')
+        self.assertNotEqual(si['tx_eq_freeze'][:8], si['tx_eq_freeze'][8:],
+                            'both banks freeze the same lanes')
+
+    def test_a_module_without_them_gets_neither_column(self):
+        """01h:161.4 and 161.6-5 clear. Reading the registers anyway would
+        put a column of zeroes under a capability the module denies."""
+        self._connect('mock_dr8')
+        si = self._dp()['signal_integrity']
+        self.assertNotIn('tx_eq_freeze', si)
+        self.assertNotIn('tx_eq_recall', si)
+
+    def test_and_no_active_half_either(self):
+        self._connect('mock_dr8')
+        self.assertNotIn('tx_eq_recall',
+                         self._dp()['signal_integrity_active'])
+
+    # ---- the panel -------------------------------------------------------
+    def test_both_columns_are_declared_with_their_addresses(self):
+        js = self._js()
+        col = js[js.index('const SI_COLUMNS'):]
+        col = col[:col.index('];')]
+        self.assertIn("'tx_eq_freeze'", col)
+        self.assertIn("'tx_eq_recall'", col)
+        self.assertIn('0x86', col, 'the freeze address is not on the header')
+        self.assertIn('0x9A', col, 'the recall address is not on the header')
+
+    def test_the_freeze_header_says_it_is_not_staged(self):
+        """Everything else in this table is a request until an Apply. This
+        column is not, and a reader who assumes otherwise will wait for an
+        Apply that was never needed."""
+        js = self._js()
+        col = js[js.index("'tx_eq_freeze'"):]
+        col = col[:col.index('],')]
+        self.assertIn('Lane-Specific Control', col)
+        self.assertIn('needs no Apply', col)
+
+    def test_the_recall_header_says_store_has_nothing_to_show(self):
+        """The third member of the adaptive group is write-only, so its
+        absence is a fact about the register and not an omission."""
+        js = self._js()
+        col = js[js.index("'tx_eq_recall'"):]
+        col = col[:col.index('],')]
+        self.assertIn('write-only', col)
+        self.assertIn('135-136', col)
+
+    def test_frozen_is_not_coloured_as_a_rejection(self):
+        """Red in this table means the module will answer
+        ConfigRejectedInvalidSI. A host freezing adaptation gets no such
+        answer, and the reserved recall code does."""
+        body = self._body()
+        freeze = body[body.index('tx_eq_freeze: (v)'):]
+        freeze = freeze[:freeze.index('tx_eq_recall: (v)')]
+        self.assertIn('flag-warn', freeze)
+        self.assertNotIn('flag-active', freeze)
+        self.assertNotIn('ConfigRejected', freeze)
+
+    def test_adaptation_running_is_not_reported_as_off(self):
+        """The generic cell prints a clear bit as "Off" in the colour of a
+        bypassed CDR. Here the clear bit is the healthy state."""
+        body = self._body()
+        freeze = body[body.index('tx_eq_freeze: (v)'):]
+        freeze = freeze[:freeze.index('tx_eq_recall: (v)')]
+        self.assertIn('Adapting', freeze)
+        self.assertIn('Frozen', freeze)
+        self.assertNotIn(chr(62) + 'Off' + chr(60), freeze)
+
+    def test_the_bespoke_cells_are_actually_reached(self):
+        """Asserting what TX_EQ_CELL contains proves the text exists, not
+        that any cell is rendered through it. Delete the one line that
+        dispatches to it and every other check in this class still passes
+        while the table shows "On" and "2"."""
+        self.assertIn('if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v);',
+                      self._body(),
+                      'the bespoke cells are built and never called')
+
+    def test_the_row_asks_whether_the_cell_is_ignored(self):
+        """Same trap on the other half: ignoredOnLane can return every
+        reason in the specification and mark nothing, if the row never calls
+        it."""
+        body = self._body()
+        self.assertIn('const why = ignoredOnLane(key, i);', body,
+                      'the row never asks')
+        self.assertIn('if (why) {', body, 'and never acts on the answer')
+
+    def test_the_reserved_code_is_marked_and_names_the_answer(self):
+        body = self._body()
+        recall = body[body.index('tx_eq_recall: (v)'):]
+        recall = recall[:recall.index('const cell =')]
+        self.assertIn('v === 3', recall)
+        self.assertIn('flag-active', recall)
+        self.assertIn('ConfigRejectedInvalidSI', recall)
+
+    def test_a_buffer_is_named_rather_than_numbered(self):
+        """1 and 2 are buffer identities, not a magnitude, and the column
+        beside them holds a target in dB."""
+        body = self._body()
+        self.assertIn("RECALL_NAMES = ['no recall', 'buffer 1', 'buffer 2'",
+                      body)
+
+    def test_the_active_recall_is_not_captioned_in_force(self):
+        """"in force" is the caption for a value the Application supplied in
+        place of the staged one. A recall that did not happen is the module
+        declining the buffer, which is a different statement."""
+        body = self._body()
+        marker = body[body.index('const inForce = (key, i, staged)'):]
+        marker = marker[:marker.index('const lanes =')]
+        recall = marker[marker.index("key === 'tx_eq_recall'"):]
+        recall = recall[:recall.index('const text =')]
+        self.assertIn('recalled ', recall)
+        self.assertIn('11h:215-216', recall)
+        self.assertIn('6.2.5', recall)
+        self.assertNotIn('in force', recall)
+
+    def test_the_footnote_stops_speaking_for_the_whole_table(self):
+        """It says the staged values are replaced where ExplicitControl is
+        clear. That is true of five columns and false of these two."""
+        body = self._body()
+        hint = body[body.index('if (hint) {'):]
+        self.assertIn('const exempt', hint)
+        self.assertIn('10h:134', hint)
+        self.assertIn('6.2.5', hint)
+        self.assertIn("exempt.length ? '  Except: '", hint)
+
+    def test_each_exception_is_stated_only_when_its_column_is_shown(self):
+        """A module advertising neither gets neither sentence, or the
+        footnote describes columns that are not on the table."""
+        body = self._body()
+        hint = body[body.index('const exempt = [];'):]
+        hint = hint[:hint.index('const max = [];')]
+        self.assertEqual(hint.count('Array.isArray(si.tx_eq_freeze)'), 1)
+        self.assertEqual(hint.count('Array.isArray(si.tx_eq_recall)'), 1)
 
 
 if __name__ == '__main__':

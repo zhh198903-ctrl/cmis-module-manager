@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.101.0'
+__version__ = '2.102.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -510,6 +510,14 @@ def _si_nibbles(reg) -> list:
     out = []
     for _bank, raw in _read_banks(*reg):
         out += cmis.unpack_nibbles(raw)
+    return out[:_state['lanes']]
+
+
+def _si_pairs(reg) -> list:
+    """A 2-bit signal integrity value per lane, across every bank."""
+    out = []
+    for _bank, raw in _read_banks(*reg):
+        out += cmis.unpack_pairs(raw)
     return out[:_state['lanes']]
 
 
@@ -1804,6 +1812,17 @@ def api_datapath_get():
             if si_adv.get('tx_adaptive_input_eq'):
                 si['tx_adaptive_eq'] = _si_lane_flags(
                     cmis.REG_SCS_TX_ADAPT_EQ)
+            # Table 6-5 splits these controls into an adaptive group -
+            # Freeze, Store, Recall - and a non-adaptive one, the target. The
+            # target was read from the start; of the adaptive group only the
+            # enable bit was, so the panel knew a lane was adapting and
+            # nothing else about it. Store is write-only (10h:135-136) and
+            # has nothing to report.
+            if si_adv.get('tx_input_eq_freeze'):
+                si['tx_eq_freeze'] = _si_lane_flags(
+                    cmis.REG_TX_ADAPT_EQ_FREEZE)
+            if si_adv.get('tx_input_eq_recall_buffers'):
+                si['tx_eq_recall'] = _si_pairs(cmis.REG_SCS_TX_EQ_RECALL)
             if si_adv.get('tx_input_eq_host_control'):
                 si['tx_input_eq_target'] = _si_nibbles(
                     cmis.REG_SCS_TX_EQ_TARGET)
@@ -1848,6 +1867,13 @@ def api_datapath_get():
             if si_adv.get('tx_adaptive_input_eq'):
                 si_active['tx_adaptive_eq'] = _si_lane_flags(
                     cmis.REG_ACS_TX_ADAPT_EQ)
+            # 11h:215-216 is the only half of the adaptive group with an
+            # Active Control Set counterpart, and it answers a different
+            # question: the staged field says which buffer to recall, this
+            # one says which buffer was recalled.
+            if si_adv.get('tx_input_eq_recall_buffers'):
+                si_active['tx_eq_recall'] = _si_pairs(
+                    cmis.REG_ACS_TX_EQ_RECALLED)
             if si_adv.get('tx_input_eq_host_control'):
                 si_active['tx_input_eq_target'] = _si_nibbles(
                     cmis.REG_ACS_TX_EQ_TARGET)
