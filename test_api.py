@@ -18806,6 +18806,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-70': 'Supported Pages Map (Page 0Ch)',
         '8-71': 'Generic FeatureAdvertisement Data Structure',
         '8-72': 'Named Feature Advertisements (Page 0Ch)',
+        '8-73': 'Named Feature Details Advertisement (Page 0Ch)',
         '8-77': 'Page 10h Overview',
         '8-78': 'Data Path initialization control (Page 10h:128)',
         '8-79': 'Lane-specific Direct Effect Control Fields (Page 10h)',
@@ -23854,6 +23855,307 @@ class TestTheSecondNamedFeature(CMISTestCase):
         js = self._js()
         self.assertIn('Object.keys(PRBS_PATTERNS)', js,
                       'the selector still falls back to this table')
+
+
+class TestWhatAComplianceClaimIsMeasuredAgainst(CMISTestCase):
+    """Page 0Ch:192-195 (Table 8-73), the Named Feature Details, never read.
+
+    The previous release put each named feature's compliance level on the
+    panel. This is what that level is supposed to be measured against:
+    8.12 says "when a module declares full support of a named feature, the
+    following feature details advertisements must conform to the options
+    profile defined by that named feature". So a module advertising full
+    options compliance whose details byte does not match has contradicted
+    itself, and the tool can say so.
+
+    The other half of the same paragraph is a gate: "when a module advertises
+    that a named feature is not supported, the feature details of that
+    feature in the following table should be ignored by the host" - so an
+    unsupported feature gets no details rather than a row of bits that mean
+    nothing.
+
+    And the firmware register is a second case of the specification
+    disagreeing with itself, three ways:
+
+        Table 8-72 cross-reference   "set to 11110000b"        0xF0
+        Table 8-73 header row        "1111 1000b: fully ..."   0xF8
+        Table 8-73 per-bit rows      bits 7-2 each state 1b    0xFC
+
+    Checked against the rendered page, not only the extracted text. The PM
+    register's three statements all agree on 0xBC, which is what makes the
+    firmware one visible as a defect rather than a convention. No single
+    value is used as the answer; a byte matching any of them is the module
+    following the specification as written somewhere."""
+
+    def _ext(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/ext54'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the required patterns ------------------------------------------
+
+    def test_the_pm_register_has_one_required_value(self):
+        import cmis_registers as c
+        self.assertEqual(set(c.NA_FULL_PATTERNS.values()), {0xBC})
+
+    def test_the_firmware_register_has_three(self):
+        """The finding. If a future revision settles it this test says so."""
+        import cmis_registers as c
+        self.assertEqual(c.FW_FULL_PATTERNS['Table 8-72'], 0xF0)
+        self.assertEqual(c.FW_FULL_PATTERNS['Table 8-73 header'], 0xF8)
+        self.assertEqual(c.FW_FULL_PATTERNS['Table 8-73 bit rows'], 0xFC)
+        self.assertEqual(len(set(c.FW_FULL_PATTERNS.values())), 3)
+
+    def test_the_bit_rows_build_their_own_pattern(self):
+        """Each row states the value full support wants, so the pattern is
+        derived rather than retyped - and the PM one then agrees with the
+        header by construction rather than by luck."""
+        import cmis_registers as c
+        self.assertEqual(c._required_from_bits(c.NA_SUPPORT_BITS), 0xBC)
+        self.assertEqual(c._required_from_bits(c.FW_SUPPORT_BITS), 0xFC)
+
+    def test_every_bit_of_both_registers_is_named(self):
+        import cmis_registers as c
+        self.assertEqual([b[0] for b in c.NA_SUPPORT_BITS],
+                         [7, 6, 5, 4, 3, 2, 1])
+        self.assertEqual([b[0] for b in c.FW_SUPPORT_BITS],
+                         [7, 6, 5, 4, 3, 2])
+        for bits in (c.NA_SUPPORT_BITS, c.FW_SUPPORT_BITS):
+            for _bit, name, want, desc in bits:
+                self.assertTrue(name and desc, name)
+                self.assertIn(want, (0, 1), name)
+
+    # ---- the decode -------------------------------------------------------
+
+    def test_a_byte_matching_a_source_is_full_by_that_source(self):
+        import cmis_registers as c
+        for value, source in ((0xF0, 'Table 8-72'),
+                              (0xF8, 'Table 8-73 header'),
+                              (0xFC, 'Table 8-73 bit rows')):
+            d = c.parse_support_details(value, c.FW_SUPPORT_BITS,
+                                        c.FW_FULL_PATTERNS, 0x88)
+            self.assertTrue(d['full'], hex(value))
+            self.assertEqual(d['full_per_source'], [source], hex(value))
+
+    def test_a_byte_matching_none_is_not_full(self):
+        import cmis_registers as c
+        d = c.parse_support_details(0xE8, c.FW_SUPPORT_BITS,
+                                    c.FW_FULL_PATTERNS, 0x88)
+        self.assertFalse(d['full'])
+        self.assertEqual(d['full_per_source'], [])
+
+    def test_partial_support_is_its_own_mask(self):
+        """The header gives bit 7 alone for the PM register and bits 7 and 3
+        for the firmware one, which is not the same as "some bits set"."""
+        import cmis_registers as c
+        na = lambda v: c.parse_support_details(
+            v, c.NA_SUPPORT_BITS, c.NA_FULL_PATTERNS, 0x80)['partial']
+        fw = lambda v: c.parse_support_details(
+            v, c.FW_SUPPORT_BITS, c.FW_FULL_PATTERNS, 0x88)['partial']
+        self.assertTrue(na(0x80))
+        self.assertFalse(na(0x7F))
+        self.assertTrue(fw(0x88))
+        self.assertFalse(fw(0x80), 'bit 3 is part of the firmware mask')
+        self.assertFalse(fw(0x08))
+
+    def test_the_table_72_value_is_not_even_partial_by_the_header(self):
+        """A further face of the same contradiction: a module following
+        Table 8-72's 0xF0 fails Table 8-73's own partial-support rule."""
+        import cmis_registers as c
+        d = c.parse_support_details(0xF0, c.FW_SUPPORT_BITS,
+                                    c.FW_FULL_PATTERNS, 0x88)
+        self.assertTrue(d['full'])
+        self.assertFalse(d['partial'])
+
+    def test_each_bit_reports_whether_it_meets_the_requirement(self):
+        import cmis_registers as c
+        d = c.parse_support_details(0xE8, c.FW_SUPPORT_BITS,
+                                    c.FW_FULL_PATTERNS, 0x88)
+        short = [f['name'] for f in d['fields'] if not f['meets']]
+        self.assertEqual(short, ['AbnormalIndicationSupported',
+                                 'RejectUnsupportedActivation'])
+
+    def test_a_zero_bit_can_be_the_requirement(self):
+        """NaFeedsSupervision wants 0. A decoder that treated "set" as
+        "compliant" would mark a conformant module short on two bits."""
+        import cmis_registers as c
+        d = c.parse_support_details(0xBC, c.NA_SUPPORT_BITS,
+                                    c.NA_FULL_PATTERNS, 0x80)
+        self.assertEqual([f['name'] for f in d['fields'] if not f['meets']], [])
+        d = c.parse_support_details(0xFC, c.NA_SUPPORT_BITS,
+                                    c.NA_FULL_PATTERNS, 0x80)
+        self.assertIn('NaFeedsSupervision',
+                      [f['name'] for f in d['fields'] if not f['meets']])
+
+    # ---- the contradiction check -------------------------------------------
+
+    def test_a_full_claim_with_matching_details_is_not_a_conflict(self):
+        import cmis_registers as c
+        feature = {'supported': True, 'options_profile_compliance': 3}
+        det = c.parse_support_details(0xBC, c.NA_SUPPORT_BITS,
+                                      c.NA_FULL_PATTERNS, 0x80)
+        self.assertEqual(c.feature_claim_conflicts(feature, det, 'PM'), [])
+
+    def test_a_full_claim_with_details_that_match_nothing_is(self):
+        import cmis_registers as c
+        feature = {'supported': True, 'options_profile_compliance': 3}
+        det = c.parse_support_details(0xE8, c.FW_SUPPORT_BITS,
+                                      c.FW_FULL_PATTERNS, 0x88)
+        out = c.feature_claim_conflicts(feature, det, 'FW')
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['raw'], 0xE8)
+        self.assertEqual(out[0]['failing'], ['AbnormalIndicationSupported',
+                                             'RejectUnsupportedActivation'])
+
+    def test_matching_any_one_source_is_enough(self):
+        """Where the specification gives three values, a module following any
+        of them is following the specification as written somewhere."""
+        import cmis_registers as c
+        feature = {'supported': True, 'options_profile_compliance': 3}
+        for value in (0xF0, 0xF8, 0xFC):
+            det = c.parse_support_details(value, c.FW_SUPPORT_BITS,
+                                          c.FW_FULL_PATTERNS, 0x88)
+            self.assertEqual(c.feature_claim_conflicts(feature, det, 'FW'), [],
+                             hex(value))
+
+    def test_a_lesser_claim_is_not_checked_against_full(self):
+        """Only a claim of full compliance has something to contradict."""
+        import cmis_registers as c
+        det = c.parse_support_details(0xE8, c.FW_SUPPORT_BITS,
+                                      c.FW_FULL_PATTERNS, 0x88)
+        for level in (0, 1, 2):
+            feature = {'supported': True, 'options_profile_compliance': level}
+            self.assertEqual(c.feature_claim_conflicts(feature, det, 'FW'), [],
+                             level)
+
+    def test_an_unsupported_feature_is_not_checked_at_all(self):
+        import cmis_registers as c
+        det = c.parse_support_details(0xE8, c.FW_SUPPORT_BITS,
+                                      c.FW_FULL_PATTERNS, 0x88)
+        feature = {'supported': False, 'options_profile_compliance': 3}
+        self.assertEqual(c.feature_claim_conflicts(feature, det, 'FW'), [])
+
+    # ---- the module ---------------------------------------------------------
+
+    def test_the_register_is_the_one_the_table_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_FEATURE_DETAILS, (0x0C, 192, 4))
+
+    def test_both_details_reach_the_payload(self):
+        d = self._ext()
+        self.assertEqual(d['pm_details']['raw'], 0xBC)
+        self.assertEqual(d['fw_details']['raw'], 0xE8)
+
+    def test_the_two_details_are_two_different_bytes(self):
+        """192 and 194, with 193 Reserved between them. Reading one for the
+        other gives a plausible set of bits for the wrong feature."""
+        d = self._ext()
+        self.assertNotEqual(d['pm_details']['raw'], d['fw_details']['raw'])
+
+    def test_the_recommended_option_is_read_separately(self):
+        """195.7 FixedFirmwareFallback is a recommended option, so it is not
+        part of the profile a full claim is measured against."""
+        d = self._ext()
+        self.assertTrue(d['fw_details']['fixed_fallback'])
+        self.assertNotIn('FixedFirmwareFallback',
+                         [f['name'] for f in d['fw_details']['fields']])
+
+    def test_the_shipped_profile_does_not_contradict_itself(self):
+        d = self._ext()
+        self.assertEqual(d['feature_conflicts'], [])
+
+    def test_a_contradicting_module_is_reported_by_the_endpoint(self):
+        """The test above passes with the check torn out, because the fixture
+        is consistent. This drives a module that is not."""
+        import app as appmod
+        orig = appmod._read_upper
+
+        def fake(page, addr, length, *a, **k):
+            if (page, addr) == (0x0C, 0xA2):
+                return bytes([0x54, 0x33])      # claims fully compliant
+            return orig(page, addr, length, *a, **k)
+
+        appmod._read_upper = fake
+        try:
+            d = self._ext()
+        finally:
+            appmod._read_upper = orig
+        self.assertEqual(len(d['feature_conflicts']), 1)
+        self.assertEqual(d['feature_conflicts'][0]['feature'],
+                         'Firmware load management')
+
+    def test_an_unsupported_feature_gets_no_details(self):
+        """8.12: "when a module advertises that a named feature is not
+        supported, the feature details of that feature ... should be ignored
+        by the host". mock_1600g_16lane has consolidated PM and no firmware
+        load management, so one set of details is shown and the other is
+        not - the gate needs a module on each side of it or it is never
+        exercised against a real read."""
+        d = self._ext('mock_1600g_16lane')
+        self.assertFalse(d['load_management']['supported'])
+        self.assertIsNone(d.get('fw_details'))
+        self.assertTrue(d['consolidated_pm']['supported'])
+        self.assertIsNotNone(d.get('pm_details'))
+
+    def test_a_module_without_page_0ch_has_no_details(self):
+        d = self._ext('mock_dr8')
+        self.assertIsNone(d.get('pm_details'))
+        self.assertIsNone(d.get('fw_details'))
+
+    # ---- the panel ------------------------------------------------------------
+
+    def test_the_panel_shows_both_details(self):
+        js = self._js()
+        self.assertIn('featureDetails(d.pm_details)', js)
+        self.assertIn('featureDetails(d.fw_details)', js)
+        self.assertIn('conflictLine(d.feature_conflicts)', js)
+
+    def test_the_details_name_the_bits_that_fall_short(self):
+        """"Some options are missing" does not tell an operator which
+        capability they do not have."""
+        js = self._js()
+        i = js.index('function featureDetails')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function conflictLine')])
+        self.assertIn('f.meets', body)
+        self.assertIn('f.name', body)
+        self.assertIn('f.description', body)
+
+    def test_the_details_say_which_source_calls_it_full(self):
+        js = self._js()
+        i = js.index('function featureDetails')
+        body = js[i:js.index('function conflictLine')]
+        self.assertIn('full_per_source', body)
+
+    def test_the_conflict_line_lists_every_required_value(self):
+        """One expected value would be picking a side in a disagreement the
+        specification has with itself."""
+        js = self._js()
+        i = js.index('function conflictLine')
+        body = js[i:js.index('function renderNAD')]
+        self.assertIn('c.expected', body)
+        self.assertIn('Object.entries', body)
+        self.assertIn('c.failing', body)
+
+    def test_the_conflict_line_is_absent_when_there_is_none(self):
+        js = self._js()
+        i = js.index('function conflictLine')
+        body = js[i:js.index('function renderNAD')]
+        self.assertIn('!conflicts.length', body)
+        # Scoped to the assembly: .filter(Boolean) appears elsewhere in the
+        # file, so looking for it anywhere passes with this one removed and
+        # an empty line left as a blank row.
+        i = js.index("document.getElementById('ext54-pm').innerHTML")
+        assembly = js[i:js.index('<br>', i)]
+        self.assertIn('.filter(Boolean)', assembly,
+                      'an empty line must not leave a blank row')
 
 
 if __name__ == '__main__':

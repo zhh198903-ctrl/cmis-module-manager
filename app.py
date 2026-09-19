@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.99.0'
+__version__ = '2.100.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1285,6 +1285,28 @@ def api_module_ext54():
             # tool's own update path would care about.
             out['load_management'] = cmis.parse_feature_advertisement(
                 _read_upper(*cmis.REG_LOAD_MANAGEMENT))
+            # 192-195 (Table 8-73), the details each claim above is measured
+            # against. "When a module advertises that a named feature is not
+            # supported, the feature details of that feature ... should be
+            # ignored by the host" - so an unsupported feature gets no
+            # details rather than a row of bits that mean nothing.
+            det = _read_upper(*cmis.REG_FEATURE_DETAILS)
+            conflicts = []
+            if out['consolidated_pm']['supported']:
+                out['pm_details'] = cmis.parse_support_details(
+                    det[0], cmis.NA_SUPPORT_BITS, cmis.NA_FULL_PATTERNS, 0x80)
+                conflicts += cmis.feature_claim_conflicts(
+                    out['consolidated_pm'], out['pm_details'],
+                    'Consolidated PM')
+            if out['load_management']['supported']:
+                out['fw_details'] = cmis.parse_support_details(
+                    det[2], cmis.FW_SUPPORT_BITS, cmis.FW_FULL_PATTERNS, 0x88)
+                # 195.7 is a recommended option, not part of the profile.
+                out['fw_details']['fixed_fallback'] = bool(det[3] & 0x80)
+                conflicts += cmis.feature_claim_conflicts(
+                    out['load_management'], out['fw_details'],
+                    'Firmware load management')
+            out['feature_conflicts'] = conflicts
             out['available']['0Ch'] = True
 
         if caps.get('page_60h_supported'):

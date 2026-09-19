@@ -1310,8 +1310,11 @@ async function loadExt54() {
         + esc(f.requirements_compliance_name);
     document.getElementById('ext54-pm').innerHTML = [
       featureLine('Consolidated PM', d.consolidated_pm),
+      featureDetails(d.pm_details),
       featureLine('Firmware load management', d.load_management),
-    ].join('<br>');
+      featureDetails(d.fw_details),
+      conflictLine(d.feature_conflicts),
+    ].filter(Boolean).join('<br>');
   }
 }
 
@@ -2335,6 +2338,45 @@ const SI_COLUMNS = [
   ['rx_eq_post_cursor',   'Rx EQ Post',      '10h / 0xA6\u20130xA9', 'OutputEqPostCursorTargetRx (01h:162.4-3)'],
   ['rx_output_amplitude', 'Rx Amplitude',    '10h / 0xAA\u20130xAD', 'OutputAmplitudeTargetRx (01h:162.2)'],
 ];
+
+// Table 8-73. Each row states the value full support wants, so a bit that
+// differs is named rather than left for the reader to work out from a hex
+// byte - and the byte is shown as well, because that is what the module
+// actually said.
+function featureDetails(det) {
+  if (!det) return '';
+  const bad = det.fields.filter(f => !f.meets);
+  const head = '<span class="reg-meta">details 0x'
+    + det.raw.toString(16).toUpperCase().padStart(2, '0') + ' \u00b7 '
+    + (det.full
+       ? 'full support per ' + esc(det.full_per_source.join(', '))
+       : det.partial ? 'partial support' : 'not supported')
+    + '</span>';
+  if (!bad.length) return head;
+  // Named, with what each one would have to be. "Some options are missing"
+  // does not tell an operator which capability they do not have.
+  return head + ' <span class="reg-meta">short of full: '
+    + esc(bad.map(f => f.name + ' (' + f.description + ')').join('; '))
+    + '</span>';
+}
+
+
+// 8.12: the details "must conform to the options profile" when a module
+// declares full support. A module that says fully compliant and does not is
+// contradicting itself, which is worth more than either half alone.
+function conflictLine(conflicts) {
+  if (!conflicts || !conflicts.length) return '';
+  return conflicts.map(c =>
+    '<span class="flag-warn">\u25b2</span> ' + esc(c.feature)
+    + ' claims full options compliance, but its details byte 0x'
+    + c.raw.toString(16).toUpperCase().padStart(2, '0')
+    + ' matches none of the values the specification requires ('
+    + esc(Object.entries(c.expected)
+            .map(([k, v]) => k + ' 0x' + v.toString(16).toUpperCase())
+            .join(', '))
+    + '). Short of full: ' + esc(c.failing.join(', ')) + '.').join('<br>');
+}
+
 
 function renderNAD(d) {
   // Page 1Ch is optional (8.24) and 01h:175 is the only thing that says it

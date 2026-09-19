@@ -430,6 +430,11 @@ _XD16_1600G = {
     'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km, the DR reach of its optics
     'cmis_rev':            0x54,
     'lanes':               16,               # two banks; 01h:142.1-0 = 01b
+    # A module with consolidated PM and no firmware load management at all:
+    # 0Ch:162 is zero, which Table 8-71 defines as "feature is not
+    # supported". 8.12 then says the host should ignore that feature's
+    # details, so the panel must not show them however 0Ch:194 reads.
+    'load_mgmt_0c':    {0xA2: 0x00, 0xA3: 0x00},
     'default_polarity_tx': 0b00000101,       # lanes 1 and 3 wired inverted
     'default_polarity_rx': 0b00000010,       # lane 2 wired inverted
     'pages_ext_173':       0b10000000,       # Page 0Ch only, as above
@@ -1516,6 +1521,16 @@ class MockBackend(I2CInterface):
             # answered" rather than a bottom score - has a live example.
             for a, v in (p.get('load_mgmt_0c') or
                          {0xA2: 0x54, 0xA3: 0x20}).items():
+                p0c[a] = v
+            # 192-195 Named Feature Details (Table 8-73). The PM register is
+            # 1011 1100b, which every statement in the specification agrees
+            # is full support - and this profile claims full PM compliance,
+            # so the two have to match. The firmware register is not full
+            # support under any reading, and the profile claims only partial
+            # firmware compliance, so it does not contradict itself either.
+            for a, v in (p.get('feature_details_0c') or
+                         {0xC0: 0xBC, 0xC1: 0x00,
+                          0xC2: 0xE8, 0xC3: 0x80}).items():
                 p0c[a] = v
             regs[0x0C] = p0c          # filled in below, once every page exists
 

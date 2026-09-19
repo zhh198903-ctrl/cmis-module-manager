@@ -2592,6 +2592,9 @@ REG_SUPPORTED_PAGES_MAP = (0x0C, 0x80, 32)   # 0Ch:128-159 U8[32] page bitmap
 REG_CONSOLIDATED_PM     = (0x0C, 0xA0, 2)    # 0Ch:160-161 FeatureAdvertisement
 # The other named feature in Table 8-72, and the same structure.
 REG_LOAD_MANAGEMENT     = (0x0C, 0xA2, 2)    # 0Ch:162-163
+# 192-195 (Table 8-73), the details each named feature's compliance
+# claim is measured against. 196-223 is Reserved.
+REG_FEATURE_DETAILS     = (0x0C, 0xC0, 4)    # 0Ch:192-195
 REG_POLARITY_STATUS     = (0x60, 0x80, 2)    # 60h:128-129 actual lane polarity
 REG_ACQ_COUNTER_ADV     = (0x60, 0x82, 1)    # 60h:130 counter support (bank 0)
 REG_RESET_ACQ_RX        = (0x60, 0xC0, 1)    # 60h:192 WO bitmask, media lanes
@@ -2618,6 +2621,127 @@ def parse_supported_pages_map(raw: bytes) -> list:
             if (byte >> k) & 1:
                 pages.append(n * 8 + k)
     return pages
+
+
+# Table 8-73. (bit, name, value required for full support, description).
+# Each row in the specification states the value that full support wants, so
+# the required pattern can be built from the rows rather than retyped.
+NA_SUPPORT_BITS = (
+    (7, 'NaSupported', 1, 'NA values are supported for observable samples'),
+    (6, 'NaFeedsSupervision', 0,
+     'NA values not fed to / ignored by threshold detectors'),
+    (5, 'NaFeedsRangeStats', 1, 'NA values feed range statistics min and max'),
+    (4, 'NaFeedsAverages', 1, 'NA values feed average computations'),
+    (3, 'NaFeedsCounterStats', 1, 'NA values feed event counter stats'),
+    (2, 'NaSaturatesTotals', 1, 'NA values saturate non-random totals'),
+    (1, 'NaFeedsDiagnostics', 0,
+     'NA not fed to diagnostics statistics observables'),
+)
+
+FW_SUPPORT_BITS = (
+    (7, 'UniqueLoadVersionSupported', 1,
+     'Version information is characteristic of entire load'),
+    (6, 'DualBankSupported', 1, 'Banks A and B are supported'),
+    (5, 'FirmwareLoadTagSupported', 1,
+     'Persistent Firmware Load Tag is supported'),
+    (4, 'AbnormalIndicationSupported', 1,
+     'Abnormal Firmware Indication is supported'),
+    (3, 'TransferIsHarmless', 1,
+     'Transfer does not impact mission integrity and quality'),
+    (2, 'RejectUnsupportedActivation', 1,
+     'Module rejects if activation has unwanted side effects'),
+)
+
+
+def _required_from_bits(bits) -> int:
+    """The byte the per-bit rows together ask for."""
+    out = 0
+    for bit, _name, want, _desc in bits:
+        out |= (want & 1) << bit
+    return out
+
+
+# What "fully supported" requires, from each place the specification says it.
+#
+# For the PM register all three agree on 1011 1100b. For the firmware one they
+# do not, and the disagreement is three-way:
+#
+#   Table 8-72 cross-reference  "set to 11110000b"          0xF0
+#   Table 8-73 header row       "1111 1000b: fully ..."     0xF8
+#   Table 8-73 per-bit rows     bits 7-2 each state 1b      0xFC
+#
+# Checked against the rendered page, not only the extracted text. Nothing
+# else in OIF-CMIS-05.4 settles it, so no single value is used as the answer.
+NA_FULL_PATTERNS = {
+    'Table 8-72': 0xBC,
+    'Table 8-73 header': 0xBC,
+    'Table 8-73 bit rows': _required_from_bits(NA_SUPPORT_BITS),
+}
+
+FW_FULL_PATTERNS = {
+    'Table 8-72': 0xF0,
+    'Table 8-73 header': 0xF8,
+    'Table 8-73 bit rows': _required_from_bits(FW_SUPPORT_BITS),
+}
+
+
+def parse_support_details(byte_val: int, bits, full_patterns: dict,
+                          partial_mask: int) -> dict:
+    """One of the two Named Feature Details registers (Table 8-73).
+
+    `partial_mask` is the pattern the header gives for partial support: bit 7
+    alone for the PM register, bits 7 and 3 for the firmware one.
+
+    "Fully supported" is reported per source rather than as one verdict,
+    because the specification gives the firmware register three different
+    required values and settles on none of them.
+    """
+    fields = []
+    for bit, name, want, desc in bits:
+        got = (byte_val >> bit) & 1
+        fields.append({
+            'bit': bit, 'name': name, 'value': got,
+            'wanted_for_full': want, 'meets': got == want,
+            'description': desc,
+        })
+    matches = sorted(k for k, v in full_patterns.items() if v == byte_val)
+    return {
+        'raw': byte_val,
+        'fields': fields,
+        'full_patterns': dict(full_patterns),
+        # Which of the specification's statements this byte satisfies. Empty
+        # is not "not supported" on its own - see partial below.
+        'full_per_source': matches,
+        'full': bool(matches),
+        'partial': (byte_val & partial_mask) == partial_mask,
+    }
+
+
+def feature_claim_conflicts(feature: dict, details: dict, label: str) -> list:
+    """Where a module's compliance claim and its own details disagree.
+
+    8.12: "when a module declares full support of a named feature, the
+    following feature details advertisements must conform to the options
+    profile defined by that named feature". So a module advertising
+    OptionsProfileCompliance 3 whose details byte satisfies none of the
+    required patterns has contradicted itself.
+
+    Flagged only when the byte matches none of them. Where the specification
+    gives several values, matching any one is the module following the
+    specification as written somewhere.
+    """
+    if not feature or not feature.get('supported') or not details:
+        return []
+    if feature.get('options_profile_compliance') != 3:
+        return []
+    if details['full_per_source']:
+        return []
+    return [{
+        'feature': label,
+        'raw': details['raw'],
+        'expected': dict(details['full_patterns']),
+        'failing': [f['name'] for f in details['fields'] if not f['meets']],
+    }]
 
 
 def parse_feature_advertisement(raw: bytes) -> dict:
