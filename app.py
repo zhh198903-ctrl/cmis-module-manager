@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.92.0'
+__version__ = '2.93.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -728,6 +728,12 @@ def _discover_capabilities() -> dict:
             _read_upper(*cmis.REG_MODULE_LIMITS))
         caps['wavelength'] = cmis.parse_wavelength_info(
             _read_upper(*cmis.REG_WAVELENGTH))
+        # 163-166 (Table 8-55). Whether this module does CDB messaging at
+        # all, and the two facts a host needs before it starts one: whether
+        # the module answers other reads while a command runs, and how long
+        # it may stay busy.
+        caps['cdb'] = cmis.parse_cdb_advertisement(
+            _read_upper(*cmis.REG_CDB_CAPS))
         # Whether the fifteen Applications a host can read the classical way
         # are all of them.
         caps['nad'] = cmis.parse_nad_support(

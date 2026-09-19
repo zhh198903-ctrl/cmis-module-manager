@@ -611,6 +611,67 @@ async function loadInfo() {
        'TimingPage15hSupported (Table 8-50) - Data Path latency per lane '
        + 'lives on Page 15h (Table 8-141)'],
     ] : []),
+    ...(c.cdb ? (c.cdb.supported ? [
+      ['CDB Messaging',
+       esc(c.cdb.instances_text) + ' instance'
+       + (c.cdb.instances === 1 ? '' : 's'),
+       '01h', '0xA3[7:6]',
+       'CdbInstancesSupported (Table 8-55) - Command Data Block messaging, '
+       + 'the mechanism firmware update and the command catalogue in '
+       + 'chapter 9 run over. 3 is Reserved.'],
+      // The one that changes what a host may do while a command runs, which
+      // is why it is not phrased as a plain yes/no.
+      ['CDB Background Mode',
+       c.cdb.background_mode
+         ? 'Yes - other registers stay readable'
+         : 'No - the module stops answering until the command finishes',
+       '01h', '0xA3[5]',
+       'CdbBackgroundModeSupported (Table 8-55). Cleared, the module "will '
+       + 'hold off ACCESS to any register until CDB command processing is '
+       + 'completed" - the whole management interface, not only the CDB '
+       + 'pages. Polling through a command on such a module is not slow, it '
+       + 'is ignored.'],
+      ['CDB Max Busy', cdbBusyCell(c.cdb),
+       '01h', '0xA5[4:0] / 0xA6',
+       'The longest this module may stay busy with a CDB command, which is '
+       + 'how long a host waits before deciding it has stopped.'],
+      ['CDB EPL Pages',
+       esc(String(c.cdb.epl_pages)) + ' <span class="reg-meta">'
+       + esc(c.cdb.epl_page_range) + ' \u00b7 ' + esc(String(c.cdb.epl_bytes))
+       + ' bytes</span>',
+       '01h', '0xA3[3:0]',
+       'CdbMaxPagesEPL (Table 8-55) - the extended payload pages this module '
+       + 'has. The code is not the page count: 5, 6 and 7 mean 8, 12 and 16 '
+       + 'pages.'],
+      ['CDB Max Access',
+       esc(String(c.cdb.max_access_epl)) + ' B <span class="reg-meta">EPL</span>'
+       + ' <span class="reg-meta">\u00b7</span> '
+       + esc(String(c.cdb.max_access_lpl)) + ' B <span class="reg-meta">LPL</span>',
+       '01h', '0xA4',
+       'CdbReadWriteLengthExtension (Table 8-55) - one byte, two limits. It '
+       + 'extends an access in units of 8 bytes, but Page 9Fh holds 120 '
+       + 'bytes of LPL and the EPL pages hold up to 2048, so the same value '
+       + 'caps at 128 on one and 2048 on the other.'],
+      ['CDB Auto Paging',
+       c.cdb.auto_paging ? 'Supported' : 'Not supported',
+       '01h', '0xA3[4]',
+       'CdbAutoPagingSupported (Table 8-55) - without it "the host should '
+       + 'not write past the end of an EPL Page"; the address pointer wraps '
+       + 'inside the page instead of moving to the next one.'],
+      ['CDB Trigger',
+       c.cdb.trigger_on_stop
+         ? 'On STOP of a write including 9Fh:129'
+         : 'On a write to the CMDID register alone',
+       '01h', '0xA5[7]',
+       'CdbCommandTriggerMethod (Table 8-55) - whether the host can write a '
+       + 'complete command message in one transaction or has to compose the '
+       + 'body first and trigger it in a second step.'],
+    ] : [
+      ['CDB Messaging', 'Not supported',
+       '01h', '0xA3[7:6]',
+       'CdbInstancesSupported (Table 8-55) is zero, so this module does no '
+       + 'CDB messaging at all and the rest of the table does not apply.'],
+    ]) : []),
     ...(c.far_end ? [
       ['Far End Breakout', esc(c.far_end.summary || '-')
        + (c.far_end.uniform
@@ -837,6 +898,29 @@ function memoryModelCell(d) {
 // media can be disconnected from the module", which is what a transceiver is.
 // Testing the product for zero caught the second by accident and printed the
 // first as a measurement.
+function cdbBusyCell(cdb) {
+  // Table 8-55 gives two encodings for TCDBB and a bit to choose between
+  // them, and its three rows do not agree on which value of the bit chooses
+  // which: 166.7 says 0 selects CdbMaxBusyTime, while CdbMaxBusyTime's own
+  // row says it applies when the bit is 1b, and CdbExtMaxBusyTime's row says
+  // it applies when the bit is 0b. The readings are 0-80 ms and
+  // 160-4960 ms, so the difference is not cosmetic.
+  //
+  // Showing one number would be picking a side silently. This follows the
+  // row that defines the bit and puts the other reading beside it.
+  return esc(String(cdb.max_busy_ms)) + ' ms <span class="reg-meta">'
+    + esc(cdb.max_busy_field) + '</span>'
+    + ' <span class="flag-warn" title="OIF-CMIS-05.4 Table 8-55 is '
+    + 'self-contradictory here: 01h:166.7 says this bit value selects '
+    + esc(cdb.max_busy_field) + ', but that field\u2019s own row says it '
+    + 'applies for the opposite bit value. On the other reading this module '
+    + 'reports ' + esc(String(cdb.max_busy_ms_alt)) + ' ms via '
+    + esc(cdb.max_busy_field_alt) + '.">\u25b2</span>'
+    + ' <span class="reg-meta">or ' + esc(String(cdb.max_busy_ms_alt))
+    + ' ms \u2014 the table contradicts itself</span>';
+}
+
+
 function cuAttenuationCell(att) {
   // Whole dB against the frequency each byte is defined at. A null is the
   // module's own 0 dB - "not available (not relevant or otherwise unknown)" -

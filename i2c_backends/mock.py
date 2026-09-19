@@ -273,6 +273,14 @@ _DR8_800G = {
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
     'link_lengths': {'smf_len_byte': 0x05},   # 5 × 0.1 km = 500 m
+    # 01h:163-166 CDB Advertisement (Table 8-55):
+    #   163 = 0x62  one instance, background mode, no auto paging,
+    #               CdbMaxPagesEPL 2 -> A0h-A1h, 256 bytes
+    #   164 = 0x07  k=7, so 64 bytes per EPL access and 64 per LPL access
+    #   165 = 0x80  CdbCommandTriggerMethod 1 (write the whole message, then
+    #               STOP), CdbExtMaxBusyTime unused
+    #   166 = 0x32  CdbMaxBusySpecMethod 0, S=50 -> 30 ms by 166.7's reading
+    'cdb_163_166': (0x62, 0x07, 0x80, 0x32),
     # Page 15h (8.18, Table 8-141): total delay thru the module by host lane,
     # in nanoseconds. Eight lanes is one bank. The two AppSel entries lay out
     # either one eight lane Data Path or two four lane ones, and "for Data
@@ -437,6 +445,14 @@ _ZR_16LANE = dict(
     vendor_pn=b"DEMO-DP16L-QDD  ",
     vendor_sn=b"DEMO000000009   ",
     lanes=16,
+    # The other CdbMaxBusySpecMethod, and the widest EPL span:
+    #   163 = 0x77  one instance, background mode, auto paging,
+    #               CdbMaxPagesEPL 7 -> A0h-AFh, 16 pages, 2048 bytes
+    #   164 = 0xFF  k=255, the maximum: 2048 bytes per EPL access but only
+    #               128 per LPL access - the same byte, two limits
+    #   165 = 0x8C  trigger on STOP, CdbExtMaxBusyTime T=12 -> 1920 ms
+    #   166 = 0x80  CdbMaxBusySpecMethod 1
+    cdb_163_166=(0x77, 0xFF, 0x8C, 0x80),
     # Page 15h (8.18). Sixteen lanes is two banks, and the bank replication
     # below moves each one, so a read that never leaves bank 0 shows lanes
     # 1-8's delays sitting under lanes 9-16.
@@ -1032,6 +1048,12 @@ class MockBackend(I2CInterface):
                                                    # PwrUp 100-500 ms
         p01[0xA8] = p.get('durations_168', 0x33)   # TxTurnOff/On 10-50 ms
         p01[0xA9] = p.get('durations_169', 0x00)   # MaxDurationBPC
+        # 163-166 CDB Advertisement (Table 8-55). Absent means all zeros,
+        # which is CdbInstancesSupported = 0 - "CDB functionality not
+        # supported" - and is a real answer rather than a gap.
+        for i, b in enumerate(p.get('cdb_163_166', ())):
+            p01[0xA3 + i] = b
+
         # MediaLaneAssignmentOptions (01h:176-183, Table 8-60) is stored apart
         # from the first four descriptor bytes and is required on a paged
         # module. An Application that uses m of the eight media lanes can start

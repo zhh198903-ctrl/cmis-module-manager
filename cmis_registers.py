@@ -1419,6 +1419,104 @@ def interface_uid(gid: int, code: int) -> str:
     return '0x%02X' % code if not gid else '%d:0x%02X' % (gid, code)
 
 
+# Table 8-55 byte 163.3-0. The codes are not a page count: 0-4 happen to
+# equal one, and then 5, 6 and 7 mean 8, 12 and 16 EPL pages.
+CDB_EPL_PAGES = {
+    0: (0, 'none',    0),
+    1: (1, 'A0h',     128),
+    2: (2, 'A0h-A1h', 256),
+    3: (3, 'A0h-A2h', 384),
+    4: (4, 'A0h-A3h', 512),
+    5: (8, 'A0h-A7h', 1024),
+    6: (12, 'A0h-ABh', 1536),
+    7: (16, 'A0h-AFh', 2048),
+}
+
+
+def parse_cdb_advertisement(data: bytes) -> dict:
+    """01h:163-166 (Table 8-55), how the module does CDB messaging.
+
+    163.7-6 gates the rest: every other field in this table is RO Cnd., and
+    zero here is "CDB functionality not supported" rather than one instance.
+
+    Two things a host gets operationally wrong without this byte:
+
+    163.5 CdbBackgroundModeSupported. Clear means the module "will hold off
+    ACCESS to any register until CDB command processing is completed" - the
+    whole management interface stops answering for the duration, not just the
+    CDB pages. A tool that keeps polling monitors through a firmware update on
+    such a module is not being slow, it is being ignored.
+
+    And the maximum CDB busy time, which is how long a host must be prepared
+    to wait before deciding a module has stopped. See cdb_max_busy_ms.
+    """
+    instances = (data[0] >> 6) & 0x03
+    if instances == 0:
+        return {'supported': False, 'instances': 0}
+    epl_code = data[0] & 0x0F
+    pages, page_range, epl_bytes = CDB_EPL_PAGES[epl_code]
+    k = data[1]
+    busy = cdb_max_busy_ms(data[2], data[3])
+    return {
+        'supported': True,
+        'instances': instances,
+        # "3: Reserved" - a count the standard set aside, not two instances
+        # and not a code this tool failed to recognise.
+        'instances_text': ('Reserved (3)' if instances == 3
+                           else '%d' % instances),
+        'background_mode': bool(data[0] & 0x20),
+        'auto_paging': bool(data[0] & 0x10),
+        'epl_code': epl_code,
+        'epl_pages': pages,
+        'epl_page_range': page_range,
+        'epl_bytes': epl_bytes,
+        # One byte, two limits. k extends an access in units of 8 bytes, but
+        # Page 9Fh holds 120 bytes of LPL and the EPL pages hold 2048, so the
+        # same k caps at 128 on one and 2048 on the other. Reporting a single
+        # number would promise a 2048-byte write to a page that takes 128.
+        'rw_extension': k,
+        'max_access_epl': 8 * (1 + k),
+        'max_access_lpl': min(8 * (1 + k), 128),
+        'trigger_on_stop': bool(data[2] & 0x80),
+        **busy,
+    }
+
+
+def cdb_max_busy_ms(byte_165: int, byte_166: int) -> dict:
+    """The maximum CDB busy time TCDBB, and why it comes with a caveat.
+
+    Table 8-55 gives two encodings and a bit to choose between them, and the
+    three rows do not agree on which value of the bit chooses which:
+
+      166.7  CdbMaxBusySpecMethod - "0: ... specified via CdbMaxBusyTime
+             (01h:166.6-0)", "1: ... specified via CdbExtMaxBusyTime
+             (01h:165.4-0)"
+      165.4-0 CdbExtMaxBusyTime - "... in a range of 160 ms to 4960 ms when
+             CdbMaxBusySpecMethod=0b"
+      166.6-0 CdbMaxBusyTime - "... in a range of 0 ms to 80 ms when
+             CdbMaxBusySpecMethod=1b"
+
+    The selector row and the two value rows are exactly inverted, and nothing
+    else in OIF-CMIS-05.4 settles it. The two readings are 0-80 ms and
+    160-4960 ms, so choosing silently is the difference between waiting and
+    calling a working module dead.
+
+    This follows 166.7, the row that defines what the bit means, and reports
+    the other reading beside it rather than presenting one number as settled.
+    """
+    ext = max(1, byte_165 & 0x1F) * 160
+    plain = max(0, 80 - (byte_166 & 0x7F))
+    method = (byte_166 >> 7) & 0x01
+    return {
+        'busy_method': method,
+        'max_busy_ms': ext if method else plain,
+        'max_busy_field': 'CdbExtMaxBusyTime' if method else 'CdbMaxBusyTime',
+        'max_busy_ms_alt': plain if method else ext,
+        'max_busy_field_alt': ('CdbMaxBusyTime' if method
+                               else 'CdbExtMaxBusyTime'),
+    }
+
+
 def parse_nad(raw: bytes, app_number: int = 0, media_type: int = 0x02) -> dict:
     """One Normalized Application Descriptor, Table 8-173.
 

@@ -18766,6 +18766,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-56': 'Additional Durations Advertising (Page 01h)',
         '8-57': 'Host Lane Polarity Inversion Indication (Page 01h)',
         '8-58': 'Supported Pages and Banks Advertisement (Page 01h)',
+        '8-55': 'CDB Advertisement (Page 01h)',
         '8-59': 'Normalized Application Descriptors Support (Page 01h)',
         '8-60': 'Media Lane Assignment Advertising (Page 01h)',
         '8-61': 'Additional Application Descriptor Registers (Page 01h)',
@@ -22291,6 +22292,319 @@ class TestTheApplicationsThatDoNotFitInFifteen(CMISTestCase):
         js = self._js()
         self.assertIn('18h:128', js)
         self.assertIn('cannot yet provision', js)
+
+
+class TestHowLongTheModuleMayStayBusy(CMISTestCase):
+    """01h:163-166 (Table 8-55), the CDB Messaging advertisement.
+
+    REG_CDB_CAPS was declared and never read, and nothing in the tool
+    mentioned CDB at all - the mechanism firmware update and the whole
+    command catalogue of chapter 9 run over.
+
+    Two facts a host gets operationally wrong without it:
+
+    163.5 CdbBackgroundModeSupported. Clear means the module "will hold off
+    ACCESS to any register until CDB command processing is completed" - the
+    whole management interface, not only the CDB pages. A tool polling
+    monitors through a firmware update on such a module is not slow, it is
+    being ignored.
+
+    And the maximum CDB busy time, where the specification contradicts
+    itself. Table 8-55 gives two encodings and a bit to choose between them:
+
+      166.7  "0: ... specified via CdbMaxBusyTime (01h:166.6-0)"
+             "1: ... specified via CdbExtMaxBusyTime (01h:165.4-0)"
+      165.4-0 CdbExtMaxBusyTime "... 160 ms to 4960 ms when
+             CdbMaxBusySpecMethod=0b"
+      166.6-0 CdbMaxBusyTime "... 0 ms to 80 ms when
+             CdbMaxBusySpecMethod=1b"
+
+    The selector row and the two value rows are exactly inverted, and nothing
+    else in OIF-CMIS-05.4 settles it - checked against the rendered page, not
+    only the extracted text, because a table this shape is exactly where an
+    extractor shuffles clauses between rows.
+
+    The two readings are 0-80 ms and 160-4960 ms. Picking one silently is the
+    difference between waiting for a module and declaring a working one dead,
+    so the tool follows the row that defines the bit and reports the other
+    reading beside it.
+
+    Two more traps in the same four bytes: CdbMaxPagesEPL is not a page count
+    at codes 5-7, and CdbReadWriteLengthExtension caps at two different
+    lengths depending on which page the access is to."""
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _busy_cell(self):
+        js = self._js()
+        i = js.index('function cdbBusyCell')
+        return re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function cuAttenuationCell')])
+
+    # ---- the gate ----------------------------------------------------
+
+    def test_zero_instances_means_no_cdb_at_all(self):
+        """Every other field in the table is RO Cnd. on this one."""
+        import cmis_registers as c
+        d = c.parse_cdb_advertisement(bytes([0x3F, 0xFF, 0xFF, 0xFF]))
+        self.assertFalse(d['supported'])
+        self.assertEqual(d['instances'], 0)
+        self.assertNotIn('max_busy_ms', d)
+
+    def test_three_instances_is_reserved(self):
+        """"3: Reserved" - a count the standard set aside, not two."""
+        import cmis_registers as c
+        d = c.parse_cdb_advertisement(bytes([0xC0, 0, 0, 0]))
+        self.assertTrue(d['supported'])
+        self.assertIn('Reserved', d['instances_text'])
+
+    def test_one_and_two_instances_are_counted(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.parse_cdb_advertisement(bytes([0x40, 0, 0, 0]))['instances'], 1)
+        self.assertEqual(
+            c.parse_cdb_advertisement(bytes([0x80, 0, 0, 0]))['instances'], 2)
+
+    # ---- the busy time -------------------------------------------------
+
+    def test_the_two_encodings(self):
+        import cmis_registers as c
+        # CdbExtMaxBusyTime: max(1, T) * 160 ms
+        self.assertEqual(c.cdb_max_busy_ms(0x00, 0x80)['max_busy_ms'], 160)
+        self.assertEqual(c.cdb_max_busy_ms(0x01, 0x80)['max_busy_ms'], 160)
+        self.assertEqual(c.cdb_max_busy_ms(0x1F, 0x80)['max_busy_ms'], 4960)
+        # CdbMaxBusyTime: max(0, 80 - S) ms - larger S is a shorter time
+        self.assertEqual(c.cdb_max_busy_ms(0x00, 0x00)['max_busy_ms'], 80)
+        self.assertEqual(c.cdb_max_busy_ms(0x00, 0x32)['max_busy_ms'], 30)
+        self.assertEqual(c.cdb_max_busy_ms(0x00, 0x7F)['max_busy_ms'], 0)
+
+    def test_the_ranges_are_the_ones_the_table_states(self):
+        import cmis_registers as c
+        ext = [c.cdb_max_busy_ms(t, 0x80)['max_busy_ms'] for t in range(32)]
+        self.assertEqual((min(ext), max(ext)), (160, 4960))
+        plain = [c.cdb_max_busy_ms(0, s)['max_busy_ms'] for s in range(128)]
+        self.assertEqual((min(plain), max(plain)), (0, 80))
+
+    def test_the_selector_follows_the_row_that_defines_it(self):
+        """166.7 is the row whose subject is the bit."""
+        import cmis_registers as c
+        d = c.cdb_max_busy_ms(0x0A, 0x14)        # method 0
+        self.assertEqual(d['max_busy_field'], 'CdbMaxBusyTime')
+        d = c.cdb_max_busy_ms(0x0A, 0x94)        # method 1
+        self.assertEqual(d['max_busy_field'], 'CdbExtMaxBusyTime')
+
+    def test_the_other_reading_is_reported_too(self):
+        """Not decoration: the two differ by more than an order of magnitude,
+        and the specification does not say which is right."""
+        import cmis_registers as c
+        d = c.cdb_max_busy_ms(0x0A, 0x14)
+        self.assertEqual(d['max_busy_ms'], 60)
+        self.assertEqual(d['max_busy_ms_alt'], 1600)
+        self.assertEqual(d['max_busy_field_alt'], 'CdbExtMaxBusyTime')
+
+    def test_the_two_readings_are_never_the_same_number(self):
+        """One is 0-80 ms and the other 160-4960 ms, so there is no value of
+        the bytes where the ambiguity quietly does not matter."""
+        import cmis_registers as c
+        for t in range(0, 32, 7):
+            for s in range(0, 128, 29):
+                for m in (0x00, 0x80):
+                    d = c.cdb_max_busy_ms(t, s | m)
+                    self.assertNotEqual(d['max_busy_ms'], d['max_busy_ms_alt'])
+
+    def test_the_selector_bit_is_not_part_of_the_value(self):
+        """166.7 sits on top of 166.6-0. Reading the whole byte as S makes
+        every module that selects the extended encoding report 0 ms on the
+        other reading - and 0 ms is a number a reader would believe."""
+        import cmis_registers as c
+        d = c.cdb_max_busy_ms(0x00, 0x80)        # method 1, S = 0
+        self.assertEqual(d['max_busy_ms_alt'], 80)
+        d = c.cdb_max_busy_ms(0x00, 0x8A)        # method 1, S = 10
+        self.assertEqual(d['max_busy_ms_alt'], 70)
+
+    def test_the_busy_time_is_not_read_from_the_trigger_bit(self):
+        """165.7 is CdbCommandTriggerMethod and 165.4-0 the busy time; 6-5
+        are Reserved between them."""
+        import cmis_registers as c
+        self.assertEqual(c.cdb_max_busy_ms(0xFF, 0x80)['max_busy_ms'],
+                         c.cdb_max_busy_ms(0x1F, 0x80)['max_busy_ms'])
+
+    # ---- the EPL pages --------------------------------------------------
+
+    def test_the_page_code_is_not_the_page_count(self):
+        """0-4 happen to equal one, and then 5, 6 and 7 mean 8, 12 and 16."""
+        import cmis_registers as c
+        got = [c.CDB_EPL_PAGES[i][0] for i in range(8)]
+        self.assertEqual(got, [0, 1, 2, 3, 4, 8, 12, 16])
+
+    def test_every_page_code_carries_its_range_and_byte_count(self):
+        import cmis_registers as c
+        self.assertEqual(c.CDB_EPL_PAGES[7], (16, 'A0h-AFh', 2048))
+        self.assertEqual(c.CDB_EPL_PAGES[5], (8, 'A0h-A7h', 1024))
+        self.assertEqual(c.CDB_EPL_PAGES[0], (0, 'none', 0))
+        for code, (pages, _r, nbytes) in c.CDB_EPL_PAGES.items():
+            self.assertEqual(nbytes, pages * 128, code)
+
+    def test_the_page_code_comes_from_the_low_nibble(self):
+        import cmis_registers as c
+        d = c.parse_cdb_advertisement(bytes([0x47, 0, 0, 0]))
+        self.assertEqual(d['epl_pages'], 16)
+        d = c.parse_cdb_advertisement(bytes([0x42, 0, 0, 0]))
+        self.assertEqual(d['epl_pages'], 2)
+
+    # ---- one byte, two limits -------------------------------------------
+
+    def test_the_length_extension_caps_differently_per_page(self):
+        """Page 9Fh holds 120 bytes of LPL and the EPL pages up to 2048, so
+        the same k means two different maxima. One number would promise a
+        2048-byte write to a page that takes 128."""
+        import cmis_registers as c
+        d = c.parse_cdb_advertisement(bytes([0x40, 0xFF, 0, 0]))
+        self.assertEqual(d['max_access_epl'], 2048)
+        self.assertEqual(d['max_access_lpl'], 128)
+
+    def test_the_extension_formula(self):
+        import cmis_registers as c
+        for k, epl in ((0, 8), (1, 16), (7, 64), (14, 120), (255, 2048)):
+            d = c.parse_cdb_advertisement(bytes([0x40, k, 0, 0]))
+            self.assertEqual(d['max_access_epl'], epl, k)
+        # LPL follows until 15, then stops at 128
+        self.assertEqual(
+            c.parse_cdb_advertisement(bytes([0x40, 14, 0, 0]))['max_access_lpl'],
+            120)
+        self.assertEqual(
+            c.parse_cdb_advertisement(bytes([0x40, 15, 0, 0]))['max_access_lpl'],
+            128)
+        self.assertEqual(
+            c.parse_cdb_advertisement(bytes([0x40, 200, 0, 0]))['max_access_lpl'],
+            128)
+
+    # ---- the other bits ---------------------------------------------------
+
+    def test_background_mode_and_auto_paging_are_their_own_bits(self):
+        import cmis_registers as c
+        d = c.parse_cdb_advertisement(bytes([0x60, 0, 0, 0]))
+        self.assertTrue(d['background_mode'])
+        self.assertFalse(d['auto_paging'])
+        d = c.parse_cdb_advertisement(bytes([0x50, 0, 0, 0]))
+        self.assertFalse(d['background_mode'])
+        self.assertTrue(d['auto_paging'])
+
+    def test_the_trigger_method_is_bit_seven_of_165(self):
+        import cmis_registers as c
+        self.assertTrue(c.parse_cdb_advertisement(
+            bytes([0x40, 0, 0x80, 0]))['trigger_on_stop'])
+        self.assertFalse(c.parse_cdb_advertisement(
+            bytes([0x40, 0, 0x7F, 0]))['trigger_on_stop'])
+
+    # ---- the module ------------------------------------------------------
+
+    def test_the_module_reports_it(self):
+        d = self._caps()['cdb']
+        self.assertTrue(d['supported'])
+        self.assertEqual(d['epl_pages'], 2)
+        self.assertEqual(d['max_busy_ms'], 30)
+
+    def test_both_busy_time_methods_are_exercised_by_a_profile(self):
+        """One fixture per branch, or the selector is never tested against a
+        real read."""
+        self.assertEqual(self._caps('mock_dr8')['cdb']['busy_method'], 0)
+        self.assertEqual(self._caps('mock_zr16')['cdb']['busy_method'], 1)
+
+    def test_a_profile_shows_the_two_access_limits_apart(self):
+        d = self._caps('mock_zr16')['cdb']
+        self.assertEqual(d['max_access_epl'], 2048)
+        self.assertEqual(d['max_access_lpl'], 128)
+
+    def test_a_module_without_cdb_says_so(self):
+        d = self._caps('mock_coherent')['cdb']
+        self.assertFalse(d['supported'])
+
+    def test_the_bytes_are_read_from_01h_163(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_CDB_CAPS, (0x01, 163, 4))
+
+    # ---- the panel --------------------------------------------------------
+
+    def test_the_panel_has_the_rows(self):
+        js = self._js()
+        for label in ("'CDB Messaging'", "'CDB Background Mode'",
+                      "'CDB Max Busy'", "'CDB EPL Pages'",
+                      "'CDB Max Access'", "'CDB Auto Paging'",
+                      "'CDB Trigger'"):
+            self.assertIn(label, js, label)
+
+    def test_the_rows_name_their_bits(self):
+        js = self._js()
+        for addr in ("'0xA3[7:6]'", "'0xA3[5]'", "'0xA3[4]'", "'0xA3[3:0]'",
+                     "'0xA4'", "'0xA5[7]'", "'0xA5[4:0] / 0xA6'"):
+            self.assertIn(addr, js, addr)
+
+    def test_the_background_row_says_what_clear_costs(self):
+        """A plain "Not supported" would read as a missing convenience. It
+        means the management interface stops answering."""
+        js = self._js()
+        i = js.index("'CDB Background Mode'")
+        row = js[i:js.index('],', i)]
+        self.assertIn('stops answering', row)
+
+    def test_the_busy_cell_shows_both_readings(self):
+        """On the face of the cell, not only inside the tooltip. The tooltip
+        quotes the same value, so looking for it anywhere in the function
+        passes with the visible half deleted - and a reader who never hovers
+        then sees one number presented as settled."""
+        body = self._busy_cell()
+        visible = body.split("\\u25b2</span>", 1)
+        self.assertEqual(len(visible), 2, 'the warn marker ends the tooltip')
+        self.assertIn('max_busy_ms_alt', visible[1],
+                      'the other reading has to be on the face of the cell')
+        self.assertIn('max_busy_field_alt', body)
+
+    def test_the_busy_cell_says_the_table_contradicts_itself(self):
+        """Without that, two numbers side by side look like a tool that
+        cannot make up its mind rather than a specification that cannot."""
+        body = self._busy_cell()
+        self.assertIn('contradict', body)
+        self.assertIn('166.7', body)
+
+    def test_the_page_row_warns_that_the_code_is_not_the_count(self):
+        js = self._js()
+        i = js.index("'CDB EPL Pages'")
+        row = js[i:js.index('],', i)]
+        self.assertIn('not the page count', row)
+
+    def test_the_access_row_names_both_limits(self):
+        """Scoped to the cell, not the row: the tooltip explains EPL and LPL
+        too, so searching the whole row passes with the cell showing one
+        number."""
+        js = self._js()
+        i = js.index("'CDB Max Access'")
+        cell = js[i:js.index("'01h', '0xA4'", i)]
+        self.assertIn('max_access_epl', cell)
+        self.assertIn('max_access_lpl', cell)
+        self.assertIn('EPL', cell)
+        self.assertIn('LPL', cell)
+
+    def test_an_unsupporting_module_gets_one_row_not_seven(self):
+        """Six rows of detail about a mechanism the module does not have is
+        worse than one row saying it does not have it."""
+        js = self._js()
+        i = js.index('c.cdb.supported ?')
+        block = js[i:js.index('...(c.far_end', i)]
+        _yes, no = block.split('] : [', 1)
+        self.assertNotIn("'CDB Max Busy'", no)
+        self.assertIn('does no ', no)
 
 
 if __name__ == '__main__':
