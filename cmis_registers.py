@@ -33,6 +33,9 @@ REG_CUSTOM_MON       = (None, 0x18, 2)
 REG_MODULE_CONTROL   = (None, 0x1A, 1)   # Module-level control register
 REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15)
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
+# Lower 56-57 (Table 8-18), both RO and Required, and both in the same
+# table as the subtype byte below that this already reads.
+REG_CMIS_SM_SUPPORT  = (None, 0x38, 2)   # 56 CmisSmSupport, 57 FunctionType
 REG_MODULE_SUBTYPE   = (None, 0x3C, 1)   # Lower 60: [3:0] SFF8024ModuleSubtype
 REG_HEATSINK_FIBER   = (None, 0x3D, 1)   # Lower 61: [7:4] HeatsinkType (5.4), [1:0] FiberFaceType
 REG_MEDIA_TYPE       = (None, 0x55, 1)   # Lower 85: Media Type Encoding (Table 8-20)
@@ -2261,6 +2264,57 @@ def parse_default_polarity(raw: bytes) -> list:
              'input_tx_inverted':  bool((tx >> i) & 1),
              'output_rx_inverted': bool((rx >> i) & 1)}
             for i in range(8)]
+
+
+# Table 8-18, Lower 56. Each entry is (text, MSM, DPSM, NPSM); None where
+# the code does not say.
+_CMIS_SM_SUPPORT = {
+    0: ('Not stated (pre-CMIS 5.3)', None, None, None),
+    1: ('None - e.g. a passive cable', False, False, False),
+    2: ('MSM only - Resource Module or fixed transceiver', True, False, False),
+    3: ('MSM + DPSM - programmable transceiver', True, True, False),
+    4: ('MSM + DPSM + NPSM - Muxceiver', True, True, True),
+}
+
+
+def parse_state_machines(byte_56: int, byte_57: int) -> dict:
+    """Lower 56-57 (Table 8-18): which state machines this module runs.
+
+    The tool's whole Data Path tab is about the DPSM - states, Apply, DPInit,
+    DPInitPending - and code 1 or 2 says there is no DPSM to be in a state.
+    A module can say so while having a full paged memory: code 2 is "MSM only
+    (Resource Module or fixed transceiver)", which no memory-model check
+    catches.
+
+    Code 0 is the trap. It is not "no state machines": "when undefined (prior
+    to CMIS 5.3), the type of module is implicit but can usually be determined
+    from MemoryModel (00h:2) and from other advertisements". Reading it as an
+    absence would take the Data Path tab away from every module built before
+    5.3. So it reports None - not stated - and the memory model stays the
+    fallback the specification names.
+
+    Codes 5-FF are Reserved, which is also not an absence.
+    """
+    text, msm, dpsm, npsm = _CMIS_SM_SUPPORT.get(
+        byte_56, ('Reserved (%d)' % byte_56, None, None, None))
+    if byte_57 == 0:
+        fn = 'Transmission Module'
+    elif byte_57 == 1:
+        fn = 'ELSFP Resource Module'
+    elif byte_57 < 128:
+        fn = 'Reserved (%d)' % byte_57
+    else:
+        fn = 'Custom (%d)' % byte_57
+    return {
+        'sm_code': byte_56,
+        'sm_text': text,
+        'sm_stated': byte_56 in _CMIS_SM_SUPPORT and byte_56 != 0,
+        'msm': msm,
+        'dpsm': dpsm,
+        'npsm': npsm,
+        'function_type': byte_57,
+        'function_text': fn,
+    }
 
 
 def parse_extended_module_info(subtype_byte: int, heatsink_byte: int) -> dict:

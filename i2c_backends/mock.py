@@ -969,6 +969,13 @@ class MockBackend(I2CInterface):
         # host lanes reach which far end module.
         p00[0xD3] = self._profile.get('far_end_config_211', 0x00)
         p00[0xD4] = p['media_if_tech']      # Media Interface Technology
+        # 56-57 (Table 8-18), both RO and Required. Derived from the memory
+        # model rather than declared beside it: a flat memory module has no
+        # Page 10h, so no Data Path to run a state machine over, and a module
+        # claiming a DPSM it has no registers for is a module bug.
+        lower[0x38] = p.get('cmis_sm_support',
+                            1 if p.get('flat_memory') else 3)
+        lower[0x39] = p.get('module_function_type', 0x00)   # 57
         lower[0x3C] = p.get('module_subtype', 0x00)          # 60
         lower[0x3D] = p.get('heatsink_fiber', 0x00)          # 61 (5.4 heatsink type)
         regs[0x00] = p00

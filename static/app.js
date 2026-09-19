@@ -616,6 +616,16 @@ async function loadInfo() {
     // the answers from 01h:173-174 - the bytes that extend this one - and
     // nothing from the byte itself: five of the six were decoded at connect
     // and thrown away, including whether the module has VDM at all.
+    ['State Machines', stateMachineCell(c),
+     'Lower', '0x38',
+     'CmisSmSupport (Table 8-18) - which of the Module, Data Path and '
+     + 'Network Path state machines this module runs. Code 0 is "not '
+     + 'stated", not "none": the specification has a host fall back to the '
+     + 'memory model for a module built before CMIS 5.3.'],
+    ['Module Function', esc(c.function_text || '-'),
+     'Lower', '0x39',
+     'ModuleFunctionType (Table 8-18) - a transmission module or an ELSFP '
+     + 'Resource Module.'],
     ...(c.si ? [
       // 161.0-1 and 162.0-1. The Flags panel has reported Tx CDR loss of
       // lock since it was written; whether that CDR is in circuit is this
@@ -947,6 +957,22 @@ function memoryModelCell(d) {
 // saying "VDM" and nothing else leaves the reader to look up which pages
 // that is before they can go and read them.
 // Table 8-54, 01h:161.6-5. "11b: reserved" is not a buffer count.
+// Lower 56. The three machines are worth naming rather than printing the
+// code's sentence alone: the Data Path tab is about the DPSM, and "MSM only"
+// reads like a capability rather than the absence it is.
+function stateMachineCell(c) {
+  const txt = esc(c.sm_text || '-');
+  if (c.dpsm === null || c.dpsm === undefined) {
+    return txt + ' <span class="reg-meta">module has not said; the memory '
+      + 'model decides</span>';
+  }
+  const parts = [['MSM', c.msm], ['DPSM', c.dpsm], ['NPSM', c.npsm]]
+    .filter(([_n, on]) => on).map(([n]) => n);
+  return txt + ' <span class="reg-meta">'
+    + (parts.length ? parts.join(' + ') : 'no state machines') + '</span>';
+}
+
+
 function recallBuffersText(code) {
   if (code === 3) return 'Reserved (11b)';
   return code ? code + ' buffer' + (code === 1 ? '' : 's') : 'Not supported';
@@ -2180,6 +2206,7 @@ async function loadDatapath() {
 
   renderSignalIntegrity(d);
   renderLatency(d);
+  renderNoDpsmNote(AppState.caps);
 
   const ctl = (AppState.caps && AppState.caps.controls) || {};
   const rxtx = (AppState.caps && AppState.caps.rx_tx) || {};
@@ -2317,6 +2344,26 @@ function renderNAD(d) {
       + 'registers read BEh and the identity is only here. Block 0 mirrors '
       + 'the basic Application Descriptors by requirement. AN = 15 × '
       + 'block index + AppSel code.';
+  }
+}
+
+
+function renderNoDpsmNote(caps) {
+  // The Data Path tab is entirely about the DPSM. When the module has said
+  // it does not run one, the states and the Apply buttons are describing a
+  // machine that is not there - and a blank panel reads as a failed read.
+  const el = document.getElementById('datapath-no-dpsm');
+  if (!el) return;
+  if (caps && caps.dpsm === false) {
+    el.innerHTML = '<span class="flag-warn">\u25b2</span> This module '
+      + 'reports <b>' + esc(caps.sm_text || '') + '</b> in CmisSmSupport '
+      + '<span class="reg-meta">Lower 0x38</span>, so it runs no Data Path '
+      + 'State Machine. The states and controls on this tab describe a '
+      + 'machine it does not have.';
+    el.hidden = false;
+  } else {
+    el.innerHTML = '';
+    el.hidden = true;
   }
 }
 

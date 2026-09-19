@@ -148,6 +148,21 @@ def paged_mock_backends(names=None):
     return sorted(out)
 
 
+def flat_mock_backends():
+    """The twin of paged_mock_backends: the static memory profiles.
+
+    A sweep asserting a property that *differs* between the two kinds needs
+    both halves, and writing it as one pass over every registered profile is
+    what the enumeration budget exists to discourage. Derived from the
+    profile for the same reason the other one is.
+    """
+    import i2c_interface
+    import i2c_backends            # noqa: F401 - triggers registration
+    return sorted(n for n, cls in i2c_interface._BACKENDS.items()
+                  if n.startswith('mock')
+                  and getattr(cls, 'PROFILE', {}).get('flat_memory'))
+
+
 def js_function_body(js, header):
     """The body of a JS function, whichever line ending the file has.
 
@@ -20048,11 +20063,17 @@ class TestAFlatModuleHasNoPageToRead(CMISTestCase):
         is not.
 
         Counted rather than forbidden: two places legitimately want every
-        backend - the registry checks themselves."""
+        backend - the registry checks themselves.
+
+        Counted below the first class, because the module-level helpers are
+        built out of this same expression and are the answer to it, not an
+        instance of the problem. Without that, adding the flat-side twin of
+        paged_mock_backends tripped the guard against itself."""
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'test_api.py'), encoding='utf-8') as f:
             src = f.read()
-        raw_filters = len(re.findall(r"startswith\('mock'\)", src))
+        tests_only = src[src.index(chr(10) + 'class '):]
+        raw_filters = len(re.findall(r"startswith\('mock'\)", tests_only))
         wrapped = len(re.findall(r'paged_mock_backends\(', src))
         self.assertGreaterEqual(
             wrapped, 9,
@@ -23035,6 +23056,222 @@ class TestTheCDRTheToolCouldNotSee(CMISTestCase):
         i = js.index("'Staged Control Set 1'")
         row = js[i:js.index('],', i)]
         self.assertIn('writes Set 0', row)
+
+
+class TestWhichStateMachinesTheModuleRuns(CMISTestCase):
+    """Lower 56-57 (Table 8-18), both RO and Required, both never read - from
+    the same table as the subtype byte at Lower 60 that this tool already
+    reads two fields out of.
+
+    56 CmisSmSupport says which of the Module, Data Path and Network Path
+    state machines the module runs. The entire Data Path tab is about the
+    DPSM: the states, the Apply buttons, DPInit, DPInitPending. Codes 1 and 2
+    say there is no DPSM to be in a state.
+
+    Code 2 is the one no existing check catches. "MSM only (Resource Module
+    or fixed transceiver)" is a module with a full paged memory, Page 01h,
+    advertisements and monitors - _require_paged passes it straight through.
+    Only this byte says the Data Path machinery is not there.
+
+    And code 0 is the trap: not "no state machines" but "not stated". "When
+    undefined (prior to CMIS 5.3), the type of module is implicit but can
+    usually be determined from MemoryModel (00h:2) and from other
+    advertisements." Reading it as an absence would take the Data Path tab
+    away from every module built before 5.3."""
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the decode ------------------------------------------------------
+
+    def test_each_code_names_the_machines_it_means(self):
+        import cmis_registers as c
+        want = {
+            1: (False, False, False),
+            2: (True, False, False),
+            3: (True, True, False),
+            4: (True, True, True),
+        }
+        for code, (msm, dpsm, npsm) in want.items():
+            d = c.parse_state_machines(code, 0)
+            self.assertEqual((d['msm'], d['dpsm'], d['npsm']),
+                             (msm, dpsm, npsm), code)
+            self.assertTrue(d['sm_stated'], code)
+
+    def test_zero_is_not_stated_rather_than_none(self):
+        """The difference between "this module has no Data Path machinery"
+        and "this module predates the field"."""
+        import cmis_registers as c
+        d = c.parse_state_machines(0, 0)
+        self.assertFalse(d['sm_stated'])
+        self.assertIsNone(d['dpsm'])
+        self.assertIsNone(d['msm'])
+        self.assertIsNone(d['npsm'])
+        self.assertNotEqual(d['dpsm'], False,
+                            'None and False are different answers here')
+
+    def test_a_reserved_code_is_not_an_absence_either(self):
+        import cmis_registers as c
+        for code in (5, 6, 200, 255):
+            d = c.parse_state_machines(code, 0)
+            self.assertIsNone(d['dpsm'], code)
+            self.assertFalse(d['sm_stated'], code)
+            self.assertIn('Reserved', d['sm_text'], code)
+
+    def test_the_text_says_which_code_it_was(self):
+        import cmis_registers as c
+        self.assertIn('passive cable', c.parse_state_machines(1, 0)['sm_text'])
+        self.assertIn('MSM only', c.parse_state_machines(2, 0)['sm_text'])
+        self.assertIn('Muxceiver', c.parse_state_machines(4, 0)['sm_text'])
+
+    def test_the_function_type_is_the_other_byte(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_state_machines(3, 0)['function_text'],
+                         'Transmission Module')
+        self.assertEqual(c.parse_state_machines(3, 1)['function_text'],
+                         'ELSFP Resource Module')
+        self.assertIn('Reserved', c.parse_state_machines(3, 5)['function_text'])
+        self.assertIn('Custom', c.parse_state_machines(3, 200)['function_text'])
+
+    def test_the_two_bytes_do_not_read_each_other(self):
+        """56 is the state machines and 57 the function type. One byte read
+        for the other gives a plausible answer on both rows."""
+        import cmis_registers as c
+        d = c.parse_state_machines(1, 0)
+        self.assertEqual(d['sm_code'], 1)
+        self.assertEqual(d['function_type'], 0)
+        self.assertFalse(d['dpsm'])
+        self.assertEqual(d['function_text'], 'Transmission Module')
+
+    # ---- the read ---------------------------------------------------------
+
+    def test_the_register_is_lower_56_and_two_bytes(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_CMIS_SM_SUPPORT, (None, 56, 2))
+
+    def test_a_flat_module_answers_it_too(self):
+        """Lower Memory, so it is there on a static memory module - and a
+        passive cable is exactly the module whose answer matters. Read before
+        the flat branch returns, or the one module that needs it is the one
+        module that does not get it."""
+        caps = self._caps('mock_flat_dac')
+        self.assertTrue(caps.get('flat_memory'))
+        self.assertEqual(caps['sm_code'], 1)
+        self.assertFalse(caps['dpsm'])
+
+    def test_a_programmable_transceiver_says_so(self):
+        caps = self._caps('mock_dr8')
+        self.assertEqual(caps['sm_code'], 3)
+        self.assertTrue(caps['dpsm'])
+        self.assertTrue(caps['msm'])
+        self.assertFalse(caps['npsm'])
+
+    def test_both_required_bytes_are_written_rather_than_defaulted(self):
+        """Lower 56 and 57 are both RO Required, and a conformant module
+        defines them. The mock's lower memory starts empty and an unwritten
+        address reads zero, so leaving byte 57 out would give the same
+        answer - which is why a value check cannot see the difference, and
+        why this looks at the source instead. Zero is the right answer for
+        every profile here; it should be the right answer on purpose."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'i2c_backends', 'mock.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('lower[0x38] =', src)
+        self.assertIn('lower[0x39] =', src)
+
+    def test_no_profile_claims_a_machine_it_has_no_registers_for(self):
+        """A paged profile runs a Data Path; a flat one has no Page 10h to
+        run it over. Derived in the mock from the memory model so the two
+        cannot drift, and checked here so the derivation is not the only
+        thing saying it."""
+        for name in paged_mock_backends():
+            with self.subTest(backend=name):
+                caps = self._caps(name)
+                self.assertTrue(caps['dpsm'])
+                self.assertFalse(caps['npsm'],
+                                 'no profile serves Network Path pages')
+        flat = flat_mock_backends()
+        self.assertTrue(flat, 'there has to be a flat profile to check')
+        for name in flat:
+            with self.subTest(backend=name):
+                caps = self._caps(name)
+                self.assertFalse(caps['dpsm'])
+                self.assertFalse(caps['npsm'])
+
+    # ---- the panel ---------------------------------------------------------
+
+    def test_the_capability_rows_exist(self):
+        js = self._js()
+        self.assertIn("'State Machines'", js)
+        self.assertIn("'Module Function'", js)
+        self.assertIn("'0x38'", js)
+        self.assertIn("'0x39'", js)
+
+    def test_the_row_explains_that_zero_is_not_an_absence(self):
+        js = self._js()
+        i = js.index("'State Machines'")
+        row = js[i:js.index('],', i)]
+        self.assertIn('not', row)
+        self.assertIn('memory model', row)
+
+    def test_the_cell_distinguishes_not_stated_from_none(self):
+        """Both print something; only one of them is a fact about the
+        module."""
+        js = self._js()
+        i = js.index('function stateMachineCell')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function recallBuffersText')])
+        self.assertIn('=== null', body)
+        self.assertIn('has not said', body)
+        self.assertIn('no state machines', body)
+
+    def test_the_cell_names_the_machines_rather_than_only_the_sentence(self):
+        js = self._js()
+        i = js.index('function stateMachineCell')
+        body = js[i:js.index('function recallBuffersText')]
+        for name in ("'MSM'", "'DPSM'", "'NPSM'"):
+            self.assertIn(name, body, name)
+
+    def test_the_datapath_tab_has_somewhere_to_say_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="datapath-no-dpsm"', html)
+        el = html[html.index('id="datapath-no-dpsm"'):]
+        self.assertIn('hidden', el[:el.index('>')])
+
+    def test_the_note_fires_only_on_a_stated_absence(self):
+        """Not on code 0 and not on a Reserved code: neither says the module
+        lacks a DPSM, and hiding the tab's meaning on a pre-5.3 module would
+        be worse than the gap this closes."""
+        js = self._js()
+        i = js.index('function renderNoDpsmNote')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function renderLatency')])
+        self.assertIn('caps.dpsm === false', body)
+        self.assertIn('el.hidden = true', body)
+
+    def test_the_note_is_rendered(self):
+        self.assertIn('renderNoDpsmNote(AppState.caps);', self._js())
+
+    def test_the_note_names_the_byte_it_read(self):
+        js = self._js()
+        i = js.index('function renderNoDpsmNote')
+        body = js[i:js.index('function renderLatency')]
+        self.assertIn('CmisSmSupport', body)
+        self.assertIn('0x38', body)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.95.0'
+__version__ = '2.96.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -692,6 +692,11 @@ def _discover_capabilities() -> dict:
         # because two Page 00h blocks below are defined only for some media
         # types and are Reserved for the rest.
         caps['media_type_code'] = _read_lower(*cmis.REG_MEDIA_TYPE[1:])[0]
+        # Lower 56-57 (Table 8-18), and read before the flat branch for the
+        # same reason: a passive cable is exactly the module whose answer
+        # matters, and it returns early below.
+        caps.update(cmis.parse_state_machines(
+            *_read_lower(*cmis.REG_CMIS_SM_SUPPORT[1:])))
         caps['config'] = cmis.parse_config_capabilities(
             _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         caps['flat_memory'] = caps['config'].get('memory_model') == 'Flat'

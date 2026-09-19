@@ -242,6 +242,11 @@
     <!-- ===== Tab: DataPath Config ===== -->
     <div class="tab-panel" id="tab-datapath">
 
+      <!-- Shown only when CmisSmSupport (Lower 0x38) says this module runs
+           no Data Path State Machine, which the memory model does not
+           always reveal: code 2 is a fully paged module with an MSM only. -->
+      <div class="caps-note" id="datapath-no-dpsm" hidden></div>
+
       <!-- Module Control card -->
       <div class="card">
         <h3>Module Control
