@@ -502,13 +502,68 @@ _FLAT_DAC = dict(
 )
 
 
+# (HostInterfaceID, MediaInterfaceID, lane-count byte,
+#  HostLaneAssignmentOptions, MediaLaneAssignmentOptions, byte5<<8 | byte6)
+# where byte 5 bit 7 is NetworkPathIndicator and byte 6 holds the two GIDs.
+_XD24_NADS = [
+    [   # Bank 0 - Applications 1-15, mirrored into the basic registers
+        (0x51, 0x56, 0x88, 0x01, 0x01, 0x0000),
+        # The case BEh exists for: a 12-bit Host Interface UID. 6.2.1.6.2 -
+        # "if a NAD cannot be represented correctly in a basic Application
+        # Descriptor because of a UID being greater than 255, the module will
+        # change the offending interface ID in the relevant basic Application
+        # Descriptor to the special value ... BEh". _basic_from_nad below is
+        # the module doing that, so this Application's basic descriptor reads
+        # BEh on the host side and its real identity is only on Page 1Ch.
+        #
+        # Carried by the second of the two Applications this profile already
+        # had rather than by a third: the shipped profiles are frozen at two
+        # AppSel codes of differing width, and a fixture that quietly grows
+        # one is a fixture two other test classes stop describing.
+        (0x07, 0x1C, 0x44, 0x11, 0x11, 0x0020),
+    ],
+    [   # Bank 1 - Applications 16-30
+        (0x51, 0x23, 0x88, 0x01, 0x01, 0x0001),   # media GID 1
+        (0x4F, 0x1C, 0x44, 0x11, 0x11, 0x0000),
+        (0x4E, 0x56, 0x84, 0x01, 0x11, 0x0000),
+    ],
+    [   # Bank 2 - Applications 31-45. The second one is a Network Path
+        # rather than a Data Path (byte 5 bit 7, 8.19.5.3).
+        (0x4F, 0x1C, 0x44, 0x11, 0x11, 0x0000),
+        (0x51, 0x56, 0x88, 0x01, 0x01, 0x8000),
+    ],
+    [   # Bank 3 - Applications 46-60
+        (0x4E, 0x1B, 0x22, 0x55, 0x55, 0x0000),
+    ],
+]
+
+
+def _basic_from_nad(bank0):
+    """The basic Application Descriptors a module with NADs must publish.
+
+    6.2.1.6.2 requires the first fifteen NADs to be mirrored into the basic
+    registers, with the interface ID replaced by BEh wherever the UID has a
+    non-zero GID and so cannot be represented in eight bits. Deriving the
+    basic list here rather than writing it out a second time is what keeps
+    the mirror from drifting - two hand-maintained copies of one list is
+    exactly how a module comes to advertise two different Applications under
+    one AppSel code.
+    """
+    out = []
+    for h, m, lc, hla, _mla, b56 in bank0:
+        gids = b56 & 0xFF
+        out.append((0xBE if (gids >> 4) & 0x0F else h,
+                    0xBE if gids & 0x0F else m, lc, hla))
+    return out
+
+
 _XD24 = {
     'display':         '24 host lanes, three banks (CMIS 5.4 bank escape)',
     # This profile already exists to exercise a CMIS 5.4 escape past a legacy
     # limit; Normalized Application Descriptors are the other one. Four banks
     # of 15 is sixty Applications, of which a host reading only the basic
     # descriptors sees the first fifteen and has no way to know that.
-    'nad_banks_175':   4,
+    'nad_blocks': _XD24_NADS,
     'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-XD24-3BANK ",
@@ -529,14 +584,11 @@ _XD24 = {
     'temperature_c_nom':   67.0,
     'base_ber':            8.0e-6,
     'snr_db_nom':          20.5,
-    'app_descriptors': [
-        # An Application is capped at eight lanes (5.4 section 6.4.1), so the
-        # module advertises ones that fit a lane group and instantiates them
-        # per group - three groups here rather than the two a 16-lane module
-        # has. 0x11 is the bitmap of permissible starting lanes, 1 and 5.
-        (0x51, 0x56, 0x88, 0x01),            # AppSel 1: 800GAUI-8 S C2M -> 800GBASE-DR8 (8H/8M)
-        (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4-S C2M -> 400GBASE-DR4 (4H/4M)
-    ],
+    # Not a second list: the mirror of NAD Bank 0, BEh substitution and
+    # all. An Application is capped at eight lanes (5.4 section 6.4.1), so
+    # the module advertises ones that fit a lane group and instantiates them
+    # per group - three groups here rather than the two a 16-lane module has.
+    'app_descriptors': _basic_from_nad(_XD24_NADS[0]),
     'link_lengths': {'smf_len_byte': 0x05},   # 0.5 km
     'cmis_rev':            0x54,
     'lanes':               24,               # three banks; 01h:142.1-0 = 11b
@@ -954,7 +1006,12 @@ class MockBackend(I2CInterface):
         # 175 (Table 8-59): banks of Normalized Application Descriptors on
         # Page 1Ch. Zero means the basic descriptors are all there is, which
         # is what every profile said and what the panel assumed.
-        p01[0xAF] = p.get('nad_banks_175', 0x00)
+        # 175 NADBanksSupported (Table 8-59). Derived from the Page 1Ch
+        # blocks this profile actually carries rather than declared beside
+        # them: a module advertising banks it does not have is a module bug,
+        # not a case to model here by accident.
+        p01[0xAF] = (len(p['nad_blocks']) if p.get('nad_blocks')
+                     else p.get('nad_banks_175', 0x00))
         p01[0x8A] = (wl >> 8) & 0xFF
         p01[0x8B] = wl & 0xFF
         p01[0x8C] = (wl_tol >> 8) & 0xFF
@@ -1298,6 +1355,36 @@ class MockBackend(I2CInterface):
             p14[0xD0 + lane * 2] = (w >> 8) & 0xFF
             p14[0xD0 + lane * 2 + 1] = w & 0xFF
         regs[0x14] = p14
+
+        # ==== Page 1Ch - Normalized Application Descriptors (8.24) ====
+        # 128-247 is fifteen 8-byte NADs (Table 8-174); 248-255 Reserved.
+        # Bank 0 is built from this profile's basic descriptors rather than
+        # written out again: 6.2.1.6.2 requires the first fifteen NADs to be
+        # mirrored into the basic registers, and two hand-written copies of
+        # one list is how they come to disagree.
+        nad_blocks = p.get('nad_blocks')
+        if nad_blocks:
+            blocks = list(nad_blocks)
+            for bank, nads in enumerate(blocks):
+                p1c = {a: 0x00 for a in range(0x80, 0x100)}
+                for i in range(15):
+                    base = 0x80 + i * 8
+                    if i < len(nads):
+                        h, m, lc, hla, mla, b5b6 = nads[i]
+                        p1c[base] = h
+                        p1c[base + 1] = m
+                        p1c[base + 2] = lc
+                        p1c[base + 3] = hla
+                        p1c[base + 4] = mla
+                        p1c[base + 5] = (b5b6 >> 8) & 0xFF
+                        p1c[base + 6] = b5b6 & 0xFF
+                    else:
+                        # The unused-descriptor terminator, the same FFh the
+                        # basic list uses (8.2.13).
+                        p1c[base] = 0xFF
+                regs[(0x1C, bank)] = p1c
+                if bank == 0:
+                    regs[0x1C] = p1c
 
         # ==== Page 15h - Timing Characteristics (8.18, Table 8-141) ====
         # 128-223 Reserved; 224-239 Rx latency, 240-255 Tx latency, both

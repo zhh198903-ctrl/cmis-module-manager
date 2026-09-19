@@ -57,6 +57,11 @@ REG_MODULE_PWR_CLASS = (0x00, 0xC8, 1)   # bits[7:5]=power class
 REG_MODULE_MAX_POWER = (0x00, 0xC9, 1)   # 0.25 W increments
 REG_CABLE_LENGTH     = (0x00, 0xCA, 1)   # [7:6]=mult, [5:0]=base
 REG_CONNECTOR_TYPE   = (0x00, 0xCB, 1)   # SFF-8024 Table 4-3
+# Page 1Ch (section 8.24, Table 8-172). 128-247 is fifteen 8-byte
+# Normalized Application Descriptors; 248-255 is Reserved and is not a
+# sixteenth.
+REG_NAD_BLOCK        = (0x1C, 0x80, 120)
+
 # Page 15h (section 8.18, Table 8-141). Banked - each bank is 8 host
 # lanes - and present only when 01h:145.3 says so.
 REG_DP_RX_LATENCY    = (0x15, 0xE0, 16)  # 224-239, 8 x U16 ns
@@ -1397,6 +1402,139 @@ FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
 # a different set of frequencies.
 CU_ATTENUATION_GHZ = (5.0, 7.0, 12.9, 25.8, 53.125)
 CU_ATTENUATION_GHZ_PCIE = (2.5, 4.0, 8.0, 16.0, 32.0)
+
+
+NAD_SIZE = 8
+NADS_PER_BANK = 15
+
+
+def interface_uid(gid: int, code: int) -> str:
+    """An Interface UID printed the way the specification thinks of it.
+
+    6.2.1.6.2: Normalized Application Descriptors exist "to support
+    interfaces identified by a 12-bit Interface Unique ID (UID)". The UID is
+    a 4-bit GID and an 8-bit ID, and the SFF-8024 tables this tool resolves
+    names from are the GID 0 namespace only.
+    """
+    return '0x%02X' % code if not gid else '%d:0x%02X' % (gid, code)
+
+
+def parse_nad(raw: bytes, app_number: int = 0, media_type: int = 0x02) -> dict:
+    """One Normalized Application Descriptor, Table 8-173.
+
+    Eight contiguous bytes, which is the point of them: the basic descriptor
+    for the same Application is scattered across Lower Memory and Page 01h.
+
+    Byte 6 is the half a basic descriptor cannot carry - the GIDs of the two
+    Interface UIDs. When either is non-zero the Application's identity does
+    not fit in eight bits, and 6.2.1.6.2 says the module puts BEh in the
+    basic descriptor instead. The tool has been printing "See NAD (0xBE)"
+    there and had nothing to send the reader to.
+
+    Byte 5 bit 7 says this descriptor may not be an Application in the
+    ordinary sense at all: a Network Path is a different thing from a Data
+    Path (8.19.5.3) and listing one as the other would offer the reader a
+    provisioning move that does not exist.
+    """
+    host_gid = (raw[6] >> 4) & 0x0F
+    media_gid = raw[6] & 0x0F
+    host_n, host_txt = lane_count_field((raw[2] >> 4) & 0x0F)
+    media_n, media_txt = lane_count_field(raw[2] & 0x0F)
+    return {
+        'app_number':   app_number,
+        'host_if_id':   raw[0],
+        'media_if_id':  raw[1],
+        'host_gid':     host_gid,
+        'media_gid':    media_gid,
+        'host_uid':     interface_uid(host_gid, raw[0]),
+        'media_uid':    interface_uid(media_gid, raw[1]),
+        # A name only where there is a table to read it from. A non-zero GID
+        # is a different registry, not a code this tool failed to recognise.
+        'host_if_name': (host_interface_name(raw[0]) if not host_gid
+                         else 'GID %d - not an SFF-8024 interface ID'
+                              % host_gid),
+        'media_if_name': (media_interface_name(raw[1], media_type)
+                          if not media_gid
+                          else 'GID %d - not an SFF-8024 interface ID'
+                               % media_gid),
+        'host_lanes':        host_n,
+        'host_lanes_text':   host_txt,
+        'media_lanes':       media_n,
+        'media_lanes_text':  media_txt,
+        'host_lane_assign_mask':  raw[3],
+        'media_lane_assign_mask': raw[4],
+        'network_path': bool(raw[5] & 0x80),
+    }
+
+
+def parse_nad_block(raw: bytes, bank: int, media_type: int = 0x02) -> list:
+    """One Bank of Page 1Ch, Table 8-174.
+
+    "NAD<i>, with AppSel code = <i> = 1..15, accessed on Bank Index <j> ... is
+    the Normalized Application Descriptor for Application Number
+    AN = 15*<j> + <i>", and selecting it needs both halves: AppSelCode = i
+    and NADBlockIndex = j. A list numbered 1..60 with no pair beside it
+    cannot be acted on.
+
+    An unused descriptor carries HostInterfaceID FFh, the same terminator the
+    basic list uses (8.2.13), and is dropped rather than listed as an
+    Application with no interface.
+    """
+    out = []
+    for i in range(NADS_PER_BANK):
+        chunk = raw[i * NAD_SIZE:(i + 1) * NAD_SIZE]
+        if len(chunk) < NAD_SIZE or chunk[0] == 0xFF:
+            continue
+        nad = parse_nad(chunk, NADS_PER_BANK * bank + i + 1, media_type)
+        nad['app_sel'] = i + 1
+        nad['nad_block_index'] = bank
+        out.append(nad)
+    return out
+
+
+def nad_mirror_mismatches(bank0: list, basic: list) -> list:
+    """Where Bank 0 and the basic Application Descriptors disagree.
+
+    6.2.1.6.2 makes this a requirement, not a convention: "the content of the
+    first 15 Normalized Application Descriptor (NAD) instances must be
+    mirrored into the basic Application Advertisement registers".
+
+    With one substitution built into the rule, which is the whole reason this
+    cannot be a plain equality check: "if a NAD cannot be represented
+    correctly in a basic Application Descriptor because of a UID being
+    greater than 255, the module will change the offending interface ID in
+    the relevant basic Application Descriptor to the special value ... BEh".
+    So a basic descriptor reading BEh opposite a NAD with a non-zero GID is
+    the module doing exactly what it was told, and flagging it would report
+    every correctly built module as broken.
+    """
+    out = []
+    by_sel = {b.get('app_sel'): b for b in basic}
+    for nad in bank0:
+        b = by_sel.get(nad['app_sel'])
+        if b is None:
+            out.append({'app_sel': nad['app_sel'], 'field': 'descriptor',
+                        'nad': nad['host_uid'], 'basic': 'absent'})
+            continue
+        for side in ('host', 'media'):
+            gid = nad[side + '_gid']
+            want = NAD_INTERFACE_ID if gid else nad[side + '_if_id']
+            got = b.get(side + '_if_id')
+            if got != want:
+                out.append({'app_sel': nad['app_sel'],
+                            'field': side + ' interface ID',
+                            'nad': ('0x%02X (GID %d, so BEh is required here)'
+                                    % (nad[side + '_if_id'], gid)) if gid
+                                   else '0x%02X' % want,
+                            'basic': '0x%02X' % got if got is not None
+                                     else 'absent'})
+        for side in ('host', 'media'):
+            if b.get(side + '_lanes') != nad[side + '_lanes']:
+                out.append({'app_sel': nad['app_sel'],
+                            'field': side + ' lane count',
+                            'nad': nad[side + '_lanes_text'],
+                            'basic': str(b.get(side + '_lanes'))})
+    return out
 
 
 def parse_dp_latency(raw: bytes) -> list:

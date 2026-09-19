@@ -2076,6 +2076,67 @@ const SI_COLUMNS = [
   ['rx_output_amplitude', 'Rx Amplitude',    '10h / 0xAA\u20130xAD', 'OutputAmplitudeTargetRx (01h:162.2)'],
 ];
 
+function renderNAD(d) {
+  // Page 1Ch is optional (8.24) and 01h:175 is the only thing that says it
+  // exists, so an absent card means "this module has no NADs" rather than
+  // "nothing came back".
+  const card = document.getElementById('card-nad');
+  const body = document.getElementById('tbl-nad');
+  if (!card || !body) return;
+  const nads = d.nad_applications;
+  if (!Array.isArray(nads) || !nads.length) { card.hidden = true; return; }
+  card.hidden = false;
+
+  body.innerHTML = nads.map(n => {
+    // Both halves of the selector, because one without the other cannot be
+    // acted on: AppSelCode repeats 1..15 in every block.
+    const sel = 'AppSel <b>' + n.app_sel + '</b> <span class="reg-meta">+</span> '
+      + 'block <b>' + n.nad_block_index + '</b>';
+    // A GID is a different registry, not a code the tool did not recognise,
+    // so the UID is printed as the specification writes it and the name only
+    // where there is a table behind it.
+    const uid = u => '<code>' + esc(u.uid) + '</code>'
+      + (u.gid ? ' <span class="reg-meta">' + esc(u.name) + '</span>'
+               : ' <span class="reg-meta">' + esc(u.name) + '</span>');
+    const np = n.network_path
+      ? ' <span class="flag-warn" title="NetworkPathIndicator (Page 1Ch byte 5.7)'
+        + ' — this descriptor is a Network Path, not a Data Path">NP</span>'
+      : '';
+    return '<tr><td>' + n.app_number + np + '</td><td>' + sel + '</td><td>'
+      + uid({uid: n.host_uid, gid: n.host_gid, name: n.host_if_name})
+      + '</td><td>'
+      + uid({uid: n.media_uid, gid: n.media_gid, name: n.media_if_name})
+      + '</td><td>' + esc(n.host_lanes_text) + '</td><td>'
+      + esc(n.media_lanes_text) + '</td><td><code>'
+      + esc(bin8(n.host_lane_assign_mask)) + '</code></td><td><code>'
+      + esc(bin8(n.media_lane_assign_mask)) + '</code></td></tr>';
+  }).join('');
+
+  const note = document.getElementById('nad-note');
+  if (note) {
+    const bad = d.nad_mirror_mismatches || [];
+    note.innerHTML = bad.length
+      ? '<span class="flag-warn">▲</span> Block 0 has to mirror the basic '
+        + 'Application Descriptors (CMIS 6.2.1.6.2), and does not: '
+        + bad.map(m => 'AppSel ' + m.app_sel + ' ' + esc(m.field) + ' is '
+            + esc(m.nad) + ' on Page 1Ch and ' + esc(m.basic) + ' in the basic '
+            + 'registers').join('; ')
+        + '. The module is advertising two different Applications under one '
+        + 'AppSel code.'
+      : '';
+  }
+  const hint = document.getElementById('nad-hint');
+  if (hint) {
+    hint.textContent = 'Each descriptor is a contiguous 8-byte structure '
+      + '(Table 8-173) carrying the full 12-bit Interface UIDs, which a basic '
+      + 'descriptor cannot: where a UID has a non-zero GID the basic '
+      + 'registers read BEh and the identity is only here. Block 0 mirrors '
+      + 'the basic Application Descriptors by requirement. AN = 15 × '
+      + 'block index + AppSel code.';
+  }
+}
+
+
 function renderLatency(d) {
   // Page 15h is optional (8.18) and the advertisement bit is the only thing
   // that says it exists, so an absent card is "this module has no Page 15h"
@@ -2539,10 +2600,13 @@ async function loadApplications() {
         + ` bank${nad.banks === 1 ? '' : 's'}</b> of Normalized Application `
         + `Descriptors on Page 1Ch <span class="reg-meta">01h:175</span> — up `
         + `to <b>${nad.max_applications} Applications</b>. The table above is `
-        + 'the basic descriptors only; this tool does not read Page 1Ch, and '
-        + 'cannot provision an Application that lives there.'
+        + 'the basic descriptors only; the full list is below. This tool '
+        + 'cannot yet provision an Application outside the first block: '
+        + 'that needs the NADBlockIndex in the Staged Control Set '
+        + '(18h:128\u2013143), which it does not write.'
       : '';
   }
+  renderNAD(res.data);
   if (!apps || apps.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="placeholder-text">No applications advertised.</td></tr>';
     return;

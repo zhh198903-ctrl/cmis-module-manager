@@ -12612,12 +12612,22 @@ class TestTheApplicationsBeyondTheFirstFifteen(CMISTestCase):
         self.assertIn('01h:175', js,
                       'the note does not say what it is going by')
 
-    def test_the_note_does_not_claim_support(self):
-        """Saying the list is partial is the point; implying the rest are
-        reachable would be a worse lie than the silence it replaces."""
+    def test_the_note_still_says_which_half_is_missing(self):
+        """This note used to read "this tool does not read Page 1Ch, and
+        cannot provision an Application that lives there" - saying the list
+        was partial rather than implying the rest were reachable.
+
+        The reading half is done. The provisioning half is not: selecting an
+        Application outside block 0 needs the NADBlockIndex in the Staged
+        Control Set, which this tool does not write. Dropping that sentence
+        along with the other one would turn an honest limit into a silent
+        one, which is the failure the original note was written against."""
         js = self._js()
-        self.assertIn('this tool does not read Page 1Ch', js)
-        self.assertIn('cannot provision an Application that lives there', js)
+        self.assertNotIn('this tool does not read Page 1Ch', js)
+        note = js[js.index('advertises <b>'):]
+        note = note[:note.index("      : '';")]
+        self.assertIn('cannot yet provision', note)
+        self.assertIn('18h:128', note, 'name the register it would need')
 
 
 class TestLaneFlagsPastTheFirstBank(CMISTestCase):
@@ -18808,6 +18818,9 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-138': 'Latched Diagnostics Flags (Page 14h)',
         '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
         '8-141': 'Data Path Rx and Tx Latency, per lane (Page 15h)',
+        '8-172': 'Page 1Ch Overview',
+        '8-173': 'Normalized Application Descriptor (NAD) Structure (Page 1Ch)',
+        '8-174': 'Normalized Application Descriptor Block (Page 1Ch)',
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-191': 'Acquisition Counters (Page 61h)',
@@ -21945,6 +21958,339 @@ class TestHowLongTheModuleDelaysTheSignal(CMISTestCase):
         js = self._js()
         self.assertNotIn('this tool does not read Page 15h', js)
         self.assertIn("'0x91[3]'", js, 'the row still names its bit')
+
+
+class TestTheApplicationsThatDoNotFitInFifteen(CMISTestCase):
+    """Page 1Ch (section 8.24), Normalized Application Descriptors.
+
+    The Applications panel has reported "this module advertises N banks of
+    Normalized Application Descriptors - up to M Applications" and then, in
+    the same sentence, "this tool does not read Page 1Ch". On a module
+    advertising four banks that is sixty Applications summarised as the
+    fifteen that happen to be reachable without reading them.
+
+    Worse, the tool already had a dead end pointing here. Table 8-22 defines
+    BEh as "the GID of the Host Interface UID is non-zero and hence the
+    corresponding NAD must be consulted", and the basic descriptor panel has
+    been printing "See NAD (0xBE)" with nowhere to send the reader.
+
+    What the NAD carries that a basic descriptor cannot is the full 12-bit
+    Interface UID: 6.2.1.6.2 exists "to support interfaces identified by a
+    12-bit Interface Unique ID". Byte 6 holds the two GIDs, and when either
+    is non-zero the module must write BEh into the basic register instead.
+
+    Two more things the specification decides:
+
+    248-255 is Reserved. Fifteen descriptors is 120 bytes, not 128, and a
+    sixteenth read out of the tail is not an Application.
+
+    And block 0 "must be mirrored into the basic Application Advertisement
+    registers" - with the BEh substitution built into the rule, so the check
+    cannot be a plain equality or every correctly built module fails it."""
+
+    def _apps(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/applications'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _render_body(self):
+        js = self._js()
+        i = js.index('function renderNAD')
+        return re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function renderLatency')])
+
+    # ---- the block layout ------------------------------------------
+
+    def test_the_block_stops_before_the_reserved_tail(self):
+        """Table 8-172: 128-247 is the NAD Block, 248-255 is Reserved."""
+        import cmis_registers as c
+        page, addr, length = c.REG_NAD_BLOCK
+        self.assertEqual((page, addr), (0x1C, 128))
+        self.assertEqual(length, c.NADS_PER_BANK * c.NAD_SIZE)
+        self.assertEqual(length, 120)
+        self.assertEqual(addr + length, 248, 'the read has to stop at 248')
+
+    def test_fifteen_descriptors_of_eight_bytes(self):
+        import cmis_registers as c
+        self.assertEqual((c.NADS_PER_BANK, c.NAD_SIZE), (15, 8))
+
+    # ---- the descriptor --------------------------------------------
+
+    def test_every_field_of_the_structure(self):
+        """Table 8-173, each byte different so a swap shows."""
+        import cmis_registers as c
+        n = c.parse_nad(bytes([0x51, 0x56, 0x84, 0x13, 0x25, 0x00, 0x00, 0x00]))
+        self.assertEqual(n['host_if_id'], 0x51)
+        self.assertEqual(n['media_if_id'], 0x56)
+        self.assertEqual(n['host_lanes'], 8)
+        self.assertEqual(n['media_lanes'], 4)
+        self.assertEqual(n['host_lane_assign_mask'], 0x13)
+        self.assertEqual(n['media_lane_assign_mask'], 0x25)
+        self.assertFalse(n['network_path'])
+        self.assertEqual((n['host_gid'], n['media_gid']), (0, 0))
+
+    def test_the_two_gids_are_the_two_nibbles_of_byte_six(self):
+        import cmis_registers as c
+        n = c.parse_nad(bytes([0x07, 0x23, 0x88, 0, 0, 0x00, 0x21, 0]))
+        self.assertEqual(n['host_gid'], 2)
+        self.assertEqual(n['media_gid'], 1)
+
+    def test_a_uid_is_printed_as_gid_and_id(self):
+        import cmis_registers as c
+        self.assertEqual(c.interface_uid(0, 0x51), '0x51')
+        self.assertEqual(c.interface_uid(2, 0x07), '2:0x07')
+
+    def test_a_non_zero_gid_is_not_looked_up_in_sff_8024(self):
+        """The SFF-8024 tables are the GID 0 namespace. Naming a GID 2 code
+        from them would put a confident wrong interface on the panel."""
+        import cmis_registers as c
+        n = c.parse_nad(bytes([0x51, 0x56, 0x88, 0, 0, 0x00, 0x10, 0]))
+        self.assertIn('GID 1', n['host_if_name'])
+        self.assertNotIn('800GAUI', n['host_if_name'])
+        # and the media side, whose GID is zero, still gets its name
+        self.assertEqual(n['media_if_name'], '800GBASE-DR8')
+
+    def test_the_network_path_bit_is_byte_five_bit_seven(self):
+        """8.19.5.3: a Network Path is not a Data Path, and offering one as
+        an Application the host can lay out is a move that does not exist."""
+        import cmis_registers as c
+        self.assertTrue(c.parse_nad(bytes([1, 2, 0x11, 0, 0, 0x80, 0, 0]))
+                        ['network_path'])
+        self.assertFalse(c.parse_nad(bytes([1, 2, 0x11, 0, 0, 0x7F, 0, 0]))
+                         ['network_path'])
+
+    def test_the_lane_count_rule_is_the_same_one(self):
+        """Zero is "defined by interface ID", not zero lanes - the rule the
+        basic descriptors already follow."""
+        import cmis_registers as c
+        n = c.parse_nad(bytes([1, 2, 0x00, 0, 0, 0, 0, 0]))
+        self.assertEqual(n['host_lanes'], 0)
+        self.assertNotEqual(n['host_lanes_text'], '0')
+
+    # ---- the block and the Application Number -----------------------
+
+    def test_the_application_number_is_fifteen_times_the_block(self):
+        """Table 8-174: AN = 15*<j> + <i>."""
+        import cmis_registers as c
+        raw = bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]) * 15
+        for bank, first in ((0, 1), (1, 16), (2, 31), (254, 3811)):
+            block = c.parse_nad_block(raw, bank)
+            self.assertEqual(block[0]['app_number'], first, bank)
+            self.assertEqual(block[-1]['app_number'], first + 14, bank)
+
+    def test_both_halves_of_the_selector_are_reported(self):
+        """AppSelCode repeats 1..15 in every block, so one without the other
+        cannot be acted on."""
+        import cmis_registers as c
+        block = c.parse_nad_block(
+            bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]) * 15, 3)
+        self.assertEqual(block[0]['app_sel'], 1)
+        self.assertEqual(block[0]['nad_block_index'], 3)
+        self.assertEqual(block[4]['app_sel'], 5)
+
+    def test_an_unused_descriptor_is_dropped(self):
+        """HostInterfaceID FFh is the terminator the basic list uses."""
+        import cmis_registers as c
+        raw = (bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]) * 2
+               + bytes([0xFF] + [0] * 7) * 13)
+        self.assertEqual(len(c.parse_nad_block(raw, 0)), 2)
+
+    def test_a_short_block_does_not_invent_descriptors(self):
+        import cmis_registers as c
+        raw = bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]) * 3
+        self.assertEqual(len(c.parse_nad_block(raw, 0)), 3)
+
+    # ---- the module ------------------------------------------------
+
+    def test_the_module_reports_every_bank(self):
+        d = self._apps()
+        self.assertEqual(d['nad']['banks'], 4)
+        self.assertEqual(d['nad']['max_applications'], 60)
+        blocks = {n['nad_block_index'] for n in d['nad_applications']}
+        self.assertEqual(blocks, {0, 1, 2, 3}, 'every bank has to be read')
+
+    def test_it_finds_more_applications_than_the_basic_list(self):
+        d = self._apps()
+        self.assertGreater(len(d['nad_applications']), len(d['applications']))
+
+    def test_the_bank_is_not_read_four_times_over(self):
+        """Each bank is a different NAD Block. A read that never changes bank
+        returns block 0 four times, which looks like sixty Applications and
+        is fifteen."""
+        d = self._apps()
+        by_block = {}
+        for n in d['nad_applications']:
+            by_block.setdefault(n['nad_block_index'], []).append(n['host_uid'])
+        self.assertNotEqual(by_block[0], by_block.get(1))
+        self.assertNotEqual(by_block[1], by_block.get(2))
+
+    def test_the_dead_end_now_leads_somewhere(self):
+        """The basic descriptor for this Application reads BEh because its
+        Host Interface UID does not fit in eight bits. That is the whole
+        reason Page 1Ch exists, and the panel used to stop there."""
+        d = self._apps()
+        import cmis_registers as c
+        basic = [a for a in d['applications']
+                 if a['host_if_id'] == c.NAD_INTERFACE_ID]
+        self.assertTrue(basic, 'the fixture has to carry the BEh case')
+        sel = basic[0]['app_sel']
+        nad = [n for n in d['nad_applications']
+               if n['nad_block_index'] == 0 and n['app_sel'] == sel]
+        self.assertEqual(len(nad), 1)
+        self.assertNotEqual(nad[0]['host_gid'], 0,
+                            'BEh is written precisely when the GID is not 0')
+        self.assertNotEqual(nad[0]['host_if_id'], c.NAD_INTERFACE_ID,
+                            'the NAD carries the real ID, not the stand-in')
+
+    def test_a_module_without_nads_is_not_asked_for_the_page(self):
+        import app as appmod
+        self._apps('mock_dr8')
+        reads = []
+        orig = appmod._read_upper
+        appmod._read_upper = lambda page, *a, **k: (
+            reads.append(page) or orig(page, *a, **k))
+        try:
+            self.assertIsNone(appmod._read_nad_applications())
+        finally:
+            appmod._read_upper = orig
+        self.assertEqual(reads, [], 'nothing should have been read')
+
+    def test_a_module_without_nads_reports_none(self):
+        self.assertIsNone(self._apps('mock_dr8')['nad_applications'])
+
+    # ---- the mirror --------------------------------------------------
+
+    def test_the_mock_mirror_holds(self):
+        self.assertEqual(self._apps()['nad_mirror_mismatches'], [])
+
+    def test_a_broken_mirror_reaches_the_endpoint(self):
+        """The test above passes with the check torn out of the handler: the
+        fixture is conformant, so an empty list is right either way. This
+        drives a module whose Page 1Ch and basic registers disagree."""
+        import app as appmod
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x51, 0x99, 0x88, 1, 1, 0, 0, 0]), 1)
+        nad['app_sel'] = 1
+        nad['nad_block_index'] = 0
+        orig = appmod._read_nad_applications
+        appmod._read_nad_applications = lambda *a, **k: [nad]
+        try:
+            d = self._apps()
+        finally:
+            appmod._read_nad_applications = orig
+        self.assertTrue(d['nad_mirror_mismatches'],
+                        'a module contradicting its own mirror has to surface')
+        self.assertEqual(d['nad_mirror_mismatches'][0]['field'],
+                         'media interface ID')
+
+    def test_a_broken_mirror_is_reported(self):
+        """The test above passes with the check torn out - the fixture is
+        conformant. This one is not."""
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]), 1)
+        nad['app_sel'] = 1
+        basic = [{'app_sel': 1, 'host_if_id': 0x51, 'media_if_id': 0x1C,
+                  'host_lanes': 8, 'media_lanes': 8}]
+        bad = c.nad_mirror_mismatches([nad], basic)
+        self.assertEqual([m['field'] for m in bad], ['media interface ID'])
+
+    def test_a_lane_count_disagreement_is_reported(self):
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x51, 0x56, 0x84, 1, 1, 0, 0, 0]), 1)
+        nad['app_sel'] = 1
+        basic = [{'app_sel': 1, 'host_if_id': 0x51, 'media_if_id': 0x56,
+                  'host_lanes': 8, 'media_lanes': 8}]
+        bad = c.nad_mirror_mismatches([nad], basic)
+        self.assertEqual([m['field'] for m in bad], ['media lane count'])
+
+    def test_BEh_opposite_a_non_zero_gid_is_not_a_mismatch(self):
+        """The substitution is part of the rule. Flagging it would report
+        every correctly built module as broken - which is why this cannot be
+        a plain equality check."""
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x07, 0x56, 0x88, 1, 1, 0, 0x20, 0]), 1)
+        nad['app_sel'] = 1
+        basic = [{'app_sel': 1, 'host_if_id': c.NAD_INTERFACE_ID,
+                  'media_if_id': 0x56, 'host_lanes': 8, 'media_lanes': 8}]
+        self.assertEqual(c.nad_mirror_mismatches([nad], basic), [])
+
+    def test_the_real_id_where_BEh_was_required_is_a_mismatch(self):
+        """The other direction: a module that put the true ID in the basic
+        register where the GID says BEh belongs has broken the legacy host
+        the substitution exists for."""
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x07, 0x56, 0x88, 1, 1, 0, 0x20, 0]), 1)
+        nad['app_sel'] = 1
+        basic = [{'app_sel': 1, 'host_if_id': 0x07, 'media_if_id': 0x56,
+                  'host_lanes': 8, 'media_lanes': 8}]
+        bad = c.nad_mirror_mismatches([nad], basic)
+        self.assertEqual([m['field'] for m in bad], ['host interface ID'])
+
+    def test_a_descriptor_missing_from_the_basic_list_is_reported(self):
+        import cmis_registers as c
+        nad = c.parse_nad(bytes([0x51, 0x56, 0x88, 1, 1, 0, 0, 0]), 2)
+        nad['app_sel'] = 2
+        bad = c.nad_mirror_mismatches([nad], [])
+        self.assertEqual([m['field'] for m in bad], ['descriptor'])
+
+    # ---- the panel ---------------------------------------------------
+
+    def test_the_card_exists_and_starts_hidden(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="card-nad"', html)
+        self.assertIn('id="tbl-nad"', html)
+        card = html[html.index('id="card-nad"'):]
+        self.assertIn('hidden', card[:card.index('>')])
+
+    def test_the_renderer_is_called(self):
+        self.assertIn('renderNAD(res.data);', self._js())
+
+    def test_the_card_is_hidden_when_there_are_no_nads(self):
+        self.assertIn('card.hidden = true', self._render_body())
+
+    def test_the_row_carries_both_halves_of_the_selector(self):
+        body = self._render_body()
+        self.assertIn('n.app_sel', body)
+        self.assertIn('n.nad_block_index', body)
+
+    def test_a_network_path_row_is_marked(self):
+        body = self._render_body()
+        self.assertIn('n.network_path', body)
+        self.assertIn('NetworkPathIndicator', body)
+
+    def test_the_hint_explains_what_a_gid_means(self):
+        body = self._render_body()
+        self.assertIn('12-bit', body)
+        self.assertIn('BEh', body)
+
+    def test_a_broken_mirror_reaches_the_panel(self):
+        body = self._render_body()
+        self.assertIn('nad_mirror_mismatches', body)
+        self.assertIn('6.2.1.6.2', body)
+
+    def test_the_panel_no_longer_says_the_tool_skips_the_page(self):
+        js = self._js()
+        self.assertNotIn('this tool does not read Page 1Ch', js)
+
+    def test_the_panel_still_states_the_provisioning_limit(self):
+        """Reading them is not provisioning them: selecting an Application
+        outside block 0 needs the NADBlockIndex in the Staged Control Set,
+        which this tool does not write. Dropping that sentence along with the
+        other one would turn an honest limit into a silent one."""
+        js = self._js()
+        self.assertIn('18h:128', js)
+        self.assertIn('cannot yet provision', js)
 
 
 if __name__ == '__main__':

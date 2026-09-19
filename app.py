@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.91.0'
+__version__ = '2.92.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -583,6 +583,30 @@ def _verify_page_checksums(caps: dict) -> list:
             'reported': got,
             'ok': want == got,
         })
+    return out
+
+
+def _read_nad_applications(media_type: int = 0x02):
+    """Page 1Ch (section 8.24), if the module has one.
+
+    01h:175 NADBanksSupported is the only thing that says it does, and the
+    Applications panel has been reporting that number while saying "this tool
+    does not read Page 1Ch" underneath the fifteen it could see. On a module
+    advertising four banks that is sixty Applications summarised as fifteen.
+
+    Each bank is one NAD Block, so this is banked by block index rather than
+    by lane - _read_banks counts lanes, which is a different thing here, so
+    the banks are walked directly.
+    """
+    nad = (_state.get('caps') or {}).get('nad') or {}
+    banks = nad.get('banks') or 0
+    if not banks:
+        return None
+    page, addr, length = cmis.REG_NAD_BLOCK
+    out = []
+    for bank in range(banks):
+        out += cmis.parse_nad_block(
+            _read_upper(page, addr, length, bank), bank, media_type)
     return out
 
 
@@ -1851,7 +1875,21 @@ def api_applications():
         # the rest of its Applications on Page 1Ch, so this list is a prefix
         # rather than the set. Saying so beats showing fifteen of hundreds
         # as though that were all of them.
+        # Page 1Ch itself, now that the panel can say more than how many
+        # banks it declined to read. Bank 0 mirrors the basic list by
+        # requirement (6.2.1.6.2), so the two are cross-checked rather than
+        # concatenated - a module that disagrees with itself here is
+        # advertising two different Applications under one AppSel code.
+        try:
+            nads = _read_nad_applications(media_type)
+        except Exception:
+            nads = None
+        mirror = cmis.nad_mirror_mismatches(
+            [n for n in nads if n['nad_block_index'] == 0], apps
+        ) if nads else []
         return _ok({'applications': apps,
+                    'nad_applications': nads,
+                    'nad_mirror_mismatches': mirror,
                     'nad': _state['caps'].get('nad', {})})
     except Exception as e:
         return _err(str(e), 500)

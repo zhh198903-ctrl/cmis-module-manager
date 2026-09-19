@@ -288,6 +288,29 @@
         <div class="caps-note" id="apps-nad"></div>
       </div>
 
+      <!-- Normalized Application Descriptors (Page 1Ch). Optional: the card
+           only exists when 01h:175 advertises at least one NAD bank, so it
+           is hidden by default and filled in app.js. -->
+      <div class="card" id="card-nad" hidden>
+        <h3>Normalized Application Descriptors<span class="reg-meta">Page 1Ch · Table 8-173</span></h3>
+        <div id="nad-note" class="caps-note"></div>
+        <div class="table-scroll">
+          <table><thead>
+            <tr>
+              <th>AN<span class="reg-meta">15·j + i</span></th>
+              <th>Select with<span class="reg-meta">AppSelCode · NADBlockIndex</span></th>
+              <th>Host Interface UID<span class="reg-meta">GID:ID</span></th>
+              <th>Media Interface UID<span class="reg-meta">GID:ID</span></th>
+              <th>Host Lanes<span class="reg-meta">dec</span></th>
+              <th>Media Lanes<span class="reg-meta">dec</span></th>
+              <th>Host Lane Assign<span class="reg-meta">binary bitmap</span></th>
+              <th>Media Lane Assign<span class="reg-meta">binary bitmap</span></th>
+            </tr>
+          </thead><tbody id="tbl-nad"></tbody></table>
+        </div>
+        <p class="hint" id="nad-hint"></p>
+      </div>
+
       <div class="card">
         <h3>DataPath Configuration
           <span style="display:flex;gap:8px">
