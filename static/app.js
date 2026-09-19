@@ -616,6 +616,7 @@ async function loadInfo() {
     // the answers from 01h:173-174 - the bytes that extend this one - and
     // nothing from the byte itself: five of the six were decoded at connect
     // and thrown away, including whether the module has VDM at all.
+    ...(propagationRow(c) || []),
     ['State Machines', stateMachineCell(c),
      'Lower', '0x38',
      'CmisSmSupport (Table 8-18) - which of the Module, Data Path and '
@@ -978,6 +979,45 @@ function memoryModelCell(d) {
 // Lower 56. The three machines are worth naming rather than printing the
 // code's sentence alone: the Data Path tab is about the DPSM, and "MSM only"
 // reads like a capability rather than the absence it is.
+// 01h:148-149. Parsed since the limits block was decoded and shown
+// nowhere: its three neighbours all judge a live reading, and this one has
+// no reading to judge, so there was no place it fell into.
+//
+// It is the delay through the *cable*, which is not the Data Path latency on
+// the DataPath tab - that is the delay through the *module* (Page 15h,
+// Table 8-141). Both are nanoseconds and they are not the same number, so
+// the row says which one this is.
+function propagationRow(c) {
+  const lim = (c && c.limits) || {};
+  const ns = lim.propagation_delay_ns;
+  // "Propagation delay of a non-separable AOC". A module whose media comes
+  // off has no cable for light to cross, so the row is absent rather than
+  // reporting "not specified" about something that does not apply.
+  const cableAssembly = c.media_type_code === 3 || c.media_type_code === 4;
+  if (ns == null && !cableAssembly) return null;
+  const odd = ns != null && !cableAssembly;
+  return [[
+    'Cable Propagation Delay',
+    ns == null
+      ? 'Not specified <span class="reg-meta">the module reports zero</span>'
+      : esc(String(ns)) + ' ns' + (odd
+          ? ' <span class="flag-warn" title="01h:148-149 is defined as the '
+            + 'propagation delay of a non-separable AOC, and this module '
+            + 'advertises media type '
+            + esc(String(c.media_type_code)) + ', which is detachable">'
+            + '\u25b2</span> <span class="reg-meta">but this module\u2019s '
+            + 'media is separable</span>'
+          : ''),
+    '01h', '0x94\u20130x95',
+    'PropagationDelay (Table 8-50) - "propagation delay of a non-separable '
+    + 'AOC in multiples of 10 ns rounded to the nearest 10 ns, or zero for '
+    + 'not specified". This is the delay through the cable. The Data Path '
+    + 'latency on the DataPath tab is the delay through the module '
+    + '(Page 15h) - a different number in the same unit.',
+  ]];
+}
+
+
 function stateMachineCell(c) {
   const txt = esc(c.sm_text || '-');
   if (c.dpsm === null || c.dpsm === undefined) {

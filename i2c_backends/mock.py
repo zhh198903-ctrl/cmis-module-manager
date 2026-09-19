@@ -479,6 +479,48 @@ _ZR_16LANE = dict(
 # module-level monitor and two lane ones - so a host that ignores the
 # advertisement shows 0.0000 V, -40 dBm and 0.000 mA as if it had measured
 # them.
+# An active optical cable: a paged module whose media is not separable.
+# Every other paged profile here has a connector and detachable fibre, so
+# three things written for cable assemblies had only a flat memory module to
+# run against, and one had nothing at all:
+#
+#   00h:202 cable length on a module that also has Page 01h
+#   00h:204-208, where an AOC is the case the "0 dB means not available"
+#   rule exists for - active optical shares media type 04h with active copper
+#   01h:148-149 PropagationDelay, which is defined for exactly this module
+#   and which no fixture could express until the mock stopped splitting it
+#   across two tuple entries
+_AOC_400G = dict(
+    _DR8_800G,
+    display='400G active optical cable, 20 m (non-separable media)',
+    vendor_pn=b"DEMO-AOC-400G20M",
+    vendor_sn=b"DEMO000000011   ",
+    media_type=0x04,          # Active Cable assembly (Table 8-20)
+    connector_type=0x23,      # No Separable Connector (SFF-8024)
+    # 00h:202 (Table 8-33): multiplier 01b = 1 m, base 20 -> 20 m. A module
+    # with separable media has to write zero here, so a non-zero value is
+    # how this one says its fibre does not come off.
+    cable_length_202=0x54,
+    # 01h:146-150. Light covers about 0.2 m/ns in fibre, so 20 m is close to
+    # 100 ns; the register counts multiples of 10 ns, hence 10.
+    module_limits=(70, -40, 10, 0xA5),
+    # 00h:204-208 stay zero. Media type 04h covers active copper as well as
+    # active optical, and an AOC answering the copper attenuation block with
+    # zeros - "not available (not relevant or otherwise unknown)" - is how
+    # the two are told apart. Until now that path had no module behind it.
+    # Two Applications of differing width, like every other shipped
+    # profile: 400G across four lanes, and a 100G quarter of the same cable.
+    app_descriptors=[
+        (0x4F, 0x1C, 0x44, 0x11),   # AppSel 1: 400GAUI-4-S C2M -> 400GBASE-DR4
+        (0x4B, 0x1A, 0x11, 0x0F),   # AppSel 2: 100GAUI-1 -> 100GBASE-DR
+    ],
+    # 00h:210 (Table 8-36): four media lanes, so 5-8 are not there. A cable
+    # with four fibres that advertises eight contradicts itself, and lets a
+    # host read four lanes' worth of optical power that nothing answers.
+    media_lane_unsupported=0xF0,
+)
+
+
 _FEW_MONITORS = dict(
     _DR8_800G,
     display='800G DR8 implementing only some monitors (01h:159-160)',
@@ -773,7 +815,7 @@ _FR4X2_800G = {
     'durations_169': 0x02,               # MaxDurationBPC = 2 -> 2.5 ms
     # An industrial-temperature module: allowed up to 85 C, which the page's
     # hardcoded 70 called an alarm, and a 3.14 V minimum supply.
-    'module_limits': (85, -40, 0, 0, 0x9D),
+    'module_limits': (85, -40, 0, 0x9D),
     'durations_144': 0x25,               # DPDeinit 5-10 ms, DPInit 100-500 ms
     # 2x 400G-FR4: each half is four CWDM wavelengths sharing one duplex
     # fibre pair, so media lanes 1-4 are one fibre and differ only by
@@ -1087,12 +1129,19 @@ class MockBackend(I2CInterface):
         # 146-150 (Table 8-50): the module's own operating limits. Zero is
         # the specification's "not specified" and was every profile's answer,
         # so there was nothing to colour a reading against.
-        lim = p.get('module_limits', (70, -40, 0, 0, 0xA5))
+        # Four fields, not five: PropagationDelay is one U16 across 148-149.
+        # This used to take the high byte from lim[2] >> 8 and the low byte
+        # from lim[3] - two different tuple entries - so a profile setting a
+        # delay of 100 would have written 0 to both bytes and read back as
+        # "not specified". Invisible while every profile passed zero, which
+        # is also why nothing downstream could be built against the field.
+        lim = p.get('module_limits', (70, -40, 0, 0xA5))
+        delay = lim[2] & 0xFFFF
         p01[0x92] = lim[0] & 0xFF                  # 146 ModuleTempMax
         p01[0x93] = lim[1] & 0xFF                  # 147 ModuleTempMin
-        p01[0x94] = (lim[2] >> 8) & 0xFF           # 148 PropagationDelay hi
-        p01[0x95] = lim[3] & 0xFF                  # 149 PropagationDelay lo
-        p01[0x96] = lim[4] & 0xFF                  # 150 OperatingVoltageMin
+        p01[0x94] = (delay >> 8) & 0xFF            # 148 PropagationDelay hi
+        p01[0x95] = delay & 0xFF                   # 149 PropagationDelay lo
+        p01[0x96] = lim[3] & 0xFF                  # 150 OperatingVoltageMin
         p01[0x8F] = p.get('durations_143', 0xD9)   # ModSelWaitTime 1.6 ms
         p01[0x90] = p.get('durations_144', 0x37)   # DPDeinit 10-50 ms,
                                                    # DPInit 1-5 s
@@ -3134,6 +3183,11 @@ class MockZR16LaneBackend(MockBackend):
 @register_backend("mock_flat_dac")
 class MockFlatDacBackend(MockBackend):
     PROFILE = _FLAT_DAC
+
+
+@register_backend("mock_aoc")
+class MockAocBackend(MockBackend):
+    PROFILE = _AOC_400G
 
 
 @register_backend("mock_fewmon")

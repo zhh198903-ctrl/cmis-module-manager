@@ -24158,6 +24158,212 @@ class TestWhatAComplianceClaimIsMeasuredAgainst(CMISTestCase):
                       'an empty line must not leave a blank row')
 
 
+class TestHowLongTheCableItselfTakes(CMISTestCase):
+    """01h:148-149 PropagationDelay (Table 8-50) - "propagation delay of a
+    non-separable AOC in multiples of 10 ns rounded to the nearest 10 ns, or
+    zero for not specified".
+
+    Decoded correctly since the limits block was first read, and shown
+    nowhere. Its three neighbours in that block - ModuleTempMax,
+    ModuleTempMin, OperatingVoltageMin - all exist to judge a live reading,
+    and this one has no reading to judge, so there was no place it fell into.
+
+    It also could not be tested, because the mock could not express it: the
+    U16 was written with its high byte from lim[2] >> 8 and its low byte from
+    lim[3], two different tuple entries, so any profile setting a delay would
+    have written zero to both bytes. Invisible while every profile passed
+    zero. **A field no fixture can carry is a field nothing downstream gets
+    built against.**
+
+    And there was no module to carry it either: every paged profile had
+    separable media, so mock_aoc is new - an active optical cable, which is
+    the module this register is defined for, and which also gives the
+    "an AOC answers the copper attenuation block with zeros" path its first
+    real fixture."""
+
+    def _caps(self, backend='mock_aoc'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _info(self, backend='mock_aoc'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _row_body(self):
+        js = self._js()
+        i = js.index('function propagationRow')
+        return re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('function stateMachineCell')])
+
+    # ---- the decode ------------------------------------------------------
+
+    def test_the_unit_is_ten_nanoseconds(self):
+        import cmis_registers as c
+        d = c.parse_module_limits(bytes([70, 0xD8, 0x00, 0x0A, 0xA5]))
+        self.assertEqual(d['propagation_delay_ns'], 100)
+        d = c.parse_module_limits(bytes([70, 0xD8, 0x01, 0x00, 0xA5]))
+        self.assertEqual(d['propagation_delay_ns'], 2560)
+
+    def test_it_is_one_value_across_two_bytes(self):
+        """A U16, so the high byte carries 256 counts. Reading only the low
+        byte caps the answer at 2550 ns and is wrong quietly."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.parse_module_limits(bytes([0, 0, 0xFF, 0xFF, 0]))
+            ['propagation_delay_ns'], 655350)
+
+    def test_zero_is_not_specified(self):
+        import cmis_registers as c
+        self.assertIsNone(
+            c.parse_module_limits(bytes([70, 0xD8, 0, 0, 0xA5]))
+            ['propagation_delay_ns'])
+
+    def test_the_aoc_neighbours_survive_the_block(self):
+        """The delay sits between the temperatures and the voltage, and the
+        mock writes all four from one tuple. An index slipping by one takes
+        the voltage with it - 10 counts of 20 mV is 0.2 V, which a panel
+        would then paint every reading red against."""
+        lim = self._caps()['limits']
+        self.assertEqual(lim['voltage_min_v'], 3.3)
+        self.assertEqual(lim['temp_max_c'], 70)
+        self.assertEqual(lim['temp_min_c'], -40)
+
+    def test_a_delay_past_one_byte_survives_the_mock(self):
+        """The AOC's 100 ns is ten counts, so its high byte is zero and a
+        mock writing only the low byte would look correct. A U16 needs a
+        value that uses both."""
+        import i2c_backends.mock as m
+        import cmis_registers as c
+
+        class _Long(m.MockBackend):
+            PROFILE = dict(m._AOC_400G, module_limits=(70, -40, 1234, 0xA5))
+
+        regs = _Long()._registers[0x01]
+        self.assertEqual((regs[0x94], regs[0x95]), (1234 >> 8, 1234 & 0xFF))
+        self.assertEqual(
+            c.parse_module_limits(bytes([regs[0x92], regs[0x93], regs[0x94],
+                                         regs[0x95], regs[0x96]]))
+            ['propagation_delay_ns'], 12340)
+
+    def test_the_neighbours_are_not_disturbed(self):
+        """Four fields share the block and three of them already had users."""
+        import cmis_registers as c
+        d = c.parse_module_limits(bytes([70, 0xD8, 0x00, 0x0A, 0xA5]))
+        self.assertEqual(d['temp_max_c'], 70)
+        self.assertEqual(d['temp_min_c'], -40)
+        self.assertEqual(d['voltage_min_v'], 3.3)
+
+    # ---- the fixture the mock could not carry -------------------------------
+
+    def test_a_profile_can_now_express_a_delay(self):
+        """The mock split the U16 across two tuple entries, so this value
+        could not have survived the round trip before."""
+        self.assertEqual(self._caps()['limits']['propagation_delay_ns'], 100)
+
+    def test_the_limits_tuple_is_the_four_fields(self):
+        """Five entries invited the split that lost the delay."""
+        import i2c_backends.mock as m
+        self.assertEqual(len(m._AOC_400G['module_limits']), 4)
+        self.assertEqual(len(m._FR4X2_800G['module_limits']), 4)
+
+    def test_the_delay_matches_the_cable_it_is_on(self):
+        """20 m of fibre at about 0.2 m/ns. Not a conformance rule - a check
+        that the fixture is a module and not two unrelated numbers."""
+        info = self._info()
+        self.assertEqual(info['cable_length']['metres'], 20.0)
+        ns = self._caps()['limits']['propagation_delay_ns']
+        self.assertAlmostEqual(ns / info['cable_length']['metres'], 5.0,
+                               delta=1.0)
+
+    # ---- the new module -------------------------------------------------------
+
+    def test_the_aoc_has_media_that_does_not_come_off(self):
+        """00h:202 is zero on a module with separable media, so a non-zero
+        length is how this one says its fibre is attached."""
+        info = self._info()
+        self.assertFalse(info['cable_length']['undefined'])
+        self.assertEqual(self._caps()['media_type_code'], 0x04)
+        self.assertIn('No Separable', info['connector_type'])
+
+    def test_the_aoc_is_a_paged_module(self):
+        """The point of adding it: the one cable assembly this suite had was
+        flat, so nothing on Page 01h could be exercised for a cable."""
+        caps = self._caps()
+        self.assertFalse(caps.get('flat_memory'))
+        self.assertIsNotNone(caps.get('limits'))
+
+    def test_the_aoc_answers_the_copper_block_with_zeros(self):
+        """Media type 04h covers active copper as well as active optical, and
+        round 41 wrote the branch where an AOC removes itself by reporting
+        no attenuation. This is the first module behind it."""
+        self.assertIsNone(self._caps().get('cu_attenuation'))
+
+    def test_a_passive_copper_cable_still_reports_attenuation(self):
+        """The other side of the same branch, so the test above is not
+        passing because the feature broke."""
+        self.assertIsNotNone(self._caps('mock_flat_dac').get('cu_attenuation'))
+
+    # ---- the panel -------------------------------------------------------------
+
+    def test_the_row_exists(self):
+        """The call site, not the definition: "propagationRow(c)" is a
+        substring of "function propagationRow(c) {", so looking for it
+        anywhere passes with the row never built."""
+        js = self._js()
+        self.assertIn('...(propagationRow(c) || []),', js)
+        self.assertIn("'Cable Propagation Delay'", js)
+
+    def test_the_row_names_the_bytes_it_read(self):
+        body = self._row_body()
+        self.assertIn("'01h', '0x94\\u20130x95',", body)
+
+    def test_the_row_is_absent_on_a_module_with_no_cable(self):
+        """"Not specified" about something that does not apply is worse than
+        silence - and a cable assembly that says nothing still gets the row,
+        because there the silence is an answer."""
+        body = self._row_body()
+        self.assertIn('if (ns == null && !cableAssembly) return null;', body)
+
+    def test_both_cable_assembly_media_types_count(self):
+        """03h passive copper and 04h active cable are both media that does
+        not come off. Dropping 03h would hide the row on the one cable
+        assembly this suite had before the AOC."""
+        body = self._row_body()
+        self.assertIn('c.media_type_code === 3 || c.media_type_code === 4',
+                      body)
+
+    def test_the_row_says_which_delay_it_is(self):
+        """Both this and the Page 15h Data Path latency are nanoseconds, and
+        they are not the same number."""
+        body = self._row_body()
+        self.assertIn('through the cable', body)
+        self.assertIn('through the module', body)
+        self.assertIn('Page 15h', body)
+
+    def test_a_separable_module_reporting_one_is_flagged(self):
+        """The register is defined for a non-separable AOC. A module with
+        detachable media reporting a delay has contradicted itself."""
+        body = self._row_body()
+        self.assertIn('const odd', body)
+        self.assertIn('separable', body)
+
+    def test_the_flag_only_fires_on_the_odd_pair(self):
+        body = self._row_body()
+        self.assertIn('ns != null && !cableAssembly', body)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

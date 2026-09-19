@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.100.0<br>
+      <b>版本</b>　2.101.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -511,6 +511,11 @@
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_1600g_dr8</code></td><td class="label">模拟 <b>1.6TBASE-DR8</b>（8 × 106.25 GBd PAM4, SMF 500m, 功率等级 8 / 26 W），光参数按 <b>IEEE P802.3dj/D3.1 第 180 章</b>建模，自报 <b>CMIS 5.4</b> 并广告全部 5.4 可选页</td></tr>
         <tr><td><code>mock_1600g_16lane</code></td><td class="label">模拟 <b>1.6T 16×100G</b>（主机侧即 <b>1.6TAUI-16 C2M</b>，<b>16 通道 / 双 Bank</b>, 功率等级 8 / 28 W），用于演示跨 Bank 读写与 5.4 新增字段</td></tr>
+        <tr><td><code>mock_aoc</code></td><td class="label">模拟一根 <b>400G 有源光缆(AOC)</b>,20 m。
+            媒介<b>不可分离</b>——光纤是焊死在模块上的,所以它有连接器类型「无可分离连接器」、
+            有线缆长度、也有<b>线缆传播时延</b>(<code>01h:148-149</code>,这个寄存器正是为这种模块定义的)。
+            其余分页 profile 的媒介都是可插拔的,所以几条「为线缆组件写的」逻辑此前只有平坦内存的 DAC 可对照,
+            传播时延那一条则一个模块都没有。</td></tr>
         <tr><td><code>mock_fewmon</code></td><td class="label">模拟一块<b>只实现了部分监控项</b>的 800G DR8。
             CMIS 把<b>每一项监控都定义为可选</b>，由 <code>01h:159-160</code> 广告自己有哪些；
             这块模块<b>没有电源电压监控、没有发送光功率监控、也没有偏置电流监控</b>，
@@ -531,7 +536,7 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>11 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），一块只实现了部分监控项的模块，以及一块<b>平坦内存的无源铜缆 DAC</b>（只有 Lower Memory 与 Page 00h，用来暴露「读一个模块没有的页」这类问题），可用于不同场景演示与培训。</span>
+    <span>12 种 Mock 模块涵盖了从 800G 到 1.6T 的主流应用：数据中心 coherent lite 10km、C-band 可调谐相干长途、数据中心 500m、机架内 100m、园区 2km，两块 1.6T（8×200G 单 Bank 与 16×100G 双 Bank），一块 24 通道 / 三 Bank 的模块（专门用来走 5.4 的通道数逃逸路径），一块 16 通道的可调谐模块（专门用来走 Page 12h 的第二个 Bank），一块只实现了部分监控项的模块，一块<b>平坦内存的无源铜缆 DAC</b>（只有 Lower Memory 与 Page 00h，用来暴露「读一个模块没有的页」这类问题），以及一根<b>400G 有源光缆</b>（媒介不可分离的分页模块，用来走线缆组件在 Page 01h 上的那些字段），可用于不同场景演示与培训。</span>
   </div>
 </div>
 
@@ -823,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.100.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.100.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.101.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.101.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1688,6 +1693,16 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>线缆本身要走多久(01h:148-149)</h3>
+  <p>规范 Table 8-50:「<b>不可分离 AOC 的传播时延</b>,以 10 ns 为单位、四舍五入到最近的 10 ns,为 0 表示未规定」。这个字段从解析器写好那天就解对了,却<b>一处都没显示过</b>。</p>
+  <p>原因不难理解:同一块(01h:146-150)的另外三个字段——最高/最低温度、最低工作电压——都是拿来<b>判定实时读数</b>的(给温度、电压上色),而传播时延<b>没有读数可判</b>,于是没有一个现成的位置接得住它。它属于能力面板。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>更深一层的原因:演示模块根本表达不了这个字段。</b>它是跨 148-149 的一个 U16,而 mock 把高字节取自 <code>lim[2] >> 8</code>、低字节取自<b>另一个元素</b> <code>lim[3]</code>。任何 profile 想设一个真实值,两个字节都会被写成 0,读回来就是「未规定」。因为从来没有 profile 设过它,这个错一直不可见。<b>一个夹具承载不了的字段,下游就不会有人为它建任何东西。</b></span>
+  </div>
+  <p>而且也<b>没有模块可以承载它</b>:此前每一个分页 profile 的媒介都是可插拔的,唯一的线缆组件 <code>mock_flat_dac</code> 是平坦内存、连 Page 01h 都没有。所以本版新增了 <code>mock_aoc</code>——一根 20 m 的 400G 有源光缆,正是这个寄存器所定义的那种模块。它顺带给另一条此前无人可测的分支补上了真实模块:媒介类型 04h 同时涵盖有源铜缆与有源光缆,而<b>有源光缆用「全 0」回答铜缆衰减</b>、从而让那一行自动消失。</p>
+  <p class="note"><b>不要和 DataPath 页签那个时延搞混。</b>两个都是纳秒,但不是一回事:这里是<b>光在线缆里走的时间</b>;DataPath 页签上的是 Page 15h 的<b>信号穿过模块的时间</b>。面板上这一行会写明自己是哪一个。另外,媒介可分离的模块<b>不显示这一行</b>——没有线缆,也就无所谓传播时延;若这种模块偏偏报了一个非零值,会被标出来。</p>
+
   <h3>合规声明是拿什么来衡量的(Page 0Ch:192-195)</h3>
   <p>上一版把每个具名特性的合规等级搬上了面板。规范 Table 8-73 给出的,正是这个等级<b>应该被拿来衡量的东西</b>:</p>
   <table>
@@ -1701,15 +1716,15 @@
   <p><b>二、</b>「模块通告某具名特性<b>不支持</b>时,主机<b>应忽略</b>该特性在下表中的细节」——所以不支持的特性<b>不显示</b>细节,而不是把一串没有含义的位摆出来。演示模块 <code>mock_1600g_16lane</code> 就是这种模块:有性能监控、没有固件加载管理。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
-    <span><b>固件那个寄存器的「完全支持」要求值,规范给了三个互相矛盾的说法。</b>已对照原始页面图核实,不是文本抽取错位:
-    <table>
+    <span><b>固件那个寄存器的「完全支持」要求值,规范给了三个互相矛盾的说法。</b>已对照原始页面图核实,不是文本抽取错位。</span>
+  </div>
+  <table>
       <tr><th>出处</th><th>值</th></tr>
       <tr><td>Table 8-72 交叉引用「set to 11110000b」</td><td>0xF0</td></tr>
       <tr><td>Table 8-73 表头「1111 1000b: fully supported」</td><td>0xF8</td></tr>
       <tr><td>Table 8-73 逐位行(7-2 各写 1b)</td><td>0xFC</td></tr>
-    </table>
-    性能监控那个寄存器三处<b>完全一致</b>(都是 0xBC),这正是固件那个能被看出是缺陷、而不是某种约定的原因。规范其它地方没有第二处说法可以定夺,所以工具<b>不替你选一个当答案</b>:模块的字节只要命中其中<b>任意一个</b>,就算是「按规范某处写的做了」,三个都不中才算矛盾,而且会把三个值一并列出。</span>
-  </div>
+  </table>
+  <p>性能监控那个寄存器三处<b>完全一致</b>(都是 0xBC),这正是固件那个能被看出是缺陷、而不是某种约定的原因。规范其它地方没有第二处说法可以定夺,所以工具<b>不替你选一个当答案</b>:模块的字节只要命中其中<b>任意一个</b>,就算是「按规范某处写的做了」,三个都不中才算矛盾,而且会把三个值一并列出。</p>
   <p class="note">还有一个容易做错的细节:<code>NaFeedsSupervision</code>(192.6)和 <code>NaFeedsDiagnostics</code>(192.1)这两位,规范要求的值是 <b>0</b> 而不是 1。把「置位」当成「合规」的解码器,会把一个完全合规的模块报成差两位。工具是逐行按规范写明的<b>要求值</b>比对的,完全支持的位型也是由这些行推导出来、而非另抄一遍。</p>
 
   <h3>合规等级不是分数(Page 0Ch 的具名特性)</h3>
@@ -1939,7 +1954,7 @@
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.100.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.101.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -3748,7 +3763,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 11 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），以及 <code>mock_fewmon</code>（只实现部分监控项）。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 12 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），<code>mock_fewmon</code>（只实现部分监控项），以及 <code>mock_aoc</code>（400G 有源光缆，媒介不可分离）。</div>
   </div>
 
   <div class="faq-item">
@@ -3928,7 +3943,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.100.0<br>
+    CMIS Module Manager 操作手册 v2.101.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
