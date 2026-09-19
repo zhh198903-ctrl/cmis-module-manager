@@ -18805,6 +18805,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-68': 'Laser capabilities for tunable lasers (Page 04h)',
         '8-70': 'Supported Pages Map (Page 0Ch)',
         '8-71': 'Generic FeatureAdvertisement Data Structure',
+        '8-72': 'Named Feature Advertisements (Page 0Ch)',
         '8-77': 'Page 10h Overview',
         '8-78': 'Data Path initialization control (Page 10h:128)',
         '8-79': 'Lane-specific Direct Effect Control Fields (Page 10h)',
@@ -23685,6 +23686,174 @@ class TestTheAlarmsSomebodyTurnedOff(CMISTestCase):
 def cmis_module_flag_keys(case):
     import cmis_registers as c
     return c.parse_module_monitor_flags(bytes(6)).keys()
+
+
+class TestTheSecondNamedFeature(CMISTestCase):
+    """Page 0Ch, Table 8-72, names two features with the same structure:
+    0Ch:160-161 ConsolidatedPmFeature and 0Ch:162-163 LoadManagementFeature.
+    The tool read the first and not the second.
+
+    And Table 8-71 gives the two compliance nibbles four names:
+
+        0: undefined, unknown
+        1: noncompliant
+        2: partially compliant, with exceptions
+        3: fully compliant
+
+    COMPLIANCE_NAMES held exactly those and nothing used it, so the panel
+    printed the raw nibbles. Zero is the one that matters: beside a 3 it
+    reads as the worse of two results, when it is the module saying it has
+    not answered.
+
+    Found by the lens the previous release produced - grep every module-level
+    constant for its consumers, because one referenced only by tests and
+    fixtures is a fact the product does not use. Three came back;
+    PRBS_PATTERN_NAMES was a stale duplicate of PATTERN_NAMES missing three
+    of its entries, and is deleted."""
+
+    def _ext(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/ext54'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the names -------------------------------------------------------
+
+    def test_the_four_codes_are_the_ones_the_table_defines(self):
+        import cmis_registers as c
+        self.assertEqual(c.compliance_name(0), 'undefined, unknown')
+        self.assertEqual(c.compliance_name(1), 'noncompliant')
+        self.assertEqual(c.compliance_name(2),
+                         'partially compliant, with exceptions')
+        self.assertEqual(c.compliance_name(3), 'fully compliant')
+
+    def test_zero_is_not_a_bottom_score(self):
+        """It is the module declining to answer. Anything that reads like a
+        grade would put it below "noncompliant"."""
+        self.assertNotIn('compliant',
+                         __import__('cmis_registers').compliance_name(0))
+
+    def test_a_code_the_table_does_not_define(self):
+        """The field is four bits and the specification names four values."""
+        import cmis_registers as c
+        for code in (4, 7, 15):
+            self.assertIn('Undefined code', c.compliance_name(code), code)
+
+    def test_the_two_nibbles_are_not_the_same_nibble(self):
+        import cmis_registers as c
+        d = c.parse_feature_advertisement(bytes([0x54, 0x31]))
+        self.assertEqual(d['options_profile_compliance'], 3)
+        self.assertEqual(d['requirements_compliance'], 1)
+        self.assertEqual(d['options_profile_compliance_name'],
+                         'fully compliant')
+        self.assertEqual(d['requirements_compliance_name'], 'noncompliant')
+
+    def test_an_unsupported_feature_says_so_before_anything_else(self):
+        """Byte 0 is "0: Feature is not supported, >0: CmisRevision of the
+        feature definition", so a compliance figure on an absent feature is
+        not a result."""
+        import cmis_registers as c
+        d = c.parse_feature_advertisement(bytes([0x00, 0x33]))
+        self.assertFalse(d['supported'])
+        self.assertEqual(d['defined_in'], '')
+
+    # ---- the second feature ------------------------------------------------
+
+    def test_the_register_is_the_one_the_table_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_CONSOLIDATED_PM, (0x0C, 160, 2))
+        self.assertEqual(c.REG_LOAD_MANAGEMENT, (0x0C, 162, 2))
+        self.assertEqual(c.REG_CONSOLIDATED_PM[1] + c.REG_CONSOLIDATED_PM[2],
+                         c.REG_LOAD_MANAGEMENT[1])
+
+    def test_both_features_reach_the_payload(self):
+        d = self._ext()
+        self.assertIn('consolidated_pm', d)
+        self.assertIn('load_management', d)
+        self.assertTrue(d['load_management']['supported'])
+
+    def test_the_two_features_are_two_different_reads(self):
+        """Adjacent two-byte structures. Reading one twice would report the
+        second feature's compliance as the first one's."""
+        d = self._ext()
+        self.assertNotEqual(d['consolidated_pm'], d['load_management'])
+
+    def test_the_fixture_exercises_the_undefined_code(self):
+        """A live example of 0, or the name for it is never seen against a
+        real read."""
+        d = self._ext()
+        self.assertEqual(d['load_management']['requirements_compliance_name'],
+                         'undefined, unknown')
+        self.assertEqual(
+            d['load_management']['options_profile_compliance_name'],
+            'partially compliant, with exceptions')
+
+    def test_a_module_without_page_0ch_reports_neither(self):
+        d = self._ext('mock_dr8')
+        self.assertIsNone(d.get('consolidated_pm'))
+        self.assertIsNone(d.get('load_management'))
+
+    # ---- the panel -----------------------------------------------------------
+
+    def test_the_panel_shows_both_features(self):
+        js = self._js()
+        self.assertIn("featureLine('Consolidated PM', d.consolidated_pm)", js)
+        self.assertIn("featureLine('Firmware load management', d.load_management)",
+                      js)
+
+    def test_the_panel_prints_the_names_not_the_codes(self):
+        js = self._js()
+        i = js.index('const featureLine')
+        body = js[i:js.index('.join(', i)]
+        self.assertIn('options_profile_compliance_name', body)
+        self.assertIn('requirements_compliance_name', body)
+        self.assertNotIn('${f.options_profile_compliance}', body)
+        self.assertNotIn('${f.requirements_compliance}', body)
+
+    def test_an_unsupported_feature_gets_one_line_not_three_numbers(self):
+        js = self._js()
+        i = js.index('const featureLine')
+        body = js[i:js.index('.join(', i)]
+        self.assertIn('!f.supported', body)
+        self.assertIn('not supported', body)
+
+    # ---- the stale duplicate ---------------------------------------------------
+
+    def test_the_duplicate_pattern_table_is_gone(self):
+        """PRBS_PATTERN_NAMES listed IDs 0-12 as a list while PATTERN_NAMES
+        holds the dict the API actually sends, including 14 Custom and 15
+        User Pattern. Two lists of the same thing, one of them short."""
+        import cmis_registers as c
+        self.assertFalse(hasattr(c, 'PRBS_PATTERN_NAMES'))
+        here = os.path.dirname(os.path.abspath(__file__))
+        for name in ('cmis_registers.py', 'app.py', 'static/app.js'):
+            with open(os.path.join(here, *name.split('/')),
+                      encoding='utf-8') as f:
+                self.assertNotIn('PRBS_PATTERN_NAMES', f.read(), name)
+
+    def test_the_surviving_pattern_table_still_has_what_it_had(self):
+        """Deleting the duplicate must not take anything with it."""
+        import cmis_registers as c
+        self.assertEqual(c.PATTERN_NAMES[0], 'PRBS31Q')
+        self.assertEqual(c.PATTERN_NAMES[12], 'SSPRQ')
+        self.assertEqual(c.PATTERN_NAMES[14], 'Custom')
+        self.assertEqual(c.PATTERN_NAMES[15], 'User Pattern')
+
+    def test_pattern_id_13_is_reserved_and_stays_unnamed(self):
+        """Table 8-115 reserves 13. Naming it would put "Reserved" in the
+        pattern selector as something an operator can choose, because the
+        fallback list of options is built from this table's keys."""
+        import cmis_registers as c
+        self.assertNotIn(13, c.PATTERN_NAMES)
+        js = self._js()
+        self.assertIn('Object.keys(PRBS_PATTERNS)', js,
+                      'the selector still falls back to this table')
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.98.0'
+__version__ = '2.99.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1280,6 +1280,11 @@ def api_module_ext54():
                 _read_upper(*cmis.REG_SUPPORTED_PAGES_MAP))
             out['consolidated_pm'] = cmis.parse_feature_advertisement(
                 _read_upper(*cmis.REG_CONSOLIDATED_PM))
+            # Table 8-72 names two features and the panel reported one.
+            # Firmware load management is the other, and it is the one this
+            # tool's own update path would care about.
+            out['load_management'] = cmis.parse_feature_advertisement(
+                _read_upper(*cmis.REG_LOAD_MANAGEMENT))
             out['available']['0Ch'] = True
 
         if caps.get('page_60h_supported'):

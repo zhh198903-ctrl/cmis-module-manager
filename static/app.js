@@ -1297,10 +1297,21 @@ async function loadExt54() {
   if (d.supported_pages) {
     document.getElementById('ext54-pagemap').textContent =
       d.supported_pages.map(p => '0x' + p.toString(16).toUpperCase().padStart(2, '0')).join('  ');
-    const pm = d.consolidated_pm;
-    document.getElementById('ext54-pm').textContent = pm && pm.supported
-      ? `Consolidated PM: defined by CMIS ${pm.defined_in}, options compliance ${pm.options_profile_compliance}, requirements compliance ${pm.requirements_compliance}`
-      : 'Consolidated PM: not supported';
+    // Table 8-72 names two features, and Table 8-71 gives the compliance
+    // nibbles four names. The panel printed one feature and two bare
+    // numbers - and 0 among them is "undefined, unknown", which beside a 3
+    // reads as the worse of two results rather than as no answer.
+    const featureLine = (label, f) => !f || !f.supported
+      ? esc(label) + ': not supported'
+      : esc(label) + ': defined by CMIS ' + esc(f.defined_in)
+        + ' <span class="reg-meta">options</span> '
+        + esc(f.options_profile_compliance_name)
+        + ' <span class="reg-meta">requirements</span> '
+        + esc(f.requirements_compliance_name);
+    document.getElementById('ext54-pm').innerHTML = [
+      featureLine('Consolidated PM', d.consolidated_pm),
+      featureLine('Firmware load management', d.load_management),
+    ].join('<br>');
   }
 }
 

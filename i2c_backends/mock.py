@@ -1509,6 +1509,14 @@ class MockBackend(I2CInterface):
             # (04h and 12h only exist on tunable profiles).
             p0c[0xA0] = 0x54          # ConsolidatedPM defined in CMIS 5.4
             p0c[0xA1] = 0x33          # fully compliant on both counts
+            # 162-163, the other named feature (Table 8-72). Deliberately
+            # not a second copy of the first: partially compliant on the
+            # options profile and undefined on the requirements, so the two
+            # rows cannot be swapped without showing, and code 0 - "not
+            # answered" rather than a bottom score - has a live example.
+            for a, v in (p.get('load_mgmt_0c') or
+                         {0xA2: 0x54, 0xA3: 0x20}).items():
+                p0c[a] = v
             regs[0x0C] = p0c          # filled in below, once every page exists
 
             adv174 = p.get('pages_ext_174', 0x00)

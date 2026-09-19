@@ -590,13 +590,6 @@ MEDIA_TYPES = {
     0x05: "BASE-T",
 }
 
-# PRBS pattern IDs (Table 8-115 Pattern IDs). 8-105 is the Active Control
-# Set's provisioned Rx controls.
-PRBS_PATTERN_NAMES = [
-    'PRBS31Q', 'PRBS31', 'PRBS23Q', 'PRBS23', 'PRBS15Q', 'PRBS15',
-    'PRBS13Q', 'PRBS13', 'PRBS9Q', 'PRBS9', 'PRBS7Q', 'PRBS7', 'SSPRQ',
-]
-
 # ---------------------------------------------------------------------------
 # Parse / encode utilities
 # ---------------------------------------------------------------------------
@@ -1165,10 +1158,15 @@ NEW_IN_5_4 = frozenset({
 })
 
 # Grid spacing code 1001b was added in CMIS 5.4; 5.3 stopped at 150 GHz.
-# Table 8-115. ID 13 is Reserved and is deliberately absent: the dropdown
-# falls back to this table when a module advertises no pattern at all, and an
-# encoding the standard reserves is not something to offer as a choice. 14
-# (Custom) and 15 (User Pattern) are real selections and are listed.
+# Table 8-115 Pattern IDs. ID 13 is Reserved and is deliberately absent: the
+# dropdown falls back to this table when a module advertises no pattern at
+# all, and an encoding the standard reserves is not something to offer as a
+# choice. 14 (Custom) and 15 (User Pattern) are real selections and are
+# listed.
+#
+# The table's full caption used to appear only on a second copy of this list
+# that nothing read, so deleting the copy would have taken the reference with
+# it.
 PATTERN_NAMES = {
     0: 'PRBS31Q', 1: 'PRBS31', 2: 'PRBS23Q', 3: 'PRBS23', 4: 'PRBS15Q',
     5: 'PRBS15', 6: 'PRBS13Q', 7: 'PRBS13', 8: 'PRBS9Q', 9: 'PRBS9',
@@ -2592,6 +2590,8 @@ def parse_relative_thresholds(raw: bytes) -> dict:
 # Presence is advertised in 01h:173-174; none of these may be read blindly.
 REG_SUPPORTED_PAGES_MAP = (0x0C, 0x80, 32)   # 0Ch:128-159 U8[32] page bitmap
 REG_CONSOLIDATED_PM     = (0x0C, 0xA0, 2)    # 0Ch:160-161 FeatureAdvertisement
+# The other named feature in Table 8-72, and the same structure.
+REG_LOAD_MANAGEMENT     = (0x0C, 0xA2, 2)    # 0Ch:162-163
 REG_POLARITY_STATUS     = (0x60, 0x80, 2)    # 60h:128-129 actual lane polarity
 REG_ACQ_COUNTER_ADV     = (0x60, 0x82, 1)    # 60h:130 counter support (bank 0)
 REG_RESET_ACQ_RX        = (0x60, 0xC0, 1)    # 60h:192 WO bitmask, media lanes
@@ -2626,16 +2626,37 @@ def parse_feature_advertisement(raw: bytes) -> dict:
     if len(raw) < 2:
         return {'supported': False}
     rev, comp = raw[0], raw[1]
+    opts, reqs = (comp >> 4) & 0x0F, comp & 0x0F
     return {
         'supported': rev != 0,
         'defined_in': f'{(rev >> 4) & 0x0F}.{rev & 0x0F}' if rev else '',
-        'options_profile_compliance': (comp >> 4) & 0x0F,
-        'requirements_compliance': comp & 0x0F,
+        'options_profile_compliance': opts,
+        'requirements_compliance': reqs,
+        # COMPLIANCE_NAMES existed and nothing used it, so the panel printed
+        # the raw nibbles - two numbers where the specification has four
+        # named levels, one of which is "not answered".
+        'options_profile_compliance_name': compliance_name(opts),
+        'requirements_compliance_name': compliance_name(reqs),
     }
 
 
-COMPLIANCE_NAMES = {0: 'undefined', 1: 'noncompliant',
-                    2: 'partially compliant', 3: 'fully compliant'}
+# Table 8-71, the low and high nibbles of byte 1. The specification defines
+# four codes and stops there.
+COMPLIANCE_NAMES = {0: 'undefined, unknown', 1: 'noncompliant',
+                    2: 'partially compliant, with exceptions',
+                    3: 'fully compliant'}
+
+
+def compliance_name(code: int) -> str:
+    """One of the four codes, or a code Table 8-71 does not define.
+
+    Zero is the one that matters: "undefined, unknown", not a bottom score.
+    Printed as a bare 0 beside a 3 it reads as the worse of two results,
+    when it is the module saying it has not answered.
+    """
+    if code in COMPLIANCE_NAMES:
+        return COMPLIANCE_NAMES[code]
+    return 'Undefined code (%d)' % code
 
 
 def parse_polarity_status(raw: bytes) -> list:
