@@ -343,6 +343,24 @@
         <p class="hint" id="si-hint"></p>
       </div>
 
+      <!-- Data Path Latency (Page 15h). The page is optional and the card
+           only exists when 01h:145.3 says the module has one, so the whole
+           thing is hidden by default and filled in app.js. -->
+      <div class="card" id="card-latency" hidden>
+        <h3>Data Path Latency<span class="reg-meta">Page 15h · Table 8-141</span></h3>
+        <div id="latency-note" class="caps-note"></div>
+        <div class="table-scroll">
+          <table><thead>
+            <tr>
+              <th>Lane</th>
+              <th>Rx Latency<span class="reg-meta">15h / 0xE0+2(n−1) · ns</span></th>
+              <th>Tx Latency<span class="reg-meta">15h / 0xF0+2(n−1) · ns</span></th>
+            </tr>
+          </thead><tbody id="tbl-latency"></tbody></table>
+        </div>
+        <p class="hint" id="latency-hint"></p>
+      </div>
+
       <!-- Output Controls card -->
       <div class="card">
         <h3>Output Controls

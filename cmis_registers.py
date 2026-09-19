@@ -57,6 +57,10 @@ REG_MODULE_PWR_CLASS = (0x00, 0xC8, 1)   # bits[7:5]=power class
 REG_MODULE_MAX_POWER = (0x00, 0xC9, 1)   # 0.25 W increments
 REG_CABLE_LENGTH     = (0x00, 0xCA, 1)   # [7:6]=mult, [5:0]=base
 REG_CONNECTOR_TYPE   = (0x00, 0xCB, 1)   # SFF-8024 Table 4-3
+# Page 15h (section 8.18, Table 8-141). Banked - each bank is 8 host
+# lanes - and present only when 01h:145.3 says so.
+REG_DP_RX_LATENCY    = (0x15, 0xE0, 16)  # 224-239, 8 x U16 ns
+REG_DP_TX_LATENCY    = (0x15, 0xF0, 16)  # 240-255, 8 x U16 ns
 REG_CU_ATTENUATION   = (0x00, 0xCC, 5)   # 204-208 (Table 8-35); 209 is
                                          # Reserved and was inside this
                                          # read as a sixth attenuation
@@ -1393,6 +1397,53 @@ FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
 # a different set of frequencies.
 CU_ATTENUATION_GHZ = (5.0, 7.0, 12.9, 25.8, 53.125)
 CU_ATTENUATION_GHZ_PCIE = (2.5, 4.0, 8.0, 16.0, 32.0)
+
+
+def parse_dp_latency(raw: bytes) -> list:
+    """Table 8-141: eight U16 latencies in nanoseconds, by host lane.
+
+    "Data Path Rx Latency and Data Path Tx Latency convey the total delay thru
+    the module, in nanoseconds, and are reported by host lane."
+
+    Plain unsigned, and deliberately no escape value. Table 8-35 two pages
+    earlier defines 0 as "this characteristic is not available" and this table
+    defines nothing of the sort, so a zero here is zero nanoseconds as far as
+    the specification is concerned. Reading the neighbouring table's rule into
+    this one would hide a real answer behind "unknown"; the honest caveat is a
+    different one and belongs beside it - 8.18 says the accuracy "is not
+    specified in this version of CMIS", and that for modules updating these
+    dynamically "it is currently undefined as to when the values in these
+    registers are guaranteed to be valid".
+    """
+    return [struct.unpack_from('>H', raw, i * 2)[0]
+            for i in range(min(8, len(raw) // 2))]
+
+
+def latency_disagreements(groups: list, latency: dict) -> list:
+    """Data Paths whose lanes do not all report the same latency.
+
+    8.18: "For Data Paths with multiple lanes, all lanes shall report the same
+    latency." A module that reports different numbers across one Data Path has
+    contradicted itself, and showing the column without checking leaves the
+    reader to notice - on a sixteen lane module, across two banks, in a table
+    of thirty-two numbers.
+
+    The rule is about Data Paths "with multiple lanes", and no guard is
+    needed for that: one lane yields one value, and one value is never more
+    than one distinct value.
+
+    groups is lane numbers, one list per Data Path, as the datapath payload
+    reports them. Returns one entry per disagreeing Data Path.
+    """
+    out = []
+    for g in groups:
+        for kind in ('rx', 'tx'):
+            vals = [latency[kind][n - 1] for n in g
+                    if 0 < n <= len(latency.get(kind, []))]
+            if len(set(vals)) > 1:
+                out.append({'lanes': list(g), 'kind': kind,
+                            'values': vals})
+    return out
 
 
 def is_copper_media(code) -> bool:

@@ -273,6 +273,12 @@ _DR8_800G = {
         (0x4F, 0x1C, 0x44, 0x11),            # AppSel 2: 400GAUI-4 → 400GBASE-DR4 (4H/4M)
     ],
     'link_lengths': {'smf_len_byte': 0x05},   # 5 × 0.1 km = 500 m
+    # Page 15h (8.18, Table 8-141): total delay thru the module by host lane,
+    # in nanoseconds. Eight lanes is one bank. The two AppSel entries lay out
+    # either one eight lane Data Path or two four lane ones, and "for Data
+    # Paths with multiple lanes, all lanes shall report the same latency" -
+    # so every lane here reports the same pair either way.
+    'dp_latency_ns': {'rx': (1180,) * 8, 'tx': (940,) * 8},
 }
 
 # ---------------------------------------------------------------------------
@@ -431,6 +437,12 @@ _ZR_16LANE = dict(
     vendor_pn=b"DEMO-DP16L-QDD  ",
     vendor_sn=b"DEMO000000009   ",
     lanes=16,
+    # Page 15h (8.18). Sixteen lanes is two banks, and the bank replication
+    # below moves each one, so a read that never leaves bank 0 shows lanes
+    # 1-8's delays sitting under lanes 9-16.
+    # "For Data Paths with multiple lanes, all lanes shall report the same
+    # latency", so the eight lanes of a bank agree with each other.
+    dp_latency_ns={'rx': (2450,) * 8, 'tx': (2180,) * 8},
 )
 
 # Table 8-53 makes all six module monitors and all three lane monitors
@@ -1005,7 +1017,13 @@ class MockBackend(I2CInterface):
         # 145 Aux observables (Table 8-50). A module that reports Aux values
         # without this says nothing about what they mean: Aux2 is degrees
         # Celsius or a percentage of TEC current depending on one bit.
-        p01[0x91] = p.get('aux_observable_145', 0x00)
+        # 145.3 TimingPage15hSupported is derived from whether this
+        # profile actually has a Page 15h rather than declared beside it: a
+        # module advertising a page it does not have, or having one it does
+        # not advertise, is a bug in the module, not a case to model here by
+        # accident.
+        p01[0x91] = (p.get('aux_observable_145', 0x00)
+                     | (0x08 if p.get('dp_latency_ns') else 0x00))
         # 151 Rx/Tx characteristics (Table 8-50). Left at zero this says the
         # Rx power monitor reports OMA and Rx LOS responds to OMA, which is
         # not what any of these profiles actually model.
@@ -1281,6 +1299,19 @@ class MockBackend(I2CInterface):
             p14[0xD0 + lane * 2 + 1] = w & 0xFF
         regs[0x14] = p14
 
+        # ==== Page 15h - Timing Characteristics (8.18, Table 8-141) ====
+        # 128-223 Reserved; 224-239 Rx latency, 240-255 Tx latency, both
+        # 8 x U16 nanoseconds by host lane. Banked below with the other
+        # lane-banked pages.
+        lat = p.get('dp_latency_ns')
+        if lat:
+            p15 = {a: 0x00 for a in range(0x80, 0x100)}
+            for kind, base in (('rx', 0xE0), ('tx', 0xF0)):
+                for lane, ns in enumerate(lat[kind][:8]):
+                    p15[base + lane * 2] = (ns >> 8) & 0xFF
+                    p15[base + lane * 2 + 1] = ns & 0xFF
+            regs[0x15] = p15
+
         # ==== CMIS 5.4 optional pages, only for profiles that advertise them ====
         if p.get('cmis_rev', 0x53) >= 0x54 and p.get('pages_ext_173', 0):
             p0c = {}
@@ -1354,10 +1385,24 @@ class MockBackend(I2CInterface):
         lane_count = p.get('lanes', 8)
         if lane_count > 8:
             for bank in range(1, (lane_count + 7) // 8):
-                for page in (0x10, 0x11, 0x12, 0x13, 0x14, 0x60, 0x61, 0x62, 0x6D):
+                for page in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                             0x60, 0x61, 0x62, 0x6D):
                     if page not in regs:
                         continue
                     copy = dict(regs[page])
+                    # Page 15h bank b is lanes 8b+1..8b+8, a different set of
+                    # Data Paths with their own delay through the module. A
+                    # plain copy would let a reader that only ever selects
+                    # bank 0 produce exactly the right answer for all sixteen
+                    # lanes.
+                    if page == 0x15:
+                        for base, step in ((0xE0, 60), (0xF0, -45)):
+                            for lane in range(8):
+                                a = base + lane * 2
+                                v = (copy[a] << 8) | copy[a + 1]
+                                v = max(0, min(0xFFFF, v + bank * step))
+                                copy[a] = (v >> 8) & 0xFF
+                                copy[a + 1] = v & 0xFF
                     if page == 0x11:
                         for lane in range(8):
                             for base, step in ((0x9A, 40), (0xBA, -30), (0xAA, 90)):

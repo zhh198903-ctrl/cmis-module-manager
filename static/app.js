@@ -605,7 +605,7 @@ async function loadInfo() {
        + 'signal'],
       ['Timing (Page 15h)',
        c.aux.timing_page_15h
-         ? 'Advertised - this tool does not read Page 15h'
+         ? 'Yes - per-lane latency on the DataPath tab'
          : 'Not supported',
        '01h', '0x91[3]',
        'TimingPage15hSupported (Table 8-50) - Data Path latency per lane '
@@ -1996,6 +1996,7 @@ async function loadDatapath() {
   }
 
   renderSignalIntegrity(d);
+  renderLatency(d);
 
   const ctl = (AppState.caps && AppState.caps.controls) || {};
   const rxtx = (AppState.caps && AppState.caps.rx_tx) || {};
@@ -2074,6 +2075,56 @@ const SI_COLUMNS = [
   ['rx_eq_post_cursor',   'Rx EQ Post',      '10h / 0xA6\u20130xA9', 'OutputEqPostCursorTargetRx (01h:162.4-3)'],
   ['rx_output_amplitude', 'Rx Amplitude',    '10h / 0xAA\u20130xAD', 'OutputAmplitudeTargetRx (01h:162.2)'],
 ];
+
+function renderLatency(d) {
+  // Page 15h is optional (8.18) and the advertisement bit is the only thing
+  // that says it exists, so an absent card is "this module has no Page 15h"
+  // rather than "nothing came back".
+  const card = document.getElementById('card-latency');
+  const body = document.getElementById('tbl-latency');
+  if (!card || !body) return;
+  const lat = d.dp_latency;
+  if (!lat || !Array.isArray(lat.rx)) { card.hidden = true; return; }
+  card.hidden = false;
+
+  const conflicts = d.latency_conflicts || [];
+  const bad = new Set();
+  conflicts.forEach(c => c.lanes.forEach(n => bad.add(n)));
+
+  body.innerHTML = lat.rx.map((rx, i) => {
+    const n = i + 1;
+    const tx = lat.tx[i];
+    // The existing warning colour rather than a class of its own: a lane
+    // whose Data Path disagrees with itself is the same kind of "look at
+    // this" as a monitor outside its warning threshold.
+    const cls = bad.has(n) ? ' class="alarm-low"' : '';
+    return '<tr' + cls + '><td>' + n + '</td><td>' + esc(String(rx))
+      + '</td><td>' + esc(tx === undefined ? '-' : String(tx)) + '</td></tr>';
+  }).join('');
+
+  const note = document.getElementById('latency-note');
+  if (note) {
+    note.innerHTML = conflicts.length
+      ? '\u26a0 ' + conflicts.map(c =>
+          'lanes ' + c.lanes.join(', ') + ' are one Data Path but report '
+          + c.kind.toUpperCase() + ' latencies of ' + c.values.join(' / ')
+          + ' ns').join('; ')
+        + '. CMIS 8.18: "for Data Paths with multiple lanes, all lanes shall '
+        + 'report the same latency" \u2014 this module contradicts itself.'
+      : '';
+  }
+  const hint = document.getElementById('latency-hint');
+  if (hint) {
+    // Both caveats are the specification's own, and both change how much
+    // weight a reader should put on the number.
+    hint.textContent = 'Total delay through the module by host lane, in '
+      + 'nanoseconds. CMIS 8.18 does not specify the accuracy of these '
+      + 'values, and for modules that update them dynamically it is '
+      + 'undefined when they are guaranteed to be valid. Banked: each bank '
+      + 'covers 8 lanes.';
+  }
+}
+
 
 function renderSignalIntegrity(d) {
   const head = document.getElementById('tbl-si-head');

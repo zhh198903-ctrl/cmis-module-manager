@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.90.0'
+__version__ = '2.91.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -583,6 +583,32 @@ def _verify_page_checksums(caps: dict) -> list:
             'reported': got,
             'ok': want == got,
         })
+    return out
+
+
+def _read_dp_latency(lanes: int):
+    """Page 15h (section 8.18, Table 8-141), if the module has one.
+
+    01h:145.3 is the only thing that says this page exists; the capabilities
+    panel has been showing that bit since the byte was decoded, worded as
+    "advertised - this tool does not read Page 15h" because it did not. This
+    is that sentence coming off the panel.
+
+    Banked, and that is the part worth getting right: "Page 15h may optionally
+    be Banked. Each Bank of Page 15h refers to 8 lanes." Reading bank 0 alone
+    on a sixteen lane module would fill lanes 9-16 with lanes 1-8's numbers,
+    which is not a blank to notice but eight plausible wrong answers.
+    """
+    caps = _state.get('caps') or {}
+    if not (caps.get('aux') or {}).get('timing_page_15h'):
+        return None
+    out = {}
+    for kind, reg in (('rx', cmis.REG_DP_RX_LATENCY),
+                      ('tx', cmis.REG_DP_TX_LATENCY)):
+        vals = []
+        for _bank, chunk in _read_banks(*reg, lanes):
+            vals += cmis.parse_dp_latency(chunk)
+        out[kind] = vals[:lanes]
     return out
 
 
@@ -1765,7 +1791,23 @@ def api_datapath_get():
                   for g in _datapath_groups(app_select[:_state['lanes']],
                                             host_lanes_by_app)]
 
+        # Page 15h, read here rather than with the advertisements: 8.18
+        # calls these "read-only reporting registers (not necessarily
+        # static)", so they belong with the things the refresh button
+        # re-reads, not with the block that is read once at connect.
+        # _state['lanes'], not the `lanes` in scope here - that one is the
+        # per-lane row list this handler is building, and passing it would
+        # slice the latency list by a list.
+        try:
+            dp_latency = _read_dp_latency(_state['lanes'])
+        except Exception:
+            dp_latency = None
+        latency_conflicts = cmis.latency_disagreements(
+            groups, dp_latency) if dp_latency else []
+
         return _ok({
+            'dp_latency': dp_latency,
+            'latency_conflicts': latency_conflicts,
             'signal_integrity': si,
             'signal_integrity_active': si_active,
             'si_advertised': si_adv,

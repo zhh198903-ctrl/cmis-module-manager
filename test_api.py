@@ -20829,14 +20829,19 @@ class TestTheSevenFieldsOfOneAdvertisementByte(CMISTestCase):
         for addr in ("'0x91[6:5]'", "'0x91[7]'", "'0x91[4]'", "'0x91[3]'"):
             self.assertIn(addr, js, addr)
 
-    def test_the_page_15h_row_does_not_promise_what_the_tool_lacks(self):
-        """The bit advertises a page this tool does not read. Showing it as
-        plain 'Supported' would send the operator looking for a panel that is
-        not there."""
+    def test_the_page_15h_row_sends_the_reader_where_the_data_is(self):
+        """This row used to read "Advertised - this tool does not read Page
+        15h", so that a bare "Supported" would not send an operator looking
+        for a panel that was not there. The panel exists now, and the row has
+        to name it or the disclaimer has simply been replaced by a shrug."""
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
             js = f.read()
-        self.assertIn('this tool does not read Page 15h', js)
+        self.assertNotIn('this tool does not read Page 15h', js)
+        row = js[js.index("['Timing (Page 15h)'"):]
+        row = row[:row.index('],')]
+        self.assertIn('DataPath', row,
+                      'say which tab the latency is on')
 
 
 class TestWhatTheCableBreaksOutInto(CMISTestCase):
@@ -21666,6 +21671,280 @@ class TestTheShippedExeCanTalkToTheAdapter(CMISTestCase):
             bat = f.read()
         self.assertNotIn('D:\\claude', bat)
         self.assertNotIn('Users\\', bat)
+
+
+class TestHowLongTheModuleDelaysTheSignal(CMISTestCase):
+    """Page 15h (section 8.18, Table 8-141): Data Path Rx and Tx latency, per
+    host lane, 8 x U16 nanoseconds at 224-239 and 240-255.
+
+    The capabilities panel has decoded 01h:145.3 since round 36 and said, in
+    as many words, "Advertised - this tool does not read Page 15h" - pointing
+    at a page it never opened. This is that sentence coming off the panel.
+
+    Three things the specification decides here:
+
+    It is banked. "Page 15h may optionally be Banked. Each Bank of Page 15h
+    refers to 8 lanes." A bank-0-only read on a sixteen lane module does not
+    leave lanes 9-16 blank; it fills them with lanes 1-8's delays, which are
+    eight plausible numbers.
+
+    There is no escape value. Table 8-35, two tables earlier, defines 0 as
+    "this characteristic is not available"; this table defines nothing of the
+    sort. Reading the neighbouring rule into this one would report a real
+    zero as unknown - the opposite error to the one round 41 fixed, and just
+    as wrong.
+
+    And "for Data Paths with multiple lanes, all lanes shall report the same
+    latency" is a property worth checking rather than a sentence to quote: a
+    module that disagrees with itself across a Data Path has contradicted a
+    shall, and on sixteen lanes across two banks nobody reads thirty-two
+    numbers looking for it."""
+
+    def _dp(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _caps(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the registers and the decode --------------------------------
+
+    def test_the_two_blocks_are_where_the_table_puts_them(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_DP_RX_LATENCY, (0x15, 224, 16))
+        self.assertEqual(c.REG_DP_TX_LATENCY, (0x15, 240, 16))
+        # 8 x U16 each, and the two together end exactly at the page end.
+        self.assertEqual(c.REG_DP_RX_LATENCY[1] + c.REG_DP_RX_LATENCY[2],
+                         c.REG_DP_TX_LATENCY[1])
+        self.assertEqual(c.REG_DP_TX_LATENCY[1] + c.REG_DP_TX_LATENCY[2], 256)
+
+    def test_each_lane_is_a_big_endian_u16(self):
+        import cmis_registers as c
+        raw = bytes([0x00, 0x64, 0x00, 0xC8, 0x01, 0x2C, 0x00, 0x00,
+                     0x03, 0xE8, 0x07, 0xD0, 0x0B, 0xB8, 0xFF, 0xFF])
+        self.assertEqual(c.parse_dp_latency(raw),
+                         [100, 200, 300, 0, 1000, 2000, 3000, 65535])
+
+    def test_zero_is_zero_nanoseconds_not_unknown(self):
+        """Table 8-35 defines 0 dB as "not available". This table defines no
+        such thing, and inventing it would hide a real answer."""
+        import cmis_registers as c
+        self.assertEqual(c.parse_dp_latency(bytes(16)), [0] * 8)
+
+    def test_it_never_returns_more_than_eight(self):
+        import cmis_registers as c
+        self.assertEqual(len(c.parse_dp_latency(bytes(32))), 8)
+
+    # ---- the banked read ----------------------------------------------
+
+    def test_a_sixteen_lane_module_reports_sixteen_lanes(self):
+        d = self._dp('mock_zr16')
+        lat = d['dp_latency']
+        self.assertEqual(len(lat['rx']), 16)
+        self.assertEqual(len(lat['tx']), 16)
+
+    def test_the_second_bank_is_not_the_first_one_again(self):
+        """The whole point of the banking. Each bank of Page 15h is a
+        different set of eight lanes, so a read that never leaves bank 0
+        answers lanes 9-16 with lanes 1-8's delays - eight numbers that are
+        the right shape and the wrong module."""
+        lat = self._dp('mock_zr16')['dp_latency']
+        self.assertNotEqual(lat['rx'][:8], lat['rx'][8:],
+                            'bank 1 came back as a copy of bank 0')
+        self.assertNotEqual(lat['tx'][:8], lat['tx'][8:])
+
+    def test_rx_and_tx_are_not_the_same_read(self):
+        lat = self._dp('mock_zr16')['dp_latency']
+        self.assertNotEqual(lat['rx'], lat['tx'])
+
+    def test_an_eight_lane_module_reports_eight(self):
+        lat = self._dp('mock_dr8')['dp_latency']
+        self.assertEqual(len(lat['rx']), 8)
+        self.assertEqual(len(lat['tx']), 8)
+
+    # ---- the gate -------------------------------------------------------
+
+    def test_a_module_without_the_page_is_not_asked_for_it(self):
+        """01h:145.3 is the only thing that says the page exists. Reading it
+        anyway on a module that does not have it would land on Page 00h -
+        8.2.15 has a module clear PageSelect rather than refuse - and decode
+        the vendor block as nanoseconds."""
+        for backend in ('mock_coherent', 'mock_sr8', 'mock_1600g_dr8'):
+            d = self._dp(backend)
+            self.assertFalse((self._caps(backend).get('aux') or {})
+                             .get('timing_page_15h'), backend)
+            self.assertIsNone(d.get('dp_latency'), backend)
+
+    def test_nothing_is_read_when_the_module_says_it_has_no_such_page(self):
+        """Not just "the answer is None" - a module without Page 15h refuses
+        the page select anyway (8.2.15) and would produce None either way,
+        after a transaction it should never have been sent. The advertisement
+        is there so the host does not have to find out the hard way."""
+        import app as appmod
+        self._caps('mock_coherent')
+        reads = []
+        orig = appmod._read_banks
+        appmod._read_banks = lambda page, *a, **k: (
+            reads.append(page) or orig(page, *a, **k))
+        try:
+            self.assertIsNone(appmod._read_dp_latency(8))
+        finally:
+            appmod._read_banks = orig
+        self.assertNotIn(0x15, reads, 'Page 15h was read anyway')
+        self.assertEqual(reads, [], 'nothing at all should have been read')
+
+    def test_the_advertisement_and_the_page_cannot_disagree_in_the_mocks(self):
+        """Every profile that advertises 145.3 has a Page 15h and every one
+        that does not, does not. A mock that advertises a page it lacks would
+        make the gate look wrong when it is the fixture that is."""
+        import i2c_interface
+        for name in [b['name'] for b in i2c_interface.list_backends()
+                     if b['name'].startswith('mock')]:
+            caps = self._caps(name)
+            if caps.get('flat_memory'):
+                continue           # no Page 01h, so nothing is advertised
+            advertised = bool((caps.get('aux') or {}).get('timing_page_15h'))
+            got = self._dp(name).get('dp_latency')
+            self.assertEqual(advertised, got is not None, name)
+
+    def test_a_flat_module_has_neither(self):
+        self.assertIsNone((self._caps('mock_flat_dac').get('aux') or {})
+                          .get('timing_page_15h'))
+
+    # ---- the shall ------------------------------------------------------
+
+    def test_lanes_of_one_data_path_are_checked_against_each_other(self):
+        import cmis_registers as c
+        lat = {'rx': [100, 100, 250, 100], 'tx': [50, 50, 50, 50]}
+        bad = c.latency_disagreements([[1, 2, 3, 4]], lat)
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0]['kind'], 'rx')
+        self.assertEqual(bad[0]['lanes'], [1, 2, 3, 4])
+
+    def test_tx_is_checked_as_well_as_rx(self):
+        import cmis_registers as c
+        lat = {'rx': [100] * 4, 'tx': [50, 50, 50, 70]}
+        bad = c.latency_disagreements([[1, 2, 3, 4]], lat)
+        self.assertEqual([b['kind'] for b in bad], ['tx'])
+
+    def test_a_consistent_module_raises_nothing(self):
+        import cmis_registers as c
+        lat = {'rx': [100] * 8, 'tx': [50] * 8}
+        self.assertEqual(
+            c.latency_disagreements([[1, 2, 3, 4], [5, 6, 7, 8]], lat), [])
+
+    def test_a_one_lane_data_path_cannot_disagree_with_itself(self):
+        """The shall is about Data Paths with multiple lanes. A single lane
+        flagged against itself would be noise on every module."""
+        import cmis_registers as c
+        lat = {'rx': [100, 250], 'tx': [50, 70]}
+        self.assertEqual(c.latency_disagreements([[1], [2]], lat), [])
+
+    def test_two_data_paths_may_differ_from_each_other(self):
+        """Different Data Paths are different paths through the module."""
+        import cmis_registers as c
+        lat = {'rx': [100, 100, 900, 900], 'tx': [50, 50, 80, 80]}
+        self.assertEqual(
+            c.latency_disagreements([[1, 2], [3, 4]], lat), [])
+
+    def test_the_mock_modules_do_not_contradict_the_shall(self):
+        for backend in ('mock_dr8', 'mock_zr16'):
+            self.assertEqual(self._dp(backend)['latency_conflicts'], [],
+                             backend)
+
+    def test_a_contradicting_module_is_reported_by_the_endpoint(self):
+        """The previous test passes with the check torn out of the handler -
+        every mock is conformant, so an empty list is the right answer either
+        way. This drives a module that is not."""
+        import app as appmod
+        orig = appmod._read_dp_latency
+        appmod._read_dp_latency = lambda lanes: {
+            'rx': [1180, 1180, 1400, 1180, 1180, 1180, 1180, 1180],
+            'tx': [940] * 8}
+        try:
+            d = self._dp('mock_dr8')
+        finally:
+            appmod._read_dp_latency = orig
+        self.assertTrue(d['latency_conflicts'],
+                        'a Data Path disagreeing with itself has to surface')
+        c = d['latency_conflicts'][0]
+        self.assertEqual(c['kind'], 'rx')
+        self.assertIn(3, c['lanes'])
+
+    # ---- the panel ------------------------------------------------------
+
+    def test_the_card_exists_in_the_page(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="card-latency"', html)
+        self.assertIn('id="tbl-latency"', html)
+        # Hidden by default: the page is optional, so a module without one
+        # must not leave an empty card behind.
+        card = html[html.index('id="card-latency"'):]
+        self.assertIn('hidden', card[:card.index('>')])
+
+    def test_the_card_names_both_byte_ranges(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('0xE0', html)
+        self.assertIn('0xF0', html)
+
+    def test_the_card_is_hidden_when_there_is_no_page(self):
+        body = self._render_body()
+        self.assertIn('card.hidden = true', body)
+
+    def _render_body(self):
+        js = self._js()
+        i = js.index('function renderLatency')
+        body = js[i:js.index('function renderSignalIntegrity')]
+        return re.sub('//[^' + chr(10) + ']*', '', body)
+
+    def test_the_renderer_is_called(self):
+        self.assertIn('renderLatency(d);', self._js())
+
+    def test_a_disagreeing_lane_is_marked(self):
+        body = self._render_body()
+        self.assertIn('latency_conflicts', body)
+        self.assertIn('alarm-low', body)
+
+    def test_the_note_quotes_the_shall(self):
+        body = self._render_body()
+        self.assertIn('shall', body)
+        self.assertIn('8.18', body)
+
+    def test_the_hint_carries_both_caveats(self):
+        """Accuracy is unspecified, and on a module that updates these
+        dynamically it is undefined when they are valid. Both change how much
+        weight the number deserves."""
+        body = self._render_body()
+        self.assertIn('accuracy', body)
+        self.assertIn('undefined', body)
+        self.assertIn('nanosecond', body)
+
+    def test_the_capability_row_no_longer_says_the_tool_skips_the_page(self):
+        """It said "Advertised - this tool does not read Page 15h", which was
+        honest at the time and is now false."""
+        js = self._js()
+        self.assertNotIn('this tool does not read Page 15h', js)
+        self.assertIn("'0x91[3]'", js, 'the row still names its bit')
 
 
 if __name__ == '__main__':
