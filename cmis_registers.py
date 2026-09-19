@@ -57,7 +57,9 @@ REG_MODULE_PWR_CLASS = (0x00, 0xC8, 1)   # bits[7:5]=power class
 REG_MODULE_MAX_POWER = (0x00, 0xC9, 1)   # 0.25 W increments
 REG_CABLE_LENGTH     = (0x00, 0xCA, 1)   # [7:6]=mult, [5:0]=base
 REG_CONNECTOR_TYPE   = (0x00, 0xCB, 1)   # SFF-8024 Table 4-3
-REG_CU_ATTENUATION   = (0x00, 0xCC, 6)   # 6 bytes copper attenuation
+REG_CU_ATTENUATION   = (0x00, 0xCC, 5)   # 204-208 (Table 8-35); 209 is
+                                         # Reserved and was inside this
+                                         # read as a sixth attenuation
 REG_MEDIA_LANE_INFO  = (0x00, 0xD2, 1)   # MediaLaneUnsupported bitmap
 REG_FAR_END_CFG      = (0x00, 0xD3, 1)
 REG_MEDIA_IF_TECH    = (0x00, 0xD4, 1)   # Media Interface Technology
@@ -1383,6 +1385,48 @@ FAR_END_LANE_GROUPS = {
 # shape a cable is usually ordered by.
 FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
                    27: '16-lane'}
+
+
+# Table 8-35. The note beneath it: "when the module advertises itself as a
+# PCIe application, the cable attenuation fields above are reported for
+# frequencies 2.5, 4.0, 8.0, 16.0, 32.0 GHz" instead - the same five bytes,
+# a different set of frequencies.
+CU_ATTENUATION_GHZ = (5.0, 7.0, 12.9, 25.8, 53.125)
+CU_ATTENUATION_GHZ_PCIE = (2.5, 4.0, 8.0, 16.0, 32.0)
+
+
+def is_copper_media(code) -> bool:
+    """Media types 03h and 04h (Table 8-20) are cable assemblies.
+
+    8.3.6 gates the cable attenuation block on being a copper cable; 05h
+    BASE-T is copper but is not a cable assembly with a loss figure at
+    53 GHz, and 01h/02h are fibre. 04h "Active Cable assembly" covers active
+    optical as well as active copper - an active optical cable is left to
+    answer the block with zeros, which the specification defines as "not
+    available (not relevant or otherwise unknown)".
+    """
+    return code in (0x03, 0x04)
+
+
+def parse_cu_attenuation(data: bytes) -> list:
+    """00h:204-208 (Table 8-35): cable attenuation in whole dB.
+
+    "A value of 0 dB indicates that this characteristic is not available (not
+    relevant or otherwise unknown)", so a zero is an absent figure rather than
+    a cable with no loss - which at 53 GHz would be a remarkable cable.
+
+    Byte 209 is Reserved and is not one of these; the register was declared
+    six bytes long, which would have put it on the panel as a sixth
+    attenuation at no stated frequency.
+
+    "For active linear copper cables with host-programmable gain, the
+    characteristics are reported for the 0 dB gain setting."
+    """
+    out = []
+    for i, ghz in enumerate(CU_ATTENUATION_GHZ):
+        db = data[i] if i < len(data) else 0
+        out.append({'ghz': ghz, 'db': db or None})
+    return out
 
 
 def parse_firmware_revision(major: int, minor: int) -> dict:

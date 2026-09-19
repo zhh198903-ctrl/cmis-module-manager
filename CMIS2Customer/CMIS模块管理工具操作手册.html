@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.89.0<br>
+      <b>版本</b>　2.90.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -823,8 +823,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.89.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.89.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.90.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.90.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1687,6 +1687,24 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>铜缆衰减:0 dB 不是「没有损耗」</h3>
+  <p>规范 Table 8-35 在 00h:204-208 给出线缆在五个频点上的插入损耗，每计数 1 dB：</p>
+  <table>
+    <tr><th>地址</th><th>频点</th><th>说明</th></tr>
+    <tr><td>204</td><td>5 GHz</td><td rowspan="5">整数 dB。<b>模块报 0 表示「该特性不可用」</b>，不是这根线缆在该频点无损耗</td></tr>
+    <tr><td>205</td><td>7 GHz</td></tr>
+    <tr><td>206</td><td>12.9 GHz</td></tr>
+    <tr><td>207</td><td>25.8 GHz</td></tr>
+    <tr><td>208</td><td>53.125 GHz</td></tr>
+    <tr><td>209</td><td>—</td><td>Reserved，不是第六个频点</td></tr>
+  </table>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>这一段此前<b>从未被读取</b>。铜缆模块的面板能说出线缆多长、分支成什么、用的什么技术，唯独说不出<b>它有多大损耗</b>——而这恰恰是判断链路能否闭合的那个数。两处坑一并处理了:寄存器原本声明成 6 字节，<b>把 Reserved 的 209 也圈了进来</b>，它会以一个没有频点的第六个衰减值出现在面板上;而 <b>0 dB 按普通无符号字节解码就成了「零损耗」</b>，在 53 GHz 上是个一眼假却又完全看不出错的数字。</span>
+  </div>
+  <p>规范 8.3.6 还限定了适用范围:「对于其它模块，204-209 字节是保留的」。光模块同样能读回这几个字节，但读回来的东西没有含义，所以这一行<b>在光模块上不显示</b>，而不是显示成 0。有源线缆(媒介类型 04h)既包含有源铜缆也包含有源光缆，后者会用「全 0」来回答，这一行同样不出现。</p>
+  <p class="note">表下方还有一条注:<b>当模块声明自己是 PCIe 应用时，同样这五个字节代表的是 2.5 / 4.0 / 8.0 / 16.0 / 32.0 GHz</b>。仅凭这几个字节无法判断是哪一组频点，所以工具把这条说明写进了该行的悬停提示，而不是替你猜一个。</p>
 
   <h3>Rx LOS 是对着哪个量报的</h3>
   <p>规范 Table 8-50 的 01h:151 里有两个相邻的位:</p>
@@ -3740,7 +3758,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.89.0<br>
+    CMIS Module Manager 操作手册 v2.90.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

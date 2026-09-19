@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.89.0'
+__version__ = '2.90.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -586,6 +586,28 @@ def _verify_page_checksums(caps: dict) -> list:
     return out
 
 
+def _read_cu_attenuation(caps):
+    """00h:204-208, Table 8-35, but only where the specification defines it.
+
+    8.3.6: "For active linear copper cables with host-programmable gain, the
+    characteristics are reported for the 0dB gain setting. For other modules
+    bytes 204-209 are reserved." An optical module answers the read - these
+    are ordinary readable bytes on a page every module has - and the answer
+    means nothing. Reported unconditionally, the panel would print a cable
+    loss for a module that has no cable.
+
+    So the media type gates it, and then the module's own "0 dB indicates
+    this characteristic is not available" removes the row again on a cable
+    assembly that did not fill the block in - which is how an active optical
+    cable, sharing media type 04h with active copper, answers.
+    """
+    if not cmis.is_copper_media(caps.get('media_type_code')):
+        return None
+    att = cmis.parse_cu_attenuation(_read_upper(*cmis.REG_CU_ATTENUATION))
+    # Every figure absent is not a cable with no loss.
+    return att if any(a['db'] is not None for a in att) else None
+
+
 def _discover_capabilities() -> dict:
     """Read the advertisements that decide how the rest of the session behaves.
 
@@ -616,6 +638,10 @@ def _discover_capabilities() -> dict:
         #
         # None of it was true, and none of it looked wrong. The lane count in
         # particular sizes every per-lane panel in the tool.
+        # 00h:85, Lower Memory, so a flat module answers it too. Read here
+        # because two Page 00h blocks below are defined only for some media
+        # types and are Reserved for the rest.
+        caps['media_type_code'] = _read_lower(*cmis.REG_MEDIA_TYPE[1:])[0]
         caps['config'] = cmis.parse_config_capabilities(
             _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         caps['flat_memory'] = caps['config'].get('memory_model') == 'Flat'
@@ -634,6 +660,7 @@ def _discover_capabilities() -> dict:
                 *cmis.REG_MEDIA_LANE_INFO)[0]
             caps['far_end'] = cmis.parse_far_end_config(
                 _read_upper(*cmis.REG_FAR_END_CFG)[0])
+            caps['cu_attenuation'] = _read_cu_attenuation(caps)
             return caps
         # Before anything long is read: everything below asks for more than
         # eight bytes at a time, and whether that is allowed is this byte's
@@ -707,6 +734,7 @@ def _discover_capabilities() -> dict:
         # lanes reach which far end module.
         caps['far_end'] = cmis.parse_far_end_config(
             _read_upper(*cmis.REG_FAR_END_CFG)[0])
+        caps['cu_attenuation'] = _read_cu_attenuation(caps)
         lane_count = caps.get('max_lanes', 8)
         caps['media_lane_map'] = cmis.parse_media_lane_mapping(
             b''.join(raw for _b, raw in

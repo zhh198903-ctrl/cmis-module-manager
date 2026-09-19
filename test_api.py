@@ -18735,6 +18735,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-27': 'Page 00h Overview',
         '8-29': 'Vendor Information (Page 00h)',
         '8-33': 'Cable Assembly Link Length (Page 00h)',
+        '8-35': 'Copper Cable Attenuation (Page 00h)',
         '8-36': 'Media Lane Information (Page 00h)',
         '8-37': 'Cable Assembly Information (Page 00h)',
         '8-38': 'Far End Configurations for Uniform Far End Breakout (Page 00h)',
@@ -21303,6 +21304,365 @@ class TestWhatRxLOSRespondsTo(CMISTestCase):
                     'rx_los_type', 'rx_los_is_fast', 'tx_disable_is_fast',
                     'tx_disable_module_wide'):
             self.assertIn(key, d, key)
+
+
+class TestHowLossyTheCableIs(CMISTestCase):
+    """Table 8-35, 00h:204-208: cable attenuation at 5, 7, 12.9, 25.8 and
+    53.125 GHz, one whole dB per count.
+
+    REG_CU_ATTENUATION was declared and never read. On the copper profile the
+    panel could say how long the cable is, what it breaks out into and what
+    technology it is, but not the one number that decides whether the link
+    closes.
+
+    Two traps sit on top of it:
+
+    Byte 209 is Reserved, and the register was declared six bytes long - the
+    Reserved byte was inside the read, one position past 53.125 GHz with no
+    frequency of its own.
+
+    And "A value of 0 dB indicates that this characteristic is not available
+    (not relevant or otherwise unknown)". Every mock profile answers these
+    bytes with zeros, so the straightforward decode puts a lossless cable at
+    53 GHz on every module in the tool.
+
+    8.3.6 gates the block as well: "For other modules bytes 204-209 are
+    reserved." An optical module answers the read and the answer means
+    nothing, so the row is absent there rather than zeroed."""
+
+    def _caps(self, backend='mock_flat_dac'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def _cell_body(self):
+        js = self._js()
+        i = js.index('function cuAttenuationCell')
+        body = js[i:js.index('function cableLengthCell')]
+        return re.sub('//[^' + chr(10) + ']*', '', body)
+
+    def _row_tooltip(self):
+        js = self._js()
+        i = js.index("['Cable Attenuation'")
+        return js[i:js.index('] : []),', i)]
+
+    def test_the_register_stops_one_byte_short_of_the_reserved_one(self):
+        """204-208 is five bytes. 209 is Reserved and has no frequency."""
+        import cmis_registers as c
+        page, addr, length = c.REG_CU_ATTENUATION
+        self.assertEqual((page, addr), (0x00, 204))
+        self.assertEqual(length, 5)
+        self.assertEqual(addr + length, 209, 'the read has to stop before 209')
+
+    def test_the_five_frequencies_are_the_ones_the_table_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.CU_ATTENUATION_GHZ, (5.0, 7.0, 12.9, 25.8, 53.125))
+        got = [a['ghz'] for a in c.parse_cu_attenuation(bytes(5))]
+        self.assertEqual(got, list(c.CU_ATTENUATION_GHZ))
+
+    def test_each_byte_is_whole_dB_at_its_own_frequency(self):
+        """Five different values, so reading one byte for another shows."""
+        import cmis_registers as c
+        att = c.parse_cu_attenuation(bytes([3, 6, 9, 14, 21]))
+        self.assertEqual([(a['ghz'], a['db']) for a in att],
+                         [(5.0, 3), (7.0, 6), (12.9, 9), (25.8, 14),
+                          (53.125, 21)])
+
+    def test_zero_is_not_available_not_zero_loss(self):
+        """The specification's words on 208, and the reason this cannot be
+        decoded as a plain unsigned byte: a cable with 0 dB of loss at
+        53 GHz would be a remarkable cable, and every module that leaves the
+        block unfilled reports exactly that."""
+        import cmis_registers as c
+        att = c.parse_cu_attenuation(bytes([5, 0, 9, 0, 0]))
+        self.assertEqual([a['db'] for a in att], [5, None, 9, None, None])
+
+    def test_a_short_read_does_not_invent_figures(self):
+        import cmis_registers as c
+        att = c.parse_cu_attenuation(bytes([7]))
+        self.assertEqual(len(att), 5)
+        self.assertEqual([a['db'] for a in att], [7, None, None, None, None])
+
+    def test_the_pcie_frequencies_are_carried_too(self):
+        """The note under Table 8-35: on a PCIe application the same five
+        bytes are reported at a different set of frequencies. Recorded so the
+        panel can say so rather than labelling them wrongly in silence."""
+        import cmis_registers as c
+        self.assertEqual(c.CU_ATTENUATION_GHZ_PCIE,
+                         (2.5, 4.0, 8.0, 16.0, 32.0))
+
+    def test_the_copper_profile_reports_its_loss(self):
+        att = self._caps()['cu_attenuation']
+        self.assertIsNotNone(att, 'a DAC is exactly what this block is for')
+        self.assertEqual([a['db'] for a in att], [5, 6, 9, 14, None])
+
+    def test_the_loss_rises_with_frequency(self):
+        """Not a formatting check: a profile whose bytes were filled in the
+        wrong order, or read off by one, would come back falling."""
+        att = [a['db'] for a in self._caps()['cu_attenuation']
+               if a['db'] is not None]
+        self.assertEqual(att, sorted(att))
+        self.assertGreater(att[-1], att[0])
+
+    def test_an_optical_module_has_no_cable_to_lose_anything_in(self):
+        """8.3.6: "For other modules bytes 204-209 are reserved." They read
+        back as zeros, and zeros here are not a measurement."""
+        for backend in ('mock_dr8', 'mock_coherent', 'mock_sr8'):
+            self.assertIsNone(self._caps(backend).get('cu_attenuation'),
+                              backend)
+
+    def test_the_media_type_is_known_during_discovery(self):
+        """The gate above needs it, and it comes from Lower Memory so a flat
+        module answers it too."""
+        self.assertEqual(self._caps()['media_type_code'], 0x03)
+        self.assertEqual(self._caps('mock_dr8')['media_type_code'], 0x02)
+
+    def test_copper_media_is_the_two_cable_assembly_types(self):
+        import cmis_registers as c
+        self.assertTrue(c.is_copper_media(0x03))   # passive copper
+        self.assertTrue(c.is_copper_media(0x04))   # active cable assembly
+        for code in (0x00, 0x01, 0x02, 0x05, None):
+            self.assertFalse(c.is_copper_media(code), repr(code))
+
+    def test_reserved_bytes_on_an_optical_module_are_not_read_as_loss(self):
+        """The gate earns its place only against a module that answers these
+        bytes with something. Every optical mock answers zeros, so the
+        "nothing was filled in" rule alone hides the row and the gate looks
+        redundant - but 8.3.6 makes 204-209 Reserved on such a module, and a
+        Reserved byte is not promised to be zero. Whatever is in it is not a
+        cable loss, because there is no cable."""
+        import app as appmod
+        orig = appmod._read_upper
+        appmod._read_upper = lambda *a: bytes([3, 6, 9, 14, 21])
+        try:
+            for code in (0x01, 0x02, 0x05, 0x00):
+                self.assertIsNone(
+                    appmod._read_cu_attenuation({'media_type_code': code}),
+                    'media type 0x%02X has no cable' % code)
+            # And the same bytes on a cable assembly are the measurement.
+            att = appmod._read_cu_attenuation({'media_type_code': 0x03})
+            self.assertEqual([a['db'] for a in att], [3, 6, 9, 14, 21])
+        finally:
+            appmod._read_upper = orig
+
+    def test_a_copper_module_that_filled_nothing_in_shows_no_row(self):
+        """Media type alone is not enough: an active optical cable shares
+        media type 04h with active copper and answers the block with zeros."""
+        import app as appmod
+        caps = {'media_type_code': 0x04}
+        orig = appmod._read_upper
+        appmod._read_upper = lambda *a: bytes(5)
+        try:
+            self.assertIsNone(appmod._read_cu_attenuation(caps))
+        finally:
+            appmod._read_upper = orig
+
+    def test_the_panel_has_a_row_for_it(self):
+        js = self._js()
+        self.assertIn('cuAttenuationCell(c.cu_attenuation)', js)
+        self.assertIn("'Cable Attenuation'", js)
+
+    def test_the_row_names_the_bytes_it_read(self):
+        js = self._js()
+        self.assertIn("'0xCC-0xD0'", js, 'the five bytes, not six')
+        self.assertNotIn("'0xCC-0xD1'", js, '0xD1 is Reserved')
+
+    def test_the_cell_says_what_a_missing_figure_means(self):
+        """Otherwise a reader takes a blank for a measurement not taken by
+        the tool rather than one the module declined to give.
+
+        Scoped to the cell: the tooltip quotes this same wording, so looking
+        for it anywhere in the file passes with the cell printing 0 dB."""
+        body = self._cell_body()
+        self.assertIn('not specified', body)
+        self.assertNotIn('0</b>', body, 'a missing figure is not zero loss')
+
+    def test_the_tooltip_says_why_a_figure_can_be_missing(self):
+        """The cell's wording alone does not say whose choice it was. Scoped
+        to the row, because the cell carries the same two words."""
+        tip = self._row_tooltip()
+        self.assertIn('0 dB', tip, 'name the value the module reported')
+        self.assertIn('not specified', tip)
+
+    def test_the_tooltip_carries_the_pcie_caveat(self):
+        """The tool cannot tell from these bytes which set of frequencies it
+        is looking at, so it says so instead of guessing."""
+        js = self._js()
+        for f in ('2.5', '4.0', '8.0', '16.0', '32.0'):
+            self.assertIn(f, js, f)
+
+    def test_the_cell_prints_the_frequency_with_every_figure(self):
+        """Five numbers with no frequencies against them is five numbers."""
+        body = self._cell_body()
+        self.assertIn("a.ghz + ' GHz'", body)
+        self.assertIn("' dB</b>'", body)
+
+
+class TestTheShippedExeCanTalkToTheAdapter(CMISTestCase):
+    """The WCH driver installs a 32-bit CH341DLL.dll. A 64-bit process cannot
+    load it, so a 64-bit build of this tool reports the CH341 backend as
+    unavailable - which is exactly what an unplugged adapter looks like.
+
+    build_exe.bat knew this and said so in a comment, but made the 32-bit
+    interpreter opt-in: "without it the build uses whatever python is on
+    PATH, which is fine for a local test build". It is fine for a local test
+    build. It is the same command that builds the release, and afterwards
+    nothing distinguishes the two artifacts - same file list, same version
+    banner, same startup, and every test in this file passes against either
+    because they all run on mock backends.
+
+    Every version still on the download site shipped 64-bit.
+
+    So the check is on the artifact, in the script that produces the release
+    zip, next to the flat-payload check that exists for the same reason: the
+    two releases that broke the self-updater also looked perfectly reasonable
+    in a file listing."""
+
+    def _mk(self):
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, os.path.join(here, 'packaging'))
+        import make_dist_zip
+        return make_dist_zip
+
+    def _pe(self, machine):
+        """A minimal PE image carrying just the field the gate reads."""
+        buf = bytearray(0x400)
+        buf[0:2] = b'MZ'
+        struct.pack_into('<I', buf, 0x3C, 0x80)
+        buf[0x80:0x84] = b'PE\0\0'
+        struct.pack_into('<H', buf, 0x84, machine)
+        return bytes(buf)
+
+    def _tmp(self, data):
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix='.exe')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        return path
+
+    def test_the_machine_field_is_read_from_the_image(self):
+        m = self._mk()
+        self.assertEqual(m.pe_machine(self._tmp(self._pe(0x014C))), 0x014C)
+        self.assertEqual(m.pe_machine(self._tmp(self._pe(0x8664))), 0x8664)
+
+    def test_a_64_bit_build_is_refused(self):
+        m = self._mk()
+        with self.assertRaises(SystemExit) as cm:
+            m.assert_exe_is_32bit(self._tmp(self._pe(0x8664)))
+        self.assertIn('32-bit', str(cm.exception))
+        self.assertIn('CH341DLL', str(cm.exception),
+                      'say which adapter stops working, not just the bitness')
+
+    def test_an_arm64_build_is_refused_too(self):
+        """Not-64-bit is not the test; being the one architecture that can
+        load the driver is."""
+        m = self._mk()
+        with self.assertRaises(SystemExit):
+            m.assert_exe_is_32bit(self._tmp(self._pe(0xAA64)))
+
+    def test_a_32_bit_build_passes(self):
+        m = self._mk()
+        m.assert_exe_is_32bit(self._tmp(self._pe(0x014C)))
+
+    def test_something_that_is_not_a_pe_image_is_refused(self):
+        m = self._mk()
+        for junk in (b'not an exe at all' + bytes(0x400),
+                     b'MZ' + bytes(0x400)):
+            with self.assertRaises(SystemExit):
+                m.pe_machine(self._tmp(junk))
+
+    def test_a_non_executable_carrying_a_pe_signature_is_refused(self):
+        """Both checks earn their place. Dropping the MZ check is invisible
+        against junk, because junk fails the PE signature a moment later -
+        it shows only on a file that is not an executable and still has those
+        four bytes where the offset points, which is then read as a
+        well-formed 32-bit image and waved through."""
+        forged = bytearray(self._pe(0x014C))
+        forged[0:2] = b'PK'                      # a zip, say
+        m = self._mk()
+        with self.assertRaises(SystemExit) as cm:
+            m.pe_machine(self._tmp(bytes(forged)))
+        self.assertIn('not a PE image', str(cm.exception))
+
+    def test_the_release_zip_runs_the_check(self):
+        """The gate is worth nothing if main() never calls it."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'packaging', 'make_dist_zip.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        body = src[src.index('def main('):]
+        body = re.sub('#[^' + chr(10) + ']*', '', body)
+        self.assertIn('assert_exe_is_32bit', body)
+        self.assertIn(".exe'", body, 'and applied to the exe it packages')
+
+    def test_the_built_exe_is_32_bit(self):
+        """Against the real artifact when there is one. Skipped rather than
+        failed on a checkout that has not built it - the exe is gitignored."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        exe = os.path.join(here, 'CMIS2Customer', 'CMIS_Module_Manager.exe')
+        if not os.path.exists(exe):
+            self.skipTest('no exe built')
+        self._mk().assert_exe_is_32bit(exe)
+
+    def test_the_build_script_refuses_a_64_bit_interpreter(self):
+        """It used to fall back to PATH silently. The comment explaining why
+        32-bit matters was already there; what was missing was anything that
+        stopped the build."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'packaging', 'build_exe.bat'),
+                  encoding='utf-8') as f:
+            bat = f.read()
+        code = '\n'.join(l for l in bat.split('\n')
+                         if not l.strip().upper().startswith('REM'))
+        self.assertIn("calcsize('P')==4", code, 'check the interpreter width')
+        # Scoped to the guard block: the script has a second "exit /b 1" on
+        # the PyInstaller failure branch, and names CMIS_ALLOW_64BIT again in
+        # the help text the refusal prints - so looking for either anywhere
+        # in the file passes with the refusal reduced to a warning.
+        guard = code[code.index('if not defined CMIS_ALLOW_64BIT'):]
+        guard = guard[:guard.index(chr(10) + '    )')]
+        self.assertIn('exit /b 1', guard, 'stop the build, do not just warn')
+        self.assertIn('CMIS_PYTHON', guard, 'and say how to build it right')
+
+    def test_a_64_bit_build_has_to_be_asked_for_by_name(self):
+        """The refusal is conditional on an opt-out, and the opt-out has to
+        be the condition rather than merely mentioned nearby."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'packaging', 'build_exe.bat'),
+                  encoding='utf-8') as f:
+            bat = f.read()
+        self.assertIn('if not defined CMIS_ALLOW_64BIT', bat)
+
+    def test_the_build_script_looks_for_a_32_bit_interpreter_first(self):
+        """Falling back to PATH is still there as a last resort; what changed
+        is that it is no longer the first thing tried."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'packaging', 'build_exe.bat'),
+                  encoding='utf-8') as f:
+            bat = f.read()
+        self.assertIn('py -3-32', bat)
+        self.assertLess(bat.index('py -3-32'),
+                        bat.index('set "CMIS_PYTHON=python"'),
+                        'the 32-bit launcher has to be tried before PATH')
+
+    def test_the_build_script_still_carries_no_local_paths(self):
+        """It is in the public repository."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'packaging', 'build_exe.bat'),
+                  encoding='utf-8') as f:
+            bat = f.read()
+        self.assertNotIn('D:\\claude', bat)
+        self.assertNotIn('Users\\', bat)
 
 
 if __name__ == '__main__':

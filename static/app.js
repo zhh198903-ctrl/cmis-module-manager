@@ -623,6 +623,16 @@ async function loadInfo() {
        + 'module. Cleared on a module with detachable media. Beyond eight '
        + 'lanes the topology repeats in each group of eight.'],
     ] : []),
+    ...(c.cu_attenuation ? [
+      ['Cable Attenuation', cuAttenuationCell(c.cu_attenuation),
+       '00h', '0xCC-0xD0',
+       'Table 8-35 - insertion loss of the cable assembly in whole dB at '
+       + 'five frequencies. A frequency shown as not specified is the '
+       + 'module reporting 0 dB, which the specification defines as the '
+       + 'characteristic being unavailable rather than as a lossless cable. '
+       + 'On a PCIe module the same five bytes are reported at 2.5, 4.0, '
+       + '8.0, 16.0 and 32.0 GHz instead. Byte 209 is Reserved.'],
+    ] : []),
     // 01h:151 has seven fields; two reached the interface. The byte is read
     // at connect either way, and the two timing bits in particular change
     // what a reader should expect from the module rather than merely
@@ -827,6 +837,19 @@ function memoryModelCell(d) {
 // media can be disconnected from the module", which is what a transceiver is.
 // Testing the product for zero caught the second by accident and printed the
 // first as a measurement.
+function cuAttenuationCell(att) {
+  // Whole dB against the frequency each byte is defined at. A null is the
+  // module's own 0 dB - "not available (not relevant or otherwise unknown)" -
+  // and printing it as 0 dB would read as a cable with no loss at 53 GHz.
+  return att.map(function (a) {
+    const f = a.ghz + ' GHz';
+    return a.db === null || a.db === undefined
+      ? '<span class="reg-meta">' + esc(f) + ' not specified</span>'
+      : esc(f) + ' <b>' + esc(String(a.db)) + ' dB</b>';
+  }).join(' <span class="reg-meta">\u00b7</span> ');
+}
+
+
 function cableLengthCell(d) {
   const cl = d.cable_length;
   if (!cl) return d.cable_length_m ? esc(d.cable_length_m + ' m') : '-';

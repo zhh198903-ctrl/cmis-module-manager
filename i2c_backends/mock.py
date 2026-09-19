@@ -481,6 +481,11 @@ _FLAT_DAC = dict(
     # with separable media advertises, and this one is the cable.
     cable_length_202=0x43,
     config_caps_02=0x80,      # bit 7: flat memory
+    # 00h:204-208 at 5 / 7 / 12.9 / 25.8 / 53.125 GHz, whole dB. A 3 m 26 AWG
+    # twinax at 53 GBd PAM4; the 53.125 GHz figure is left 0 because this
+    # cable is not specified that high, which is the specification's own way
+    # of saying a characteristic is not available rather than zero loss.
+    cu_attenuation=(5, 6, 9, 14, 0),
     flat_memory=True,
 )
 
@@ -842,7 +847,13 @@ class MockBackend(I2CInterface):
         # assembly carries its own length.
         p00[0xCA] = self._profile.get('cable_length_202', 0x00)
         p00[0xCB] = p['connector_type']
-        for a in range(0xCC, 0xD2): p00[a] = 0x00   # Cu attenuation = 0
+        # 00h:204-208 (Table 8-35), 1 dB per count. Zero is not a
+        # placeholder: "A value of 0 dB indicates that this characteristic is
+        # not available", which is the right answer for every profile with a
+        # fibre on the end of it. 209 is Reserved and stays zero.
+        for a in range(0xCC, 0xD2): p00[a] = 0x00
+        for i, db in enumerate(self._profile.get('cu_attenuation', ())):
+            p00[0xCC + i] = db
         # MediaLaneUnsupported (00h:210, Table 8-36): which media lanes the
         # module does NOT have. This was a flat zero - "all eight supported" -
         # on every profile, including the coherent ones whose Application

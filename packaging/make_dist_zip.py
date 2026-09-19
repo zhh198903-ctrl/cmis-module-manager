@@ -18,6 +18,7 @@ than under `skill/`: updater._payload_members rejects any nested entry.
 
 import os
 import re
+import struct
 import sys
 import zipfile
 
@@ -63,6 +64,48 @@ def assert_updater_accepts(names: list) -> None:
         raise SystemExit('staging root must hold exactly one exe, got %s' % exes)
 
 
+IMAGE_FILE_MACHINE_I386 = 0x014C
+
+
+def pe_machine(path: str) -> int:
+    """The Machine field of a PE image, read from the file itself."""
+    with open(path, 'rb') as f:
+        head = f.read(0x400)
+    if head[:2] != b'MZ':
+        raise SystemExit('%s is not a PE image' % path)
+    off = struct.unpack_from('<I', head, 0x3C)[0]
+    if head[off:off + 4] != b'PE\0\0':
+        raise SystemExit('%s has no PE header' % path)
+    return struct.unpack_from('<H', head, off + 4)[0]
+
+
+def assert_exe_is_32bit(path: str) -> None:
+    """Refuse to ship an exe that cannot talk to the primary adapter.
+
+    The WCH driver installs a 32-bit CH341DLL.dll and a 64-bit process cannot
+    load it, so a 64-bit build starts, serves the interface, lists every mock
+    and reports the CH341 backend as simply unavailable - which is also what
+    an unplugged adapter looks like. Nothing about the artifact says which of
+    the two it is; the file listing, the size, the version banner and every
+    mock-backed test are identical either way.
+
+    build_exe.bat picks the interpreter, and it used to fall back to whatever
+    "python" was on PATH. That is the right default for a local test build and
+    the wrong one for a release, and the release is the one nobody can tell
+    apart afterwards. So the check lives here, on the artifact, rather than on
+    the build that produced it.
+    """
+    machine = pe_machine(path)
+    if machine != IMAGE_FILE_MACHINE_I386:
+        raise SystemExit(
+            'refusing to package a 0x%04X exe: the shipped build must be '
+            '32-bit (0x%04X) or it cannot load the 32-bit CH341DLL.dll. '
+            'Rebuild with a 32-bit interpreter: set CMIS_PYTHON=<path to a '
+            '32-bit python.exe> (or install one for the py -3-32 launcher) '
+            'and run packaging/build_exe.bat again.'
+            % (machine, IMAGE_FILE_MACHINE_I386))
+
+
 def write_skill_zip(out_dir: str, ver: str) -> str:
     """The companion skill, published on its own as well as bundled.
 
@@ -92,6 +135,9 @@ def main() -> int:
 
     entries = members()
     assert_updater_accepts([n for _p, n in entries])
+    for src, name in entries:
+        if name.lower().endswith('.exe'):
+            assert_exe_is_32bit(src)
 
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
         for src, name in entries:
