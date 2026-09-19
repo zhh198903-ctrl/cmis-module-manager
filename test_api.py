@@ -21508,16 +21508,19 @@ class TestHowLossyTheCableIs(CMISTestCase):
 
 class TestTheShippedExeCanTalkToTheAdapter(CMISTestCase):
     """The WCH driver installs a 32-bit CH341DLL.dll. A 64-bit process cannot
-    load it, so a 64-bit build of this tool reports the CH341 backend as
-    unavailable - which is exactly what an unplugged adapter looks like.
+    load it, so a 64-bit build of this tool cannot drive the adapter it exists
+    to drive. The backend reports the reason accurately to anyone who has one
+    attached and opens the list - the gap is that nobody building the release
+    has one attached.
 
     build_exe.bat knew this and said so in a comment, but made the 32-bit
     interpreter opt-in: "without it the build uses whatever python is on
     PATH, which is fine for a local test build". It is fine for a local test
     build. It is the same command that builds the release, and afterwards
-    nothing distinguishes the two artifacts - same file list, same version
-    banner, same startup, and every test in this file passes against either
-    because they all run on mock backends.
+    nothing available to the person who built it distinguishes the two
+    artifacts: same file list, same version banner, same startup, and every
+    test in this file passes against either because they all run on mock
+    backends. The difference shows up on a customer's desk.
 
     Every version still on the download site shipped 64-bit.
 

@@ -83,11 +83,16 @@ def assert_exe_is_32bit(path: str) -> None:
     """Refuse to ship an exe that cannot talk to the primary adapter.
 
     The WCH driver installs a 32-bit CH341DLL.dll and a 64-bit process cannot
-    load it, so a 64-bit build starts, serves the interface, lists every mock
-    and reports the CH341 backend as simply unavailable - which is also what
-    an unplugged adapter looks like. Nothing about the artifact says which of
-    the two it is; the file listing, the size, the version banner and every
-    mock-backed test are identical either way.
+    load it, so a 64-bit build starts, serves the interface, lists every mock,
+    and cannot drive the adapter this tool exists to drive.
+
+    The backend says so plainly once someone with a CH341 opens the list -
+    "found ... but failed to load. This EXE is 64-bit" - which is the point:
+    the only thing that can tell the two artifacts apart is a user with the
+    hardware, after release. The file listing, the size, the version banner,
+    the startup log and every test in the suite are identical either way,
+    because the tests all run on mock backends and a mock does not care how
+    wide the process is.
 
     build_exe.bat picks the interpreter, and it used to fall back to whatever
     "python" was on PATH. That is the right default for a local test build and
