@@ -352,6 +352,67 @@ TIMING_SECONDS = {
 }
 
 
+# Every element CMIS marks RO/COR. Table 8-3 defines the access type in
+# one line: "All bits in a RO/COR Byte are cleared by the module after the
+# Byte value has been read."
+#
+# So a read of one of these is destructive, and uniquely so: the module keeps
+# no second copy. A latched Flag records that something happened - a checker
+# that slipped, a data path that bounced, a laser that refused a channel -
+# and once read it is gone unless whoever read it kept the answer. Every
+# panel in this tool that reads one folds it into the flag history for that
+# reason. A raw read from the register panel does not, and nothing said so.
+#
+# (page, or None for Lower Memory; first byte; last byte; what it holds)
+CLEAR_ON_READ_BLOCKS = (
+    (None, 0x08, 0x0D, 'module Flags (Tables 8-9 and 8-10) - temperature, '
+                       'supply voltage, Aux and Custom monitor thresholds, '
+                       'and the module-level fault and firmware Flags'),
+    (0x11, 134, 153, 'lane Flags (Tables 8-96 to 8-98) - data path state '
+                     'changes, Tx failure, LOS, CDR loss of lock, adaptive '
+                     'equalizer failure and every optical threshold'),
+    # 230 is the summary and is plain RO: it reads as whatever 231-238 say,
+    # so it is not cleared by reading it - only by the Flags underneath going
+    # away.
+    (0x12, 231, 238, 'laser tuning Flags (Table 8-109) - the only record '
+                     'that the module refused a tuning request'),
+    (0x14, 132, 139, 'diagnostics Flags (Table 8-138) - loss of reference '
+                     'clock, gating complete, pattern generator and checker '
+                     'loss of lock'),
+    (0x17, 128, 128, 'Network Path State Changed Flags (Table 8-163)'),
+    # Table 8-177 gives the whole of Page 2Ch to "Supervision Flag Quads ...
+    # (RO/COR access)", numbering them by quad rather than by byte. However
+    # the numbering is read, every byte of the page is a latched Flag.
+    (0x2C, 128, 255, 'VDM threshold crossing Flags (Table 8-177) - every '
+                     'byte of this page is latched'),
+)
+
+
+def clear_on_read_overlap(page, address, length):
+    """The clear-on-read blocks a read of this range would touch.
+
+    `page` is None for Lower Memory. Returns one entry per block the read
+    overlaps, with the bytes of that block it actually reaches - a read that
+    clips the edge of a Flag block still destroys the part it reaches, and
+    saying "11h:134-153" when two bytes were read would overstate it.
+    """
+    last = address + max(length, 1) - 1
+    out = []
+    for blk_page, first, blk_last, what in CLEAR_ON_READ_BLOCKS:
+        if blk_page != (None if address < 0x80 else page):
+            continue
+        lo, hi = max(address, first), min(last, blk_last)
+        if lo > hi:
+            continue
+        out.append({
+            'page': blk_page,
+            'first': lo,
+            'last': hi,
+            'holds': what,
+        })
+    return out
+
+
 # Which side of the module each lane Flag in 11h:134-153 is about, taken
 # from the sentence in each row of Tables 8-96, 8-97 and 8-98 rather than
 # from the Tx/Rx in its name. The two do not agree, and nothing about the

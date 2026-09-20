@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.109.0'
+__version__ = '2.110.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -742,6 +742,12 @@ def _discover_capabilities() -> dict:
         caps['features'] = cmis.parse_misc_features(b251)
         _state['max_read'] = cmis.max_read_bytes(b251)
         caps['max_read'] = _state['max_read']
+        # Sent once so the register panel can warn before a read rather than
+        # after it. Deriving it in the page would be a second copy of a table
+        # taken from the specification, and the two would drift.
+        caps['clear_on_read_blocks'] = [
+            {'page': p, 'first': f, 'last': l, 'holds': h}
+            for p, f, l, h in cmis.CLEAR_ON_READ_BLOCKS]
         # How long the module says its own transient states take, and how
         # long it actually needs after a page change.
         # 146-150: the temperature range the module is allowed to run in and
@@ -4165,6 +4171,18 @@ def api_register_read():
             'length': length,
             'data': list(data),
             'hex': ' '.join(f'{b:02X}' for b in data),
+            # Table 8-3: "All bits in a RO/COR Byte are cleared by the module
+            # after the Byte value has been read". Every panel in this tool
+            # that reads a latched Flag folds it into the flag history for
+            # that reason; a raw read cannot, because these bytes are only
+            # numbers here. So the reply says what the read just destroyed -
+            # the module keeps no second copy, and the bytes above are now
+            # the only record there is.
+            # The page is passed as given: below 0x80 the helper knows
+            # Lower Memory is mapped whatever PageSelect says, and deciding
+            # it here as well would be the same rule in two places.
+            'clears_on_read': cmis.clear_on_read_overlap(
+                page, address, length),
             # What the module will answer in one transaction, and therefore
             # whether this read was one or several. 128 is the ceiling only
             # when full page read is advertised (section 5.2.2.1).

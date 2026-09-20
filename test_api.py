@@ -18837,6 +18837,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-5': 'Management Characteristics (Lower Memory)',
         '8-6': 'Global Status Information (Lower Memory)',
         '8-7': 'Module State Encodings',
+        '8-3': 'Access Types',
         '8-9': 'Module Flags (not for static memory modules) (Lower Memory)',
         '8-10': 'Module-Level Monitor Values (not for static memory modules) (Lower Memory)',
         '8-11': 'Module Global Controls (not for static memory modules ) (Lower Memory)',
@@ -18933,9 +18934,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-138': 'Latched Diagnostics Flags (Page 14h)',
         '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
         '8-141': 'Data Path Rx and Tx Latency, per lane (Page 15h)',
+        '8-163': 'Network Path Related Flags (Page 17h)',
         '8-172': 'Page 1Ch Overview',
         '8-173': 'Normalized Application Descriptor (NAD) Structure (Page 1Ch)',
         '8-174': 'Normalized Application Descriptor Block (Page 1Ch)',
+        '8-177': 'Summary of Page Definitions for Page 20h-2Fh',
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
@@ -26596,6 +26599,205 @@ class TestWhichSideEachLaneFlagIsAbout(CMISTestCase):
         j = html.index('>Rx Output<')
         self.assertIn('unlike every other Rx Flag',
                       html[html.rindex('<th', 0, j):j])
+
+
+class TestAReadThatDestroysWhatItReturns(CMISTestCase):
+    """CMIS Table 8-3 defines six access types, and one of them makes a read
+    destructive: "All bits in a RO/COR Byte are cleared by the module after
+    the Byte value has been read."
+
+    Those bytes are the latched Flags - the module's record that something
+    happened: a data path bounced, a checker slipped, a laser refused a
+    channel. The module keeps no second copy. Every panel in this tool that
+    reads one folds it into the flag history for exactly that reason; the
+    raw register panel does not, because there those bytes are only numbers.
+
+    So the register panel could wipe the module's fault record with no
+    warning at all, and the operator would have no way to know it had
+    happened - the dump looks the same whether the bytes were interesting or
+    not.
+
+    The blocks are the four this tool already reads carefully, plus two it
+    has no panel for and can still reach: Network Path Flags on Page 17h and
+    the VDM threshold crossing Flags on Page 2Ch, which Table 8-177 gives
+    "(RO/COR access)" for the whole page.
+
+    12h:230 is deliberately not in the table. The Flag summary is plain RO:
+    it reads as whatever the Flags at 231-238 say, and reading it clears
+    nothing."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _read(self, page, address, length=1, bank=0):
+        return self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': address,
+                             'length': length, 'bank': bank}),
+            content_type='application/json'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the table --------------------------------------------------------
+    def test_the_blocks_are_the_ones_the_specification_marks(self):
+        import cmis_registers as c
+        got = {(p, f, l) for p, f, l, _h in c.CLEAR_ON_READ_BLOCKS}
+        self.assertEqual(got, {
+            (None, 0x08, 0x0D),   # module Flags
+            (0x11, 134, 153),     # lane Flags
+            (0x12, 231, 238),     # laser tuning Flags
+            (0x14, 132, 139),     # diagnostics Flags
+            (0x17, 128, 128),     # Network Path State Changed
+            (0x2C, 128, 255),     # VDM threshold crossing
+        })
+
+    def test_the_tuning_summary_is_not_in_it(self):
+        """12h:230 is RO, not RO/COR: it reports what 231-238 hold and
+        reading it clears nothing."""
+        import cmis_registers as c
+        self.assertEqual(c.clear_on_read_overlap(0x12, 230, 1), [])
+        self.assertTrue(c.clear_on_read_overlap(0x12, 231, 1))
+
+    def test_every_block_says_what_it_holds(self):
+        """"This read clears something" is not actionable. Which record is
+        about to be destroyed is."""
+        import cmis_registers as c
+        for _p, _f, _l, holds in c.CLEAR_ON_READ_BLOCKS:
+            self.assertGreater(len(holds), 20, holds)
+
+    # ---- the overlap ------------------------------------------------------
+    def test_a_read_that_clips_the_edge_reports_only_what_it_reaches(self):
+        """Naming the whole block when two bytes were read would overstate
+        it, and an operator who has learned the warning overstates would
+        stop reading it."""
+        import cmis_registers as c
+        got = c.clear_on_read_overlap(0x11, 128, 8)
+        self.assertEqual([(g['first'], g['last']) for g in got], [(134, 135)])
+
+    def test_a_read_that_covers_the_block_reports_the_block(self):
+        import cmis_registers as c
+        got = c.clear_on_read_overlap(0x11, 134, 20)
+        self.assertEqual([(g['first'], g['last']) for g in got], [(134, 153)])
+
+    def test_a_read_that_misses_it_reports_nothing(self):
+        import cmis_registers as c
+        self.assertEqual(c.clear_on_read_overlap(0x11, 200, 8), [])
+
+    def test_lower_memory_is_not_confused_with_a_page(self):
+        """Below 0x80 the page selector is irrelevant - Lower Memory is
+        always mapped. A block on Page 11h must not match a Lower read."""
+        import cmis_registers as c
+        self.assertTrue(c.clear_on_read_overlap(0x11, 0x08, 2))
+        self.assertEqual(
+            [(g['first'], g['last'])
+             for g in c.clear_on_read_overlap(0x11, 0x08, 2)], [(8, 9)])
+        self.assertEqual(c.clear_on_read_overlap(None, 0x20, 4), [])
+
+    def test_a_zero_length_read_still_names_the_byte(self):
+        import cmis_registers as c
+        self.assertTrue(c.clear_on_read_overlap(0x11, 134, 0))
+
+    # ---- the endpoint -----------------------------------------------------
+    def test_the_read_says_what_it_destroyed(self):
+        self._connect()
+        d = self._read(0x11, 134, 4)
+        self.assertEqual([(b['first'], b['last']) for b in d['clears_on_read']],
+                         [(134, 137)])
+
+    def test_a_harmless_read_says_nothing(self):
+        self._connect()
+        self.assertEqual(self._read(0x11, 200, 4)['clears_on_read'], [])
+
+    def test_a_lower_memory_read_is_judged_as_lower_memory(self):
+        self._connect()
+        d = self._read(0x11, 0x08, 2)
+        self.assertEqual([(b['first'], b['last']) for b in d['clears_on_read']],
+                         [(8, 9)])
+
+    def test_the_page_gets_the_table_at_connect(self):
+        """So the panel can warn before the read rather than after it - the
+        record is gone by then."""
+        self._connect()
+        caps = self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+        import cmis_registers as c
+        self.assertEqual(len(caps['clear_on_read_blocks']),
+                         len(c.CLEAR_ON_READ_BLOCKS))
+        self.assertEqual(
+            {(b['page'], b['first'], b['last'])
+             for b in caps['clear_on_read_blocks']},
+            {(p, f, l) for p, f, l, _h in c.CLEAR_ON_READ_BLOCKS})
+
+    def test_the_reads_this_tool_makes_itself_are_unaffected(self):
+        """The Flags panel reads the same bytes and keeps the answer. Only
+        the raw panel had no way to."""
+        self._connect()
+        before = self.assertOk(
+            self.client.get('/api/module/flags'))['data']
+        self.assertTrue(before['lanes'])
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_panel_asks_before_reading(self):
+        js = self._js()
+        body = js[js.index('async function rawRead()'):]
+        body = body[:body.index("const res = await apiPost('/api/register/read'")]
+        self.assertIn('_clearOnReadOverlap(page, address, length)', body,
+                      'the panel never checks what the read would clear')
+        # The live condition, not just the call: `if (false && !confirm(...`
+        # leaves every word of the warning in place and asks nothing.
+        self.assertIn('if (cor.length && !confirm(', body,
+                      'the warning is built and never shown')
+        self.assertIn('return;', body,
+                      'declining the confirm reads anyway')
+
+    def test_the_warning_comes_before_the_read_not_after(self):
+        js = self._js()
+        body = js[js.index('async function rawRead()'):]
+        body = body[:body.index('_renderReadLimit')]
+        self.assertLess(body.index('confirm('),
+                        body.index("apiPost('/api/register/read'"),
+                        'the record is already gone by the time it warns')
+
+    def test_the_warning_names_the_record_and_the_rule(self):
+        js = self._js()
+        body = js[js.index('async function rawRead()'):]
+        body = body[:body.index("const res = await apiPost('/api/register/read'")]
+        # Joined first: the message is built from string literals split
+        # across lines, and which words land either side of a break is a
+        # fact about the source formatting, not about what is said.
+        joined = re.sub(r"'\s*\+\s*'", '', body)
+        self.assertIn('b.holds', body, 'it does not say what is being lost')
+        self.assertIn('Table 8-3', joined, 'it does not say where the rule is')
+        self.assertIn('the module keeps no second copy', joined)
+        self.assertIn('the only record left', joined)
+
+    def test_the_dump_repeats_it_afterwards(self):
+        """The confirm is gone the moment it is answered, and the bytes on
+        screen are then the only record."""
+        js = self._js()
+        body = js[js.index('const cleared = res.data.clears_on_read'):]
+        body = body[:body.index('_renderReadLimit')]
+        self.assertIn('cleared by this read', body)
+        self.assertIn('b.holds', body)
+
+    def test_the_table_is_not_a_second_copy_in_the_page(self):
+        """A table taken from the specification and written down twice is
+        how the two come to disagree."""
+        js = self._js()
+        body = js[js.index('function _clearOnReadOverlap'):]
+        body = body[:body.index('function _corWhere')]
+        self.assertIn('clear_on_read_blocks', body,
+                      'the page does not use the table the server sent')
+        for addr in ('134', '153', '0x0D'):
+            self.assertNotIn(addr, body,
+                             'the page carries its own copy of the ranges')
 
 
 if __name__ == '__main__':

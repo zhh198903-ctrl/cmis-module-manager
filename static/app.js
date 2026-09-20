@@ -3277,11 +3277,48 @@ function _rawWhere(page, bank, banked) {
   return `Page ${hex} Bank ${bank} · lanes ${bank * 8 + 1}-${bank * 8 + 8}`;
 }
 
+// Table 8-3: "All bits in a RO/COR Byte are cleared by the module after the
+// Byte value has been read." A read of a latched Flag is destructive and the
+// module keeps no second copy, so the warning has to come before the read -
+// afterwards the record is already gone. The blocks arrive from the server
+// with the capabilities rather than being listed here: two copies of a table
+// taken from the specification is how they come to disagree.
+function _clearOnReadOverlap(page, address, length) {
+  const blocks = (AppState.caps || {}).clear_on_read_blocks || [];
+  const last = address + Math.max(length, 1) - 1;
+  const onPage = address < 0x80 ? null : page;
+  return blocks
+    .filter(b => b.page === onPage
+                 && Math.max(address, b.first) <= Math.min(last, b.last))
+    .map(b => ({ holds: b.holds, page: b.page,
+                 from: Math.max(address, b.first),
+                 to: Math.min(last, b.last) }));
+}
+
+function _corWhere(b, page) {
+  const where = b.page === null
+    ? 'Lower ' : `${page.toString(16).toUpperCase().padStart(2, '0')}h:`;
+  return where + (b.from === b.to ? b.from : `${b.from}-${b.to}`);
+}
+
 async function rawRead() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
   const length  = parseInt(document.getElementById('raw-length').value, 10) || 1;
   const bank    = parseInt(document.getElementById('raw-bank').value, 10) || 0;
+
+  const cor = _clearOnReadOverlap(page, address, length);
+  if (cor.length && !confirm(
+      'This read clears what it returns.\n\n'
+      + cor.map(b => '  ' + _corWhere(b, page) + ' — ' + b.holds).join('\n')
+      + '\n\nCMIS Table 8-3: all bits in a clear-on-read byte are cleared by '
+      + 'the module once the byte has been read. These are latched Flags - a '
+      + 'record that something happened - and the module keeps no second '
+      + 'copy. The Monitoring and Flags panels fold them into the flag '
+      + 'history when they read them; a raw read cannot, so whatever comes '
+      + 'back is the only record left.\n\nRead anyway?')) {
+    return;
+  }
 
   const res = await apiPost('/api/register/read', { page, address, length, bank });
   const dumpEl = document.getElementById('hex-dump');
@@ -3292,8 +3329,16 @@ async function rawRead() {
     return;
   }
 
+  // Said again on the dump itself: the confirm is gone the moment it is
+  // answered, and these bytes are now the only record of what was there.
+  const cleared = res.data.clears_on_read || [];
   dumpEl.textContent =
     _rawWhere(res.data.page, res.data.bank, res.data.banked) + '\n'
+    + (cleared.length
+       ? cleared.map(b => 'cleared by this read: '
+                          + _corWhere(b, res.data.page) + ' — ' + b.holds)
+                .join('\n') + '\n'
+       : '')
     + formatHexDump(res.data.data, address);
   _renderReadLimit(res.data.max_read);
   _rawBankNote();
