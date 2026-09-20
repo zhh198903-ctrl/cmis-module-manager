@@ -25908,6 +25908,302 @@ class TestWhereAnApplicationMayBegin(CMISTestCase):
                       'the marker is built and never placed in the row')
 
 
+class TestWhichMediaLanesADataPathUses(CMISTestCase):
+    """The host picks host lanes. The media lanes follow from them, and 7.9.1
+    makes the derivation fixed:
+
+      "The first application instance (in host lane numbering sequence) will
+      use the media lane group starting at the lowest numbered available
+      media lane advertised for that application. This will consume a
+      particular set of consecutively numbered media lanes. The second
+      application will use the media lane group starting at the next lowest
+      numbered available media lane advertised for that application, and so
+      forth."
+
+    Nothing reported the result. On a module without media lane switching it
+    is not a register - CMIS does not need one, because the rule decides it -
+    and this panel never worked it out. Meanwhile the monitoring table puts a
+    media-lane measurement (Table 8-99: Tx power, Rx power, Tx bias are
+    "Media Lane-Specific Monitors") on the same numbered row as a host-lane
+    state, and the two sides are numbered independently.
+
+    Where an Application's media width equals its host width they line up and
+    nothing is wrong. Where it does not, they diverge: two instances of a
+    4H/1M coherent Application put host lanes 5-8 on media lane 2, and media
+    lane 5 belongs to no Data Path at all.
+
+    The input was already being read - MediaLaneAssignmentOptions
+    (01h:176-190), printed on the Applications tab as a raw bitmap. It was
+    not reaching the DataPath endpoints at all: both parsed the descriptors
+    with the media assignment block left empty, so the field they would have
+    needed read as "not stated"."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the rule ---------------------------------------------------------
+    def test_equal_widths_line_up_and_nothing_is_odd(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 2, 'media_lane_assign_mask': 0x11,
+                 'media_lanes': 4}]
+        self.assertEqual(
+            c.media_lane_groups([[1, 2, 3, 4], [5, 6, 7, 8]], [2] * 8, apps),
+            {1: [1, 2, 3, 4], 5: [5, 6, 7, 8]})
+
+    def test_a_narrower_media_side_shifts_everything_after_it(self):
+        """The case the row numbering cannot express: two 4H/1M Data Paths.
+        Host lanes 5-8 are measured on media lane 2."""
+        import cmis_registers as c
+        apps = [{'app_sel': 2, 'media_lane_assign_mask': 0xFF,
+                 'media_lanes': 1}]
+        self.assertEqual(
+            c.media_lane_groups([[1, 2, 3, 4], [5, 6, 7, 8]], [2] * 8, apps),
+            {1: [1], 5: [2]})
+
+    def test_mixed_widths_consume_in_host_lane_order(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'media_lane_assign_mask': 0x11,
+                 'media_lanes': 4},
+                {'app_sel': 2, 'media_lane_assign_mask': 0xFF,
+                 'media_lanes': 2}]
+        self.assertEqual(
+            c.media_lane_groups([[1, 2, 3, 4], [5, 6, 7, 8]],
+                                [1, 1, 1, 1, 2, 2, 2, 2], apps),
+            {1: [1, 2, 3, 4], 5: [5, 6]})
+
+    def test_a_start_that_is_free_but_not_advertised_is_not_used(self):
+        """Both halves of "lowest numbered available media lane advertised
+        for that application" have to hold."""
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'media_lane_assign_mask': 0x10,
+                 'media_lanes': 2}]
+        self.assertEqual(
+            c.media_lane_groups([[1, 2]], [1] * 8, apps), {1: [5, 6]})
+
+    def test_a_start_that_is_advertised_but_taken_is_not_used(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'media_lane_assign_mask': 0x01,
+                 'media_lanes': 2},
+                {'app_sel': 2, 'media_lane_assign_mask': 0x03,
+                 'media_lanes': 2}]
+        # App 2 advertises media lanes 1 and 2 as starts. Lane 1 is taken,
+        # and starting at 2 would run into lane 2, which is also taken - so
+        # this Data Path has nowhere the module said it may go, and gets no
+        # answer rather than a plausible one.
+        self.assertEqual(
+            c.media_lane_groups([[1, 2], [3, 4]], [1, 1, 2, 2], apps),
+            {1: [1, 2]})
+
+    def test_a_run_that_would_fall_off_the_end_is_not_used(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'media_lane_assign_mask': 0x80,
+                 'media_lanes': 4}]
+        self.assertEqual(c.media_lane_groups([[1]], [1] * 8, apps), {})
+
+    def test_an_application_with_no_bitmap_is_not_guessed_at(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.media_lane_groups([[1, 2]], [1, 1],
+                                [{'app_sel': 1, 'media_lane_assign_mask': None,
+                                  'media_lanes': 2}]), {})
+
+    def test_an_unused_lane_has_no_media_lanes(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.media_lane_groups([[1]], [0] * 8,
+                                [{'app_sel': 1, 'media_lane_assign_mask': 0x01,
+                                  'media_lanes': 1}]), {})
+
+    # ---- the endpoint -----------------------------------------------------
+    def test_the_datapath_endpoint_reads_the_media_assignments(self):
+        """Both DataPath endpoints parsed the descriptors with that block
+        left empty, so the field read as "not stated" and the allocation
+        could not be worked out at all."""
+        self._connect()
+        self.assertTrue(self._dp()['media_lane_groups'],
+                        'the DataPath endpoint still drops the media '
+                        'assignment block')
+
+    def test_the_allocation_is_keyed_by_the_first_host_lane(self):
+        self._connect()
+        d = self._dp()
+        for group in d['datapath_groups']:
+            self.assertIn(str(group[0]), d['media_lane_groups'])
+
+    def test_a_coherent_module_shows_the_divergence(self):
+        """Two 4H/1M Data Paths: host 5-8 are measured on media lane 2, and
+        the monitoring row numbered 5 is media lane 5 - which belongs to
+        nothing."""
+        self._connect('mock_coherent_zr')
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2] * 8}),
+            content_type='application/json'))
+        self.assertEqual(self._dp()['media_lane_groups'],
+                         {'1': [1], '5': [2]})
+
+    def test_a_banked_module_is_answered_for_its_first_bank_only(self):
+        """7.9.1: "for each Bank (i.e. group of eight host lanes) there are
+        always eight external media lanes", so the pool does not run on past
+        lane 8 - and 8.3.7 says a module wider than eight lanes cannot
+        unambiguously declare its media lanes at all. How the allocation
+        carries across banks is not written down."""
+        self._connect('mock_1600g_16lane')
+        d = self._dp()
+        self.assertEqual(sorted(d['media_lane_groups']), ['1'],
+                         'a Data Path past the first bank was given media '
+                         'lanes the specification does not define')
+        self.assertTrue(max(d['media_lane_groups']['1']) <= 8)
+
+    def _patch_apps(self, **fields):
+        """Give every Application the fields this test needs. No shipped
+        profile advertises a start that would let a second bank's Data Path
+        land anywhere, so the distinction the bank restriction makes is not
+        reachable from a profile."""
+        real = app_module.cmis.parse_application_descriptors
+
+        def patched(*a, **kw):
+            out = real(*a, **kw)
+            for app in out:
+                app.update(fields)
+            return out
+
+        app_module.cmis.parse_application_descriptors = patched
+        self.addCleanup(
+            setattr, app_module.cmis, 'parse_application_descriptors', real)
+
+    def test_a_second_bank_is_not_given_the_first_bank_s_leftovers(self):
+        """With any start advertised and four media lanes a Data Path, the
+        group on host lanes 9-16 would be handed media lanes 5-8 - lanes that
+        belong to the other bank's numbering, not to it."""
+        self._connect('mock_1600g_16lane')
+        self._patch_apps(media_lane_assign_mask=0xFF, media_lanes=4)
+        self.assertEqual(self._dp()['media_lane_groups'], {'1': [1, 2, 3, 4]})
+
+    def test_a_data_path_wider_than_a_bank_gets_no_answer(self):
+        """7.9.1 gives each bank eight external media lanes. A twelve-lane
+        media side does not fit one, and the tool says nothing rather than
+        numbering lanes 9-12 that the bank does not have.
+
+        On a wider module, because that is where the ceiling and the host
+        lane count part company: eight lanes make the two the same number."""
+        self._connect('mock_1600g_16lane')
+        self._patch_apps(media_lane_assign_mask=0x01, media_lanes=12)
+        self.assertEqual(self._dp()['media_lane_groups'], {})
+
+    def test_the_ceiling_is_the_bank_and_not_the_host_lane_count(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'media_lane_assign_mask': 0x01,
+                 'media_lanes': 12}]
+        self.assertEqual(
+            c.media_lane_groups([[1]], [1] * 8, apps, media_lanes=8), {})
+        self.assertEqual(
+            c.media_lane_groups([[1]], [1] * 8, apps, media_lanes=16),
+            {1: list(range(1, 13))})
+
+    def test_a_switching_module_says_its_answer_is_nominal(self):
+        """Page 6Dh can redirect media lanes, and then the committed mapping
+        there is the truth rather than 7.9.1's allocation."""
+        self._connect('mock_24lane')
+        self.assertTrue(self._dp()['media_lanes_are_nominal'])
+        self._connect('mock_dr8')
+        self.assertFalse(self._dp()['media_lanes_are_nominal'])
+
+    def test_the_advertisement_is_read_once_per_connection(self):
+        """A static Page 01h advertisement the DataPath panel now needs on
+        every refresh. Page 01h is visited on that path anyway - the
+        additional descriptors live there - so this saves a transaction
+        rather than a page change, which is the part that costs on real
+        hardware."""
+        import cmis_registers as c
+        self._connect()
+        self._dp()
+        self.assertIsNotNone(app_module._state.get('media_lane_assign'))
+        before = app_module._read_upper
+        reads = []
+
+        def counted(page, addr, *a, **kw):
+            reads.append((page, addr))
+            return before(page, addr, *a, **kw)
+
+        app_module._read_upper = counted
+        try:
+            self._dp()
+        finally:
+            app_module._read_upper = before
+        self.assertNotIn(c.REG_MEDIA_LANE_ASSIGN[:2], reads,
+                         'the media assignments are re-read on every refresh')
+
+    def test_the_cache_does_not_survive_a_reconnect(self):
+        """Another module has another advertisement."""
+        self._connect()
+        self._dp()
+        self._connect('mock_coherent_zr')
+        self.assertIsNone(app_module._state.get('media_lane_assign'),
+                          'the previous module\u2019s assignments are still '
+                          'cached')
+
+    def test_the_cache_is_not_in_the_dict_that_gets_serialised(self):
+        """Raw bytes in caps take the whole capabilities reply with them."""
+        self._connect()
+        self._dp()
+        self.assertNotIn('media_lane_assign',
+                         app_module._state.get('caps') or {})
+        self.assertOk(self.client.get('/api/module/capabilities'))
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_row_shows_which_media_lanes_it_uses(self):
+        js = self._js()
+        body = js[js.index('const mediaLanes ='):]
+        body = body[:body.index('const stale =')]
+        self.assertIn('(d.media_lane_groups || {})[String(lane.lane)]', body,
+                      'the row reads a lane list that is not its own')
+        self.assertIn('01h:176-190', body,
+                      'the note does not say where the answer comes from')
+        self.assertIn('7.9.1', body)
+        self.assertIn('Table 8-99', body,
+                      'nothing connects this to the rows it is measured on')
+
+    def test_the_note_is_actually_rendered(self):
+        self.assertIn('${mediaNote}${startNote}', self._js(),
+                      'the note is built and never placed in the row')
+
+    def test_a_switching_module_is_told_the_answer_is_nominal(self):
+        js = self._js()
+        body = js[js.index('const mediaLanes ='):]
+        body = body[:body.index('const stale =')]
+        self.assertIn('+ (d.media_lanes_are_nominal', body,
+                      'the warning is not gated on the module saying it can '
+                      'redirect media lanes')
+        self.assertIn("${d.media_lanes_are_nominal ? ' (nominal)' : ''}", body,
+                      'the label does not say the answer is nominal')
+        self.assertIn('6Dh', body,
+                      'nothing says where the committed mapping is')
+
+    def test_contiguous_lanes_collapse_and_gaps_do_not(self):
+        js = self._js()
+        run = new_fn = js[js.index('function _laneRun('):]
+        run = run[:run.index(chr(10) + '}')]
+        self.assertIn('lanes[j + 1] === lanes[j] + 1', run,
+                      'the run detection is not adjacency')
+        self.assertIn('gap', js[js.index('// "1, 2, 3, 4" is four numbers'):
+                                js.index('function _laneRun(')],
+                      'nothing records why a scattered set stays scattered')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

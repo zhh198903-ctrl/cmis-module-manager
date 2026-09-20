@@ -352,6 +352,65 @@ TIMING_SECONDS = {
 }
 
 
+def media_lane_groups(groups, app_select, apps, media_lanes=8) -> dict:
+    """Which media lanes each Data Path occupies, by the rule in 7.9.1.
+
+    The host picks host lanes; the media lanes follow from them, and CMIS
+    makes the derivation deterministic:
+
+      "The first application instance (in host lane numbering sequence) will
+      use the media lane group starting at the lowest numbered available
+      media lane advertised for that application. This will consume a
+      particular set of consecutively numbered media lanes. The second
+      application will use the media lane group starting at the next lowest
+      numbered available media lane advertised for that application, and so
+      forth. The media lanes assigned to an application therefore depend on
+      the number of media lanes required by parallel applications using lower
+      host lane numbers."
+
+    "advertised for that application" is MediaLaneAssignmentOptions
+    (01h:176-190), a bitmap of media lanes 1-8 this tool already reads and
+    shows as a bitmap on the Applications tab.
+
+    Returned as {first host lane of the Data Path: [media lane, ...]}. A Data
+    Path whose Application advertises no bitmap - a flat memory module has no
+    Page 01h to put one on - is left out rather than guessed at.
+
+    Note this is the nominal allocation. A module advertising
+    MediaLaneSwitchingSupported can redirect it, and then Page 6Dh's
+    committed mapping is the truth; the caller says which it is showing.
+    """
+    by_sel = {a.get('app_sel'): a for a in apps}
+    taken = set()
+    out = {}
+    for group in sorted(groups or [], key=lambda g: g[0] if g else 0):
+        if not group:
+            continue
+        first = group[0]
+        sel = app_select[first - 1] if first - 1 < len(app_select) else 0
+        app = by_sel.get(sel)
+        if not sel or app is None:
+            continue
+        mask = app.get('media_lane_assign_mask')
+        width = app.get('media_lanes') or 0
+        if not mask or not width:
+            continue
+        # The lowest advertised start whose whole run is still free. Both
+        # halves matter: a start that is advertised but overlaps an earlier
+        # Data Path is not "available", and one that is free but not
+        # advertised is not a start this Application may use.
+        for start in range(1, media_lanes + 1):
+            if not (mask >> (start - 1)) & 1:
+                continue
+            lanes = list(range(start, start + width))
+            if lanes[-1] > media_lanes or taken.intersection(lanes):
+                continue
+            taken.update(lanes)
+            out[first] = lanes
+            break
+    return out
+
+
 def lane_start_violations(groups, app_select, apps) -> list:
     """Data Paths that begin on a lane their Application may not start on.
 

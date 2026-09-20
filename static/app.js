@@ -2252,6 +2252,32 @@ async function loadDatapath() {
           + '- "invalid set of lanes for AppSel".')}">`
         + `may not begin here</div>`
       : '';
+    // 7.9.1: the host picks host lanes and the media lanes follow from
+    // them, deterministically - "The first application instance (in host
+    // lane numbering sequence) will use the media lane group starting at the
+    // lowest numbered available media lane advertised for that application
+    // ... The second application will use the media lane group starting at
+    // the next lowest numbered available media lane". Nothing reports the
+    // result, because on a module without media lane switching it is not a
+    // register; and nothing on this page said it either, while the
+    // monitoring table put a media-lane measurement on a host-lane row. Two
+    // instances of a 4H/1M Application put host lanes 5-8 on media lane 2,
+    // and media lane 5 then belongs to no Data Path at all.
+    const mediaLanes = (d.media_lane_groups || {})[String(lane.lane)];
+    const mediaNote = mediaLanes && mediaLanes.length
+      ? `<div class="reg-meta" title="${esc(
+          'The media lanes this Data Path occupies, derived from '
+          + 'MediaLaneAssignmentOptions (01h:176-190) by the allocation rule '
+          + 'in 7.9.1: instances take the lowest advertised media lane group '
+          + 'still free, in host lane order. Tx and Rx optical power and Tx '
+          + 'bias are indexed by media lane (Table 8-99), so these are the '
+          + 'rows of the monitoring table this Data Path is measured on.'
+          + (d.media_lanes_are_nominal
+             ? ' This module can redirect media lanes, so this is the '
+               + 'nominal allocation - the mapping it committed is on Page '
+               + '6Dh.' : ''))}">media ${esc(_laneRun(mediaLanes))}`
+        + `${d.media_lanes_are_nominal ? ' (nominal)' : ''}</div>`
+      : '';
     const stale = active !== lane.app_select
       ? `<div class="appsel-mismatch" title="${esc(
           'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for ' + appName(lane.app_select)
@@ -2300,7 +2326,7 @@ async function loadDatapath() {
 
     return `<tr class="datapath-lane-row">
       <td>Lane ${lane.lane}</td>
-      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${startNote}${stale}${pendingNote}</td>
+      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${mediaNote}${startNote}${stale}${pendingNote}</td>
       <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
       <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
       <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>
@@ -3033,6 +3059,22 @@ async function loadModuleControl() {
 // ---------------------------------------------------------------------------
 // Application Descriptors (DataPath tab)
 // ---------------------------------------------------------------------------
+// "1, 2, 3, 4" is four numbers to read where "1-4" is one fact. Only
+// contiguous runs collapse: a module with media lane switching can hand a
+// Data Path a scattered set, and hiding the gap would be the one thing worth
+// seeing about it.
+function _laneRun(lanes) {
+  const out = [];
+  let i = 0;
+  while (i < lanes.length) {
+    let j = i;
+    while (j + 1 < lanes.length && lanes[j + 1] === lanes[j] + 1) j++;
+    out.push(j > i ? `${lanes[i]}–${lanes[j]}` : String(lanes[i]));
+    i = j + 1;
+  }
+  return out.join(', ');
+}
+
 // 6.2.1.6 calls this "the fifth byte" of the Application Descriptor, and it
 // lives apart from the other four on Page 01h. A flat memory map module has no
 // Page 01h to put it on, so absent is a shape of module rather than a gap.

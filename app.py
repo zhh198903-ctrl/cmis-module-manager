@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.106.0'
+__version__ = '2.107.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -65,6 +65,9 @@ _state = {
     # milliseconds until it does, since this hold-off is paid before that
     # byte can be read.
     'bpc_sleep': 0.010,
+    # 01h:176-190, a static advertisement the DataPath panel needs on
+    # every refresh. Kept out of caps because that dict is serialised.
+    'media_lane_assign': None,
     # CMIS Flags are latched with clear-on-read: reading the byte that
     # holds one clears it. Polling therefore consumes them, and an event
     # that came and went between two refreshes exists only in whichever
@@ -686,6 +689,7 @@ def _discover_capabilities() -> dict:
     caps = {'max_lanes': 8, 'banks_supported': 1, 'cmis_revision': ''}
     _state['max_read'] = 8
     _state['bpc_sleep'] = 0.010
+    _state['media_lane_assign'] = None
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
@@ -983,6 +987,7 @@ def api_connect():
     _state['connected'] = True
     _state['max_read'] = 8
     _state['bpc_sleep'] = 0.010
+    _state['media_lane_assign'] = None
     _state['dp_state_since'] = {}
     # The Flag history is a record of what *this* module has fired. Connecting
     # kept the previous one's, and history_since with it - so a fresh module
@@ -1917,7 +1922,8 @@ def api_datapath_get():
         try:
             _apps = cmis.parse_application_descriptors(
                 _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-                _additional_app_descriptors(), b'', _flat_memory())
+                _additional_app_descriptors(),
+                _media_lane_assignments(), _flat_memory())
             for a in _apps:
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
@@ -1976,6 +1982,20 @@ def api_datapath_get():
                 if a.get('host_lane_assign_mask')},
             'lane_start_violations': cmis.lane_start_violations(
                 groups, app_select[:_state['lanes']], _apps or []),
+            # Keyed by the first host lane of each Data Path, the same way
+            # datapath_groups is ordered. Nominal, and the flag beside it
+            # says so: a module that can redirect media lanes reports the
+            # mapping it actually committed on Page 6Dh.
+            'media_lane_groups': {
+                str(k): v for k, v in _nominal_media_lanes(
+                    groups, app_select[:_state['lanes']],
+                    _apps or []).items()},
+            # True when the module can redirect media lanes: then 7.9.1's
+            # allocation is what would happen by default and Page 6Dh's
+            # committed mapping is what did.
+            'media_lanes_are_nominal': bool(
+                (_state.get('caps') or {}).get(
+                    'media_lane_switching_supported')),
             'datapath_groups': groups,
             'lanes': lanes,
         })
@@ -2155,14 +2175,54 @@ def _control_transition(action, body) -> dict:
             'advertisement': '01h:167 %s' % which}
 
 
+def _nominal_media_lanes(groups, app_select, apps):
+    """Which media lanes each Data Path occupies, by the rule in 7.9.1.
+
+    The host chooses host lanes and the media lanes follow from them. Nothing
+    reports the result: it is not a register on a module without media lane
+    switching, and CMIS does not need one because the derivation is fixed.
+    This tool already reads the only input it takes.
+
+    Where the module can redirect media lanes (Page 6Dh), the committed
+    mapping there is the truth instead - the caller says which one it is
+    showing rather than this function guessing.
+    """
+    # Eight, and only for Data Paths inside the first bank. 7.9.1 says
+    # "for each Bank (i.e. group of eight host lanes) there are always eight
+    # external media lanes", so the pool does not run on past lane 8 into a
+    # ninth media lane - and 8.3.7 says a module wider than eight lanes
+    # "cannot unambiguously declare" its media lanes at all. How the
+    # allocation carries across banks is not written down, and answering it
+    # here would be this tool inventing the rule.
+    try:
+        return cmis.media_lane_groups(
+            [g for g in groups if g and g[0] <= 8], app_select, apps,
+            media_lanes=8)
+    except Exception:
+        return {}
+
+
 def _media_lane_assignments():
     """01h:176-190, the fifth descriptor byte for Applications 1-15 (Table
     8-60). "Not required for flat Memory Map modules", which have no Page 01h
-    at all - there the descriptors are simply four bytes long."""
+    at all - there the descriptors are simply four bytes long.
+
+    Cached for the life of the connection. It is a static advertisement, and
+    the DataPath panel now needs it on every refresh - fetching it there
+    would cost a page change to 01h and back on a page that already walks
+    Lower memory and Pages 10h, 11h and 15h.
+    """
+    # Not in caps: that dict is serialised to the capabilities endpoint, and
+    # raw bytes do not survive the trip - they take the whole reply with them.
+    cached = _state.get('media_lane_assign')
+    if cached is not None:
+        return cached
     try:
-        return _read_upper(*cmis.REG_MEDIA_LANE_ASSIGN)
+        raw = _read_upper(*cmis.REG_MEDIA_LANE_ASSIGN)
     except Exception:
-        return b''
+        raw = b''
+    _state['media_lane_assign'] = raw
+    return raw
 
 
 def _additional_app_descriptors():
@@ -2356,7 +2416,8 @@ def api_datapath_set():
         try:
             _apps = cmis.parse_application_descriptors(
                 _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-                _additional_app_descriptors(), b'', _flat_memory())
+                _additional_app_descriptors(),
+                _media_lane_assignments(), _flat_memory())
             for a in _apps:
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
