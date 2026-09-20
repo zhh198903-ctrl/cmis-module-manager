@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.104.0'
+__version__ = '2.105.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -337,7 +337,8 @@ def _set_page(page: int, bank: int = 0):
     _state['page'] = None  # unknown while the writes are in flight
     _state['bank'] = None
     _state['backend'].write_bytes(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
-    time.sleep(_state.get('bpc_sleep') or 0.010)
+    time.sleep(_state.get('bpc_sleep')
+               or cmis.TIMING_SECONDS['tBPC'])
     if page and page not in _state['pages_ok']:
         got = _state['backend'].read_bytes(cmis.REG_PAGE_SELECT[1], 1)
         if len(got) == 1 and got[0] != page:
@@ -432,7 +433,12 @@ def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
     for bank in range((lanes + 7) // 8):
         _set_page(page, bank)
         _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
-        time.sleep(0.005)
+        # tDDCS, Table 10-5. Five milliseconds was half of it, and this is
+        # the class of wait the module does not enforce: "ACCESS that is too
+        # early is not rejected". A short wait here returns the previous
+        # selector's sixty-four bytes decoded as whatever this selector
+        # means - BER values read as error counters, and no error anywhere.
+        time.sleep(cmis.TIMING_SECONDS['tDDCS'])
         yield bank, _read_upper(page, addr, length or full, bank)
 
 
@@ -1447,6 +1453,9 @@ def _await_mls_commit(banks: int) -> dict:
                 break
         if not running or time.time() >= deadline:
             break
+        # A polling cadence, not a Chapter 10 wait: the loop has its own
+        # deadline and stops on the module's own answer, so this only decides
+        # how often it asks. Nothing in Chapter 10 governs it.
         time.sleep(0.01)
     return {'commit_complete': not running,
             'commit_max_seconds': budget,
@@ -2457,6 +2466,12 @@ def api_datapath_set():
                                else cmis.REG_APPLY_DATAPATH)
                     _state['backend'].write_bytes(trigger[1], bytes([mask]))
                 applied = sorted(l + 1 for l in need)
+                # A settle before returning, not a wait this reply depends on:
+                # nothing is read back here, and the page fetches ConfigStatus
+                # on its next refresh. Chapter 10 has no parameter for
+                # Apply-to-ConfigStatus - Table 10-5's own note says timings
+                # "may be added" for effects that depend on hardware
+                # reconfiguration - so there is no number to be short of.
                 time.sleep(0.1)
 
         return _ok({'message': 'DataPath configuration written',
@@ -3850,7 +3865,14 @@ def api_laser_set():
         # Writing is not tuning. The module answers in the Page 12h Flags, and
         # reporting success on the strength of the write alone told the
         # operator a refused channel had been applied.
-        time.sleep(0.05)
+        #
+        # ton_flag, Table 10-6: "Time from onset of condition or occurrence
+        # of event to associated Flag bit raised", 200 ms. Fifty was a
+        # quarter of it, and reading a Flag before the module has had time to
+        # raise it finds it clear - which is the same answer as a request
+        # that was accepted. The wait is the whole basis for saying nothing
+        # was refused, so it has to be the full one.
+        time.sleep(cmis.TIMING_SECONDS['ton_flag'])
         raw = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
         refused = {}
         for i in range(_state['lanes']):
@@ -3865,8 +3887,14 @@ def api_laser_set():
                 refused[i + 1] = bad
         if refused and _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
+        # An empty `refused` is a claim about a Flag that was not up yet as
+        # much as about one that never came, so the reply carries what it
+        # waited: Table 10-6 allows the module the whole of ton_flag, and
+        # anything less would have been a guess reported as an answer.
         return _ok({'message': 'Laser tuning parameters written', 'lanes': written,
-                    'refused': refused})
+                    'refused': refused,
+                    'flag_wait_ms': round(
+                        cmis.TIMING_SECONDS['ton_flag'] * 1000)})
     except Exception as e:
         return _err(str(e), 500)
 

@@ -318,6 +318,40 @@ def parse_tuning_flags(byte_val: int) -> dict:
             for bit, name, _desc in TUNING_FLAG_BITS}
 
 
+# Chapter 10 timings this tool waits on, in seconds. Every constant delay
+# in the code is a claim about one of these, and the claims were being made
+# without the numbers being looked up.
+#
+# The difference that matters is what happens to a host that is early:
+#
+#   Table 10-4    ACCESS hold-off. The module rejects the access, so being
+#                 early is visible - "A host not willing to wait for
+#                 specified maximum durations can retry a rejected ACCESS".
+#   Table 10-5    Content dependency. Nothing is rejected. The section says
+#                 it outright: "The module does not prevent access to stale
+#                 data in these cases (i.e. ACCESS that is too early is not
+#                 rejected)."
+#   Table 10-6    Condition to Flag. Nothing is rejected either: the Flag is
+#                 simply not up yet, which reads exactly like a condition
+#                 that did not occur.
+#
+# So a wait short of the first kind produces an error, and a wait short of
+# either of the other two produces an answer.
+TIMING_SECONDS = {
+    # Table 10-4. The module may advertise less in 01h:167; this is the
+    # ceiling and the fallback.
+    'tBPC': 0.010,
+    # Table 10-5. From the STOP of the write to 14h:128 to a read that
+    # retrieves the newly selected content rather than the previous
+    # selector's bytes, decoded as whatever this one means.
+    'tDDCS': 0.010,
+    # Table 10-6. "Time from onset of condition or occurrence of event to
+    # associated Flag bit raised". Reading a Flag sooner than this and
+    # finding it clear says nothing.
+    'ton_flag': 0.200,
+}
+
+
 def diag_mask_addr(flag_addr: int) -> int:
     """The Page 13h Mask byte that governs a Page 14h diagnostics Flag byte.
 

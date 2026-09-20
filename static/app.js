@@ -4400,7 +4400,22 @@ async function applyLaser() {
   }
   const res = await apiPost('/api/module/laser', { lanes });
   if (res.status === 'ok') {
-    toast('Laser tuning applied', 'success');
+    // The server waits the whole of ton_flag and reads Page 12h before
+    // answering, precisely so this is knowable - and then nothing read it.
+    // "Applied" on a request the module refused is the one thing this panel
+    // must not say, and the Flags it would have to be read from are cleared
+    // by the read that found them, so the refusal is not waiting on screen
+    // for anyone who missed the toast.
+    const refused = (res.data && res.data.refused) || {};
+    const lanesRefused = Object.keys(refused);
+    if (lanesRefused.length) {
+      const detail = lanesRefused.map(lane => `lane ${lane}: `
+        + refused[lane].map(k => (TUNING_FLAG_LABELS[k] || [k])[0]).join(', ')
+      ).join('; ');
+      toast(`Module refused the tuning request — ${detail}`, 'error', 12000);
+    } else {
+      toast('Laser tuning applied', 'success');
+    }
     setTimeout(loadLaser, 300);
   } else {
     toast(`Apply failed: ${res.message}`, 'error');

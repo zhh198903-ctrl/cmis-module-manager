@@ -5401,9 +5401,10 @@ class TestPageSelection(CMISTestCase):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
         src = io.open(path, encoding='utf-8').read()
         body = src.split('def _set_page(')[1].split('\ndef ')[0]
-        self.assertIn("time.sleep(_state.get('bpc_sleep') or 0.010)", body,
-                      'page-change hold-off is not the advertised one, '
-                      'falling back to tBPC = 10 ms')
+        self.assertIn("time.sleep(_state.get('bpc_sleep')", body,
+                      'the page-change hold-off is not the advertised one')
+        self.assertIn("or cmis.TIMING_SECONDS['tBPC'])", body,
+                      'the fallback is not tBPC from the Chapter 10 table')
         self.connect()
         self.assertLessEqual(app_module._state['bpc_sleep'], 0.010,
                              'the hold-off exceeds tBPC')
@@ -11867,8 +11868,12 @@ class TestHowLongTheModuleSaidItNeeds(CMISTestCase):
         self.assertLess(body.index("_state['bpc_sleep'] = 0.010"),
                         body.index('REG_DURATIONS'),
                         'the shortened hold-off is used before it is read')
-        self.assertIn("time.sleep(_state.get('bpc_sleep') or 0.010)", src,
-                      'the page hold-off is still a fixed 10 ms')
+        # The fallback is the ceiling Table 10-4 sets, named rather than
+        # spelled: a literal here is a number nobody can trace back.
+        self.assertIn("time.sleep(_state.get('bpc_sleep')", src,
+                      'the page hold-off no longer falls back at all')
+        self.assertIn("or cmis.TIMING_SECONDS['tBPC'])", src,
+                      'the fallback is a bare literal again')
 
     def _src_app(self):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -18923,6 +18928,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-173': 'Normalized Application Descriptor (NAD) Structure (Page 1Ch)',
         '8-174': 'Normalized Application Descriptor Block (Page 1Ch)',
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
+        # Chapter 10 - timings rather than registers, so they name no
+        # page and the cross-page check skips them.
+        '10-4': 'Maximum ACCESS Hold-Off Durations',
+        '10-5': 'Content Dependency Timings',
+        '10-6': 'Condition to Interrupt Timings',
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-191': 'Acquisition Counters (Page 61h)',
         '8-192': 'Page 62h Overview',
@@ -25476,6 +25486,209 @@ class TestTheDiagnosticsFlagsNobodyIsToldAbout(CMISTestCase):
                 self.assertNotIn(claim, src,
                                  '%s still claims 12h:239-246 is the only '
                                  'Mask block that ships masked' % name)
+
+
+class TestTheWaitsThatWereGuesses(CMISTestCase):
+    """Every constant delay in this tool is a claim about a timing parameter
+    in Chapter 10, and two of them claimed a number the specification does
+    not allow.
+
+    Chapter 10 splits the waits into kinds, and the difference is what
+    happens to a host that is early:
+
+      Table 10-4  ACCESS hold-off. The module rejects the access, so being
+                  early is visible - "A host not willing to wait for
+                  specified maximum durations can retry a rejected ACCESS".
+      Table 10-5  Content dependency. Nothing is rejected: "The module does
+                  not prevent access to stale data in these cases (i.e.
+                  ACCESS that is too early is not rejected)."
+      Table 10-6  Condition to Flag. Nothing is rejected either - the Flag
+                  is simply not up yet, which reads exactly like a condition
+                  that never occurred.
+
+    So a wait short of the first kind produces an error, and a wait short of
+    either of the others produces an answer. This tool waited the full tBPC -
+    the one the module would have enforced anyway - and was short on both of
+    the kinds that fail silently:
+
+      14h:128    5 ms where tDDCS is 10 ms. The Diagnostics Data area is
+                 sixty-four bytes whose meaning is decided by the selector,
+                 so an early read returns the previous selector's bytes
+                 decoded as this one: BER values read as error counters.
+      12h Flags  50 ms where ton_flag is 200 ms. The tuning Flags are the
+                 only thing that says a tuning request was refused, and the
+                 wait is the whole basis for reporting that none was.
+
+    And the panel threw away the answer it did get: applyLaser toasted
+    "Laser tuning applied" on any 200, without reading `refused` at all. The
+    Flags are cleared by the read that found them, so the refusal is not
+    waiting on screen for whoever missed the toast."""
+
+    PROFILE = 'mock_coherent_zr'
+
+    def _connect(self, backend=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend or self.PROFILE,
+                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _src(self, name='app.py'):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, *name.split('/')), encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the numbers are the specification's -----------------------------
+    def test_the_table_carries_the_three_it_waits_on(self):
+        import cmis_registers as c
+        self.assertEqual(c.TIMING_SECONDS['tBPC'], 0.010)
+        self.assertEqual(c.TIMING_SECONDS['tDDCS'], 0.010)
+        self.assertEqual(c.TIMING_SECONDS['ton_flag'], 0.200)
+
+    def test_the_table_says_which_kind_each_wait_is(self):
+        """The number alone is the smaller half. Which table a wait comes
+        from decides whether being early is an error or an answer, and the
+        next delay added needs to be able to find that out."""
+        src = self._src('cmis_registers.py')
+        whole = src[src.index('# Chapter 10 timings'):]
+        whole = whole[:whole.index(chr(10) + '}')]
+        preamble = whole[:whole.index('TIMING_SECONDS = {')]
+        self.assertIn('Table 10-4', preamble)
+        self.assertIn('Table 10-5', preamble)
+        self.assertIn('Table 10-6', preamble)
+        self.assertEqual(preamble.count('Nothing is rejected'), 2,
+                         'nothing records that two of these fail silently')
+        # And each entry cites its own table. The preamble explains the
+        # kinds; without this, a key could sit under a comment that names no
+        # table at all and the preamble would still read correctly.
+        lines = whole[whole.index('TIMING_SECONDS = {'):].split(chr(10))
+        for key, table in (("'tBPC'", '10-4'), ("'tDDCS'", '10-5'),
+                           ("'ton_flag'", '10-6')):
+            i = next(n for n, l in enumerate(lines) if l.strip().startswith(key))
+            # The run of comment lines directly above the entry, and nothing
+            # from the entry before it.
+            above, j = [], i - 1
+            while j >= 0 and lines[j].strip().startswith('#'):
+                above.append(lines[j])
+                j -= 1
+            self.assertIn('Table ' + table, chr(10).join(above),
+                          '%s does not say which table its number is from'
+                          % key)
+
+    def test_no_constant_delay_is_left_unexplained(self):
+        """A bare time.sleep with a number in it is the shape the two
+        defects had. The ones that remain are polling cadences and settles
+        with no Chapter 10 parameter to check against, and each says so."""
+        src = self._src()
+        import re as _re
+        bare = []
+        for m in _re.finditer(r'time\.sleep\(([0-9.]+)\)', src):
+            line_no = src[:m.start()].count(chr(10))
+            window = chr(10).join(
+                src.split(chr(10))[max(0, line_no - 12):line_no + 1])
+            if 'TIMING_SECONDS' in window or '#' in window:
+                continue
+            bare.append(m.group(0))
+        self.assertEqual(bare, [], 'a constant delay with nothing said about '
+                                   'where the number comes from')
+
+    # ---- tDDCS ------------------------------------------------------------
+    def test_the_selector_wait_is_the_whole_of_tddcs(self):
+        src = self._src()
+        body = src[src.index('REG_DIAG_SELECTOR[1], bytes([sel]))'):]
+        body = body[:body.index('yield bank')]
+        self.assertIn("time.sleep(cmis.TIMING_SECONDS['tDDCS'])", body,
+                      'the Diagnostics Data selector wait is a literal again')
+        self.assertNotIn('time.sleep(0.005)', body)
+
+    def test_the_selector_wait_names_what_an_early_read_returns(self):
+        """"Too short" is not the point - that it produces a number rather
+        than an error is."""
+        src = self._src()
+        body = src[src.index('REG_DIAG_SELECTOR[1], bytes([sel]))'):]
+        body = body[:body.index('yield bank')]
+        self.assertIn('not rejected', body)
+        self.assertIn('Table 10-5', body)
+
+    def test_the_diagnostics_read_still_works(self):
+        self._connect('mock_dr8')
+        rv = self.client.get('/api/module/counters')
+        self.assertIn(rv.status_code, (200, 503))
+
+    # ---- ton_flag ---------------------------------------------------------
+    def test_the_tuning_wait_is_the_whole_of_ton_flag(self):
+        src = self._src()
+        body = src[src.index('# Writing is not tuning.'):]
+        body = body[:body.index('refused = {}')]
+        self.assertIn("time.sleep(cmis.TIMING_SECONDS['ton_flag'])", body,
+                      'the tuning Flag wait is a literal again')
+        self.assertNotIn('time.sleep(0.05)', body)
+
+    def test_the_reply_carries_what_it_waited(self):
+        """An empty `refused` is a claim about a Flag that may not have been
+        raised yet, so the answer says what it gave the module."""
+        self._connect()
+        d = self._laser_apply()
+        self.assertEqual(d['flag_wait_ms'], 200)
+
+    def _laser_apply(self, **over):
+        lane = self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes'][0]
+        body = {'lane': lane['lane'], 'grid_code': lane['grid_code'],
+                'channel': lane['channel'],
+                'target_power_dbm': lane['target_power_dbm']}
+        body.update(over)
+        return self.assertOk(self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [body]}),
+            content_type='application/json'))['data']
+
+    def test_a_refused_request_is_still_reported(self):
+        """Grid 0 has no advertised channel plan, so the module is the one
+        that has to say no."""
+        self._connect()
+        d = self._laser_apply(grid_code=0, channel=7)
+        self.assertIn('1', [str(k) for k in d['refused']],
+                      'the module refused and the reply did not say so')
+
+    def test_an_accepted_request_reports_nothing_refused(self):
+        self._connect()
+        self.assertEqual(self._laser_apply()['refused'], {})
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_panel_reads_the_refusal_before_claiming_success(self):
+        js = self._src('static/app.js')
+        body = js[js.index('async function applyLaser()'):]
+        body = body[:body.index('document.addEventListener')]
+        self.assertIn('res.data.refused', body,
+                      'the panel never looks at what the module answered')
+        self.assertIn("toast('Laser tuning applied', 'success')", body,
+                      'the success path is gone entirely')
+        # The success toast has to be the else branch, not the default.
+        self.assertLess(body.index('lanesRefused.length'),
+                        body.index("toast('Laser tuning applied'"),
+                        '"applied" is still said before the refusal is read')
+
+    def test_the_refusal_toast_names_the_lane_and_the_reason(self):
+        """"Refused" without which lane and what for sends the operator back
+        to a table whose Flags this request already cleared."""
+        js = self._src('static/app.js')
+        body = js[js.index('async function applyLaser()'):]
+        body = body[:body.index('document.addEventListener')]
+        self.assertIn('lane ${lane}', body)
+        self.assertIn('TUNING_FLAG_LABELS', body,
+                      'the toast prints raw field names')
+        self.assertIn("'error'", body, 'a refusal is toasted as a success')
+
+    def test_the_refusal_toast_stays_up_long_enough_to_read(self):
+        """Three seconds is the default and this is the one message the
+        operator cannot get back: the Flags behind it are cleared."""
+        js = self._src('static/app.js')
+        body = js[js.index('async function applyLaser()'):]
+        body = body[:body.index('document.addEventListener')]
+        m = re.search(r"toast\(`Module refused[^;]*?'error',\s*(\d+)\)", body)
+        self.assertTrue(m, 'the refusal toast has no explicit duration')
+        self.assertGreaterEqual(int(m.group(1)), 10000)
 
 
 if __name__ == '__main__':
