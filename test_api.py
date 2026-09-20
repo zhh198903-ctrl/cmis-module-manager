@@ -25691,6 +25691,223 @@ class TestTheWaitsThatWereGuesses(CMISTestCase):
         self.assertGreaterEqual(int(m.group(1)), 10000)
 
 
+class TestWhereAnApplicationMayBegin(CMISTestCase):
+    """6.2.3.2.1: "The host must assign lanes to Data Paths in accordance with
+    the Lane Assignment Options field advertised by the module for that
+    Application." The field is HostLaneAssignmentOptions, the fourth
+    Application Descriptor byte - "Bits 0-7 form a bit map corresponding to
+    Host Lanes 1-8. A bit value of 1 indicates that the lane group of the
+    advertised Application can begin on the corresponding host lane."
+
+    This tool reads that byte and prints it on the Applications tab as a raw
+    bitmap. The DataPath panel, which is where the choice is actually made,
+    offered every Application in every lane's dropdown and said nothing about
+    it. The operator found out afterwards, as ConfigRejectedInvalidDataPath
+    (4h) in a four-bit status code.
+
+    The write is deliberately still allowed. The line this tool draws is
+    whether the module answers: it refuses a write the module would swallow
+    in silence, because a control that reports applied and does nothing
+    cannot be diagnosed - and a Data Path on the wrong boundary is the
+    opposite, named in ConfigStatusLane by the module itself. Seeing what a
+    real module does with a bad allocation is a thing this tool exists to
+    allow. So the rule goes on the panel before the write, and the write goes
+    through.
+
+    The rule is about where a Data Path *begins*. A four-lane Application
+    starting on lane 1 occupies lanes 2-4 and the host writes the same AppSel
+    into all four; those are continuation lanes and the bitmap says nothing
+    about them. Checking each lane against the bitmap would flag three lanes
+    out of every four on a conformant module."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the rule ---------------------------------------------------------
+    def test_only_the_first_lane_of_a_data_path_is_judged(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 2, 'host_lane_assign_mask': 0x11}]
+        # Four lanes from lane 1: legal, and lanes 2-4 are not asked about.
+        self.assertEqual(
+            c.lane_start_violations([[1, 2, 3, 4]], [2] * 8, apps), [])
+        self.assertEqual(
+            c.lane_start_violations([[5, 6, 7, 8]], [2] * 8, apps), [])
+
+    def test_a_data_path_on_the_wrong_boundary_is_named(self):
+        import cmis_registers as c
+        apps = [{'app_sel': 2, 'host_lane_assign_mask': 0x11}]
+        got = c.lane_start_violations([[3, 4, 5, 6]],
+                                      [0, 0, 2, 2, 2, 2, 0, 0], apps)
+        self.assertEqual(got, [{'lane': 3, 'app_sel': 2,
+                                'lanes': [3, 4, 5, 6],
+                                'allowed_starts': [1, 5], 'mask': 0x11}])
+
+    def test_a_flat_module_has_no_such_field(self):
+        """The fourth descriptor byte is the HostInterfaceGID there, and says
+        nothing about lane groups."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.lane_start_violations(
+                [[3, 4]], [1] * 8,
+                [{'app_sel': 1, 'host_lane_assign_mask': None}]), [])
+
+    def test_a_zero_bitmap_is_not_a_refusal_of_every_lane(self):
+        """A module advertising that an Application can begin nowhere is not
+        stating a constraint anyone could satisfy."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.lane_start_violations(
+                [[3, 4]], [1] * 8,
+                [{'app_sel': 1, 'host_lane_assign_mask': 0}]), [])
+
+    def test_an_unused_lane_is_not_judged(self):
+        """AppSel 0 is the absence of an Application, not App 0."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.lane_start_violations(
+                [[2]], [0] * 8,
+                [{'app_sel': 1, 'host_lane_assign_mask': 0x01}]), [])
+
+    def test_the_eighth_lane_is_still_inside_the_bitmap(self):
+        """Bit 7 is host lane 8. Stopping one lane early would let the last
+        lane the bitmap does cover go unjudged."""
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'host_lane_assign_mask': 0x01}]
+        self.assertEqual(
+            [v['lane'] for v in
+             c.lane_start_violations([[8]], [0] * 7 + [1], apps)], [8])
+        apps = [{'app_sel': 1, 'host_lane_assign_mask': 0x80}]
+        self.assertEqual(
+            c.lane_start_violations([[8]], [0] * 7 + [1], apps), [],
+            'lane 8 is bit 7, and a module advertising it was refused')
+
+    def test_the_check_stops_where_the_bitmap_stops(self):
+        """Eight bits for host lanes 1-8. On a wider module 5.4 does not say
+        how they extend - whether lane 9 is bank 1's lane 1 or is simply not
+        covered - and answering that here would enforce a rule the
+        specification does not have."""
+        import cmis_registers as c
+        apps = [{'app_sel': 1, 'host_lane_assign_mask': 0x01}]
+        self.assertEqual(
+            c.lane_start_violations([[9, 10, 11, 12]], [1] * 16, apps), [])
+
+    def test_the_wide_demo_module_is_not_flagged_as_shipped(self):
+        """It runs an eight-lane Application on lanes 1-8 and again on 9-16,
+        which is what a sixteen-lane module does. Flagging the second
+        instance would be the tool inventing that rule."""
+        self._connect('mock_1600g_16lane')
+        self.assertEqual(self._dp()['lane_start_violations'], [])
+
+    # ---- the write is still allowed ---------------------------------------
+    def test_the_write_still_goes_through(self):
+        """The module answers this one by name, so the tool does not stand in
+        front of it. Refusing here would take away the ability to see what a
+        real module does with a bad allocation."""
+        self._connect()
+        deactivated(self.client)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [0, 2, 2, 2, 2, 0, 0, 0]}),
+            content_type='application/json'))
+
+    def test_and_the_panel_says_so_before_the_apply(self):
+        self._connect()
+        deactivated(self.client)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [0, 2, 2, 2, 2, 0, 0, 0]}),
+            content_type='application/json'))
+        got = self._dp()['lane_start_violations']
+        self.assertEqual([v['lane'] for v in got], [2],
+                         'the panel does not report the boundary the module '
+                         'is about to reject')
+        self.assertEqual(got[0]['allowed_starts'], [1, 5])
+
+    def test_the_endpoint_publishes_where_each_one_may_begin(self):
+        self._connect()
+        starts = self._dp()['app_lane_starts']
+        self.assertEqual(starts['2'], [1, 5])
+        self.assertIn('1', starts)
+
+    def test_an_application_with_no_bitmap_is_left_out(self):
+        """Nothing to say rather than an empty list, which the page would
+        render as "begins on nothing". No shipped paged profile advertises an
+        Application it cannot place, so the descriptors are patched under the
+        endpoint rather than a profile distorted into an odd module."""
+        self._connect()
+        real = app_module.cmis.parse_application_descriptors
+
+        def patched(*a, **kw):
+            out = real(*a, **kw)
+            for app in out:
+                if app.get('app_sel') == 2:
+                    app['host_lane_assign_mask'] = 0
+            return out
+
+        app_module.cmis.parse_application_descriptors = patched
+        try:
+            starts = self._dp()['app_lane_starts']
+        finally:
+            app_module.cmis.parse_application_descriptors = real
+        self.assertNotIn('2', starts,
+                         'an Application whose bitmap says nothing was '
+                         'published with an empty list of starting lanes')
+        self.assertIn('1', starts, 'the others went with it')
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_dropdown_states_the_rule(self):
+        js = self._js()
+        body = js[js.index('const startsOn = (sel) =>'):]
+        body = body[:body.index('opts.unshift')]
+        self.assertIn('(d.app_lane_starts || {})[String(sel)]', body,
+                      'the dropdown looks up a lane list that is not this '
+                      'option’s')
+        self.assertIn('begins on', body)
+        self.assertIn('lanes && lanes.length ?', body,
+                      'an Application with no bitmap gets the phrase with '
+                      'nothing after it')
+        self.assertIn('esc(startsOn(a.app_sel))', body,
+                      'the text is built and never placed on the option')
+
+    def test_the_rule_is_not_a_per_option_gate(self):
+        """The option is legitimate on a continuation lane, so the dropdown
+        states the rule rather than passing a verdict on this row."""
+        js = self._js()
+        body = js[js.index('const startsOn = (sel) =>'):]
+        body = body[:body.index('opts.unshift')]
+        self.assertNotIn('disabled', body)
+        self.assertNotIn('lane.lane', body,
+                         'the option text depends on which row it is in')
+
+    def test_the_row_marks_a_data_path_that_may_not_begin_there(self):
+        js = self._js()
+        body = js[js.index('const badStart ='):]
+        body = body[:body.index('const stale =')]
+        self.assertIn('lane_start_violations', body)
+        self.assertIn('v.lane === lane.lane', body,
+                      'the marker is not tied to the lane it is drawn on')
+        self.assertIn('ConfigRejectedInvalidDataPath', body,
+                      'the marker does not name what the module will answer')
+        self.assertIn('HostLaneAssignmentOptions', body)
+
+    def test_the_marker_is_actually_rendered(self):
+        self.assertIn('${startNote}${stale}${pendingNote}', self._js(),
+                      'the marker is built and never placed in the row')
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

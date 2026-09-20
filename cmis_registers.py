@@ -352,6 +352,71 @@ TIMING_SECONDS = {
 }
 
 
+def lane_start_violations(groups, app_select, apps) -> list:
+    """Data Paths that begin on a lane their Application may not start on.
+
+    6.2.3.2.1 states it as an obligation on the host: "The host must assign
+    lanes to Data Paths in accordance with the Lane Assignment Options field
+    advertised by the module for that Application." The field is
+    HostLaneAssignmentOptions, the fourth Application Descriptor byte - "Bits
+    0-7 form a bit map corresponding to Host Lanes 1-8. A bit value of 1
+    indicates that the lane group of the advertised Application can begin on
+    the corresponding host lane."
+
+    The rule is about where a Data Path *begins*, not about which lane holds
+    which code. A four-lane Application starting on lane 1 occupies lanes 2-4
+    as well, and the host writes the same AppSel into all four - those are
+    continuation lanes and the bitmap says nothing about them. Checking each
+    lane against the bitmap instead would flag three lanes out of every four
+    on a conformant module.
+
+    A module answers ConfigRejectedInvalidDataPath (4h, Table 8-101,
+    "invalid set of lanes for AppSel") to an Apply that breaks this.
+
+    `groups` are lane numbers, 1-based, as _datapath_groups reports them.
+    """
+    masks = {}
+    for a in apps:
+        mask = a.get('host_lane_assign_mask')
+        # None on a flat memory module, whose fourth descriptor byte is the
+        # HostInterfaceGID and says nothing about lane groups. Zero is a
+        # module advertising that the Application can begin nowhere, which is
+        # not a constraint anyone can satisfy - read as no statement rather
+        # than as a refusal of every lane.
+        if mask:
+            masks[a.get('app_sel')] = mask
+    out = []
+    for group in groups or []:
+        if not group:
+            continue
+        first = group[0]
+        sel = app_select[first - 1] if first - 1 < len(app_select) else 0
+        # No `if not sel` guard: AppSel 0 is the absence of an Application
+        # and cannot carry a bitmap, because the descriptor array is numbered
+        # from 1 - so the lookup below already declines it. A second test for
+        # the same thing reads as a rule and is not one.
+        mask = masks.get(sel)
+        if mask is None:
+            continue
+        # "Bits 0-7 form a bit map corresponding to Host Lanes 1-8". On a
+        # module wider than eight lanes the specification does not say how
+        # the eight bits extend - whether lane 9 is read as bank 1's lane 1
+        # or is simply not covered - and answering that here would enforce a
+        # rule 5.4 does not have. Checked where the bitmap's meaning is
+        # unambiguous, and silent past it.
+        if first > 8:
+            continue
+        if not (mask >> (first - 1)) & 1:
+            out.append({
+                'lane': first,
+                'app_sel': sel,
+                'lanes': list(group),
+                'allowed_starts': [b + 1 for b in range(8) if (mask >> b) & 1],
+                'mask': mask,
+            })
+    return out
+
+
 def diag_mask_addr(flag_addr: int) -> int:
     """The Page 13h Mask byte that governs a Page 14h diagnostics Flag byte.
 

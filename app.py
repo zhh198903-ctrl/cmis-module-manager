@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.105.0'
+__version__ = '2.106.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1913,10 +1913,12 @@ def api_datapath_get():
         # the one the writes actually use leaves a single answer to the
         # question.
         host_lanes_by_app = {}
+        _apps = []
         try:
-            for a in cmis.parse_application_descriptors(
-                    _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-                    _additional_app_descriptors(), b'', _flat_memory()):
+            _apps = cmis.parse_application_descriptors(
+                _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
+                _additional_app_descriptors(), b'', _flat_memory())
+            for a in _apps:
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
             pass
@@ -1961,6 +1963,19 @@ def api_datapath_get():
             'explicit_control_lanes': [
                 i + 1 for i, d in enumerate(active_dpconfig)
                 if d['explicit_control']],
+            # Where each Application may begin, and whether what is staged
+            # right now breaks that. Published rather than re-derived in the
+            # page: the grouping is the server's, and two answers to which
+            # lanes make up a Data Path is the trap this panel already had
+            # once.
+            'app_lane_starts': {
+                str(a['app_sel']): [b + 1 for b in range(8)
+                                    if (a.get('host_lane_assign_mask') or 0)
+                                    >> b & 1]
+                for a in (_apps or [])
+                if a.get('host_lane_assign_mask')},
+            'lane_start_violations': cmis.lane_start_violations(
+                groups, app_select[:_state['lanes']], _apps or []),
             'datapath_groups': groups,
             'lanes': lanes,
         })
@@ -2334,6 +2349,10 @@ def api_datapath_set():
                               prev_app_select[:_state['lanes']]
                               or [1] * _state['lanes'])
         host_lanes_by_app = {}
+        # Bound before the try: the lane-start check below needs the
+        # descriptors, and an unbound name there would turn a module whose
+        # descriptors failed to parse into a 500.
+        _apps = []
         try:
             _apps = cmis.parse_application_descriptors(
                 _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
@@ -2350,6 +2369,22 @@ def api_datapath_set():
         ))
         if refused:
             return refused
+
+        # 6.2.3.2.1 puts an obligation on the host here - "The host must
+        # assign lanes to Data Paths in accordance with the Lane Assignment
+        # Options field advertised by the module" - and this endpoint
+        # deliberately does not enforce it.
+        #
+        # The line this tool draws is whether the module answers. It refuses
+        # a write the module would swallow in silence, because a control that
+        # reports applied and does nothing is the one outcome an operator
+        # cannot diagnose. A Data Path on the wrong boundary is the opposite:
+        # the module says ConfigRejectedInvalidDataPath (4h) in
+        # ConfigStatusLane, by name, and seeing what a real module does with
+        # a bad allocation is a thing this tool exists to allow.
+        #
+        # So the warning goes on the panel before the write, and the write
+        # goes through. lane_start_violations is published by the GET.
 
         bad = _refuse_broadcast_divergence({
             'tx_disable_mask': tx_disable,

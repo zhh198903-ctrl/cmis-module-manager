@@ -2188,11 +2188,21 @@ async function loadDatapath() {
     // no such entry the interface could not express it, so a lane could not be
     // freed here at all - and a module already running one showed the first
     // Application in the list instead.
+    // Where each Application may begin, from the bitmap the module
+    // publishes in its own descriptor. Listed here rather than left for the
+    // rejection code, because this is the moment the choice is made - and it
+    // is not a per-option gate: the option is legitimate on lane 3 when the
+    // Data Path starting at lane 1 reaches it, so what belongs on the option
+    // is the rule, not a verdict about this row.
+    const startsOn = (sel) => {
+      const lanes = (d.app_lane_starts || {})[String(sel)];
+      return lanes && lanes.length ? ` · begins on ${lanes.join(', ')}` : '';
+    };
     const opts = _advertisedApps.length
       ? _advertisedApps.map(a =>
           `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
           + `App ${a.app_sel} — ${a.media_if_name || hex8(a.media_if_id)} `
-          + `${esc(laneCountPair(a))}</option>`)
+          + `${esc(laneCountPair(a))}${esc(startsOn(a.app_sel))}</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
     opts.unshift(`<option value="0" ${lane.app_select === 0 ? 'selected' : ''}>`
@@ -2221,6 +2231,27 @@ async function loadDatapath() {
     // "App 0" is the misreading 6.2.3.2 exists to prevent: 0000b is not an
     // Application, it is the absence of one.
     const appName = n => n ? 'App ' + n : 'no Application';
+    // 6.2.3.2.1: "The host must assign lanes to Data Paths in accordance
+    // with the Lane Assignment Options field advertised by the module for
+    // that Application." The marker goes on the lane a Data Path *begins*
+    // on, not on every lane carrying the code: a four-lane Application
+    // starting on lane 1 occupies lanes 2-4, and the bitmap says nothing
+    // about those. Writing this now earns a refusal from the server; a
+    // module already staged this way earns ConfigRejectedInvalidDataPath
+    // from the module itself, which is a code to decode after the fact.
+    const badStart = (d.lane_start_violations || [])
+      .find(v => v.lane === lane.lane);
+    const startNote = badStart
+      ? `<div class="appsel-mismatch" title="${esc(
+          'This module advertises App ' + badStart.app_sel + ' for Data Paths '
+          + 'beginning on lane' + (badStart.allowed_starts.length > 1 ? 's ' : ' ')
+          + badStart.allowed_starts.join(', ')
+          + ' (HostLaneAssignmentOptions = 0b'
+          + badStart.mask.toString(2).padStart(8, '0') + '). A Data Path '
+          + 'starting anywhere else earns ConfigRejectedInvalidDataPath (4h) '
+          + '- "invalid set of lanes for AppSel".')}">`
+        + `may not begin here</div>`
+      : '';
     const stale = active !== lane.app_select
       ? `<div class="appsel-mismatch" title="${esc(
           'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for ' + appName(lane.app_select)
@@ -2269,7 +2300,7 @@ async function loadDatapath() {
 
     return `<tr class="datapath-lane-row">
       <td>Lane ${lane.lane}</td>
-      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${stale}${pendingNote}</td>
+      <td title="${esc(tipApp)}"><select id="app-sel-${lane.lane}" class="app-select-input" title="${esc(tipApp)}">${appOpts}</select>${startNote}${stale}${pendingNote}</td>
       <td title="${esc(tipTx)}"><input type="checkbox" id="tx-en-${lane.lane}" title="${esc(tipTx)}" ${lane.tx_enable ? 'checked' : ''}></td>
       <td title="${esc(tipTxPol)}"><input type="checkbox" id="tx-pol-${lane.lane}" title="${esc(tipTxPol)}" ${lane.tx_polarity_flip ? 'checked' : ''}></td>
       <td title="${esc(tipRxPol)}"><input type="checkbox" id="rx-pol-${lane.lane}" title="${esc(tipRxPol)}" ${lane.rx_polarity_flip ? 'checked' : ''}></td>

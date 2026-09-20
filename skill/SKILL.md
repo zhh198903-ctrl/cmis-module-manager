@@ -117,6 +117,25 @@ curl -s $B/module/capabilities | python -c \
 `⛔` 出现时其余图标会消失：它们描述的是一个现在读不到的模块，
 而空白的标题栏会被当成「一切正常」。
 
+## 这个 Application 能从哪条通道开始
+
+规范 6.2.3.2.1 是对主机的义务：「**主机必须按模块为该 Application 通告的 Lane Assignment
+Options 来分配通道**」。字段是 Application 描述符第 4 个字节 `HostLaneAssignmentOptions`：
+位 0-7 对应主机通道 1-8，置 1 表示该 Application 的通道组**可以从这条通道开始**。
+
+DataPath 面板的下拉框每项都写明了，例如 `App 2 — 400GBASE-DR4 4H/4M · begins on 1, 5`。
+暂存配置里若有数据通路起始越界，那一行会标 `may not begin here`。
+
+**三条容易搞错的：**
+
+- 规则管的是**起始**。4 通道的 App 从通道 1 起会占用 2-4，主机要把同一个 AppSel 写进
+  这四条——后三条是**延续通道**，位图对它们没有规定。拿每条通道去对位图，
+  一块合规模块上每四条会误标三条。
+- **位图只有 8 位**。超过 8 通道的模块上规范没说这 8 个位怎么延伸，所以检查到通道 8 为止。
+- **写入照样放行**，这是有意的：模块会在 `ConfigStatusLane` 里回
+  `ConfigRejectedInvalidDataPath`(4h)，看真实模块怎么处理非法分配正是这个工具的用途之一。
+  工具只拦模块会**默默吞掉**的写入。
+
 ## 排查：Apply 点了没生效
 
 按顺序问，别跳步：
