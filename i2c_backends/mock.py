@@ -2543,9 +2543,10 @@ class MockBackend(I2CInterface):
                     self._current_bank = 0x00
                     self._prev_selected = None
                     self._page_changed_at = 0.0
-                    # SoftwareReset is self-clearing (Table 8-10): a real module
-                    # never reads it back as 1, so neither may the mock, or the
-                    # UI shows "reset in progress" forever.
+                    # SoftwareReset is WO/SC (Table 8-11): Table 8-3 says a read
+                    # delivers zero once the module has evaluated what was
+                    # written, so the mock clears it here rather than leaving a
+                    # bit a real module would never read back as 1.
                     data = bytes([ctrl & ~0x08]) + bytes(data[1:])
                     return data
                 if ctrl & 0x10:

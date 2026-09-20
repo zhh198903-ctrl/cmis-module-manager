@@ -1442,6 +1442,36 @@ MODULE_CONTROL_BITS = {
     'software_reset':  3,
 }
 
+# Table 8-11 types SoftwareReset (Lower 26.3) WO/SC, and Table 8-3 says a READ
+# from a WO/SC element "delivers a zero value, except transiently when reading
+# before the module has evaluated and cleared the non-zero bits written". The
+# specification puts no bound on that window - "evaluated and cleared" appears
+# once in the whole document, in Table 8-3, with no timing beside it - so no
+# amount of waiting lets a read-modify-write establish that it is outside it.
+# A merge that carries the bit back therefore fires the trigger a second time,
+# in the middle of an unrelated change. Keyed by (page, address) because the
+# rule is about the byte, not about this one register.
+WRITE_ONLY_TRIGGER_BITS = {
+    (None, 0x1A): 0x08,   # SoftwareReset (Table 8-11)
+}
+
+
+def drop_write_only_bits(page, address: int, value: int) -> int:
+    """Strip the write-only trigger bits from a byte read back for merging."""
+    return value & ~WRITE_ONLY_TRIGGER_BITS.get((page, address), 0) & 0xFF
+
+
+# The access type of each field in byte 0x1A (Table 8-11). A panel that shows
+# them all in one status column is claiming they are all readable state;
+# Table 8-3 says one of them is not.
+MODULE_CONTROL_ACCESS = {
+    'bank_broadcast_enable':    'RW',
+    'low_pwr_allow_request_hw': 'RW',
+    'squelch_method_select':    'RW',
+    'low_pwr_request_sw':       'RW',
+    'software_reset':           'WO/SC',
+}
+
 
 def update_module_control(current: int, **fields) -> int:
     """Change only the named bits of an already-read Module Control byte.
@@ -1451,8 +1481,12 @@ def update_module_control(current: int, **fields) -> int:
     BankBroadcastEnable and force AllowLowPwrRequestHW on. Read first, then
     change only what the caller asked for. Bits 2-0 are Custom and are carried
     through untouched.
+
+    The byte read back is not trusted whole: its WO/SC trigger bits are dropped
+    before the caller's fields are applied, so only a caller that names the
+    trigger can fire it.
     """
-    val = current & 0xFF
+    val = drop_write_only_bits(None, 0x1A, current)
     for name, value in fields.items():
         if value is None:
             continue

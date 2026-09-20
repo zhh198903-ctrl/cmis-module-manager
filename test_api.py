@@ -26800,6 +26800,222 @@ class TestAReadThatDestroysWhatItReturns(CMISTestCase):
                              'the page carries its own copy of the ranges')
 
 
+class TestTheTriggerThatCameBackOnARead(CMISTestCase):
+    """Table 8-3's write-only types make a READ lie, and Lower 26.3 is one.
+
+    Table 8-11 types SoftwareReset WO/SC. Table 8-3: "A READ from a WO/SC
+    element is allowed and delivers a zero value, except transiently when
+    reading before the module has evaluated and cleared the non-zero bits
+    written."
+
+    Two things in this tool believed that bit.
+
+    The Module Control panel showed it in the same status column as the four
+    RW bits, with a dot and a tooltip reading it as "Reset in progress" or
+    "Idle". It is neither: the dot is off whatever the module is doing, and
+    the one moment it can be on means the read was early.
+
+    The write path was worse. Byte 0x1A packs unrelated controls together, so
+    every change reads it first and merges - a fix from an earlier round, put
+    in so that toggling low power would stop clearing SquelchMethodSelect.
+    The merge started from the whole byte as read, so a read landing in that
+    transient window wrote bit 3 straight back: a second software reset, in
+    the middle of an unrelated change, asked for by nobody.
+
+    The window cannot be waited out. "evaluated and cleared" appears once in
+    the whole specification, in Table 8-3, with no timing beside it. So the
+    byte read back is not trusted whole - its trigger bits are dropped before
+    the caller's fields are applied."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, body):
+        return self.client.post('/api/module/control',
+                                data=json.dumps(body),
+                                content_type='application/json')
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _control_row(self):
+        """Comments removed first: the comment above this row names both
+        tables and states the rule, so asserting on the source as written
+        passes with the tooltip gutted."""
+        body = self._js()
+        i = body.index('function loadModuleControl')
+        row = body[i:body.index('Low Power Request (SW)', i)]
+        row = re.sub('//[^' + chr(10) + ']*', '', row)
+        self.assertNotIn('Every other row in this table', row,
+                         'comments were not stripped')
+        return row
+
+    def _spy_with_stale_trigger(self, backend):
+        """Make every read of 0x1A come back with bit 3 still set, the way
+        Table 8-3 says a read before the module has evaluated it may, and
+        collect what gets written there."""
+        real_read, real_write = backend.read_bytes, backend.write_bytes
+        seen = []
+
+        def read(addr, length):
+            data = bytearray(real_read(addr, length))
+            if addr <= 0x1A < addr + length:
+                data[0x1A - addr] |= 0x08
+            return bytes(data)
+
+        def write(addr, data):
+            if addr == 0x1A:
+                seen.append(data[0])
+            return real_write(addr, data)
+
+        backend.read_bytes, backend.write_bytes = read, write
+        return seen, (real_read, real_write)
+
+    # ---- the merge --------------------------------------------------------
+    def test_a_trigger_bit_read_back_is_not_written_back(self):
+        import cmis_registers as c
+        self.assertEqual(c.update_module_control(0x08, low_pwr=True), 0x10)
+
+    def test_a_caller_that_names_the_trigger_still_fires_it(self):
+        """Dropping the bit is about what was read, not about what was asked
+        for: the reset button has to keep working."""
+        import cmis_registers as c
+        self.assertEqual(
+            c.update_module_control(0x00, software_reset=True) & 0x08, 0x08)
+        self.assertEqual(
+            c.update_module_control(0x08, software_reset=True) & 0x08, 0x08)
+
+    def test_the_neighbours_in_the_byte_are_still_carried_through(self):
+        """The merge exists because 0x1A packs unrelated controls together;
+        dropping the trigger must not turn into rebuilding the byte."""
+        import cmis_registers as c
+        self.assertEqual(c.update_module_control(0xEF, low_pwr=False), 0xE7)
+
+    def test_the_custom_bits_are_untouched(self):
+        import cmis_registers as c
+        self.assertEqual(c.update_module_control(0x0F, low_pwr=True) & 0x07,
+                         0x07)
+
+    def test_the_rule_is_keyed_to_the_byte_not_to_the_register(self):
+        import cmis_registers as c
+        self.assertEqual(c.drop_write_only_bits(None, 0x1A, 0xFF), 0xF7)
+        self.assertEqual(c.drop_write_only_bits(None, 0x1B, 0xFF), 0xFF)
+        self.assertEqual(c.drop_write_only_bits(0x10, 0x1A, 0xFF), 0xFF)
+
+    def test_only_the_bit_the_specification_types_write_only_is_dropped(self):
+        import cmis_registers as c
+        self.assertEqual(c.WRITE_ONLY_TRIGGER_BITS, {(None, 0x1A): 0x08})
+        self.assertEqual(c.MODULE_CONTROL_BITS['software_reset'], 3)
+
+    # ---- through the endpoint ---------------------------------------------
+    def test_an_unrelated_change_does_not_reset_the_module(self):
+        self._connect()
+        backend = _state['backend']
+        seen, real = self._spy_with_stale_trigger(backend)
+        try:
+            self.assertOk(self._post({'action': 'low_power'}))
+        finally:
+            backend.read_bytes, backend.write_bytes = real
+        self.assertTrue(seen, 'nothing was written to 0x1A')
+        for val in seen:
+            self.assertEqual(val & 0x08, 0,
+                             'a stale trigger bit was written back as 0x%02X'
+                             % val)
+        self.assertTrue(any(v & 0x10 for v in seen),
+                        'the low power request was not written')
+
+    def test_the_reset_button_still_writes_the_trigger(self):
+        self._connect()
+        backend = _state['backend']
+        seen, real = self._spy_with_stale_trigger(backend)
+        try:
+            self.assertOk(self._post({'action': 'reset'}))
+        finally:
+            backend.read_bytes, backend.write_bytes = real
+        self.assertTrue(any(v & 0x08 for v in seen),
+                        'the reset trigger never reached the module')
+
+    def test_setting_a_named_field_does_not_carry_the_trigger(self):
+        self._connect()
+        backend = _state['backend']
+        seen, real = self._spy_with_stale_trigger(backend)
+        try:
+            self.assertOk(self._post({'allow_lp_hw': False}))
+        finally:
+            backend.read_bytes, backend.write_bytes = real
+        self.assertTrue(seen)
+        for val in seen:
+            self.assertEqual(val & 0x08, 0, '0x%02X' % val)
+
+    # ---- what the panel is told -------------------------------------------
+    def test_the_reply_says_which_of_these_bits_are_readable(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/control'))['data']
+        self.assertEqual(d['access']['software_reset'], 'WO/SC')
+        for field in ('low_pwr_request_sw', 'low_pwr_allow_request_hw',
+                      'squelch_method_select', 'bank_broadcast_enable'):
+            self.assertEqual(d['access'][field], 'RW', field)
+
+    def test_every_field_the_panel_shows_has_an_access_type(self):
+        """A field added to the decoder without a type would be shown as
+        state by default - the assumption that just cost a reset."""
+        import cmis_registers as c
+        self.assertEqual(set(c.MODULE_CONTROL_ACCESS),
+                         set(c.parse_module_control(0x00)))
+
+    def test_the_mock_never_reads_the_trigger_back(self):
+        """The transient belongs to a real module; the mock stands for what
+        a module settles to, and that is zero."""
+        self._connect()
+        self.assertOk(self._post({'action': 'reset'}))
+        d = self.assertOk(self.client.get('/api/module/control'))['data']
+        self.assertFalse(d['software_reset'])
+        self.assertEqual(d['raw'] & 0x08, 0)
+
+    # ---- the page ---------------------------------------------------------
+    def test_the_panel_no_longer_reads_the_bit_at_all(self):
+        row = self._control_row()
+        self.assertIn('d.access.software_reset', row)
+        self.assertNotIn('d.software_reset', row)
+        self.assertNotIn('yes : no', row)
+
+    def test_the_panel_names_the_rule_it_is_following(self):
+        row = re.sub(r"'\s*\+\s*'", '', self._control_row())
+        self.assertIn('Table 8-11', row)
+        self.assertIn('Table 8-3', row)
+        self.assertIn('delivers zero except transiently', row)
+
+    def test_the_panel_says_what_the_bit_does_not_tell_you(self):
+        """The row used to answer "is a reset under way?". Naming the access
+        type without withdrawing that answer leaves the operator reading the
+        old meaning into a new label."""
+        row = re.sub(r"'\s*\+\s*'", '', self._control_row())
+        self.assertIn('reports nothing about whether a reset is under way',
+                      row)
+
+    def test_the_other_rows_still_show_their_state(self):
+        """The change is about one bit. A panel that stopped reporting the
+        four readable ones would have traded one wrong answer for four."""
+        body = self._js()
+        i = body.index('Low Power Request (SW)')
+        rest = body[i:i + 3000]
+        self.assertIn('d.low_pwr_request_sw ? yes : no', rest)
+        self.assertIn('d.low_pwr_allow_request_hw ? yes : no', rest)
+
+    def test_the_page_does_not_carry_its_own_copy_of_the_types(self):
+        """Two copies of a table taken from the specification is how the two
+        come to disagree."""
+        row = self._control_row()
+        self.assertNotIn("'WO/SC'", row)
+        self.assertNotIn('"WO/SC"', row)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

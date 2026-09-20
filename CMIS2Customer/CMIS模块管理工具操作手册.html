@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.110.0<br>
+      <b>版本</b>　2.111.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.110.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.110.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.111.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.111.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1693,6 +1693,20 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>模块控制面板里那一位,从来就不是状态</h3>
+  <p>Table 8-3 里另外两种访问类型让「读」本身撒谎,而 <code>Lower 26.3</code> 的 <b>SoftwareReset</b> 正是其中之一(Table 8-11 把它定为 <b>WO/SC</b>):</p>
+  <div class="callout">
+    <span><b>WO/SC</b> —— 「从一个 WO/SC 元素读出的值为零,<b>除非读得太早</b>——在模块尚未评估并清除所写入的非零位之前。」</span>
+  </div>
+  <p>工具里有两个地方相信了这一位。</p>
+  <p><b>一是面板。</b>它和另外四个 RW 位并排显示在同一列状态点里,悬停提示写着「Reset in progress」或「Idle」。两个都不对:不管模块在干什么,那个点都是灭的;而它唯一可能亮的时刻,意思是<b>这次读发生得太早</b>,不是「正在复位」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>二是写入路径,这一处更严重。</b>字节 <code>0x1A</code> 把几个互不相干的控制打包在一起,所以每次改动都<b>先读回来再合并</b>(这本身是早先一轮的修复:免得切低功耗时顺手清掉 SquelchMethodSelect)。合并却是从<b>读回来的整个字节</b>开始的——于是一次落在那个瞬态窗口里的读,会把第 3 位原样写回去:<b>在一次毫不相干的改动中间,又触发了一次软复位</b>,没有任何人要求过它。</span>
+  </div>
+  <p class="note"><b>这个窗口等不过去。</b>「evaluated and cleared」在整份规范里只出现一次,就在 Table 8-3,旁边<b>没有给任何时间</b>。所以读-改-写永远无法确认自己已经在窗口之外,只能<b>不信任读回来的那一位</b>:现在合并前先把写-only 的触发位剥掉,只有<b>明确点名</b>要复位的调用者才能触发它——「复位模块」按钮照常工作。</p>
+  <p class="note">面板那一格现在写的是 <b><code>WO/SC</code> trigger</b>,不再是一个状态点;访问类型由后端随数值一起送来,页面不另存一份——<b>同一张规范表抄两遍,正是两边开始打架的方式</b>。另外四个位是 RW,照常显示状态。</p>
+
   <h3>裸寄存器面板会把模块的故障记录读没了</h3>
   <p>规范 Table 8-3 定义了六种访问类型,其中一种让「读」本身成为破坏性操作:</p>
   <div class="callout">
@@ -2116,7 +2130,7 @@ Read anyway?</pre>
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.110.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.111.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -4105,7 +4119,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.110.0<br>
+    CMIS Module Manager 操作手册 v2.111.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

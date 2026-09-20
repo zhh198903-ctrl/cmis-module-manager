@@ -3014,10 +3014,23 @@ async function loadModuleControl() {
   const ctrlTip = (field, bit, note) =>
     esc(regTip({ field, page: null, addr: 0x1A, value: d.raw, bit, note }));
 
+  // Every other row in this table is a setting that reads back. This one is
+  // not: Table 8-11 types SoftwareReset WO/SC, and Table 8-3 says a read of a
+  // WO/SC element delivers zero "except transiently when reading before the
+  // module has evaluated and cleared the non-zero bits written". So a dot here
+  // is off whatever the module is doing, and on it would mean the read was
+  // early rather than that anything is resetting.
+  const resetAccess = d.access.software_reset;
+
   tbody.innerHTML = `
-    <tr title="${ctrlTip('SoftwareReset', 3, d.software_reset ? 'Reset in progress' : 'Idle; writing 1 restarts the module')}">
+    <tr title="${ctrlTip('SoftwareReset', 3,
+        'Write-only trigger (' + resetAccess + ', Table 8-11). Table 8-3: a '
+        + 'read of a WO/SC element delivers zero except transiently, before '
+        + 'the module has evaluated and cleared what was written - so this '
+        + 'bit reports nothing about whether a reset is under way. Writing 1 '
+        + 'restarts the module.')}">
       <td>Software Reset</td>
-      <td>${d.software_reset ? yes : no}</td>
+      <td><span class="reg-meta">${esc(resetAccess)} trigger</span></td>
       <td class="td-addr">0x1A[3]</td>
       <td><button class="btn-danger btn-sm" id="btn-mod-reset">Reset Module</button></td>
     </tr>

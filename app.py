@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.110.0'
+__version__ = '2.111.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2069,8 +2069,16 @@ def api_module_control_get():
         return err
     try:
         ctrl_raw = _read_lower(0x1A, 1)
-        # 'raw' backs the UI hover tooltips, which quote the byte a control maps to
-        return _ok(dict(cmis.parse_module_control(ctrl_raw[0]), raw=ctrl_raw[0]))
+        # 'raw' backs the UI hover tooltips, which quote the byte a control maps to.
+        # 'access' travels with the values because one of these bits is WO/SC
+        # (Table 8-11) and reads back as zero whatever the module is doing -
+        # showing it in the same status column as the four RW bits claims it is
+        # state. The types come from here rather than being written down in the
+        # page as well: two copies of a table taken from the specification is
+        # how the two come to disagree.
+        return _ok(dict(cmis.parse_module_control(ctrl_raw[0]),
+                        raw=ctrl_raw[0],
+                        access=dict(cmis.MODULE_CONTROL_ACCESS)))
     except Exception as e:
         return _err(str(e), 500)
 
