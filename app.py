@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.111.0'
+__version__ = '2.112.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1971,6 +1971,13 @@ def api_datapath_get():
             'signal_integrity': si,
             'signal_integrity_active': si_active,
             'si_advertised': si_adv,
+            # 01h:161.6-5 is a count and the recall code is a buffer number,
+            # so the two are comparable and were never compared. The staged
+            # set is where a host-written value sits; the Active Control Set
+            # is the module's own report and is left to speak for itself.
+            'si_recall_unadvertised': cmis.recall_buffer_violations(
+                si.get('tx_eq_recall') or [],
+                si_adv.get('tx_input_eq_recall_buffers') or 0),
             'tx_disable_mask': tx_disable_mask,
             'dp_deinit_mask':  dp_deinit_mask,
             'tx_polarity_flip_mask': tx_pol_mask,

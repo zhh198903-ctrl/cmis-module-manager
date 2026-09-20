@@ -1705,6 +1705,26 @@ EQ_RECALL_NAMES = {
 }
 
 
+def recall_buffer_violations(values, buffers: int) -> list:
+    """Lanes whose recall code names a buffer the module did not advertise.
+
+    Tables 8-83, 8-88 and 8-104 encode these two bits identically - 00b do
+    not recall, 01b buffer 1, 10b buffer 2, 11b reserved - and all three cite
+    the same advertisement, 01h:161.6-5, which Table 8-54 defines as a
+    *count*: 01b is one buffer, 10b is two. So the value is an index and the
+    advertisement is a count, and a module with one buffer has no buffer 2.
+
+    11b in a lane is reserved rather than out of range: it names no buffer at
+    all, and the panel reports it as its own kind of wrong. 11b in the
+    advertisement is reserved too - there is then no count to judge against,
+    and it needs no case of its own here because no two-bit value can exceed
+    it. Neither does "do not recall" need one: 0 is over no count.
+    """
+    if not buffers:
+        return []
+    return [i + 1 for i, v in enumerate(values) if v < 3 and v > buffers]
+
+
 def parse_si_controls_adv(data: bytes) -> dict:
     """01h:161-162 (Table 8-54): which signal integrity controls exist."""
     b161 = data[0] if len(data) > 0 else 0

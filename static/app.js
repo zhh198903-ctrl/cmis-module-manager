@@ -2638,6 +2638,11 @@ function renderSignalIntegrity(d) {
   // by the module according to the selected Application".
   const siLive = d.signal_integrity_active || {};
   const adv = d.si_advertised || {};
+  // Which lanes stage a recall from a buffer this module never advertised.
+  // Worked out where the two registers are read, not here: the rule is that
+  // 01h:161.6-5 counts buffers and 10h:154-155 numbers them, and that is one
+  // fact about the specification, not one about the table.
+  const recallUnadvertised = d.si_recall_unadvertised || [];
   const cols = SI_COLUMNS.filter(([key]) => Array.isArray(si[key]));
 
   if (!cols.length) {
@@ -2724,19 +2729,33 @@ function renderSignalIntegrity(d) {
           + 'The equalizer is no longer tracking the host signal.')}"`
         + '>Frozen</span>'
       : '<span class="flag-ok">Adapting</span>'),
-    tx_eq_recall: (v) => {
+    tx_eq_recall: (v, i) => {
       if (v === 3) {
         return `<span class="flag-active" title="${esc(
           'Table 8-83 defines 11b as reserved - there is no third buffer to '
           + 'recall from. An Apply carrying this earns '
           + 'ConfigRejectedInvalidSI.')}">reserved (11b)</span>`;
       }
+      // The sibling columns are checked against what the module advertises
+      // by the generic cell below; this column has its own renderer and so
+      // was never checked against anything. 01h:161.6-5 is a count and this
+      // value is a buffer number.
+      if (recallUnadvertised.includes(i + 1)) {
+        return `<span class="flag-active" title="${esc(
+          'This module advertises '
+          + recallBuffersText(adv.tx_input_eq_recall_buffers).toLowerCase()
+          + ' (01h:161.6-5), so it has no ' + RECALL_NAMES[v] + ' to recall '
+          + 'from. An Apply carrying this earns ConfigRejectedInvalidSI - and '
+          + 'section 6.2.5 exempts the recall from ExplicitControl, so this '
+          + 'one travels with every Apply rather than only the explicit ones.'
+        )}">${esc(RECALL_NAMES[v])}</span>`;
+      }
       return v ? `<span class="flag-ok">${esc(RECALL_NAMES[v])}</span>`
                : `<span class="reg-meta">${esc(RECALL_NAMES[0])}</span>`;
     },
   };
-  const cell = (key, v) => {
-    if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v);
+  const cell = (key, v, i) => {
+    if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v, i);
     if (typeof v === 'boolean') {
       return v ? '<span class="flag-ok">On</span>'
                : `<span class="flag-warn">${key === 'rx_cdr_enable' ? 'Bypassed' : 'Off'}</span>`;
@@ -2790,20 +2809,31 @@ function renderSignalIntegrity(d) {
       const why = ignoredOnLane(key, i);
       if (why) {
         return `<td class="control-unavailable" title="${esc(why)}">`
-          + `${cell(key, si[key][i])}`
+          + `${cell(key, si[key][i], i)}`
           + '<div class="appsel-pending">ignored</div></td>';
       }
-      return `<td>${cell(key, si[key][i])}${inForce(key, i, si[key][i])}</td>`;
+      return `<td>${cell(key, si[key][i], i)}${inForce(key, i, si[key][i])}</td>`;
     }).join('') + '</tr>').join('');
 
   if (note) {
+    const notes = [];
     // Only pre-cursor advertised means the post-cursor bytes hold the
     // pre-cursor target instead (Table 8-84), so the address alone lies.
-    note.innerHTML = adv.rx_output_eq_control === 1
-      ? '\u26a0 ' + esc('This module advertises pre-cursor control only: the '
+    if (adv.rx_output_eq_control === 1) {
+      notes.push(esc('This module advertises pre-cursor control only: the '
         + 'post-cursor bytes carry the pre-cursor target')
-        + ' <span class="reg-meta">01h:162.4-3</span>'
-      : '';
+        + ' <span class="reg-meta">01h:162.4-3</span>');
+    }
+    // Table 8-54 defines 11b as reserved, so the module has not said how many
+    // recall buffers it has. The column is still shown - it advertises the
+    // feature as something - but no buffer number below can be checked, and
+    // silence would read as "checked and fine".
+    if (adv.tx_input_eq_recall_buffers === 3) {
+      notes.push(esc('This module advertises a reserved recall buffer count '
+        + '(11b), so the buffer numbers below cannot be checked against it')
+        + ' <span class="reg-meta">01h:161.6-5</span>');
+    }
+    note.innerHTML = notes.map(n => '\u26a0 ' + n).join('<br>');
   }
   if (hint) {
     const exempt = [];

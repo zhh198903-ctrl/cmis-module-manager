@@ -10039,7 +10039,7 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
 
     def test_the_marker_is_rendered_in_every_cell(self):
         js = self._js()
-        self.assertIn('${cell(key, si[key][i])}${inForce(key, i, si[key][i])}',
+        self.assertIn('${cell(key, si[key][i], i)}${inForce(key, i, si[key][i])}',
                       js, 'the marker is built and never placed in the row')
 
     def test_the_footnote_no_longer_says_apply_commits_them(self):
@@ -18891,6 +18891,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-82': 'Staged Control Set 0, Data Path Configuration (Page 10h)',
         '8-83': 'Staged Control Set 0, Tx Controls (Page 10h)',
         '8-84': 'Staged Control Set 0, Rx Controls (Page 10h)',
+        '8-88': 'Staged Control Set 1, Tx Controls (Page 10h)',
         '8-91': 'Lane-Specific Masks (Page 10h)',
         '8-92': 'Page 11h Overview',
         '8-93': 'Lane-associated Data Path States (Page 11h)',
@@ -24809,8 +24810,8 @@ class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
         ConfigRejectedInvalidSI. A host freezing adaptation gets no such
         answer, and the reserved recall code does."""
         body = self._body()
-        freeze = body[body.index('tx_eq_freeze: (v)'):]
-        freeze = freeze[:freeze.index('tx_eq_recall: (v)')]
+        freeze = body[body.index('tx_eq_freeze: ('):]
+        freeze = freeze[:freeze.index('tx_eq_recall: (')]
         self.assertIn('flag-warn', freeze)
         self.assertNotIn('flag-active', freeze)
         self.assertNotIn('ConfigRejected', freeze)
@@ -24819,8 +24820,8 @@ class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
         """The generic cell prints a clear bit as "Off" in the colour of a
         bypassed CDR. Here the clear bit is the healthy state."""
         body = self._body()
-        freeze = body[body.index('tx_eq_freeze: (v)'):]
-        freeze = freeze[:freeze.index('tx_eq_recall: (v)')]
+        freeze = body[body.index('tx_eq_freeze: ('):]
+        freeze = freeze[:freeze.index('tx_eq_recall: (')]
         self.assertIn('Adapting', freeze)
         self.assertIn('Frozen', freeze)
         self.assertNotIn(chr(62) + 'Off' + chr(60), freeze)
@@ -24830,7 +24831,7 @@ class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
         that any cell is rendered through it. Delete the one line that
         dispatches to it and every other check in this class still passes
         while the table shows "On" and "2"."""
-        self.assertIn('if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v);',
+        self.assertIn('if (TX_EQ_CELL[key]) return TX_EQ_CELL[key](v, i);',
                       self._body(),
                       'the bespoke cells are built and never called')
 
@@ -24845,7 +24846,7 @@ class TestTheOtherHalfOfTheEqualizer(CMISTestCase):
 
     def test_the_reserved_code_is_marked_and_names_the_answer(self):
         body = self._body()
-        recall = body[body.index('tx_eq_recall: (v)'):]
+        recall = body[body.index('tx_eq_recall: ('):]
         recall = recall[:recall.index('const cell =')]
         self.assertIn('v === 3', recall)
         self.assertIn('flag-active', recall)
@@ -27014,6 +27015,207 @@ class TestTheTriggerThatCameBackOnARead(CMISTestCase):
         row = self._control_row()
         self.assertNotIn("'WO/SC'", row)
         self.assertNotIn('"WO/SC"', row)
+
+
+class TestABufferThatIsNotThere(CMISTestCase):
+    """01h:161.6-5 is a count; the recall code is a buffer number.
+
+    Table 8-54 defines TxInputEqRecallBuffersSupported as "Tx Input Eq
+    Store/Recall buffer count": 01b is one buffer, 10b is two. Tables 8-83,
+    8-88 and 8-104 all encode the buffer itself in two bits - 00b do not
+    recall, 01b buffer 1, 10b buffer 2, 11b reserved - and all three cite
+    that same advertisement.
+
+    So the two are comparable, and nothing compared them. A module with one
+    recall buffer has no buffer 2, and a lane staging one was shown in the
+    same green as a lane staging a buffer that exists.
+
+    The column had already been taken out of the generic cell, which is where
+    this table checks an advertised ceiling (the Tx input eq target) and an
+    advertised set (the amplitude codes). A recall is a code rather than a
+    magnitude, so it got a renderer of its own - and inherited none of those
+    checks.
+
+    It matters more here than in the columns that do have them: section 6.2.5
+    exempts the recall from ExplicitControl - it "works also when the
+    ExplicitControl bit is not set" - so it is the one staged signal
+    integrity value this tool's own Apply carries."""
+
+    PROFILE = 'mock_fr4x2'
+
+    def _connect(self, backend=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend or self.PROFILE,
+                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _dp(self):
+        return self.assertOk(
+            self.client.get('/api/module/datapath'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _cell(self):
+        """The recall cell alone, comments stripped: the comment above it
+        names the advertisement too."""
+        body = js_function_body(self._js(), 'function renderSignalIntegrity(')
+        cell = body[body.index('tx_eq_recall: ('):body.index('const cell =')]
+        cell = re.sub('//[^' + chr(10) + ']*', '', cell)
+        self.assertNotIn('inherited none', cell, 'comments were not stripped')
+        return cell
+
+    # ---- the rule ---------------------------------------------------------
+    def test_a_buffer_past_the_advertised_count_is_named(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.recall_buffer_violations([1, 0, 2, 0, 0, 0, 0, 0], 1), [3])
+
+    def test_the_same_lanes_are_fine_on_a_module_with_two(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.recall_buffer_violations([1, 0, 2, 0, 0, 0, 0, 0], 2), [])
+
+    def test_not_recalling_is_never_a_violation(self):
+        import cmis_registers as c
+        self.assertEqual(c.recall_buffer_violations([0] * 8, 1), [])
+
+    def test_the_reserved_code_is_not_reported_as_out_of_range(self):
+        """11b names no buffer at all. It is already marked as reserved, and
+        reporting it twice, in two different words, is worse than once."""
+        import cmis_registers as c
+        self.assertEqual(c.recall_buffer_violations([3, 3, 3, 3], 1), [])
+        self.assertEqual(c.recall_buffer_violations([3, 3, 3, 3], 2), [])
+
+    def test_a_reserved_advertisement_judges_nothing(self):
+        """11b in 01h:161.6-5 is reserved too, so there is no count to judge
+        against. The panel says so in its own words; nothing is flagged as
+        out of range on the strength of a number that is not one."""
+        import cmis_registers as c
+        self.assertEqual(c.recall_buffer_violations([2, 2, 2, 2], 3), [])
+
+    def test_a_module_that_advertises_none_judges_nothing(self):
+        """The column is not shown at all then; nothing can be said about
+        values in a register the module does not implement."""
+        import cmis_registers as c
+        self.assertEqual(c.recall_buffer_violations([1, 2, 1, 2], 0), [])
+
+    def test_every_lane_past_the_count_is_listed(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.recall_buffer_violations([2, 1, 2, 0, 2, 0, 0, 0], 1), [1, 3, 5])
+
+    def test_the_lanes_are_numbered_from_one(self):
+        """The panel numbers rows from 1, and a list that meant indices would
+        colour the row above the one at fault."""
+        import cmis_registers as c
+        self.assertEqual(c.recall_buffer_violations([0, 2], 1), [2])
+
+    # ---- through the endpoint ---------------------------------------------
+    def test_a_shipped_profile_advertises_a_single_buffer(self):
+        """Every profile that advertised the feature at all advertised two,
+        so the comparison had nothing to find and would pass unwritten."""
+        self._connect()
+        d = self._dp()
+        self.assertEqual(d['si_advertised']['tx_input_eq_recall_buffers'], 1)
+        self.assertEqual(d['signal_integrity']['tx_eq_recall'][:4],
+                         [1, 0, 2, 0])
+
+    def test_the_endpoint_names_the_lane(self):
+        self._connect()
+        self.assertEqual(self._dp()['si_recall_unadvertised'], [3])
+
+    def test_a_module_with_two_buffers_has_nothing_flagged(self):
+        """mock_sr8 stages buffer 1, buffer 2 and the reserved code. Only
+        the reserved one is wrong there, and it is wrong in a different
+        way."""
+        self._connect('mock_sr8')
+        d = self._dp()
+        self.assertEqual(d['si_advertised']['tx_input_eq_recall_buffers'], 2)
+        self.assertEqual(d['signal_integrity']['tx_eq_recall'][:5],
+                         [1, 2, 0, 0, 3])
+        self.assertEqual(d['si_recall_unadvertised'], [])
+
+    def test_the_module_does_not_recall_from_a_buffer_it_lacks(self):
+        """The staged value is a request a previous host could leave behind.
+        The Active Control Set is the module's own report, and a module with
+        one buffer cannot have recalled from a second one."""
+        self._connect()
+        d = self._dp()
+        self.assertEqual(d['signal_integrity']['tx_eq_recall'][2], 2,
+                         'lane 3 asks for buffer 2')
+        self.assertEqual(d['signal_integrity_active']['tx_eq_recall'][2], 0,
+                         'and the module reports no recall there')
+        self.assertEqual(d['signal_integrity_active']['tx_eq_recall'][0], 1,
+                         'the buffer it does have still recalls')
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_cell_marks_the_lane_the_server_named(self):
+        """The branch on its own: the reserved code above it is already
+        flag-active, so asserting on the whole cell passes with this one
+        rendered in the green of a healthy setting."""
+        cell = self._cell()
+        branch = cell[cell.index('recallUnadvertised.includes(i + 1)'):]
+        branch = branch[:branch.index('return v ?')]
+        self.assertIn('flag-active', branch)
+        self.assertNotIn('flag-ok', branch)
+
+    def test_the_cell_says_what_the_module_advertised(self):
+        """"Invalid" without the advertisement is a dead end: the operator
+        cannot tell whether to change the value or the module."""
+        cell = re.sub(r"'\s*\+\s*'", '', self._cell())
+        self.assertIn('01h:161.6-5', cell)
+        self.assertIn('This module advertises', cell)
+        self.assertIn('ConfigRejectedInvalidSI', cell)
+
+    def test_the_cell_says_why_this_one_is_not_merely_staged(self):
+        """Every other value in this table is only a request while
+        ExplicitControl is clear, which is what this tool writes. This one
+        is not, and a reader who knows the general rule would file it under
+        harmless."""
+        cell = re.sub(r"'\s*\+\s*'", '', self._cell())
+        self.assertIn('6.2.5', cell)
+        self.assertIn('ExplicitControl', cell)
+
+    def test_the_lane_index_reaches_the_bespoke_cell(self):
+        """The check is per lane, and the renderer that needs it is the one
+        the generic dispatch calls without an index."""
+        body = js_function_body(self._js(), 'function renderSignalIntegrity(')
+        self.assertIn('TX_EQ_CELL[key](v, i)', body)
+        self.assertIn('cell(key, si[key][i], i)', body)
+
+    def test_the_page_does_not_work_the_rule_out_for_itself(self):
+        """The comparison is one fact about the specification. Two copies of
+        it is how the two come to disagree."""
+        cell = self._cell()
+        self.assertNotIn('tx_input_eq_recall_buffers <', cell)
+        self.assertNotIn('> adv.tx_input_eq_recall_buffers', cell)
+
+    def test_a_reserved_advertisement_is_said_out_loud(self):
+        """With no count, no value below can be checked - and a panel that
+        checks the other columns and says nothing here reads as checked."""
+        body = js_function_body(self._js(), 'function renderSignalIntegrity(')
+        note = body[body.index('if (note) {'):body.index('if (hint) {')]
+        note = re.sub(r"'\s*\+\s*'", '', note)
+        self.assertIn('tx_input_eq_recall_buffers === 3', note)
+        self.assertIn('cannot be checked against it', note)
+
+    def test_the_older_note_still_shows_beside_it(self):
+        """The pre-cursor caveat was a single ternary. Two warnings that can
+        both apply must both appear."""
+        body = js_function_body(self._js(), 'function renderSignalIntegrity(')
+        note = body[body.index('if (note) {'):body.index('if (hint) {')]
+        self.assertIn('rx_output_eq_control === 1', note)
+        self.assertIn('notes.push', note)
+        self.assertNotIn('note.innerHTML = adv.', note)
+        # Collecting both and rendering the first is the same bug in a
+        # different place, and reads identically in every other assertion.
+        self.assertIn('notes.map(', note)
+        self.assertNotIn('notes[0]', note)
 
 
 if __name__ == '__main__':

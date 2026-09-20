@@ -859,6 +859,14 @@ _FR4X2_800G = {
     'si_153': 0x33,                          # amplitude codes 0-1; Tx eq max 3
     'si_154': 0x25,                          # post-cursor max 2, pre-cursor max 5
     'scs_rx_amplitude': 0x11,                # code 1 - one this module has
+    # The restricted module's recall is restricted too: 01h:161.6-5 = 01b is
+    # a buffer count of one (Table 8-54), where every other profile that
+    # advertises the feature at all has two. Lane 3 stages a recall from
+    # buffer 2 - a value a previous host could leave behind and the module
+    # has nowhere to recall from, which nothing in this tool compared against
+    # the advertisement.
+    'si_161':              0x2F,             # one recall buffer, no freeze
+    'scs_eq_recall':       (0x21, 0x00),     # lane 1 buffer 1, lane 3 buffer 2
     'link_lengths': {'smf_len_byte': 0x14},   # 20 × 0.1 km = 2 km
 }
 
@@ -2098,7 +2106,11 @@ class MockBackend(I2CInterface):
         the specification does not have.
         """
         want = self._lane_value(0x10, 0x9A, lane, 2)
-        return want if want in (1, 2) else 0
+        # And only the buffers this module says it has: 01h:161.6-5 is a
+        # count (Table 8-54), so a module advertising one cannot report a
+        # recall from buffer 2 however the staged set asks for it.
+        buffers = (self._profile.get('si_161', 0x0F) >> 5) & 0x03
+        return want if want in (1, 2) and want <= buffers else 0
 
     def _application_si(self, active: int, lane: int) -> int:
         """What this module picks for a lane it was left to configure itself.
