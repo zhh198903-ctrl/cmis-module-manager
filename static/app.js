@@ -3688,8 +3688,19 @@ async function applyLoopback() {
 // ---------------------------------------------------------------------------
 // PRBS (Diagnostics tab)
 // ---------------------------------------------------------------------------
+// Two of the four Mask blocks in CMIS ship set rather than clear: the laser
+// tuning Masks (Table 8-109, "Default: 1" on every bit) and these, where
+// Table 8-133 says it in one line - "The default value for all Mask bits on
+// this page is 1 (masked)". The other two, Tables 8-12 and 8-91, state no
+// default at all.
+const PRBS_MASK_TIP = 'Masked in 13h:206-213, so the module reports this here '
+  + 'but will not assert the Interrupt line for it. Table 8-133 says every '
+  + 'Mask bit on that page defaults to 1, so this is how a module ships '
+  + 'unless a host clears it.';
+
 function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
-                         isChecker, controls, location, lolMaskBanks) {
+                         isChecker, controls, location, lolMaskBanks,
+                         lolMasked) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   // The role used to be inferred from whether a LOL mask was passed, which
@@ -3785,12 +3796,25 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
       // thing a long run is for. The flag is cleared by the read that saw it,
       // so a checker that slipped and recovered reads as locked.
       const slipped = !!(lolSeen && lolSeen[i]);
+      // 8.1.4.2: a Flag raises an Interrupt "unless an associated Mask bit is
+      // set", and Table 8-133 ships every Mask on Page 13h set. So by default
+      // none of this column reaches the host, and a run left unattended in
+      // the expectation of an interrupt would finish having told nobody.
+      // Marked on the states that change what to conclude; on a quiet lane it
+      // is a title rather than more text, because the default is masked and
+      // four tables of "masked" is noise nobody reads.
+      const off = !!(lolMasked && lolMasked[i]);
+      const maskNote = off
+        ? ` <span class="flag-none" title="${esc(PRBS_MASK_TIP)}">masked</span>`
+        : '';
       lolCell = `<td>${lol
-        ? '<span class="flag-active">LOL</span>'
+        ? '<span class="flag-active">LOL</span>' + maskNote
         : slipped
         ? `<span class="flag-was" title="${esc(role + ' is locked now, but lock '
           + 'was lost since the flag history was cleared')}">&#9679;<sup>!</sup></span>`
-        : '<span class="flag-ok">●</span>'}</td>`;
+          + maskNote
+        : `<span class="flag-ok"${off ? ` title="${esc(PRBS_MASK_TIP)}"` : ''}`
+          + '>●</span>'}</td>`;
     }
     // Lane i's 4-bit pattern selector sits in the low or high nibble of
     // pattern byte base+4+(i>>1).
@@ -3927,18 +3951,22 @@ async function loadPrbs() {
   const pl = d.pattern_locations || {};
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
                    d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false,
-                   pc.host_gen, pl.host_gen, d.host_gen_lol_mask_banks);
+                   pc.host_gen, pl.host_gen, d.host_gen_lol_mask_banks,
+                   d.host_gen_lol_masked);
   _renderPrbsTable('tbl-prbs-media-gen', d.media_gen, d.media_gen_lol_mask, 0x98, 'Media',
                    d.media_gen_lol_seen, (d.pattern_capabilities || {}).media_gen, false,
-                   pc.media_gen, pl.media_gen, d.media_gen_lol_mask_banks);
+                   pc.media_gen, pl.media_gen, d.media_gen_lol_mask_banks,
+                   d.media_gen_lol_masked);
   _renderPrbsTable('tbl-prbs-host-chk',  d.host_chk,  d.host_chk_lol_mask,  0xA0,
                    'Host', d.host_chk_lol_seen,
                    (d.pattern_capabilities || {}).host_chk, true, pc.host_chk,
-                   pl.host_chk, d.host_chk_lol_mask_banks);
+                   pl.host_chk, d.host_chk_lol_mask_banks,
+                   d.host_chk_lol_masked);
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
                    'Media', d.media_chk_lol_seen,
                    (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
-                   pl.media_chk, d.media_chk_lol_mask_banks);
+                   pl.media_chk, d.media_chk_lol_mask_banks,
+                   d.media_chk_lol_masked);
   // 13h:176 and 178 (Table 8-127) say where each engine takes its clock
   // from. It changes what a pattern run means - an internally clocked
   // generator is not being driven by the host's clock at all - and it is what
@@ -3970,6 +3998,15 @@ async function loadPrbs() {
     // and was gone next refresh - which reads as "the reference came back",
     // something the module never said. What it warns about outlives the Flag.
     const refEver = d.reference_clock_lost || d.reference_clock_lost_seen;
+    // 13h:206.7 masks this one (Table 8-133), module-wide rather than per
+    // lane like the rest of the block. Worth saying beside a warning the
+    // operator may be assuming they would have been interrupted about.
+    const refMasked = d.reference_clock_masked
+      ? ` <span class="flag-none" title="${esc(
+          'Masked in 13h:206.7, so the module records this but does not '
+          + 'assert the Interrupt line for it. Table 8-133 defaults every '
+          + 'Mask bit on that page to 1.')}">masked</span>`
+      : '';
     refNote.innerHTML = !refEver ? ''
       : !d.reference_clock_lost
       ? '<span class="flag-was">Loss of reference clock — seen since the '
@@ -3992,6 +4029,7 @@ async function loadPrbs() {
         + '<span class="reg-meta">14h:132.7 — no generator or checker on '
         + 'this page is clocked from the reference clock (13h:176/178), so the '
         + 'patterns below are unaffected</span>';
+    if (refEver) refNote.innerHTML += refMasked;
   }
 }
 
@@ -4184,17 +4222,17 @@ function supervisionCell(l, offsets) {
 }
 
 // 8.2.1 defines the Interrupt line in one sentence: it "is asserted as long
-// as any Flag is set with its associated Mask cleared". Three of the four
-// Flag blocks in CMIS were already reported that way; this is the fourth,
-// and it is the one where masked is the module's shipped state - Table 8-109
-// gives every bit of 12h:239-246 "Default: 1". So on a module nobody has
+// as any Flag is set with its associated Mask cleared". Table 8-109 writes
+// "Default: 1" against every bit of 12h:239-246, so on a module nobody has
 // configured, every chip in this column is a condition the host will never
 // be told about, and saying nothing about that is the misleading half.
+//
+// Not unique to this block, as an earlier round claimed: the diagnostics
+// Masks on Page 13h ship the same way. Two of the four, not one.
 const TUNING_MASK_TIP = 'Masked in 12h:239-246, so the module reports this '
   + 'condition here but will not assert the Interrupt line for it. Every bit '
-  + 'of that register is "Default: 1" in Table 8-109 - unlike every other '
-  + 'Mask block in CMIS - so this is how a module ships unless a host clears '
-  + 'it.';
+  + 'of that register is "Default: 1" in Table 8-109, so this is how a module '
+  + 'ships unless a host clears it.';
 
 function tuningFlagCell(lane) {
   const live = Object.keys(TUNING_FLAG_LABELS).filter(k => lane.tuning_flags && lane.tuning_flags[k]);

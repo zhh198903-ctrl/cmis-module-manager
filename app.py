@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.103.0'
+__version__ = '2.104.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3121,6 +3121,15 @@ def api_prbs_get():
             media_gate_banks = _flag_banks(cmis.REG_MEDIA_GATE_DONE)
             # 132.7, module-wide rather than per lane.
             ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
+            # 13h:206-213, the Masks for every Flag above. 8.1.4.2: "While a
+            # Flag is set, an Interrupt request is generated unless an
+            # associated Mask bit is set" - and Table 8-133 states the
+            # default in one line, "The default value for all Mask bits on
+            # this page is 1 (masked)". So on a module nobody has configured,
+            # a checker that loses lock raises a Flag the host is never told
+            # about, and this panel could not say so.
+            diag_mask_banks = [raw for _b, raw in
+                               _read_banks(*cmis.REG_DIAG_FLAG_MASKS)]
             # Whether that matters here is a question about 13h:176 and 178:
             # a generator on the internal clock and a checker on a recovered
             # clock do not stop working because the reference clock went away.
@@ -3131,6 +3140,7 @@ def api_prbs_get():
             host_lol_banks = media_lol_banks = list(_z)
             host_gen_lol_banks = media_gen_lol_banks = list(_z)
             host_gate_banks = media_gate_banks = list(_z)
+            diag_mask_banks = []
             ref_clock_lost = False
             clock_sources = {}
         # Latched and cleared by the read that just happened, so a checker that
@@ -3165,6 +3175,27 @@ def api_prbs_get():
             return [bool(name in history.get(lane + 1, ()))
                     for lane in range(_state['lanes'])]
 
+        def diag_masked(flag_addr):
+            """One bit per lane, from the Mask byte that governs this Flag.
+
+            Per lane because the Masks are: a host that cares about one lane's
+            checker clears one bit, and reporting the byte would say the
+            others were watched too.
+            """
+            if not diag_mask_banks:
+                return [False] * _state['lanes']
+            addr = cmis.diag_mask_addr(flag_addr)
+            off = addr - cmis.REG_DIAG_FLAG_MASKS[1]
+            out = []
+            for blk in diag_mask_banks:
+                out += cmis.parse_lane_flags(blk[off] if off < len(blk) else 0)
+            return out[:_state['lanes']]
+
+        # 14h:132.7 is module-wide, so its Mask is one bit rather than a lane
+        # map: 13h:206.7 (Table 8-133).
+        ref_clock_masked = bool(
+            diag_mask_banks and (diag_mask_banks[0][0] & 0x80))
+
         return _ok({
             'pattern_capabilities': _diag_caps()['patterns'],
             # Table 8-115. The page used to carry its own list of names and it
@@ -3188,6 +3219,16 @@ def api_prbs_get():
             'media_chk_lol_mask_banks': media_lol_banks,
             'host_chk_lol_seen':  lol_seen('host_prbs_lol'),
             'media_chk_lol_seen': lol_seen('media_prbs_lol'),
+            # Which of these the module will actually interrupt about. Read
+            # alongside the Flags rather than cached at connect, because a
+            # Mask is RW and a host may have cleared one since.
+            'host_chk_lol_masked':  diag_masked(cmis.REG_HOST_PRBS_LOL[1]),
+            'media_chk_lol_masked': diag_masked(cmis.REG_MEDIA_PRBS_LOL[1]),
+            'host_gen_lol_masked':  diag_masked(cmis.REG_HOST_GEN_LOL[1]),
+            'media_gen_lol_masked': diag_masked(cmis.REG_MEDIA_GEN_LOL[1]),
+            'host_gate_done_masked':  diag_masked(cmis.REG_HOST_GATE_DONE[1]),
+            'media_gate_done_masked': diag_masked(cmis.REG_MEDIA_GATE_DONE[1]),
+            'reference_clock_masked': ref_clock_masked,
             'host_gen_lol_mask':  host_gen_lol_banks[0],
             'media_gen_lol_mask': media_gen_lol_banks[0],
             'host_gen_lol_mask_banks':  host_gen_lol_banks,
@@ -3527,12 +3568,13 @@ def api_laser_get():
         target_pwr   = _read_banked(*cmis.REG_TARGET_PWR_TX[:2], 2)
         tuning_status= _read_banked(*cmis.REG_TUNING_STATUS_TX[:2], 1)
         tuning_flags = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
-        # The fourth Flag/Mask pair in the specification, and the one this
-        # tool had not paired. 8.2.1 defines Interrupt in one sentence - it
-        # "is asserted as long as any Flag is set with its associated Mask
+        # One of the four Flag/Mask pairs in the specification, and one
+        # this tool had not paired. 8.2.1 defines Interrupt in one sentence -
+        # it "is asserted as long as any Flag is set with its associated Mask
         # cleared" - and Table 8-109 gives every bit of 12h:239-246
         # "Default: 1", so on a module out of reset none of these Flags
-        # reaches the host at all.
+        # reaches the host at all. The diagnostics Masks on Page 13h ship the
+        # same way (Table 8-133); the other two blocks state no default.
         tuning_masks = _read_banked(*cmis.REG_TUNING_FLAG_MASKS[:2], 1)
         # 12h:230. Defined as exact rather than advisory - bit <n>-1 is set
         # "if and only if" a Flag is set for that lane - and the note under

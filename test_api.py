@@ -18162,13 +18162,16 @@ class TestTheInterruptLineIsReportedAndModelled(CMISTestCase):
             c.FLAG_MASK_BLOCKS,
             ((None, 0x08, None, 0x1F, 6),
              (0x11, 0x86, 0x10, 0xD5, 20),
-             (0x14, 0x84, 0x13, 0xCE, 18),
+             (0x14, 0x84, 0x13, 0xCE, 8),
              (0x12, 0xE7, 0x12, 0xEF, 8)))
         # Lower: Flags 8-13 (Table 8-9) against Masks 31-36 (Table 8-12).
         self.assertEqual(0x1F - 0x08, 23)
-        # 11h:134-153 against 10h:213-232, and 14h:132-149 against 13h:206-223.
+        # 11h:134-153 against 10h:213-232.
         self.assertEqual((0x86, 0xD5, 20), (134, 213, 20))
-        self.assertEqual((0x84, 0xCE, 18), (132, 206, 18))
+        # 14h:132-139 against 13h:206-213. Eight, not the eighteen both
+        # overview tables imply: Table 8-138 defines the Flags at 132-139 and
+        # Table 8-133 the Masks at 206-213, marking 214-223 Reserved[10].
+        self.assertEqual((0x84, 0xCE, 8), (132, 206, 8))
         # 12h:231-238 against 12h:239-246 - the one pair that shares a page
         # with its Flags rather than living on the paired control page.
         self.assertEqual((0xE7, 0xEF, 8), (231, 239, 8))
@@ -18910,6 +18913,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-127': 'Clocking and Measurement Controls (Page 13h)',
         '8-129': 'PRBS Checker Behavior Single Gate Timer',
         '8-131': 'Loopback Controls (Page 13h)',
+        '8-133': 'Diagnostics Masks (Page 13h)',
         '8-134': 'User Pattern (Page 13h)',
         '8-135': 'Page 14h Overview',
         '8-138': 'Latched Diagnostics Flags (Page 14h)',
@@ -24882,12 +24886,12 @@ class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
         14h:132-149  <- 13h:206-223
         12h:231-238  <- 12h:239-246      <- not read at all
 
-    The laser tuning block was the one left out, and it is the one that
-    matters most, because Table 8-109 gives every bit of 12h:239-246
-    "Default: 1". Every other Mask block in the specification starts cleared.
-    So on a module nobody has configured, every tuning Flag on the panel is a
-    condition that will never reach the host - and the tuning panel was the
-    only one of the four that could not say so.
+    The laser tuning block was the one left out, and it is one of the two
+    that ship masked: Table 8-109 gives every bit of 12h:239-246 "Default: 1",
+    and Table 8-133 says the same of the diagnostics Masks on Page 13h in one
+    line. Tables 8-12 and 8-91 state no default at all. So on a module nobody
+    has configured, every tuning Flag on the panel is a condition that will
+    never reach the host - and the tuning panel could not say so.
 
     Two further things came off the same page:
 
@@ -25164,8 +25168,8 @@ class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
 
     def test_the_marker_names_the_register_and_the_default(self):
         """A reader told "masked" has to be able to find the byte, and the
-        default is the part that is surprising - every other Mask block in
-        CMIS starts cleared."""
+        default is the part that is surprising - a Mask that ships set is the
+        exception in CMIS, not the rule."""
         js = self._js()
         tip = js[js.index('const TUNING_MASK_TIP'):]
         tip = tip[:tip.index(';')]
@@ -25213,6 +25217,265 @@ class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
         self.assertIn('c.summary', body, 'both cases get the same sentence')
         self.assertIn('with no Flag set behind it', body)
         self.assertIn('the summary does not name', body)
+
+
+class TestTheDiagnosticsFlagsNobodyIsToldAbout(CMISTestCase):
+    """The same fault as the laser tuning block, on the block the round that
+    fixed that one described wrongly.
+
+    The diagnostics Flags live on 14h:132-139 - loss of reference clock,
+    per-lane gating complete, pattern generator LOL, pattern checker LOL -
+    and this tool reads and remembers every one of them. Their Masks are on
+    13h:206-213 and were never read. Table 8-133 states the default in a
+    single line: "The default value for all Mask bits on this page is 1
+    (masked)." So on a module nobody has configured, a checker that loses
+    lock mid-run raises a Flag the host is never interrupted about, and the
+    PRBS panel could not say so.
+
+    That is also the correction. The previous round said the laser tuning
+    Masks were the only block in CMIS that ships masked and that "every other
+    Mask block starts cleared". Two of the four do. Table 8-133, quoted
+    above, says it of this block; Table 8-109 writes "Default: 1" against
+    every bit of the laser tuning one. The module-level and lane-specific
+    blocks state no default at all. The claim shipped in a tooltip, the
+    manual, the skill and the release notes.
+
+    And the block is ten bytes shorter than this tool had it. FLAG_MASK_BLOCKS
+    paired eighteen bytes, 14h:132-149 against 13h:206-223, which is what both
+    overview tables imply - Table 8-112 says "206-223 | 18 | Masks for Flags
+    in Bytes 14h:132-149", and Table 8-135 has a row whose byte column says
+    "132-139" and whose size column says "18". The detail tables settle it:
+    Table 8-138 defines Flags at 132-139 and stops, Table 8-133 defines Masks
+    at 206-213 and marks 214-223 Reserved[10], and Table 8-135's own next row
+    marks 140-149 Reserved[10]. Checked against the rendered page, not the
+    text extraction. Nothing consumed the wrong length yet, which is the only
+    reason it was harmless."""
+
+    PROFILE = 'mock_dr8'
+
+    def _connect(self, backend=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend or self.PROFILE,
+                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the block is eight bytes ---------------------------------------
+    def test_the_flags_stop_where_the_detail_table_stops(self):
+        """Table 8-138's last row is 139. 140-149 is Reserved[10] in Table
+        8-135's own next row, so the eighteen in its size column contradicts
+        the table it sits in."""
+        import cmis_registers as c
+        flag_page, first, mask_page, mask_first, n = c.FLAG_MASK_BLOCKS[2]
+        self.assertEqual((flag_page, first), (0x14, 132))
+        self.assertEqual((mask_page, mask_first), (0x13, 206))
+        self.assertEqual(n, 8)
+        self.assertEqual(first + n - 1, 139)
+        self.assertEqual(mask_first + n - 1, 213)
+
+    def test_the_masks_register_covers_the_same_eight(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_DIAG_FLAG_MASKS, (0x13, 206, 8))
+
+    def test_every_diagnostics_flag_byte_is_inside_the_block(self):
+        """Seven bytes are read one at a time elsewhere in this tool. If one
+        of them sat outside the pairing, its Mask would be looked up at an
+        address that masks something else."""
+        import cmis_registers as c
+        _fp, first, _mp, _mf, n = c.FLAG_MASK_BLOCKS[2]
+        for reg in (c.REG_REF_CLOCK_LOL, c.REG_HOST_GATE_DONE,
+                    c.REG_MEDIA_GATE_DONE, c.REG_HOST_GEN_LOL,
+                    c.REG_MEDIA_GEN_LOL, c.REG_HOST_PRBS_LOL,
+                    c.REG_MEDIA_PRBS_LOL):
+            self.assertEqual(reg[0], 0x14)
+            self.assertTrue(first <= reg[1] < first + n,
+                            '14h:%d is outside 14h:%d-%d'
+                            % (reg[1], first, first + n - 1))
+
+    def test_the_mask_address_is_the_flag_address_shifted(self):
+        import cmis_registers as c
+        self.assertEqual(c.diag_mask_addr(132), 206)
+        self.assertEqual(c.diag_mask_addr(138), 212)
+        self.assertEqual(c.diag_mask_addr(139), 213)
+
+    def test_the_shift_follows_the_table_rather_than_a_literal(self):
+        """Derived from FLAG_MASK_BLOCKS, so moving the block moves the
+        helper with it instead of leaving a constant behind."""
+        import cmis_registers as c
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'cmis_registers.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        body = src[src.index('def diag_mask_addr('):]
+        body = body[:body.index(chr(10) + chr(10) + chr(10))]
+        self.assertIn('FLAG_MASK_BLOCKS', body,
+                      'the offset is written out rather than derived')
+
+    # ---- the demo module can come out of reset ---------------------------
+    def test_the_demo_module_ships_with_its_diagnostics_masks_set(self):
+        self._connect('mock_sr8')
+        d = self._prbs()
+        self.assertTrue(all(d['host_chk_lol_masked']),
+                        'every checker LOL on this module can interrupt, '
+                        'which is not how one ships')
+        self.assertTrue(d['reference_clock_masked'])
+
+    def test_and_a_host_can_have_cleared_some(self):
+        """Per lane and per Flag, because that is how a host clears them: one
+        bit for the one condition it is watching."""
+        self._connect()
+        d = self._prbs()
+        self.assertEqual(d['host_chk_lol_masked'][:4],
+                         [False, False, True, True],
+                         'the unmasked branch is never rendered')
+        self.assertTrue(all(d['media_chk_lol_masked']),
+                        'and the masked branch is never rendered either')
+
+    def test_each_flag_reads_its_own_mask_byte(self):
+        """Six per-lane Flags, six Mask bytes. Reading one byte for all of
+        them would report the checker's Mask against the generator's Flag."""
+        self._connect()
+        d = self._prbs()
+        self.assertNotEqual(d['host_chk_lol_masked'],
+                            d['host_gen_lol_masked'],
+                            'the generator and the checker read the same '
+                            'Mask byte')
+        self.assertEqual(d['host_gen_lol_masked'], [True] * 8)
+        self.assertEqual(d['host_gate_done_masked'], [True] * 8)
+
+    def test_the_module_wide_flag_has_a_module_wide_mask(self):
+        """13h:206.7 is one bit, not a lane map: 14h:132.7 is about the
+        module's reference clock, not a lane's. Bits 6-0 of that byte are
+        Reserved, so reading any of them instead answers about nothing."""
+        self._connect()
+        self.assertTrue(self._prbs()['reference_clock_masked'],
+                        'the one defined bit of 13h:206 reads clear')
+
+    def test_the_mask_byte_leaves_its_reserved_bits_alone(self):
+        """13h:206 has one defined bit and seven Reserved; 207 is
+        Reserved[1]. A demo module with 0xFF in both sets bits the table
+        reserves - and it makes bit 7 indistinguishable from bit 0, so a
+        reader taking the wrong one looks right."""
+        self._connect()
+        raw = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x13, 'address': 206, 'length': 2}),
+            content_type='application/json'))['data']['data']
+        self.assertEqual(raw[0], 0x80, '13h:206 sets Reserved bits')
+        self.assertEqual(raw[1], 0x00, '13h:207 is Reserved[1]')
+
+    def test_a_module_without_the_pages_reports_nothing_rather_than_false(self):
+        """A flat-memory module has no Page 13h to read, and the endpoint
+        falls back rather than failing. "Not masked" would be a claim about a
+        register that is not there."""
+        self._connect('mock_flat_dac')
+        rv = self.client.get('/api/module/prbs')
+        if rv.status_code != 200:
+            return
+        d = json.loads(rv.data)['data']
+        got = d.get('host_chk_lol_masked')
+        # One entry per lane, all false - not an empty list. The table indexes
+        # this by lane, and a short answer silently reads as unmasked for
+        # every lane past the end, which is the same claim by another route.
+        self.assertEqual(got, [False] * app_module._state['lanes'],
+                         'a module with no Page 13h did not answer per lane')
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_lol_column_marks_a_masked_flag(self):
+        js = self._js()
+        body = js[js.index('function _renderPrbsTable('):]
+        body = body[:body.index('function ', 40)]
+        self.assertIn('lolMasked', body, 'the table never reads the Masks')
+        self.assertIn('const off = !!(lolMasked && lolMasked[i]);', body,
+                      'the marker is not gated on this lane\u2019s own Mask')
+        self.assertIn('PRBS_MASK_TIP', body)
+
+    def test_all_four_tables_are_given_the_masks(self):
+        """Generators and checkers, host and media: four calls, and one left
+        out is a table that silently says every Flag can interrupt."""
+        js = self._js()
+        for key in ('host_gen_lol_masked', 'media_gen_lol_masked',
+                    'host_chk_lol_masked', 'media_chk_lol_masked'):
+            self.assertIn('d.' + key, js, '%s never reaches the table' % key)
+
+    def test_a_fired_flag_and_a_remembered_one_are_both_marked(self):
+        """A Flag that fired while masked is still a Flag nobody was told
+        about, and the history marker is exactly where that matters."""
+        js = self._js()
+        body = js[js.index("const off = !!(lolMasked && lolMasked[i]);"):]
+        body = body[:body.index('</td>`;') + 7]
+        self.assertEqual(body.count('maskNote'), 3,
+                         'one of the three states is unmarked')
+
+    def test_the_marker_names_the_register_and_the_default(self):
+        js = self._js()
+        tip = js[js.index('const PRBS_MASK_TIP'):]
+        tip = tip[:tip.index(';')]
+        self.assertIn('13h:206-213', tip)
+        self.assertIn('Interrupt', tip)
+        self.assertIn('defaults to 1', tip)
+
+    def test_the_reference_clock_note_says_when_it_is_masked(self):
+        js = self._js()
+        body = js[js.index('const refMasked'):]
+        body = body[:body.index('refNote.innerHTML')]
+        self.assertIn('13h:206.7', body)
+        self.assertIn('Interrupt', body)
+
+    def test_the_reference_clock_marker_is_actually_appended(self):
+        """Built and never placed is the standing trap here."""
+        self.assertIn('if (refEver) refNote.innerHTML += refMasked;',
+                      self._js())
+
+    # ---- the claim that was one block short ------------------------------
+    def test_two_mask_blocks_ship_masked_not_one(self):
+        """Two of the four Mask blocks ship masked: the laser tuning one,
+        where Table 8-109 writes "Default: 1" against every bit, and the
+        diagnostics one, where Table 8-133 says it in a single line. The
+        module-level and lane-specific blocks state no default. Nothing in
+        this tool may say otherwise."""
+        # Assembled from fragments: spelled out, the needles would occur in
+        # this file and the guard would fail on itself.
+        needles = [' '.join(w) for w in (
+            ('every', 'other', 'Mask', 'block', 'in', 'CMIS'),
+            ('every', 'other', 'Mask', 'block', 'in', 'the', 'specification'),
+            ('The', 'only', 'Mask', 'block', 'in', 'CMIS'),
+            ('unlike', 'every', 'other', 'Mask'),
+        )]
+        # The claim shipped in Chinese too, where the English needles above
+        # cannot reach it. Same two sentences, same fault.
+        needles += [''.join(w) for w in (
+            ('规范里其余每一组',
+             '屏蔽位都是默认清零'),
+            ('规范里其余每组',
+             '屏蔽位都默认清零'),
+        )]
+        here = os.path.dirname(os.path.abspath(__file__))
+        # The shipped text as well as the source: the claim was in a tooltip,
+        # the manual and the skill, and a correction that stops at the code
+        # leaves it on the screen.
+        for name in ('static/app.js', 'app.py', 'cmis_registers.py',
+                     'test_api.py', 'skill/SKILL.md',
+                     'CMIS2Customer/CMIS模块管理工具'
+                     '操作手册.html'):
+            path = os.path.join(here, *name.split('/'))
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding='utf-8') as f:
+                src = f.read()
+            for claim in needles:
+                self.assertNotIn(claim, src,
+                                 '%s still claims 12h:239-246 is the only '
+                                 'Mask block that ships masked' % name)
 
 
 if __name__ == '__main__':

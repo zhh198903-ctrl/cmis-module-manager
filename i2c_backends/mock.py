@@ -251,6 +251,11 @@ _DR8_800G = {
     'display':         '800GBASE-DR8 (SMF 500m, EML 1310nm)',
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-DR8-800GQDD",
+    # 13h:206-213. Table 8-133 ships every bit set, so a demo module
+    # that leaves them there can only ever show the masked branch.
+    # This one has 212.1-0 cleared: a host running a BER test on lanes
+    # 1 and 2 wants to be interrupted when their checker loses lock.
+    'diag_masks':      [0x80, 0x00] + [0xFF] * 4 + [0xFC, 0xFF],
     # Demo values, as with the bias thresholds: no standard sets these
     # for a simulated part. 1310 nm matches this profile's own media
     # interface technology, and one wavelength on eight fibres is what
@@ -1520,6 +1525,17 @@ class MockBackend(I2CInterface):
         p13[0xB1] = p.get('meas_ctrl_177', 0x00)
         p13[0xB2] = p.get('clock_src_178', 0x00)
         p13[0xB4] = 0; p13[0xB5] = 0; p13[0xB6] = 0; p13[0xB7] = 0
+        # 206-213, the Masks for the diagnostics Flags on Page 14h.
+        # Table 8-133: "The default value for all Mask bits on this
+        # page is 1 (masked)." Never writing them left the demo module
+        # reporting every diagnostics Flag as one the host would be
+        # interrupted about, which is the opposite of how one ships.
+        # 206 has one defined bit (7, the reference clock) with 6-0
+        # Reserved, and 207 is Reserved[1]; 208-213 are one bit per
+        # lane. Filling all eight with 0xFF set bits the table reserves.
+        diag_masks = p.get('diag_masks', [0x80, 0x00] + [0xFF] * 6)
+        for i in range(8):
+            p13[0xCE + i] = diag_masks[i] & 0xFF
         regs[0x13] = p13
 
         # ==== Page 14h — Diagnostic Results ====

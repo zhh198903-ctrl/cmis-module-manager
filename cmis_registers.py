@@ -291,9 +291,11 @@ REG_REL_THRESHOLDS   = (0x12, 0xD8, 2)   # 216-217: relative Tx power thresholds
 REG_TUNING_STATUS_TX = (0x12, 0xDE, 8)   # 222-229: 1B/lane [1]=TuningInProgress [0]=Unlocked
 REG_TUNING_FLAG_SUM  = (0x12, 0xE6, 1)   # 230: one bit per lane, summary
 REG_TUNING_FLAGS_TX  = (0x12, 0xE7, 8)   # 231-238: 1B/lane latched flags
-# 239-246, the Masks for those Flags. The only Mask block in CMIS whose
-# bits are "Default: 1" - every other one starts cleared - so on a module
-# out of reset every laser tuning Flag is set to not reach the host.
+# 239-246, the Masks for those Flags. One of the two Mask blocks in CMIS
+# that default to masked - Table 8-109 writes "Default: 1" against every bit
+# here, and Table 8-133 says the same of the diagnostics Masks in one line -
+# so on a module out of reset none of these Flags reaches the host. The other
+# two blocks (Tables 8-12 and 8-91) state no default at all.
 REG_TUNING_FLAG_MASKS= (0x12, 0xEF, 8)   # 239-246: 1B/lane, RW, default 1
 
 # Table 8-109. All RO/COR: the module answers a tuning request here, and the
@@ -314,6 +316,17 @@ def parse_tuning_flags(byte_val: int) -> dict:
     """Decode one lane's Page 12h:231-238 tuning Flag byte."""
     return {name: bool((byte_val >> bit) & 1)
             for bit, name, _desc in TUNING_FLAG_BITS}
+
+
+def diag_mask_addr(flag_addr: int) -> int:
+    """The Page 13h Mask byte that governs a Page 14h diagnostics Flag byte.
+
+    The two blocks are positional: 14h:132 is masked by 13h:206, and each
+    byte after it by the byte after that. Written out at every call site this
+    is an offset that looks like a typo and reads like one.
+    """
+    first_flag, first_mask = FLAG_MASK_BLOCKS[2][1], FLAG_MASK_BLOCKS[2][3]
+    return first_mask + (flag_addr - first_flag)
 
 
 def parse_tuning_masks(byte_val: int) -> dict:
@@ -403,6 +416,11 @@ REG_DIAG_CAPS        = (0x13, 0x80, 15)  # 128-142
 # 224-255 (Table 8-134): the pattern that Pattern ID 15 sends. Offering
 # "User Pattern" in a dropdown without this is offering to transmit whatever
 # happens to be in these bytes.
+# 206-213, the Masks for the diagnostics Flags on 14h:132-139. Table
+# 8-133 states the default in one line: "The default value for all Mask
+# bits on this page is 1 (masked)." So a module nobody has configured
+# raises none of these to the host.
+REG_DIAG_FLAG_MASKS  = (0x13, 0xCE, 8)   # 206-213
 REG_USER_PATTERN     = (0x13, 0xE0, 32)  # 224-255
 REG_CLOCK_MEAS       = (0x13, 0xB0, 4)   # 176-179
 REG_MEDIA_OUT_LB     = (0x13, 0xB4, 1)
@@ -2045,7 +2063,14 @@ MONITOR_FLAG_LEVELS = ('high_alarm', 'low_alarm', 'high_warn', 'low_warn')
 FLAG_MASK_BLOCKS = (
     (None, 0x08, None, 0x1F, 6),    # Lower 8-13 <- Lower 31-36 (Table 8-12)
     (0x11, 0x86, 0x10, 0xD5, 20),   # 11h:134-153 <- 10h:213-232
-    (0x14, 0x84, 0x13, 0xCE, 18),   # 14h:132-149 <- 13h:206-223
+    # Eight, not the eighteen both overview tables imply. Table 8-138
+    # defines the Flags at 132-139 and stops; Table 8-133 defines the Masks
+    # at 206-213 and marks 214-223 Reserved[10]. Table 8-135's own row says
+    # "132-139" in the byte column and "18" in the size column, and the row
+    # under it marks 140-149 Reserved[10] - so that table contradicts itself
+    # and its Reserved row agrees with the detail table. A byte the
+    # specification names Reserved is not a Flag with a Mask.
+    (0x14, 0x84, 0x13, 0xCE, 8),    # 14h:132-139 <- 13h:206-213
     # 12h:231-238 <- 12h:239-246, the laser tuning Flags. The odd one out
     # twice over: the Masks share the page with their Flags rather than
     # living on the paired control page, and Table 8-109 gives every bit
