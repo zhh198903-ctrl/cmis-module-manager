@@ -225,16 +225,24 @@
 <table>
           <thead>
             <tr>
-              <th>Lane</th>
-              <th>DP Changed<span class="reg-meta">11h / 0x86</span></th>
-              <th>Tx Fault<span class="reg-meta">11h / 0x87</span></th>
-              <th>Tx LOS<span class="reg-meta">11h / 0x88</span></th>
-              <th>Tx CDR-LOL<span class="reg-meta">11h / 0x89</span></th>
-              <th>Tx AEQ Fail<span class="reg-meta">11h / 0x8A</span></th>
-              <th>Rx LOS<span id="th-rx-los-type"></span><span class="reg-meta">11h / 0x93</span></th>
-              <th>Rx CDR-LOL<span class="reg-meta">11h / 0x94</span></th>
-              <th>Rx Output<span class="reg-meta">11h / 0x99</span></th>
-              <th>Alarms/Warns</th>
+              <!-- 11h:134-153 mixes the two sides of the module, and the
+                   Tx and Rx in the names do not follow it. Tables 8-96 to
+                   8-98 give each row a side: FailureFlagTx is "affecting
+                   media lane <i>" while LOSFlagTx, CDRLOLFlagTx and
+                   AdaptiveInputEqFailFlagTx are "host lane <i>", and
+                   OutputStatusChangedFlagRx is a host lane while every other
+                   Rx Flag is a media lane. Fifteen of the twenty Flags in
+                   the block are about a media lane. -->
+              <th title="Row n. Which side of the module lane n means differs by column - see each heading.">Lane</th>
+              <th title="DPStateChangedFlag, Table 8-96: &quot;host lane &lt;i&gt;&quot;.">DP Changed<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x86</span></th>
+              <th title="FailureFlagTx, Table 8-97: &quot;affecting media lane &lt;i&gt;&quot; - unlike the three Tx Flags beside it.">Tx Fault<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x87</span></th>
+              <th title="LOSFlagTx, Table 8-97: &quot;host lane &lt;i&gt;&quot;. The Tx input arrives from the host.">Tx LOS<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x88</span></th>
+              <th title="CDRLOLFlagTx, Table 8-97: &quot;host lane &lt;i&gt;&quot;.">Tx CDR-LOL<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x89</span></th>
+              <th title="AdaptiveInputEqFailFlagTx, Table 8-97: &quot;host lane &lt;i&gt;&quot;.">Tx AEQ Fail<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x8A</span></th>
+              <th title="LOSFlagRx, Table 8-98: &quot;media lane &lt;i&gt;&quot;. The Rx input arrives from the media.">Rx LOS<span id="th-rx-los-type"></span><span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x93</span></th>
+              <th title="CDRLOLFlagRx, Table 8-98: &quot;media lane &lt;i&gt;&quot;.">Rx CDR-LOL<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x94</span></th>
+              <th title="OutputStatusChangedFlagRx, Table 8-98: &quot;host lane &lt;i&gt;&quot; - unlike every other Rx Flag.">Rx Output<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x99</span></th>
+              <th title="Tx output power and Tx bias thresholds are per media lane; Rx input power thresholds likewise (Tables 8-97 and 8-98).">Alarms/Warns<span class="reg-meta-strong">media lane</span></th>
             </tr>
           </thead>
           <tbody id="tbl-flags">

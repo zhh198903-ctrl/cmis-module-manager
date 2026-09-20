@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.108.0'
+__version__ = '2.109.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2723,6 +2723,27 @@ def api_module_flags():
                 'rx_power_low_warn':   rxpwr_lw[i],
                 'rx_output_changed':   rx_out_ch[i],
             })
+            # 11h:134-153 mixes the two sides of the module. Tables 8-96 to
+            # 8-98 say which row is which, and the Tx and Rx in the names do
+            # not: FailureFlagTx is "affecting media lane <i>" while LOSFlagTx
+            # is "host lane <i>", and OutputStatusChangedFlagRx is a host lane
+            # while every other Rx Flag is a media lane. Fifteen of the twenty
+            # are about a media lane.
+            #
+            # A module whose media lanes are fewer than its host lanes has no
+            # such lane to raise them on, and the register reads 0 there - so
+            # the panel drew fifteen "checked, nothing wrong" marks per row on
+            # lanes that are not there, including an Rx LOS saying a signal
+            # was present on a fibre the module does not have.
+            # Not published as a field of its own here: every other boolean
+            # in this dict is a Flag that is set, and a caller collecting the
+            # raised ones has no reason to expect an exception. The nulls
+            # carry the same fact, and /api/module/monitoring states it
+            # outright for anyone who wants it as a value.
+            if not _media_lane_present(i + 1):
+                for _key, _side in cmis.LANE_FLAG_SIDE.items():
+                    if _side == 'media':
+                        lanes[-1][_key] = None
             # Fold this read into what has been seen. The read just cleared
             # these bits on the module, so if this is not kept the event is
             # gone the moment the reply is rendered.

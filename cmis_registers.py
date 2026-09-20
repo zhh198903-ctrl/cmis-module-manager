@@ -352,6 +352,47 @@ TIMING_SECONDS = {
 }
 
 
+# Which side of the module each lane Flag in 11h:134-153 is about, taken
+# from the sentence in each row of Tables 8-96, 8-97 and 8-98 rather than
+# from the Tx/Rx in its name. The two do not agree, and nothing about the
+# block's layout gives it away:
+#
+#   134       DPStateChanged        "host lane <i>"
+#   135       FailureFlagTx         "affecting media lane <i>"
+#   136-138   LOSFlagTx, CDRLOLFlagTx, AdaptiveInputEqFailFlagTx
+#                                   "host lane <i>" - the Tx *input* arrives
+#                                   from the host
+#   139-146   OpticalPowerTx, LaserBiasTx thresholds   "media lane <i>"
+#   147-152   LOSFlagRx, CDRLOLFlagRx, OpticalPowerRx  "media lane <i>"
+#   153       OutputStatusChangedFlagRx                "host lane <i>"
+#
+# So the Tx group is split three ways and the Rx group two, and a reader who
+# took "Tx" for one side and "Rx" for the other would be wrong about five of
+# the twenty.
+LANE_FLAG_SIDE = {
+    'dp_state_changed':    'host',
+    'tx_fault':            'media',
+    'tx_los':              'host',
+    'tx_cdr_lol':          'host',
+    'tx_adaptive_eq_fail': 'host',
+    'tx_power_high_alarm': 'media',
+    'tx_power_low_alarm':  'media',
+    'tx_power_high_warn':  'media',
+    'tx_power_low_warn':   'media',
+    'tx_bias_high_alarm':  'media',
+    'tx_bias_low_alarm':   'media',
+    'tx_bias_high_warn':   'media',
+    'tx_bias_low_warn':    'media',
+    'rx_los':              'media',
+    'rx_cdr_lol':          'media',
+    'rx_power_high_alarm': 'media',
+    'rx_power_low_alarm':  'media',
+    'rx_power_high_warn':  'media',
+    'rx_power_low_warn':   'media',
+    'rx_output_changed':   'host',
+}
+
+
 def media_lane_groups(groups, app_select, apps, media_lanes=8) -> dict:
     """Which media lanes each Data Path occupies, by the rule in 7.9.1.
 

@@ -3747,7 +3747,10 @@ class TestABouncedDataPathIsNotSilent(CMISTestCase):
 
         idx = html.index('id="tbl-flags"')
         head = html[html.rindex('<thead>', 0, idx):idx]
-        columns = head.count('<th>')
+        # Any <th, not the bare one: a heading that carries a title attribute
+        # is still a column, and counting only `<th>` made the guard report
+        # zero headings the moment one gained a tooltip.
+        columns = len(re.findall(r'<th[ >]', head))
 
         body = js[js.index('function renderFlags('):]
         row = body[body.index('return `<tr>'):body.index('</tr>`')]
@@ -17374,7 +17377,7 @@ class TestNothingIsReadFromALatchedBlockAndDropped(CMISTestCase):
             js = f.read()
         i = html.index('id="tbl-flags"')
         head = html[html.rindex('<thead>', 0, i):i]
-        headings = re.findall(r'<th>', head)
+        headings = re.findall(r'<th[ >]', head)
         row = js[js.index('<td>${lane.lane}</td>'):]
         row = row[:row.index('</tr>')]
         self.assertEqual(len(headings), row.count('<td>'))
@@ -18893,6 +18896,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-94': 'Data Path State Encoding',
         '8-95': 'Lane-Specific Output Status (Page 11h)',
         '8-96': 'Lane-Specific State Changed Flags (Page 11h)',
+        '8-97': 'Lane-Specific Tx Flags (Page 11h)',
+        # Its siblings 8-96 and 8-97 both say "Lane-Specific" and
+        # this one does not. Checked against the rendered page: the
+        # caption really is the short one.
+        '8-98': 'Rx Flags (Page 11h)',
         '8-99': 'Media Lane-Specific Monitors (Page 11h)',
         '8-100': 'Configuration Command Status registers (Page 11h)',
         '8-101': 'Configuration Command Execution and Result Status Codes (Page 11h)',
@@ -26404,6 +26412,190 @@ class TestWhichSideOfTheModuleEachColumnIsAbout(CMISTestCase):
         self.assertIn('check Tx disable', body)
         self.assertIn("dot(lane.output_valid_tx, 'Tx', 'Tx' + muted, 'media')",
                       body, 'the present-lane path lost its explanation')
+
+
+class TestWhichSideEachLaneFlagIsAbout(CMISTestCase):
+    """Twenty Flags in one block at 11h:134-153, and the Tx and Rx in their
+    names do not say which side of the module each is about. Tables 8-96 to
+    8-98 do, row by row:
+
+        134       DPStateChangedFlag          "host lane <i>"
+        135       FailureFlagTx               "affecting media lane <i>"
+        136-138   LOSFlagTx, CDRLOLFlagTx,
+                  AdaptiveInputEqFailFlagTx   "host lane <i>"
+        139-146   OpticalPowerTx and
+                  LaserBiasTx thresholds      "media lane <i>"
+        147-152   LOSFlagRx, CDRLOLFlagRx,
+                  OpticalPowerRx thresholds   "media lane <i>"
+        153       OutputStatusChangedFlagRx   "host lane <i>"
+
+    So the Tx group splits three ways and the Rx group two, and reading "Tx"
+    as one side and "Rx" as the other gets five of the twenty wrong. Fifteen
+    are about a media lane.
+
+    A module whose media lanes are fewer than its host lanes has no such lane
+    to raise them on, and the register reads 0 there. The panel drew fifteen
+    "checked, nothing wrong" marks per row on lanes that are not there -
+    including an Rx LOS reporting a signal present on a fibre the module does
+    not have. The optical readings beside them had been blanked for exactly
+    this reason rounds earlier, and the Tx output status one round earlier;
+    this is the same fault on the largest surface it has."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the table of sides ----------------------------------------------
+    def test_the_split_is_not_the_one_the_names_suggest(self):
+        """Five of the twenty would be wrong on a Tx/Rx reading."""
+        import cmis_registers as c
+        self.assertEqual(c.LANE_FLAG_SIDE['tx_fault'], 'media')
+        self.assertEqual(c.LANE_FLAG_SIDE['tx_los'], 'host')
+        self.assertEqual(c.LANE_FLAG_SIDE['tx_cdr_lol'], 'host')
+        self.assertEqual(c.LANE_FLAG_SIDE['tx_adaptive_eq_fail'], 'host')
+        self.assertEqual(c.LANE_FLAG_SIDE['rx_output_changed'], 'host')
+        self.assertEqual(c.LANE_FLAG_SIDE['rx_los'], 'media')
+        self.assertEqual(c.LANE_FLAG_SIDE['dp_state_changed'], 'host')
+
+    def test_fifteen_of_the_twenty_are_media_lanes(self):
+        import cmis_registers as c
+        sides = list(c.LANE_FLAG_SIDE.values())
+        self.assertEqual(len(sides), 20)
+        self.assertEqual(sides.count('media'), 15)
+        self.assertEqual(sides.count('host'), 5)
+
+    def test_every_flag_the_endpoint_reports_has_a_side(self):
+        """The table and the reply are two lists of the same twenty names.
+        One gaining a Flag the other does not know about is how a media-side
+        Flag comes to be reported on a lane that is not there."""
+        import cmis_registers as c
+        self._connect('mock_dr8')
+        keys = set(self._lanes()[0]) - {'lane', 'seen'}
+        self.assertEqual(keys, set(c.LANE_FLAG_SIDE),
+                         'the Flags reply and LANE_FLAG_SIDE disagree about '
+                         'which Flags exist')
+
+    # ---- the gate ---------------------------------------------------------
+    def test_a_media_side_flag_is_not_reported_for_an_absent_lane(self):
+        self._connect()
+        import cmis_registers as c
+        for lane in self._lanes()[1:]:
+            for key, side in c.LANE_FLAG_SIDE.items():
+                if side == 'media':
+                    self.assertIsNone(
+                        lane[key],
+                        'lane %d reports %s for a media lane the module does '
+                        'not have' % (lane['lane'], key))
+
+    def test_a_host_side_flag_is_still_reported(self):
+        """The module has all eight host lanes; blanking those would lose a
+        real answer."""
+        self._connect()
+        import cmis_registers as c
+        for lane in self._lanes():
+            for key, side in c.LANE_FLAG_SIDE.items():
+                if side == 'host':
+                    self.assertIsNotNone(
+                        lane[key],
+                        'lane %d dropped the host-lane Flag %s'
+                        % (lane['lane'], key))
+
+    def test_exactly_fifteen_go_quiet_on_an_absent_lane(self):
+        self._connect()
+        blanked = [k for k, v in self._lanes()[2].items() if v is None]
+        self.assertEqual(len(blanked), 15)
+
+    def test_a_module_with_every_media_lane_loses_nothing(self):
+        self._connect('mock_dr8')
+        for lane in self._lanes():
+            self.assertFalse([k for k, v in lane.items() if v is None],
+                             'a module with all eight media lanes had Flags '
+                             'blanked')
+
+    def test_a_wide_module_declares_nothing_and_keeps_every_flag(self):
+        """8.3.7: a module wider than eight lanes cannot unambiguously
+        declare which media lanes it has."""
+        self._connect('mock_1600g_16lane')
+        for lane in self._lanes():
+            self.assertFalse([k for k, v in lane.items() if v is None])
+
+    def test_the_reply_keeps_the_shape_its_callers_expect(self):
+        """Every other boolean in this dict is a Flag that is set, and more
+        than one caller collects the raised ones that way. A field that is
+        True for a healthy lane would read as an alarm."""
+        self._connect('mock_dr8')
+        lane = self._lanes()[0]
+        self.assertNotIn('media_lane_present', lane)
+        self.assertEqual({k for k, v in lane.items() if v is True}, set(),
+                         'a healthy lane reports something as True')
+
+    # ---- the panel --------------------------------------------------------
+    def test_the_cell_says_why_there_is_nothing_there(self):
+        js = self._js()
+        body = js[js.index('function flagCell(val, isAlarm, name, implemented)'):]
+        body = body[:body.index('const off = name && mask[name];')]
+        # Comments stripped: the block explaining this cell cites the same
+        # tables, so asserting on the raw text passes with the citation gone
+        # from the message the operator actually sees.
+        code = re.sub('//[^' + chr(10) + ']*', '', body)
+        self.assertIn('val === null', code,
+                      'a Flag about an absent media lane still gets a dot')
+        self.assertIn('00h:210', code)
+        self.assertIn('Tables 8-96 to 8-98', code,
+                      'the marker does not say where the side comes from')
+        self.assertNotIn('give each row a side', code,
+                         'comments were not stripped')
+
+    def test_the_absent_lane_check_comes_before_the_others(self):
+        """A Flag the module does not implement and a Flag about a lane that
+        is not there are different answers, and the lane one is the stronger
+        statement: there is nothing to implement it for."""
+        js = self._js()
+        body = js[js.index('function flagCell(val, isAlarm, name, implemented)'):]
+        body = body[:body.index('const off = name && mask[name];')]
+        self.assertLess(body.index('val === null'),
+                        body.index('implemented === false'))
+
+    def test_every_flag_column_says_which_side_it_is_about(self):
+        html = self._html()
+        # Located from the table it belongs to, the way the column-count
+        # guards do: an anchor on the heading text itself would move with
+        # any rewording of the very thing being checked.
+        i = html.index('id="tbl-flags"')
+        head = html[html.rindex('<thead>', 0, i):i]
+        self.assertEqual(head.count('host lane</span>'), 5,
+                         'the five host-lane columns do not all say so')
+        self.assertEqual(head.count('media lane</span>'), 4,
+                         'the media-lane columns do not all say so')
+
+    def test_the_two_columns_that_break_the_pattern_say_so(self):
+        """Tx Fault among the Tx Flags and Rx Output among the Rx ones are
+        the ones a reader would get wrong."""
+        html = self._html()
+        i = html.index('>Tx Fault<')
+        self.assertIn('unlike the three Tx Flags beside it',
+                      html[html.rindex('<th', 0, i):i])
+        j = html.index('>Rx Output<')
+        self.assertIn('unlike every other Rx Flag',
+                      html[html.rindex('<th', 0, j):j])
 
 
 if __name__ == '__main__':

@@ -3406,6 +3406,20 @@ function renderFlags(lanes, supported, masks) {
     // the same thing to whoever is chasing an intermittent link, so a lane
     // that has fired since the last clear keeps saying so.
     function flagCell(val, isAlarm, name, implemented) {
+      // 11h:134-153 mixes the two sides of the module: Tables 8-96 to 8-98
+      // give each row a side, and the Tx and Rx in the names do not follow
+      // it - FailureFlagTx is "affecting media lane <i>" while LOSFlagTx is
+      // "host lane <i>", and OutputStatusChangedFlagRx is a host lane while
+      // every other Rx Flag is a media lane. Fifteen of the twenty are about
+      // a media lane, and a module whose media lanes are fewer than its host
+      // lanes has no such lane to raise them on. The server blanks those; a
+      // green dot here would be "checked, nothing wrong" about nothing.
+      if (val === null || val === undefined) {
+        return '<span class="flag-none" title="This Flag is about a media '
+             + 'lane (Tables 8-96 to 8-98), and this module does not have '
+             + 'media lane ' + lane.lane + ' (00h:210) - so there is nothing '
+             + 'here to raise it">n/a</span>';
+      }
       if (implemented === false) {
         return '<span class="flag-none" title="This module does not implement '
              + 'this Flag (01h:157-158), so the register reads 0 whatever the '

@@ -279,6 +279,28 @@ Table 10-5 原文：「模块不会阻止访问陈旧数据（即过早的 ACCES
 `GET`/`POST /api/module/laser` 的答复里带 `flag_wait_ms`，就是它等了多久才说
 「没有通道被拒绝」的依据。
 
+## 通道标志里名字的 Tx / Rx **不等于**哪一侧
+
+`11h:134-153` 二十个通道标志，按名字里的 Tx/Rx 去分侧，**二十个里会错五个**。
+Table 8-96 到 8-98 对每行都写明了：
+
+| 字节 | 标志 | 侧 |
+|---|---|---|
+| 134 | DPStateChanged | host |
+| **135** | **FailureFlagTx** | **media**（"affecting media lane"） |
+| 136-138 | LOSFlagTx / CDRLOLFlagTx / AdaptiveInputEqFail | host（Tx 的**输入**来自主机） |
+| 139-146 | Tx 光功率 / 偏置门限 | media |
+| 147-152 | LOSFlagRx / CDRLOLFlagRx / Rx 光功率门限 | media |
+| **153** | **OutputStatusChangedFlagRx** | **host** |
+
+**15 个是按媒介通道索引的。** 媒介通道不存在时这 15 个是 `null`，面板显示 `n/a`——
+**别当成「已检查、正常」**。尤其 `rx_los` 为 null 不等于「有信号」，是「没有这条光纤」。
+5 个主机侧的照常有值。
+
+`/api/module/flags` 每条通道的字典里，**每一个为 true 的键都是一个置位的标志**——
+没有别的布尔字段混在里面。要判断媒介通道在不在，用 `/api/module/monitoring` 的
+`media_lane_present`。
+
 ## 标志亮着但中断没来 = 被屏蔽了
 
 规范一句话定义中断线：**「只要有任何一个标志置位、且它对应的屏蔽位是清零的，Interrupt 就保持有效」**。
