@@ -163,13 +163,20 @@
 <table>
           <thead>
             <tr>
-              <th>Lane</th>
-              <th>Tx Power<span class="reg-meta">11h / 0x9A+(n−1)×2, uint16×0.1µW</span></th>
-              <th>Tx Bias<span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
-              <th>Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
-              <th>DataPath State<span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
-              <th>Output<span class="reg-meta">11h / 0x84 Rx, 0x85 Tx, 1bit/lane</span></th>
-              <th>Config Status<span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
+              <!-- Every column here is indexed by lane, and CMIS numbers the
+                   host side and the media side independently. Three of these
+                   are media lanes (Table 8-99 is titled "Media Lane-Specific
+                   Monitors"), three are host lanes, and the Output column
+                   holds one of each - Table 8-95 gives OutputStatusRx to the
+                   "Rx output host lane" and OutputStatusTx to the "Tx output
+                   media lane". A row number alone does not say which. -->
+              <th title="Row n. Which side of the module lane n means differs by column - see each heading.">Lane</th>
+              <th title="OpticalPowerTx, Table 8-99 Media Lane-Specific Monitors.">Tx Power<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x9A+(n−1)×2, uint16×0.1µW</span></th>
+              <th title="LaserBiasTx, Table 8-99 Media Lane-Specific Monitors.">Tx Bias<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
+              <th title="OpticalPowerRx, Table 8-99 Media Lane-Specific Monitors.">Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
+              <th title="DPStateHostLane, Table 8-93 Lane-associated Data Path States.">DataPath State<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
+              <th title="Table 8-95: OutputStatusRx (11h:132) is per host lane, OutputStatusTx (11h:133) is per media lane. The two dots in this cell are about different lanes of the module.">Output<span class="reg-meta-strong">Rx host · Tx media</span><span class="reg-meta">11h / 0x84 Rx, 0x85 Tx, 1bit/lane</span></th>
+              <th title="ConfigStatusLane, Table 8-100: status &quot;for the Data Path of host lane &lt;i&gt;&quot;.">Config Status<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
             </tr>
           </thead>
           <tbody id="tbl-monitoring">

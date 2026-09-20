@@ -215,6 +215,14 @@ Table 8-99 的标题就是「Media Lane-Specific Monitors」。而 Monitoring �
 
 DataPath State / Config Status 是**主机侧**的,每行照常。
 
+**`Output` 那一列两侧各占一个**:Table 8-95 把 `OutputStatusRx`(`11h:132`)给了
+**Rx 输出主机通道**,把 `OutputStatusTx`(`11h:133`)给了 **Tx 输出媒介通道**。
+同一格里的两个点说的是模块两侧不同的通道。表头现在标着「Rx host · Tx media」。
+
+`output_valid_tx` 也跟着 `media_lane_present` 走:媒介通道不存在时是 `null`,
+**不要当成「输出被静音」**——去查 Tx disable / squelch 会扑空,那条通道根本不存在。
+`output_valid_rx` 则每条主机通道都有值。
+
 ## 「自适应均衡失败」之前,先看那条通道在不在自适应
 
 规范 Table 6-5 把发送端输入均衡的控制分成互斥的两组,模块按 `AdaptiveInputEqEnableTx` 决定读哪一组:

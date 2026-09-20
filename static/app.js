@@ -2141,17 +2141,33 @@ function dpStateNote(lane) {
   }[lane.datapath_state_kind] || 'Reserved DataPath state encoding';
 }
 
+// The one cell in this table holding a fact about each side of the module.
+// Table 8-95: "The signal on an Rx output host lane is declared valid in the
+// OutputStatusRx register (11h:132)" and "The signal on an Tx output media
+// lane is declared valid in the OutputStatusTx register (11h:133)". CMIS
+// numbers the two sides independently, so on a module whose media lanes are
+// fewer than its host lanes the row number means something different for
+// each dot - and the Tx one is about a lane this module may not have.
 function outputCell(lane) {
-  const dot = (valid, label, why) => valid
-    ? `<span class="flag-ok" title="${label} output signal valid">&#9679;</span> ${label}`
-    : `<span class="flag-warn" title="${why}">&#9675;</span> ${label}`;
+  const dot = (valid, label, why, side) => valid
+    ? `<span class="flag-ok" title="${esc(label + ' output signal valid on '
+        + side + ' lane ' + lane.lane)}">&#9679;</span> ${label}`
+    : `<span class="flag-warn" title="${esc(why)}">&#9675;</span> ${label}`;
   const running = lane.datapath_state === 'Activated';
   const muted = running
     ? ' output is muted although the data path is Activated - check Tx disable,'
       + ' force squelch or Rx output disable'
     : ` output is not valid because the data path is ${lane.datapath_state}`;
-  return dot(lane.output_valid_tx, 'Tx', 'Tx' + muted)
-       + '<br>' + dot(lane.output_valid_rx, 'Rx', 'Rx' + muted);
+  // Blank rather than a dot, for the same reason the optical power beside it
+  // is blank: an absent media lane reads as 0, and an open circle here sent
+  // the operator hunting a squelch on a lane that is not there.
+  const tx = lane.output_valid_tx === null || lane.output_valid_tx === undefined
+    ? `<span class="flag-none" title="${esc('OutputStatusTx (11h:133) is per '
+        + 'media lane (Table 8-95), and this module does not have media lane '
+        + lane.lane + ' (00h:210) - so there is no Tx output here to be '
+        + 'valid or muted.')}">Tx n/a</span>`
+    : dot(lane.output_valid_tx, 'Tx', 'Tx' + muted, 'media');
+  return tx + '<br>' + dot(lane.output_valid_rx, 'Rx', 'Rx' + muted, 'host');
 }
 
 function setRefreshInterval(ms) {

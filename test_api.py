@@ -18894,6 +18894,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-95': 'Lane-Specific Output Status (Page 11h)',
         '8-96': 'Lane-Specific State Changed Flags (Page 11h)',
         '8-99': 'Media Lane-Specific Monitors (Page 11h)',
+        '8-100': 'Configuration Command Status registers (Page 11h)',
         '8-101': 'Configuration Command Execution and Result Status Codes (Page 11h)',
         '8-102': 'Provisioned Data Path Configuration per Lane (DPConfigLane<i> Field)',
         '8-104': 'Active Control Set, Provisioned Tx Controls (Page 11h)',
@@ -26202,6 +26203,207 @@ class TestWhichMediaLanesADataPathUses(CMISTestCase):
         self.assertIn('gap', js[js.index('// "1, 2, 3, 4" is four numbers'):
                                 js.index('function _laneRun(')],
                       'nothing records why a scattered set stays scattered')
+
+
+class TestWhichSideOfTheModuleEachColumnIsAbout(CMISTestCase):
+    """Every column of the monitoring table is indexed by lane, and CMIS
+    numbers the host side and the media side independently. The table said
+    "Lane n" and left it at that.
+
+        Tx Power, Tx Bias, Rx Power   media lane   Table 8-99, whose title is
+                                                   "Media Lane-Specific
+                                                   Monitors"
+        DataPath State                host lane    Table 8-93, DPStateHostLane
+        Config Status                 host lane    Table 8-100, "for the Data
+                                                   Path of host lane <i>"
+        Output                        one of each  Table 8-95
+
+    The Output column is the sharp one. Table 8-95: "The signal on an Rx
+    output host lane is declared valid in the OutputStatusRx register
+    (11h:132)" and "The signal on an Tx output media lane is declared valid
+    in the OutputStatusTx register (11h:133)". Two dots in one cell, about two
+    different lanes of the module.
+
+    And it had a consequence, not only a labelling gap. Every other media-lane
+    value in the row is blanked where 00h:210 says the module has no such
+    media lane - a round put that in after 0.0 uW was being painted as an
+    alarm on lanes that do not exist. OutputStatusTx was left ungated, so a
+    conformant module reporting 0 there produced "Tx output is muted although
+    the data path is Activated - check Tx disable, force squelch or Rx output
+    disable" on seven lanes that are not there, beside a blank power reading
+    for the same lane.
+
+    The demo module hid it by claiming a valid Tx output on media lanes it
+    does not have, which is a statement no module can make."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the media-lane half is gated like the rest of its side ----------
+    def test_the_tx_output_status_follows_the_media_lanes(self):
+        """A coherent module carries eight host lanes into one optical
+        carrier. Its Tx output status is about that one media lane."""
+        self._connect()
+        lanes = self._lanes()
+        self.assertIs(lanes[0]['output_valid_tx'], True)
+        for lane in lanes[1:]:
+            self.assertFalse(lane['media_lane_present'])
+            self.assertIsNone(lane['output_valid_tx'],
+                              'lane %d reports a Tx output status for a '
+                              'media lane the module does not have'
+                              % lane['lane'])
+
+    def test_the_rx_output_status_is_about_every_host_lane(self):
+        """Its twin one byte earlier is per host lane, and the module has all
+        eight of those - blanking it would lose a real status. Asserting the
+        value rather than its presence: this module is Activated on every
+        host lane, so every Rx output is valid, and False here would mean the
+        two halves had been read from each other's byte."""
+        self._connect()
+        for lane in self._lanes():
+            self.assertIs(lane['output_valid_rx'], True,
+                          'lane %d does not report a valid Rx output on an '
+                          'Activated host lane' % lane['lane'])
+
+    def test_it_is_gated_on_the_same_thing_as_the_power_beside_it(self):
+        self._connect()
+        for lane in self._lanes():
+            if lane['media_lane_present']:
+                continue
+            self.assertIsNone(lane['tx_power_uw'])
+            self.assertIsNone(lane['output_valid_tx'],
+                              'the power is blank and the output status is '
+                              'not, for the same absent media lane')
+
+    def test_a_module_with_every_media_lane_loses_nothing(self):
+        self._connect('mock_dr8')
+        for lane in self._lanes():
+            self.assertIsNotNone(lane['output_valid_tx'])
+
+    def test_a_wide_module_declares_nothing_and_keeps_every_lane(self):
+        """8.3.7: a module wider than eight lanes cannot unambiguously
+        declare which media lanes it has, so none is hidden."""
+        self._connect('mock_1600g_16lane')
+        for lane in self._lanes():
+            self.assertIsNotNone(lane['output_valid_tx'])
+
+    def test_a_wide_module_ignores_a_byte_it_cannot_declare(self):
+        """No shipped wide profile writes 00h:210, because 8.3.7 says it
+        cannot mean anything there - so a module that wrote one anyway is the
+        only way to see that the rule is applied rather than the byte simply
+        being zero."""
+        from i2c_backends.mock import MockBackend, Mock1600G16LaneBackend
+
+        class _Odd(MockBackend):
+            PROFILE = dict(Mock1600G16LaneBackend.PROFILE,
+                           media_lane_unsupported=0xFE)
+
+        b = _Odd()
+        b.connect(0, 0x50)
+        self.assertEqual(b._media_lane_absent(), 0,
+                         'a module wider than eight lanes had its 00h:210 '
+                         'taken at face value')
+
+        class _Narrow(MockBackend):
+            PROFILE = dict(Mock1600G16LaneBackend.PROFILE, lanes=8,
+                           media_lane_unsupported=0xFE)
+
+        n = _Narrow()
+        n.connect(0, 0x50)
+        self.assertEqual(n._media_lane_absent(), 0xFE,
+                         'an eight-lane module ignored the byte it can '
+                         'declare')
+
+    # ---- the demo module stops claiming what no module can ----------------
+    def test_the_demo_module_does_not_claim_an_absent_media_lane(self):
+        """It set OutputStatusTx for all eight lanes whatever its media side
+        looked like, which hid the gate being missing."""
+        self._connect()
+        raw = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x11, 'address': 133, 'length': 1}),
+            content_type='application/json'))['data']['data']
+        absent = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0x00, 'address': 210, 'length': 1}),
+            content_type='application/json'))['data']['data']
+        self.assertEqual(raw[0] & absent[0], 0,
+                         'the module reports a valid Tx output on a media '
+                         'lane it says it does not have')
+
+    # ---- the panel --------------------------------------------------------
+    def test_every_column_says_which_side_it_is_about(self):
+        html = self._html()
+        head = html[html.index('<th title="Row n.'):]
+        head = head[:head.index('</tr>')]
+        self.assertEqual(head.count('media lane</span>'), 3,
+                         'the three Table 8-99 monitors do not say so')
+        self.assertEqual(head.count('host lane</span>'), 2,
+                         'DataPath State and Config Status do not say so')
+        self.assertIn('Rx host \u00b7 Tx media', head,
+                      'the one column holding both does not say so')
+
+    def test_each_column_names_the_table_it_comes_from(self):
+        html = self._html()
+        head = html[html.index('<th title="Row n.'):]
+        head = head[:head.index('</tr>')]
+        # Counted, not just present: the three Table 8-99 monitors are three
+        # separate columns, and asserting the number appears somewhere passes
+        # with two of them stripped.
+        self.assertEqual(head.count('Table 8-99'), 3,
+                         'not every Table 8-99 monitor cites it')
+        for table in ('Table 8-93', 'Table 8-95', 'Table 8-100'):
+            self.assertEqual(head.count(table), 1,
+                             '%s is not cited on the column it governs'
+                             % table)
+
+    def test_the_output_cell_blanks_the_half_that_is_not_there(self):
+        js = self._js()
+        body = js[js.index('function outputCell(lane)'):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertIn('lane.output_valid_tx === null', body,
+                      'an absent media lane still gets a dot')
+        self.assertIn('11h:133', body)
+        self.assertIn('00h:210', body,
+                      'the marker does not say why there is nothing here')
+        self.assertIn('Tx n/a', body)
+
+    def test_the_two_dots_name_their_own_side(self):
+        js = self._js()
+        body = js[js.index('function outputCell(lane)'):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertIn("'media')", body, 'the Tx dot does not name its side')
+        self.assertIn("'host')", body, 'the Rx dot does not name its side')
+        self.assertIn('output signal valid on ', body)
+
+    def test_the_cell_still_explains_a_real_mute(self):
+        """The marker is for a lane that is not there. A lane that is there
+        and muted keeps the remedy it had."""
+        js = self._js()
+        body = js[js.index('function outputCell(lane)'):]
+        body = body[:body.index(chr(10) + '}')]
+        self.assertIn('check Tx disable', body)
+        self.assertIn("dot(lane.output_valid_tx, 'Tx', 'Tx' + muted, 'media')",
+                      body, 'the present-lane path lost its explanation')
 
 
 if __name__ == '__main__':

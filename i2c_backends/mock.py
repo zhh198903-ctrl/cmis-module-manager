@@ -2070,6 +2070,16 @@ class MockBackend(I2CInterface):
                 value = self._application_si(active, lane)
             self._set_lane_value(0x11, active, lane, bits, value)
 
+    def _media_lane_absent(self) -> int:
+        """00h:210 (Table 8-36), one bit per media lane the module lacks.
+
+        8.3.7 leaves this undefined for a module wider than eight lanes, so
+        those declare nothing and every lane counts as present.
+        """
+        if (self._profile.get('lanes') or 8) > 8:
+            return 0
+        return self._registers.get(0x00, {}).get(0xD2, 0)
+
     def _recalled_buffer(self, lane: int) -> int:
         """11h:215-216 AdaptiveInputEqRecalledTx: which buffer was recalled.
 
@@ -2321,8 +2331,14 @@ class MockBackend(I2CInterface):
             # Table 8-95: valid means the module is really sending a signal.
             # An Activated lane whose output is disabled or force-squelched is
             # not, and no other register in the map says so.
+            # 11h:133 is indexed by media lane (Table 8-95), and this
+            # module does not have all eight of those. Declaring a valid Tx
+            # output on a media lane it does not have is a claim no module
+            # can make - and it hid the fact that the host reading it had no
+            # way to tell which lanes the byte was about.
             if (dp_active and not tx_disabled
-                    and not ((force_squelch_tx >> lane) & 1)):
+                    and not ((force_squelch_tx >> lane) & 1)
+                    and not ((self._media_lane_absent() >> lane) & 1)):
                 out_tx |= 1 << lane
             if dp_active and not ((output_disable_rx >> lane) & 1):
                 out_rx |= 1 << lane

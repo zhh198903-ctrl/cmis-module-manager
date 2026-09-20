@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.107.0'
+__version__ = '2.108.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1679,7 +1679,20 @@ def api_module_monitoring():
                 # fault on a lane that had simply been switched off - which
                 # this tool's own DPDeinit does routinely.
                 'dp_monitors_assured': cmis.dp_monitors_assured(dp_states[i]),
-                'output_valid_tx': out_tx[i],
+                # 11h:133 is indexed by media lane, not host lane: Table
+                # 8-95 says "The signal on an Tx output media lane is declared
+                # valid in the OutputStatusTx register". Its twin one byte
+                # earlier is the host-lane one - "The signal on an Rx output
+                # host lane is declared valid in the OutputStatusRx register".
+                # So the same cell holds one fact about each side, and only
+                # one of them is about a lane this module has.
+                #
+                # Ungated, a conformant module reporting 0 for a media lane it
+                # does not have produced "Tx output is muted although the data
+                # path is Activated - check Tx disable, force squelch or Rx
+                # output disable" on seven lanes that are not there, while the
+                # optical power beside it was correctly blank.
+                'output_valid_tx': out_tx[i] if media else None,
                 'output_valid_rx': out_rx[i],
                 'config_status': cfg_statuses[i],
                 # Whether the module accepted the configuration is a
