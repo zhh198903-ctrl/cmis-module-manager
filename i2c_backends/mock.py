@@ -476,6 +476,14 @@ _ZR_16LANE = dict(
     vendor_pn=b"DEMO-DP16L-QDD  ",
     vendor_sn=b"DEMO000000009   ",
     lanes=16,
+    # Sixteen lanes and no Page 60h, which is the case section 8.4.13 reserves
+    # its rule for: these eight bits are "applicable in each group of eight
+    # lanes", so lane 1 inverted means lane 9 is too. A coherent module is
+    # also where the specification says to expect inversion - its note names
+    # "modules with linearly transduced signals, for reasons of signal
+    # integrity optimization".
+    default_polarity_tx=0b00000001,      # lane 1, and so lane 9
+    default_polarity_rx=0b00010000,      # lane 5, and so lane 13
     # The other CdbMaxBusySpecMethod, and the widest EPL span:
     #   163 = 0x77  one instance, background mode, auto paging,
     #               CdbMaxPagesEPL 7 -> A0h-AFh, 16 pages, 2048 bytes

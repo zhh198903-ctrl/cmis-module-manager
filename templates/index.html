@@ -250,6 +250,15 @@
           </tbody>
         </table>
 </div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px" id="flag-history-note">
+          A CMIS Flag is latched and cleared by the read that reports it, so a fault
+          that came and went appears in exactly one refresh. Lanes that have fired
+          since the history was cleared keep a <span class="flag-was">&#9679;<sup>!</sup></span>
+          marker after the flag itself has gone.
+          <b>DP Changed</b> is the module's own record that a data path reached a steady
+          state through a real transition: a link that dropped and came back reads
+          Activated at both ends, and this is the only sign it happened.
+        </p>
       </div>
     
     </div>
@@ -459,15 +468,6 @@
           <th style="width:150px">Direction</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
           <th>L5</th><th>L6</th><th>L7</th><th>L8</th><!--lane-cols-->
         </tr></thead><tbody id="tbl-polarity"></tbody></table></div>
-        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px" id="flag-history-note">
-          A CMIS Flag is latched and cleared by the read that reports it, so a fault
-          that came and went appears in exactly one refresh. Lanes that have fired
-          since the history was cleared keep a <span class="flag-was">&#9679;<sup>!</sup></span>
-          marker after the flag itself has gone.
-          <b>DP Changed</b> is the module's own record that a data path reached a steady
-          state through a real transition: a link that dropped and came back reads
-          Activated at both ends, and this is the only sign it happened.
-        </p>
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           The polarity in effect now. It may legitimately differ from Default Polarity (01h:171–172) in Module Info, which advertises only the power-up polarity of a module whose polarity is programmable.
         </p>

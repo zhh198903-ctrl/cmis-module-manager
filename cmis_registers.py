@@ -2734,6 +2734,43 @@ def parse_default_polarity(raw: bytes) -> list:
             for i in range(8)]
 
 
+def default_polarity_scope(lanes: int, page_60h: bool) -> str:
+    """Which lanes the eight bits of 01h:171-172 describe (section 8.4.13).
+
+    "When the module supports more than eight lanes, the lane polarities
+    defined here are applicable in each group of eight lanes, unless the
+    module advertises (see Table 8-58) support for per-lane specifications on
+    Page 60h."
+
+    So the same eight bits mean one of three things, and which one depends on
+    an advertisement rather than on the register:
+
+      'module'           eight lanes or fewer - they are the module's lanes
+      'first_lane_group' wider, with Page 60h: they describe lanes 1-8 only,
+                         and 8.30.1 makes them redundant with bank 0 there
+      'every_lane_group' wider, without Page 60h: lane 1's bit is also lane
+                         9's and lane 17's, and Page 60h is not there to say
+                         otherwise
+    """
+    if lanes <= 8:
+        return 'module'
+    return 'first_lane_group' if page_60h else 'every_lane_group'
+
+
+def default_polarity_lanes(entries, lanes: int, page_60h: bool) -> list:
+    """The advertisement laid out over the lanes it actually describes.
+
+    Only the repeating case changes anything: eight entries become one per
+    lane, so a 16-lane module wired inverted on lane 1 reports lane 9 as
+    well. Reporting eight lanes there says nothing about the other eight,
+    which is not what the module said.
+    """
+    if (default_polarity_scope(lanes, page_60h) != 'every_lane_group'
+            or len(entries) < 8):
+        return entries
+    return [dict(entries[i % 8], lane=i + 1) for i in range(lanes)]
+
+
 # Table 8-18, Lower 56. Each entry is (text, MSM, DPSM, NPSM); None where
 # the code does not say.
 _CMIS_SM_SUPPORT = {

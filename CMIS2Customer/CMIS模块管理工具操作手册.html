@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.112.0<br>
+      <b>版本</b>　2.113.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.112.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.112.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.113.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.113.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1693,6 +1693,34 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>通道极性:同样八个位,在宽模块上是三个意思</h3>
+  <p>Module Info 里的 <b>Default Polarity</b> 读的是 <code>01h:171-172</code>,一共八个位。规范 8.4.13 说得很清楚:</p>
+  <div class="callout">
+    <span>「当模块支持<b>多于八条通道</b>时,这里定义的通道极性<b>适用于每一组八条通道</b>,除非模块声明(见 Table 8-58)支持在 Page 60h 上做逐通道说明。」</span>
+  </div>
+  <p>所以这八个位到底在说哪些通道,取决于<b>通道数</b>和<b>一项声明</b>,而不是取决于寄存器本身:</p>
+  <ul>
+    <li><b>不超过八条</b> —— 就是这个模块的通道,无须多说</li>
+    <li><b>更宽、且有 Page 60h</b> —— 它们只描述<b>第一组八条通道</b>;逐通道的实际状态在 Page 60h 上(8.30.1)</li>
+    <li><b>更宽、且没有 Page 60h</b> —— 第 1 通道那一位<b>同时也是</b>第 9、第 17 通道的,模块没有别的地方可以另行说明</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具此前<b>不管哪种情况都只列八条通道</b>。第三种情况代价最大:一个 16 通道、没有 Page 60h 的模块,明明在说「第 1 和第 9 通道是反的」,那一行却<b>对第 9 通道只字不提</b>——照着它接线,十六条里有八条会接反。</span>
+  </div>
+  <p>现在这一行会<b>按实际适用的通道铺开</b>(第三种情况下列出 1、9),并在后面注明它说的是哪一组通道、依据是哪一节。</p>
+
+  <h3>Page 60h 的极性表:每个 bank 都从 1 号通道重新编号</h3>
+  <p>规范 8.30 说「Page 60h 的<b>每个 bank 对应 8 条通道</b>」。工具把各 bank 读到的结果直接首尾相接,却没有重新编号——于是一个 24 通道模块返回的数据里,<b>有三条通道都叫「1 号」</b>。</p>
+  <p class="note">界面上那张表是<b>按位置</b>渲染的,所以看着是对的;错的是每一条数据自己声称的通道号。这种错法不会在屏幕上露馅,只会在有人拿这份数据去对通道时才发作。现在跨 bank 统一编号为 1…N。</p>
+
+  <h3>极性表底下那段说明,讲的是另一张表</h3>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>「Lane Polarity Status」表下面挂着一段讲<b>标志读后自清、<code>●!</code> 历史标记、DP Changed</b> 的文字——那是「Lane Flags」表的说明,而 Lane Flags 卡片下面<b>一句说明都没有</b>。</span>
+  </div>
+  <p><b>放在极性表下面它是错的:</b><code>60h:128-129</code> 是 <b>RO</b>(Table 8-188),不是 RO/COR——那里没有任何东西是锁存的,读它不清除任何东西,这张表里也没有 DP Changed 这一列。工具自己那张「读后自清」清单里<b>本来就没有 Page 60h</b>。两段说明现在都回到了各自的表下面。</p>
+
   <h3>Recall 那一列,从来没跟模块声明的缓冲区数量对过</h3>
   <p>信号完整性表里,<b>Tx EQ Recall</b> 填的是<b>缓冲区编号</b>(<code>10h:154-155</code>,Table 8-83:01b 是 1 号、10b 是 2 号);而 <code>01h:161.6-5</code> 声明的是<b>缓冲区数量</b>(Table 8-54:01b 表示一个、10b 表示两个)。<b>两者本来就该比一比,而工具从来没比过。</b></p>
   <div class="callout callout-warn">
@@ -2141,7 +2169,7 @@ Read anyway?</pre>
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.112.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.113.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -4130,7 +4158,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.112.0<br>
+    CMIS Module Manager 操作手册 v2.113.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

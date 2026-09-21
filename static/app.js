@@ -781,7 +781,7 @@ async function loadInfo() {
     ] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
-    ['Default Polarity', polaritySummary(c.default_polarity), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57)', true],
+    ['Default Polarity', polaritySummary(c.default_polarity, c.default_polarity_scope), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57). Section 8.4.13: on a module wider than eight lanes these bits apply in each group of eight, unless Page 60h carries per-lane values instead', true],
     ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', true],
     ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', true],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
@@ -1219,15 +1219,32 @@ function squelchMethodNote(d) {
   return 'Squelch method';
 }
 
-function polaritySummary(list) {
+// Section 8.4.13 gives the same eight bits three different meanings, decided
+// by the lane count and by whether Page 60h is there. Bare lane numbers read
+// as "these are the module's lanes" in all three.
+const POLARITY_SCOPE_NOTE = {
+  first_lane_group:
+    'first lane group only — the per-lane status is on Page 60h '
+    + '(section 8.30.1)',
+  every_lane_group:
+    'the same eight bits govern every group of eight, and this module has no '
+    + 'Page 60h to say otherwise (section 8.4.13)',
+};
+
+function polaritySummary(list, scope) {
   if (!Array.isArray(list) || !list.length) return '—';
   const tx = list.filter(l => l.input_tx_inverted).map(l => l.lane);
   const rx = list.filter(l => l.output_rx_inverted).map(l => l.lane);
-  if (!tx.length && !rx.length) return 'All regular';
+  const note = POLARITY_SCOPE_NOTE[scope];
+  if (!tx.length && !rx.length) {
+    return note ? `All regular <span class="reg-meta">${esc(note)}</span>`
+                : 'All regular';
+  }
   const part = [];
   if (tx.length) part.push(`Tx inverted: ${tx.join(', ')}`);
   if (rx.length) part.push(`Rx inverted: ${rx.join(', ')}`);
-  return part.join(' · ');
+  return part.join(' · ')
+    + (note ? ` <span class="reg-meta">${esc(note)}</span>` : '');
 }
 
 function extraPagesSummary(c) {

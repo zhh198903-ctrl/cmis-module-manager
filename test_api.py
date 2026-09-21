@@ -27218,6 +27218,228 @@ class TestABufferThatIsNotThere(CMISTestCase):
         self.assertNotIn('notes[0]', note)
 
 
+class TestWhichLanesThePolarityRowIsAbout(CMISTestCase):
+    """Section 8.4.13 gives the eight bits of 01h:171-172 three meanings.
+
+    "When the module supports more than eight lanes, the lane polarities
+    defined here are applicable in each group of eight lanes, unless the
+    module advertises (see Table 8-58) support for per-lane specifications on
+    Page 60h."
+
+    So which lanes the row describes depends on the lane count and on an
+    advertisement, not on the register - and the panel printed eight bare
+    lane numbers whatever the module was.
+
+    The costly case is a module wider than eight lanes with no Page 60h: the
+    module is saying lane 1 inverted means lane 9 inverted too, and the row
+    said nothing at all about lane 9. A host wiring sixteen lanes from that
+    row gets eight of them wrong.
+
+    Page 60h had a lane-numbering fault of its own. Each of its banks refers
+    to eight lanes and the parser numbers each bank's eight from one, so a
+    24-lane module's reply carried three lanes called 1. The table reads the
+    list positionally and looked right; the lane each entry named did not.
+
+    And the note under that table was about something else entirely - latched
+    Flags, the flag history marker, DP Changed - while the Lane Flags card it
+    describes had no note at all. 60h:128-129 is RO (Table 8-188), not
+    RO/COR: nothing there is latched and reading it clears nothing."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _caps(self):
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _ext(self):
+        return self.assertOk(self.client.get('/api/module/ext54'))['data']
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _card(self, marker):
+        """One card's markup, from its opening div to the next card."""
+        html = self._read('templates', 'index.html')
+        i = html.index(marker)
+        start = html.rindex('<div class="card', 0, i)
+        nxt = html.find('<div class="card', i)
+        return html[start:nxt if nxt != -1 else len(html)]
+
+    # ---- which lanes the bits describe -----------------------------------
+    def test_eight_lanes_need_no_qualification(self):
+        import cmis_registers as c
+        self.assertEqual(c.default_polarity_scope(8, False), 'module')
+        self.assertEqual(c.default_polarity_scope(8, True), 'module')
+
+    def test_a_wide_module_with_page_60h_describes_the_first_group(self):
+        """8.30.1: the Page 01h bits are "redundant with the default polarity
+        inversion information for the first lane group there"."""
+        import cmis_registers as c
+        self.assertEqual(c.default_polarity_scope(24, True),
+                         'first_lane_group')
+
+    def test_a_wide_module_without_page_60h_repeats_the_bits(self):
+        import cmis_registers as c
+        self.assertEqual(c.default_polarity_scope(16, False),
+                         'every_lane_group')
+
+    def test_nine_lanes_is_already_wider_than_eight(self):
+        """The rule is "more than eight", not "two full banks"."""
+        import cmis_registers as c
+        self.assertEqual(c.default_polarity_scope(9, False),
+                         'every_lane_group')
+
+    # ---- laying them out over the lanes ----------------------------------
+    def _eight(self, tx_bits, rx_bits):
+        import cmis_registers as c
+        return c.parse_default_polarity(bytes([tx_bits, rx_bits]))
+
+    def test_the_repeating_case_covers_every_lane(self):
+        import cmis_registers as c
+        out = c.default_polarity_lanes(self._eight(0x01, 0x10), 16, False)
+        self.assertEqual([e['lane'] for e in out], list(range(1, 17)))
+
+    def test_lane_ones_bit_reaches_lane_nine_and_seventeen(self):
+        import cmis_registers as c
+        out = c.default_polarity_lanes(self._eight(0x01, 0x00), 24, False)
+        self.assertEqual([e['lane'] for e in out if e['input_tx_inverted']],
+                         [1, 9, 17])
+
+    def test_the_other_two_scopes_are_left_as_eight(self):
+        import cmis_registers as c
+        eight = self._eight(0x01, 0x00)
+        self.assertEqual(len(c.default_polarity_lanes(eight, 24, True)), 8)
+        self.assertEqual(len(c.default_polarity_lanes(eight, 8, False)), 8)
+
+    def test_a_short_read_is_not_expanded_into_invented_lanes(self):
+        import cmis_registers as c
+        self.assertEqual(c.default_polarity_lanes([], 16, False), [])
+
+    def test_the_expansion_does_not_alias_the_source_entries(self):
+        """Eight dicts repeated by reference would make lane 9 and lane 1 the
+        same object, and anything that wrote one would write both."""
+        import cmis_registers as c
+        out = c.default_polarity_lanes(self._eight(0x01, 0x00), 16, False)
+        self.assertIsNot(out[0], out[8])
+        out[8]['lane'] = 99
+        self.assertEqual(out[0]['lane'], 1)
+
+    # ---- through the endpoint --------------------------------------------
+    def test_a_shipped_profile_is_wide_with_no_page_60h(self):
+        """Without one, the case the whole rule exists for has no module to
+        happen on and every check below passes by having nothing to see."""
+        self._connect('mock_zr16')
+        caps = self._caps()
+        self.assertEqual(caps['max_lanes'], 16)
+        self.assertFalse(caps['page_60h_supported'])
+        self.assertEqual(caps['default_polarity_scope'], 'every_lane_group')
+
+    def test_the_wide_module_reports_the_lanes_it_was_told_about(self):
+        self._connect('mock_zr16')
+        dp = self._caps()['default_polarity']
+        self.assertEqual(len(dp), 16)
+        self.assertEqual([e['lane'] for e in dp if e['input_tx_inverted']],
+                         [1, 9])
+        self.assertEqual([e['lane'] for e in dp if e['output_rx_inverted']],
+                         [5, 13])
+
+    def test_a_module_with_page_60h_is_scoped_to_the_first_group(self):
+        self._connect('mock_24lane')
+        caps = self._caps()
+        self.assertEqual(caps['default_polarity_scope'], 'first_lane_group')
+        self.assertEqual(len(caps['default_polarity']), 8)
+
+    def test_an_eight_lane_module_is_unchanged(self):
+        self._connect('mock_dr8')
+        caps = self._caps()
+        self.assertEqual(caps['default_polarity_scope'], 'module')
+        self.assertEqual(len(caps['default_polarity']), 8)
+
+    # ---- Page 60h numbers its banks from one ------------------------------
+    def test_the_status_numbers_every_lane_once(self):
+        self._connect('mock_24lane')
+        lanes = [e['lane'] for e in self._ext()['polarity_status']]
+        self.assertEqual(lanes, list(range(1, 25)))
+
+    def test_the_status_still_follows_the_banks(self):
+        """Renumbering must relabel the entries, not reorder them: bank 1's
+        eight bytes are lanes 9-16 and have to stay there."""
+        self._connect('mock_24lane')
+        ps = self._ext()['polarity_status']
+        first = [e['input_tx_inverted'] for e in ps[:8]]
+        second = [e['input_tx_inverted'] for e in ps[8:16]]
+        self.assertEqual(first, second, 'this module replicates its banks')
+        self.assertTrue(ps[8]['input_tx_inverted'],
+                        'lane 9 carries bank 1 lane 1')
+
+    # ---- the page ---------------------------------------------------------
+    def test_the_summary_says_which_lanes_it_means(self):
+        js = self._read('static', 'app.js')
+        i = js.index('const POLARITY_SCOPE_NOTE')
+        block = js[i:js.index('function polaritySummary')]
+        block = re.sub(r"'\s*\+\s*'", '', block)
+        self.assertIn('first lane group only', block)
+        self.assertIn('every group of eight', block)
+        self.assertIn('8.30.1', block)
+        self.assertIn('8.4.13', block)
+
+    def test_the_row_passes_the_scope_in(self):
+        js = self._read('static', 'app.js')
+        self.assertIn('polaritySummary(c.default_polarity, c.default_polarity_scope)',
+                      js)
+
+    def test_a_module_with_nothing_inverted_still_says_which_lanes(self):
+        """"All regular" about eight lanes of a sixteen-lane module is the
+        same silence in a friendlier voice."""
+        js = self._read('static', 'app.js')
+        i = js.index('function polaritySummary')
+        body = js[i:js.index('function extraPagesSummary')]
+        allreg = body[body.index("if (!tx.length && !rx.length)"):]
+        allreg = allreg[:allreg.index('const part')]
+        self.assertIn('note', allreg)
+
+    def test_an_eight_lane_module_gets_no_note(self):
+        js = self._read('static', 'app.js')
+        i = js.index('const POLARITY_SCOPE_NOTE')
+        block = js[i:js.index('function polaritySummary')]
+        self.assertNotIn('module:', block,
+                         'the unqualified case must have no note to print')
+
+    # ---- the note that was under the wrong table --------------------------
+    def test_the_flag_history_note_is_with_the_flags(self):
+        card = self._card('id="tbl-flags"')
+        self.assertIn('id="flag-history-note"', card)
+        self.assertIn('Clear flag history', card,
+                      'the note belongs with the button that clears it')
+
+    def test_the_polarity_card_does_not_explain_latched_flags(self):
+        """60h:128-129 is RO (Table 8-188). Nothing there is latched, reading
+        it clears nothing, and the table has no DP Changed column."""
+        card = self._card('id="tbl-polarity"')
+        self.assertNotIn('flag-history-note', card)
+        self.assertNotIn('latched and cleared by the read', card)
+        self.assertNotIn('DP Changed', card)
+
+    def test_the_polarity_card_keeps_the_note_that_is_true_of_it(self):
+        card = self._card('id="tbl-polarity"')
+        self.assertIn('The polarity in effect now', card)
+        self.assertIn('01h:171', card)
+
+    def test_the_clear_on_read_table_does_not_list_page_60h(self):
+        """The tool's own answer to whether those bytes are latched, and the
+        one the moved note contradicted."""
+        import cmis_registers as c
+        self.assertEqual(
+            [b for b in c.CLEAR_ON_READ_BLOCKS if b[0] == 0x60], [])
+        self.assertEqual(c.clear_on_read_overlap(0x60, 128, 2), [])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

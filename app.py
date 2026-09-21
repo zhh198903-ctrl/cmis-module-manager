@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.112.0'
+__version__ = '2.113.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -798,8 +798,17 @@ def _discover_capabilities() -> dict:
             _read_upper(*cmis.REG_SUPPORTED_FLAGS))
         caps['monitors'] = cmis.parse_supported_monitors(
             _read_upper(*cmis.REG_SUPPORTED_MONITORS))
-        caps['default_polarity'] = cmis.parse_default_polarity(
-            _read_upper(*cmis.REG_DEFAULT_POLARITY))
+        # Section 8.4.13 makes these eight bits mean one of three things, and
+        # which one depends on the lane count and on whether Page 60h is
+        # there - both already read above. Reported as eight lanes whatever
+        # the module was, the row said nothing about lanes 9 and up on a wide
+        # module that has no Page 60h to say it instead.
+        caps['default_polarity_scope'] = cmis.default_polarity_scope(
+            caps.get('max_lanes', 8), caps.get('page_60h_supported', False))
+        caps['default_polarity'] = cmis.default_polarity_lanes(
+            cmis.parse_default_polarity(
+                _read_upper(*cmis.REG_DEFAULT_POLARITY)),
+            caps.get('max_lanes', 8), caps.get('page_60h_supported', False))
         sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
         hs = _read_lower(0x3D, 1)[0]
         ext = cmis.parse_extended_module_info(sub, hs)
@@ -1338,6 +1347,13 @@ def api_module_ext54():
             polarity = []
             for _b, raw in _read_banks(*cmis.REG_POLARITY_STATUS):
                 polarity += cmis.parse_polarity_status(raw)
+            # "Each Bank of Page 60h refers to 8 lanes" (section 8.30), and
+            # the parser numbers each bank's eight from one. Concatenating
+            # them without renumbering put three lanes called 1 in the reply
+            # of a 24-lane module - the table below reads positionally and
+            # looked right, but the lane each entry names did not.
+            for i, entry in enumerate(polarity):
+                entry['lane'] = i + 1
             out['polarity_status'] = polarity[:_state['lanes']]
             out['acq_counter_advert'] = _read_upper(*cmis.REG_ACQ_COUNTER_ADV)[0]
             out['available']['60h'] = True
