@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.113.0'
+__version__ = '2.114.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1515,6 +1515,31 @@ def api_media_lane_switching():
     commit = bool(body.get('commit', False))
     banks = (_state['lanes'] + 7) // 8
     try:
+        # Table 8-196: with EnableMediaLaneRedirection clear "commit command
+        # is without effect" - nothing moves and no RedirectionCommitResult is
+        # written, so the module never says it ignored anything. This used to
+        # write the commit anyway and answer committed, and the panel then
+        # told the operator to press Commit again. The page sends its Enable
+        # box with every request, so an unticked box turned every Commit into
+        # a disable followed by a commit that could not happen.
+        # Judged with this request's own enable applied, since that is written
+        # first, and before anything is written: a stage that goes through
+        # while the commit it came with is refused is half an action.
+        if commit:
+            enables = ([1 if enable else 0] * banks if enable is not None
+                       else [raw[0] for _b, raw
+                             in _read_banks(*cmis.REG_MLS_ENABLE)])
+            off = cmis.mls_disabled_groups(enables)
+            if off:
+                where = ('' if banks == 1 else
+                         ' on group%s %s' % ('s' if len(off) > 1 else '',
+                                             ', '.join(map(str, off))))
+                return _err(
+                    'Media lane redirection is disabled%s (6Dh:152), and '
+                    'Table 8-196 says a commit is then without effect: the '
+                    'module changes nothing and writes no result to say so. '
+                    'Enable redirection in the same request, or first.'
+                    % where, 400)
         if mapping:
             # A target is a lane of its own group of eight (section 8.33), so
             # the request is one permutation per group. Truncating at eight

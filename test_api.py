@@ -13961,18 +13961,25 @@ class TestACommitThatIsStillRunning(CMISTestCase):
         # 6Dh:128.7-4 = 6 is "500 ms - 1 s" in Table 8-49. Deliberately not a
         # code whose ceiling equals the cap, or the cap would satisfy this.
         app_module._state['backend'].write_bytes(0x80, bytes([0x60]))
-        d = self._mls(commit=True)
+        d = self._mls(enable=True, commit=True)
         self.assertEqual(d['commit_max_seconds'], 1.0,
                          'the wait ignores what the module advertises')
         self.assertEqual(d['commit_duration_label'], '500 ms - 1 s')
 
     def test_a_commit_that_finishes_early_does_not_cost_the_budget(self):
         """Sitting out the advertised maximum on a module that finished in a
-        millisecond would be its own defect."""
+        millisecond would be its own defect.
+
+        Enabled, because this used to commit on a disabled switch: Table
+        8-196 makes that commit "without effect", so what it timed was a
+        commit that never ran, and fast for that reason."""
         self._connect()
         started = time.time()
-        self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], commit=True)
+        self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], enable=True,
+                  commit=True)
         self.assertLess(time.time() - started, 0.05)
+        self.assertEqual([l['active_target'] for l in self._read()['lanes']][:2],
+                         [2, 1], 'and it has to be a commit that happened')
 
     def test_the_answer_says_whether_it_finished(self):
         self._connect()
@@ -27438,6 +27445,197 @@ class TestWhichLanesThePolarityRowIsAbout(CMISTestCase):
         self.assertEqual(
             [b for b in c.CLEAR_ON_READ_BLOCKS if b[0] == 0x60], [])
         self.assertEqual(c.clear_on_read_overlap(0x60, 128, 2), [])
+
+
+class TestACommitTheModuleIgnores(CMISTestCase):
+    """Table 8-196, EnableMediaLaneRedirection: "0b: disabled: commit command
+    is without effect".
+
+    Not rejected - without effect. The module changes nothing and writes no
+    RedirectionCommitResult, so it never says it ignored anything. The tool
+    wrote the commit anyway and answered committed and complete; the page
+    toasted "Redirection committed" in green, and the panel under it then
+    said "press Commit" - the button just pressed, which would do nothing
+    again.
+
+    And the page sends its Enable box with every request, so an unticked box
+    made every Commit a disable followed by a commit that could not happen.
+
+    A write the module swallows silently is refused; a write the module
+    answers by name is shown. This is the first kind, and the specification
+    says so in a sentence.
+
+    The same table defines the result codes as classes - 3 to 6 are
+    rejections and everything above 6 is reserved - and the column printed
+    them all as words in one neutral style, with a code above 6 as "Code 7"."""
+
+    def _connect(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/media_lane_switching',
+                                data=json.dumps(body),
+                                content_type='application/json')
+
+    def _read(self):
+        return self.assertOk(self.client.get(
+            '/api/module/ext54'))['data']['media_lane_switching']
+
+    def _lanes(self):
+        return app_module._state['lanes']
+
+    def _perm(self):
+        return [2, 1, 3, 4, 5, 6, 7, 8] * (self._lanes() // 8)
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the rule -----------------------------------------------------------
+    def test_a_disabled_group_is_named(self):
+        import cmis_registers as c
+        self.assertEqual(c.mls_disabled_groups([1, 0, 1]), [2])
+
+    def test_only_bit_zero_is_the_enable(self):
+        """6Dh:152 bits 7-1 are Reserved; a module setting one of them has
+        not enabled anything."""
+        import cmis_registers as c
+        self.assertEqual(c.mls_disabled_groups([0xFE]), [1])
+        self.assertEqual(c.mls_disabled_groups([0x01]), [])
+
+    def test_every_disabled_group_is_listed(self):
+        import cmis_registers as c
+        self.assertEqual(c.mls_disabled_groups([0, 1, 0]), [1, 3])
+
+    # ---- through the endpoint ---------------------------------------------
+    def test_a_commit_on_a_disabled_switch_is_refused(self):
+        self._connect()
+        rv = self._post(redirection=self._perm(), enable=False, commit=True)
+        body = self.assertErr(rv, 400)
+        self.assertIn('Table 8-196', body['message'])
+        self.assertIn('without effect', body['message'])
+        self.assertIn('no result', body['message'])
+
+    def test_nothing_is_written_when_it_is_refused(self):
+        """Staging the mapping and then refusing the commit that came with it
+        would leave half an action in the module."""
+        self._connect()
+        self._post(redirection=self._perm(), enable=False, commit=True)
+        m = self._read()
+        self.assertEqual([l['redirected_to'] for l in m['lanes']][:2], [1, 2])
+
+    def test_enable_omitted_reads_what_the_module_has(self):
+        self._connect()
+        self.assertErr(self._post(commit=True), 400)
+        self.assertOk(self._post(enable=True))
+        self.assertOk(self._post(redirection=self._perm(), commit=True))
+        self.assertEqual(
+            [l['active_target'] for l in self._read()['lanes']][:2], [2, 1])
+
+    def test_enabling_in_the_same_request_is_enough(self):
+        """The enable is written before the commit, so the request's own
+        enable is the one the commit meets."""
+        self._connect()
+        self.assertOk(self._post(redirection=self._perm(), enable=True,
+                                 commit=True))
+        self.assertEqual(
+            [l['active_target'] for l in self._read()['lanes']][:2], [2, 1])
+
+    def test_disabling_in_the_same_request_is_refused_too(self):
+        """The unticked box. An enabled switch, a request that disables it
+        and then commits: the commit arrives at a disabled switch."""
+        self._connect()
+        self.assertOk(self._post(enable=True))
+        self.assertErr(self._post(redirection=self._perm(), enable=False,
+                                  commit=True), 400)
+
+    def test_staging_while_disabled_is_still_allowed(self):
+        """Stage exists to prepare a mapping before enabling; only the commit
+        is swallowed."""
+        self._connect()
+        self.assertOk(self._post(redirection=self._perm(), enable=False))
+        self.assertEqual(
+            [l['redirected_to'] for l in self._read()['lanes']][:2], [2, 1])
+
+    def test_one_disabled_group_is_enough_to_refuse(self):
+        """6Dh is banked and enabled per group. A commit written to every
+        group would do nothing in the disabled one and report the whole
+        module committed."""
+        self._connect('mock_1600g_16lane')
+        self.assertOk(self._post(enable=True))
+        app_module._set_page(0x6D, 1)
+        app_module._state['backend'].write_bytes(0x98, bytes([0]))
+        app_module._invalidate_page()
+        body = self.assertErr(self._post(redirection=self._perm(),
+                                         commit=True), 400)
+        self.assertIn('group 2', body['message'])
+        self.assertNotIn('group 1', body['message'])
+
+    def test_a_single_group_module_is_not_told_about_groups(self):
+        self._connect()
+        body = self.assertErr(self._post(commit=True), 400)
+        self.assertNotIn('group', body['message'])
+
+    # ---- the result codes ---------------------------------------------------
+    def test_the_rejections_are_the_four_the_table_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.MLS_RESULT_REJECTED, frozenset({3, 4, 5, 6}))
+        self.assertEqual([c.mls_result_kind(n) for n in range(8)],
+                         ['none', 'success', 'in_progress', 'rejected',
+                          'rejected', 'rejected', 'rejected', 'reserved'])
+
+    def test_a_code_above_six_is_named_reserved(self):
+        import cmis_registers as c
+        self.assertEqual(c.mls_result_name(7), 'Reserved (7)')
+        self.assertEqual(c.mls_result_name(255), 'Reserved (255)')
+        self.assertEqual(c.mls_result_name(4), 'Rejected: not a permutation')
+
+    def test_the_parser_carries_the_class(self):
+        import cmis_registers as c
+        m = c.parse_media_lane_switching(
+            0x00, bytes(range(1, 9)), [1], bytes([1, 4, 2, 0, 7, 1, 1, 1]),
+            bytes(range(1, 9)), 8)
+        self.assertEqual([l['commit_result_kind'] for l in m['lanes']][:5],
+                         ['success', 'rejected', 'in_progress', 'none',
+                          'reserved'])
+        self.assertEqual(m['lanes'][4]['commit_result_name'], 'Reserved (7)')
+
+    # ---- the page -----------------------------------------------------------
+    def _result_cell(self):
+        js = self._js()
+        i = js.index('const MLS_RESULT_CLASS')
+        return js[i:js.index('async function applyMls', i)]
+
+    def test_a_rejection_is_coloured_as_one(self):
+        cell = self._result_cell()
+        self.assertIn("rejected: 'flag-active'", cell)
+        self.assertIn("success: 'flag-ok'", cell)
+
+    def test_the_colour_comes_from_the_class_the_server_sent(self):
+        """Which codes are rejections is Table 8-196's, and it is decided in
+        one place."""
+        cell = self._result_cell()
+        self.assertIn('l.commit_result_kind', cell)
+        for code in ('=== 3', '=== 4', '=== 5', '=== 6', '>= 3', '> 2'):
+            self.assertNotIn('commit_result ' + code, cell)
+
+    def test_the_row_renders_through_the_cell(self):
+        js = self._js()
+        self.assertIn('`<td>${mlsResultCell(l)}</td></tr>`', js)
+        self.assertNotIn('`<td>${esc(l.commit_result_name)}</td></tr>`', js)
+
+    def test_a_disabled_switch_is_not_told_to_press_commit(self):
+        js = self._js()
+        i = js.index('m.committed === false && m.is_permutation')
+        hint = re.sub(r"'\s*\+\s*'", '', js[i:i + 900])
+        self.assertIn('m.enabled', hint)
+        self.assertIn('tick Enable, then Commit', hint)
+        self.assertIn('Table 8-196', hint)
 
 
 if __name__ == '__main__':

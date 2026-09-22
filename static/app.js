@@ -1312,7 +1312,7 @@ async function loadExt54() {
       return `<tr><td>${l.lane}${grp}</td>`
         + `<td>${target(l.redirected_to, l.redirected_to_raw)}</td>`
         + `<td${cls}>${target(l.active_target, l.active_target_raw)}</td>`
-        + `<td>${esc(l.commit_result_name)}</td></tr>`;
+        + `<td>${mlsResultCell(l)}</td></tr>`;
     }).join('')
       + (m.permutation_banks || []).map((ok, b) => ok ? '' :
           `<tr><td colspan="4"><span class="flag-active">■ ${esc(
@@ -1339,7 +1339,15 @@ async function loadExt54() {
                 ? '; this module advertises up to ' + m.commit_duration_label
                   + ' for it (6Dh:128)' : ''))}</span></td></tr>`
          : m.committed === false && m.is_permutation
-         ? '<tr><td colspan="4"><span class="flag-active">■ Staged mapping is not in effect yet — press Commit</span></td></tr>' : '');
+         // Pressing Commit on a disabled switch does nothing at all (Table
+         // 8-196), so the advice has to name the step that is missing.
+         ? (m.enabled
+            ? '<tr><td colspan="4"><span class="flag-active">■ Staged mapping is not in effect yet — press Commit</span></td></tr>'
+            : `<tr><td colspan="4"><span class="flag-active">■ ${esc(
+                'Staged mapping is not in effect, and redirection is '
+                + 'disabled - tick Enable, then Commit. A commit while it is '
+                + 'disabled is without effect (Table 8-196).')}</span></td></tr>`)
+         : '');
     // Eight numbers on a sixteen lane module is half a request, and the old
     // endpoint took it silently.
     const box = document.getElementById('mls-mapping');
@@ -1384,6 +1392,23 @@ async function resetAcqCounters() {
                           : `Reset failed: ${r.message}`,
         r.status === 'ok' ? 'success' : 'error');
   if (r.status === 'ok') loadExt54();
+}
+
+// Table 8-196's result codes read as classes. The server names and classifies
+// them; this only decides the colour, so the page carries no copy of which
+// codes are rejections.
+const MLS_RESULT_CLASS = {
+  success: 'flag-ok', in_progress: 'state-init', rejected: 'flag-active',
+  reserved: 'flag-warn', none: 'reg-meta',
+};
+
+function mlsResultCell(l) {
+  const cls = MLS_RESULT_CLASS[l.commit_result_kind] || '';
+  const tip = l.commit_result_kind === 'reserved'
+    ? 'RedirectionCommitResult ' + l.commit_result + ': Table 8-196 reserves '
+      + 'every code above 6, so this is not a result the specification defines.'
+    : 'RedirectionCommitResult ' + l.commit_result + ' (6Dh:168-175)';
+  return `<span class="${cls}" title="${esc(tip)}">${esc(l.commit_result_name)}</span>`;
 }
 
 async function applyMls(commit) {

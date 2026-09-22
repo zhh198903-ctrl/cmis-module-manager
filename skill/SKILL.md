@@ -449,6 +449,17 @@ curl -s -X POST $B/api/register/read -H 'Content-Type: application/json' \
 
 返回里带 `bank`、`banked`（这一页分不分 Bank）、`banks`（本模块有几个 Bank）。
 
+## 媒体通道切换:禁用时的 Commit 会被静默吞掉
+
+Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
+「commit 命令**没有效果**」——不是拒绝,模块**不写任何结果码**。
+所以 `POST /api/module/media_lane_switching` 带 `commit:true` 时,
+若按本次请求的 `enable` 算下来仍有任何一组是禁用的,会**直接 400**,且不写任何东西。
+要提交就在同一请求里带 `enable:true`,或先单独启用。
+
+`ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
+`rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
+
 ## 通道极性:同样八个位,在宽模块上是三个意思
 
 `01h:171-172`（Table 8-57）只有八个位。规范 **8.4.13** 说，模块**多于八条通道**时

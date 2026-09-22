@@ -3321,6 +3321,35 @@ MLS_RESULT_NAMES = {
     6: 'Rejected: lane ordering unsupported',
 }
 
+# The same table read as classes, which is what a reader scanning the column
+# needs: four of the seven codes are rejections, and ">6 Reserved" is a code
+# the specification does not define rather than one more kind of result.
+# Printed as words in one neutral style, "Rejected: conflicts with active
+# DataPath" sat beside "Success" looking like the same sort of answer.
+MLS_RESULT_REJECTED = frozenset({3, 4, 5, 6})
+
+
+def mls_result_kind(code: int) -> str:
+    """'none', 'success', 'in_progress', 'rejected' or 'reserved'."""
+    if code in MLS_RESULT_REJECTED:
+        return 'rejected'
+    return {0: 'none', 1: 'success', 2: 'in_progress'}.get(code, 'reserved')
+
+
+def mls_result_name(code: int) -> str:
+    return MLS_RESULT_NAMES.get(code, 'Reserved (%d)' % code)
+
+
+def mls_disabled_groups(enables) -> list:
+    """Groups of eight lanes (from 1) whose redirection is disabled.
+
+    Table 8-196, EnableMediaLaneRedirection: "0b: disabled: commit command is
+    without effect". Not rejected - without effect: the module changes
+    nothing and writes no RedirectionCommitResult to say so. A commit sent
+    there is swallowed whole, so it is the host that has to notice.
+    """
+    return [b + 1 for b, e in enumerate(enables) if not (e & 1)]
+
 
 def parse_media_lane_switching(advert: int, redirection: bytes,
                                enable, result: bytes,
@@ -3369,7 +3398,8 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
                               else act),
             'active_target_raw': act,
             'commit_result': res,
-            'commit_result_name': MLS_RESULT_NAMES.get(res, f'Code {res}'),
+            'commit_result_name': mls_result_name(res),
+            'commit_result_kind': mls_result_kind(res),
         })
     # The permutation has to hold inside each group, not across the module:
     # a target is a lane of its own group, so eight lanes redirected to 1-8 in
