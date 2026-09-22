@@ -27803,6 +27803,193 @@ class TestAnApplyWhileTheLastIsRunning(CMISTestCase):
         self.assertNotIn('5', body['message'].split('still')[0])
 
 
+class TestTwoPortsReconfigureApart(CMISTestCase):
+    """6.2.4.2: while a command is still being processed for lanes of a Data
+    Path, "the module ignores new triggers for those lanes and does not
+    execute the command on the Data Paths those lanes belong to".
+
+    Those lanes and those Data Paths - not the module. The demo module held
+    one command slot for the whole module and ignored every trigger while it
+    was full. So on mock_fr4x2, two 400G ports, an Apply to an idle port 2
+    while port 1 was mid-reconfiguration was accepted by the tool (correctly,
+    since v2.115.0 judges per Data Path) and then silently dropped by the
+    module the tool is demonstrated against: lanes 5-8 never entered
+    ConfigInProgress and their Application never changed.
+
+    A mock that is stricter than the specification teaches a rule the
+    specification does not have. Each command now walks its own steps on its
+    own clock, one per Data Path."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _config(self):
+        return [l['config_status_code'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _active(self):
+        return self.assertOk(self.client.get(
+            '/api/module/datapath'))['data']['active_app_select']
+
+    def _stop_both(self):
+        deactivated(self.client)
+
+    def _settle(self):
+        deadline = time.time() + 5
+        while 0xC in self._config() and time.time() < deadline:
+            time.sleep(0.05)
+
+    # ---- through the tool ----------------------------------------------------
+    def test_the_second_port_is_reconfigured_while_the_first_runs(self):
+        self._connect()
+        self._stop_both()
+        self.assertOk(self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
+                                 dp_deinit_mask=0xFF, apply=True))
+        self.assertEqual(self._config(), [0xC] * 4 + [0x1] * 4)
+        d = self.assertOk(self._post(app_select=[0] * 8, dp_deinit_mask=0xFF,
+                                     apply=True))['data']
+        self.assertEqual(d['applied_lanes'], [5, 6, 7, 8])
+        self.assertEqual(self._config(), [0xC] * 8,
+                         'port 2 never started its command')
+        self._settle()
+        self.assertEqual(self._active(), [0] * 8,
+                         'port 2 kept its old Application')
+
+    def test_both_commands_report_their_own_result(self):
+        self._connect()
+        self._stop_both()
+        self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2], dp_deinit_mask=0xFF,
+                   apply=True)
+        self._post(app_select=[0] * 8, dp_deinit_mask=0xFF, apply=True)
+        self._settle()
+        self.assertEqual(self._config(), [0x1] * 8)
+
+    # ---- the module rule itself, below the tool's own refusal ---------------
+    def _trigger(self, mask):
+        backend = _state['backend']
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x8F, bytes([mask]))
+
+    def test_a_trigger_on_a_busy_data_path_is_still_ignored(self):
+        """The rule is narrowed, not removed: the lanes being processed
+        still ignore a new trigger."""
+        self._connect()
+        self._stop_both()
+        self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2], dp_deinit_mask=0xFF,
+                   apply=True)
+        backend = _state['backend']
+        before = [(c.mask, c.time) for c in backend._commands]
+        self._trigger(0x0F)
+        self.assertEqual([(c.mask, c.time) for c in backend._commands],
+                         before, 'a busy Data Path took a second command')
+
+    def test_a_trigger_naming_both_runs_on_the_idle_one_only(self):
+        """"does not execute the command on the Data Paths those lanes belong
+        to" - the other Data Paths in the same trigger are not named."""
+        self._connect()
+        self._stop_both()
+        self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2], dp_deinit_mask=0xFF,
+                   apply=True)
+        backend = _state['backend']
+        self._trigger(0xFF)
+        self.assertEqual(sorted(c.mask for c in backend._commands),
+                         [0x0F, 0xF0])
+
+    def test_a_busy_lane_takes_its_whole_data_path_out(self):
+        """One busy lane of a four-lane Data Path is enough: the command is
+        not executed on that Data Path, so none of its lanes run it."""
+        import i2c_backends.mock as mock
+        self._connect()
+        backend = _state['backend']
+        backend._commands = [mock._ConfigCommand(
+            time.time(), 0x01, False, False, [0x1] * 8, [0x10] * 8)]
+        self.assertEqual(backend._drop_busy_data_paths(0xFF), 0xF0)
+        self.assertEqual(backend._drop_busy_data_paths(0xF0), 0xF0)
+
+    def test_nothing_busy_leaves_the_trigger_alone(self):
+        self._connect()
+        backend = _state['backend']
+        backend._commands = []
+        self.assertEqual(backend._drop_busy_data_paths(0xA5), 0xA5)
+
+    # ---- the other ways a command ends ---------------------------------------
+    def test_a_reset_drops_every_command(self):
+        self._connect()
+        self._stop_both()
+        self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2], dp_deinit_mask=0xFF,
+                   apply=True)
+        backend = _state['backend']
+        self.assertTrue(backend._commands)
+        backend._reset_time = time.time() - 1.0
+        backend._update_state_machine()
+        self.assertEqual(backend._commands, [])
+
+    def test_a_deinit_release_takes_over_only_its_own_lanes(self):
+        """Releasing a DPDeinit hold restarts the lanes it held. It used to
+        replace the one slot outright; with a command per Data Path it must
+        leave the other port's command running."""
+        self._connect()
+        self._stop_both()
+        self._post(app_select=[0, 0, 0, 0, 2, 2, 2, 2], dp_deinit_mask=0xFF,
+                   apply=True)
+        backend = _state['backend']
+        backend._set_dp_deinit(0x0F)          # releases lanes 5-8
+        self.assertEqual(sorted(c.mask for c in backend._commands),
+                         [0x0F, 0xF0])
+
+    def test_every_command_is_advanced_on_every_poll(self):
+        """Two Data Paths reconfigured at the same moment finish together.
+        Advancing one command per poll would make the second port wait for
+        the first after all - the lockout by another route."""
+        import i2c_backends.mock as mock
+        self._connect()
+        backend = _state['backend']
+        then = time.time() - 2.0
+        backend._commands = [
+            mock._ConfigCommand(then, 0x0F, False, True, [0x1] * 8,
+                                [0x10] * 8),
+            mock._ConfigCommand(then, 0xF0, False, True, [0x1] * 8,
+                                [0x10] * 8)]
+        backend._update_state_machine()
+        self.assertEqual(backend._commands, [])
+
+    def test_a_release_takes_over_the_lanes_it_overlaps(self):
+        """Releasing a hold on lanes that still have a command running
+        replaces that command - the lanes are restarting, and a stale command
+        finishing afterwards would report a result for a procedure that is no
+        longer what the lanes are doing."""
+        import i2c_backends.mock as mock
+        self._connect()
+        backend = _state['backend']
+        stale = mock._ConfigCommand(time.time(), 0xF0, False, False,
+                                    [0x1] * 8, [0x10] * 8)
+        backend._commands = [stale]
+        backend._dp_deinit_mask = 0xF0
+        backend._set_dp_deinit(0x00)
+        self.assertNotIn(stale, backend._commands)
+        self.assertEqual([c.mask for c in backend._commands], [0xF0])
+
+    def test_one_command_finishing_leaves_the_other_running(self):
+        import i2c_backends.mock as mock
+        self._connect()
+        backend = _state['backend']
+        now = time.time()
+        backend._commands = [
+            mock._ConfigCommand(now - 2.0, 0x0F, False, True, [0x1] * 8,
+                                [0x10] * 8),
+            mock._ConfigCommand(now, 0xF0, False, True, [0x1] * 8,
+                                [0x10] * 8)]
+        backend._update_state_machine()
+        self.assertEqual([c.mask for c in backend._commands], [0xF0])
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

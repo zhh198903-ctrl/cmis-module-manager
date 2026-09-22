@@ -883,6 +883,27 @@ _FR4X2_800G = {
 # Base Mock Backend (profile-driven)
 # ============================================================================
 
+class _ConfigCommand:
+    """One configuration command the module is executing (Tables 6-3, 6-4).
+
+    6.2.4.2 locks lanes out of new triggers only while *their* command runs -
+    "the module ignores new triggers for those lanes and does not execute the
+    command on the Data Paths those lanes belong to" - so a module carrying two
+    ports can be executing one command on each, and each walks its own steps
+    on its own clock. One slot for the whole module made a trigger for an idle
+    port wait behind a busy one, and then dropped it.
+    """
+    __slots__ = ('time', 'mask', 'hot', 'provision_only', 'result', 'staged')
+
+    def __init__(self, started, mask, hot, provision_only, result, staged):
+        self.time = started
+        self.mask = mask                      # lanes this command selected
+        self.hot = hot                        # ApplyImmediate rather than DPInit
+        self.provision_only = provision_only  # Table 6-4: no commissioning
+        self.result = result                  # per-lane ConfigStatus nibble
+        self.staged = staged                  # Staged set as the trigger saw it
+
+
 class MockBackend(I2CInterface):
     """Profile-driven CMIS 5.3 optical module simulator.
 
@@ -912,13 +933,8 @@ class MockBackend(I2CInterface):
         self._module_state = 0b011      # ModuleReady
         self._reset_time = 0.0
         self._lp_request_time = 0.0
-        self._apply_time = 0.0
-        self._config_result = [0x1] * 8   # per-lane ConfigStatus nibble
-        self._config_staged = [0x10] * 8  # Staged set as the Apply saw it
-        self._apply_mask = 0xFF           # lanes the last Apply selected
-        self._apply_hot = False           # ApplyImmediate rather than DPInit
+        self._commands = []               # _ConfigCommand, one per Data Path
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
-        self._apply_provision_only = False
         self._page_redirects = []         # PageSelects that named a missing page
         self._tuning_accepted = [True] * max(
             8, self.PROFILE.get('lanes', 8))
@@ -1850,7 +1866,7 @@ class MockBackend(I2CInterface):
                 self._dp_lane_states = [0x4] * 8
                 # Every lane came back through DPInit after the reset.
                 self._registers[0x11][0x86] = 0xFF
-                self._apply_time = 0
+                self._commands = []
         elif self._lp_request_time > 0:
             self._module_state = 0b001
             self._dp_lane_states = [0x1] * 8
@@ -1882,72 +1898,13 @@ class MockBackend(I2CInterface):
             if state == 0x1:
                 self._deinit_time, self._deinit_mask = 0.0, 0x00
 
-        # DataPath state machine (ApplyDataPath)
-        if self._apply_time > 0 and self._reset_time == 0:
-            dt = now - self._apply_time
-            if (not self._apply_hot and not self._apply_provision_only
-                    and dt >= 0.15):
-                # 8.14.7 clears the bits "while in DPSM state DPInit", so
-                # what matters is that the transit happened - which is any
-                # cycle, whatever Lower 02h says about the intervention-free
-                # procedures. Clearing from inside the DPInit branch alone
-                # would depend on a read landing in a 150 ms window; miss it
-                # and the flag would claim a commissioning was still pending
-                # on a Data Path that had already been through DPInit.
-                self._clear_dp_init_pending()
-            if self._apply_hot:
-                # 8.13.3.1: ApplyImmediate is Provision-and-Commission - the
-                # staged set goes straight into hardware and the Data Path
-                # never leaves the state it is in. No transient, so no
-                # DPStateChangedFlag either.
-                if dt >= 0.5:
-                    self._apply_time = 0
-                    self._commit_apply()
-            elif self._apply_provision_only:
-                # Provision only (Table 6-4): the result is reported and
-                # DPInitPending is left set, but no lane changes state.
-                if dt >= 0.15:
-                    self._apply_time = 0
-                    self._commit_apply()
-            elif dt < 0.15:
-                for i in range(8):
-                    if not self._apply_selects(i):
-                        continue
-                    if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x2      # DPInit
-            elif dt < 0.3:
-                # Figure 6-5: DPInit completes into DPInitialized, a steady
-                # state where the path is up but the Tx is not turned on. It
-                # sat between DPInit and DPTxTurnOn in the state machine and
-                # nowhere at all in this mock, so nothing ever showed it.
-                for i in range(8):
-                    if not self._apply_selects(i):
-                        continue
-                    if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x7      # DPInitialized
-            elif dt < 0.5:
-                for i in range(8):
-                    if not self._apply_selects(i):
-                        continue
-                    if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x5      # DPTxTurnOn
-            else:
-                for i in range(8):
-                    if not self._apply_selects(i):
-                        continue
-                    if not ((self._tx_disable_mask >> i) & 1):
-                        self._dp_lane_states[i] = 0x4
-                    else:
-                        self._dp_lane_states[i] = 0x1
-                    # 6.3.3: the Flag is set on entry to a lasting steady state
-                    # reached through a significant transient - which is what
-                    # has just happened, since the path went through DPInit and
-                    # DPTxTurnOn to get here. It is a Flag, so it latches until
-                    # read: this is the module's record that the path bounced.
-                    self._registers[0x11][0x86] = (
-                        self._registers[0x11].get(0x86, 0) | (1 << i))
-                self._apply_time = 0
-                self._commit_apply()
+        # DataPath state machine. 6.2.4.2 locks lanes out of new triggers
+        # only while their own command runs, so there can be one command
+        # per Data Path in flight, each on its own clock.
+        if self._reset_time == 0:
+            for cmd in list(self._commands):
+                if self._advance_command(cmd, now):
+                    self._commands.remove(cmd)
 
         # Write DP states back to Page 11h:0x80-0x83.
         # 6.2.3.2: AppSel 0000b means the lane "is unused and not part of a
@@ -2158,12 +2115,84 @@ class MockBackend(I2CInterface):
         regs[addr] = (regs.get(addr, 0) & ~(mask << shift)) | (
             (value & mask) << shift)
 
-    def _clear_dp_init_pending(self) -> None:
+    def _advance_command(self, cmd, now) -> bool:
+        """Move one configuration command on; True once it has reported.
+
+        The steps and their timings are the ones this mock has always
+        modelled - only whose they are changed.
+        """
+        dt = now - cmd.time
+        if (not cmd.hot and not cmd.provision_only
+                and dt >= 0.15):
+            # 8.14.7 clears the bits "while in DPSM state DPInit", so
+            # what matters is that the transit happened - which is any
+            # cycle, whatever Lower 02h says about the intervention-free
+            # procedures. Clearing from inside the DPInit branch alone
+            # would depend on a read landing in a 150 ms window; miss it
+            # and the flag would claim a commissioning was still pending
+            # on a Data Path that had already been through DPInit.
+            self._clear_dp_init_pending(cmd)
+        if cmd.hot:
+            # 8.13.3.1: ApplyImmediate is Provision-and-Commission - the
+            # staged set goes straight into hardware and the Data Path
+            # never leaves the state it is in. No transient, so no
+            # DPStateChangedFlag either.
+            if dt >= 0.5:
+                self._commit_apply(cmd)
+                return True
+        elif cmd.provision_only:
+            # Provision only (Table 6-4): the result is reported and
+            # DPInitPending is left set, but no lane changes state.
+            if dt >= 0.15:
+                self._commit_apply(cmd)
+                return True
+        elif dt < 0.15:
+            for i in range(8):
+                if not self._apply_selects(cmd, i):
+                    continue
+                if not ((self._tx_disable_mask >> i) & 1):
+                    self._dp_lane_states[i] = 0x2      # DPInit
+        elif dt < 0.3:
+            # Figure 6-5: DPInit completes into DPInitialized, a steady
+            # state where the path is up but the Tx is not turned on. It
+            # sat between DPInit and DPTxTurnOn in the state machine and
+            # nowhere at all in this mock, so nothing ever showed it.
+            for i in range(8):
+                if not self._apply_selects(cmd, i):
+                    continue
+                if not ((self._tx_disable_mask >> i) & 1):
+                    self._dp_lane_states[i] = 0x7      # DPInitialized
+        elif dt < 0.5:
+            for i in range(8):
+                if not self._apply_selects(cmd, i):
+                    continue
+                if not ((self._tx_disable_mask >> i) & 1):
+                    self._dp_lane_states[i] = 0x5      # DPTxTurnOn
+        else:
+            for i in range(8):
+                if not self._apply_selects(cmd, i):
+                    continue
+                if not ((self._tx_disable_mask >> i) & 1):
+                    self._dp_lane_states[i] = 0x4
+                else:
+                    self._dp_lane_states[i] = 0x1
+                # 6.3.3: the Flag is set on entry to a lasting steady state
+                # reached through a significant transient - which is what
+                # has just happened, since the path went through DPInit and
+                # DPTxTurnOn to get here. It is a Flag, so it latches until
+                # read: this is the module's record that the path bounced.
+                self._registers[0x11][0x86] = (
+                    self._registers[0x11].get(0x86, 0) | (1 << i))
+            self._commit_apply(cmd)
+            return True
+        return False
+
+    def _clear_dp_init_pending(self, cmd) -> None:
         """8.14.7: "the module clears all DPInitPendingLane<i> bits of a Data
         Path while in DPSM state DPInit"."""
         pending = self._registers[0x11].get(0xEB, 0)
         for lane in range(8):
-            if self._apply_selects(lane):
+            if self._apply_selects(cmd, lane):
                 pending &= ~(1 << lane)
         self._registers[0x11][0xEB] = pending
 
@@ -2174,21 +2203,21 @@ class MockBackend(I2CInterface):
             return True                      # legacy default: both supported
         return (raw & 0x03) == 0b10
 
-    def _apply_selects(self, lane: int) -> bool:
-        if not ((self._apply_mask >> lane) & 1):
+    def _apply_selects(self, cmd, lane: int) -> bool:
+        if not ((cmd.mask >> lane) & 1):
             return False                     # this lane was not selected
         if (self._dp_deinit_mask >> lane) & 1:
             return False                     # held deinitialised by 10h:128
-        return self._config_result[lane] == 0x1   # validation failed: no execution
+        return cmd.result[lane] == 0x1       # validation failed: no execution
 
-    def _commit_apply(self):
+    def _commit_apply(self, cmd):
         """Step (4): copy the staged set that passed into the Active Control
         Set and report the result. Shared by both Apply triggers - only the
         Data Path transitions differ between them."""
         for i in range(8):
-            if ((self._apply_mask >> i) & 1) and self._config_result[i] == 0x1:
-                self._registers[0x11][0xCE + i] = self._config_staged[i]
-                self._provision_si(i, self._config_staged[i] & 0x01)
+            if ((cmd.mask >> i) & 1) and cmd.result[i] == 0x1:
+                self._registers[0x11][0xCE + i] = cmd.staged[i]
+                self._provision_si(i, cmd.staged[i] & 0x01)
         # DPIDX is RO in the Active Control Set (Table 8-102): "the Data Path
         # Index (DPIDX) of that Data Path: DPID (lowest numbered lane of Data
         # Path)". The module works it out from what it provisioned; copying
@@ -2197,45 +2226,48 @@ class MockBackend(I2CInterface):
         # a module running two Data Paths said it was running one.
         self._recompute_dpidx(self._registers[0x11])
         for lane in range(8):
-            if not ((self._apply_mask >> lane) & 1):
+            if not ((cmd.mask >> lane) & 1):
                 continue                     # unselected lanes keep their status
             a = 0xCA + lane // 2
             shift = 4 if lane % 2 else 0
             self._registers[0x11][a] = (
                 (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
-                | (self._config_result[lane] << shift))
+                | (cmd.result[lane] << shift))
 
     def _start_apply(self, mask: int, hot: bool) -> None:
-        # Let an Apply already under way reach its result step first.
+        # Let a command already under way reach its result step first.
         self._update_state_machine()
-        # CMIS 8.13.3 step (1): a command arriving while any relevant lane
-        # still reads ConfigInProgress is aborted "silently (without
-        # feedback)" - the module does not restage anything.
-        if self._apply_time > 0:
+        # 6.2.4.2: while a command is still being processed for lanes of a
+        # Data Path, "the module ignores new triggers for those lanes and does
+        # not execute the command on the Data Paths those lanes belong to" -
+        # silently. Only those Data Paths: a trigger that also names an idle
+        # one still runs there.
+        mask = self._drop_busy_data_paths(mask)
+        if not mask:
             return
-        self._apply_time = time.time()
-        self._apply_hot = hot
-        self._apply_mask = mask
-        self._config_result = self._validate_staged_appsel(mask, subset_ok=hot)
-        # Table 6-4: where neither intervention-free procedure is advertised,
-        # ApplyDPInit provisions without commissioning - in "Any DPSM state",
-        # so the state is not part of the question. Commissioning such a path
-        # is the stepwise procedure, which arrives through the DPDeinit
-        # release below rather than through this trigger. Settled here rather
-        # than read live, because the cycle changes the states around it.
-        self._apply_provision_only = not hot and not self._regular_reconfig()
-        # Validation and execution both act on the Staged Control Set as it
-        # stood when the Apply arrived. Reading 10h again at the completion
-        # step would commit whatever was staged since.
-        self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
-                               for i in range(8)]
+        cmd = _ConfigCommand(
+            time.time(), mask, hot,
+            # Table 6-4: where neither intervention-free procedure is
+            # advertised, ApplyDPInit provisions without commissioning - in
+            # "Any DPSM state", so the state is not part of the question.
+            # Commissioning such a path is the stepwise procedure, which
+            # arrives through the DPDeinit release rather than through this
+            # trigger. Settled here rather than read live, because the cycle
+            # changes the states around it.
+            not hot and not self._regular_reconfig(),
+            self._validate_staged_appsel(mask, subset_ok=hot),
+            # Validation and execution both act on the Staged Control Set as
+            # it stood when the trigger arrived. Reading 10h again at the
+            # completion step would commit whatever was staged since.
+            [self._registers[0x10].get(0x91 + i, 0x10) for i in range(8)])
+        self._commands.append(cmd)
         # 8.14.7: DPInitPending is set by the Provision, so it stands from
         # here until a transit through DPInit clears it. ApplyImmediate
         # commits to hardware itself, so it leaves nothing pending.
         if not hot:
             pending = self._registers[0x11].get(0xEB, 0)
             for lane in range(8):
-                if ((mask >> lane) & 1) and self._config_result[lane] == 0x1:
+                if ((mask >> lane) & 1) and cmd.result[lane] == 0x1:
                     pending |= 1 << lane
             self._registers[0x11][0xEB] = pending
         for lane in range(8):
@@ -2246,6 +2278,26 @@ class MockBackend(I2CInterface):
             self._registers[0x11][a] = (
                 (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
                 | (0x0C << shift))          # ConfigInProgress
+
+    def _drop_busy_data_paths(self, mask: int) -> int:
+        """The trigger bits left once every Data Path with a busy lane is out.
+
+        A lane is busy while a command that selected it is still running. The
+        Data Path it belongs to is the staged one: that is the grouping the
+        new trigger is about to be judged against. Every lane is in some group
+        of it - unused lanes are groups of one - so dropping the groups drops
+        the busy lanes themselves too.
+        """
+        busy = 0
+        for cmd in self._commands:
+            busy |= cmd.mask
+        if not busy:
+            return mask
+        for lanes, _code, _appsel in self._staged_datapaths():
+            if any((busy >> lane) & 1 for lane in lanes):
+                for lane in lanes:
+                    mask &= ~(1 << lane)
+        return mask
 
     def _selectable(self, page: int) -> int:
         """The page a module would actually end up on after this PageSelect.
@@ -2907,16 +2959,18 @@ class MockBackend(I2CInterface):
             self._deinit_time, self._deinit_mask = time.time(), taken
         if released:
             self._update_state_machine()         # let any Apply finish first
-            self._apply_time = time.time()
-            self._apply_mask = released
-            self._apply_provision_only = False
             # Releasing a deinit hold is not an Apply trigger: the module
             # restarts the lanes it was holding, which is a subset of a Data
-            # Path only because the host chose to hold a subset.
-            self._config_result = self._validate_staged_appsel(released,
-                                                               subset_ok=True)
-            self._config_staged = [self._registers[0x10].get(0x91 + i, 0x10)
-                                   for i in range(8)]
+            # Path only because the host chose to hold a subset. It takes
+            # over those lanes from anything still running on them, as the
+            # single slot this replaced did for the whole module.
+            self._commands = [c for c in self._commands
+                              if not (c.mask & released)]
+            self._commands.append(_ConfigCommand(
+                time.time(), released, False, False,
+                self._validate_staged_appsel(released, subset_ok=True),
+                [self._registers[0x10].get(0x91 + i, 0x10)
+                 for i in range(8)]))
 
     def _default_app_select(self):
         """An AppSel code per host lane that the descriptors actually allow.

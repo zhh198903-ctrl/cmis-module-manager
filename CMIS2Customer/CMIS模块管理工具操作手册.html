@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.115.0<br>
+      <b>版本</b>　2.116.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.115.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.115.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.116.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.116.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1693,6 +1693,14 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>演示模块:两个端口可以同时重配</h3>
+  <p>上一节的规则是<b>按数据通路</b>的:规范 6.2.4.2 说模块忽略的是「那些通道上的新触发」,并且「不在那些通道所属的数据通路上执行」——不是整个模块。工具从 v2.115.0 起就是这样判断的。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span><b>内置的演示模块却比规范更严:</b>它整个模块只有一个「进行中的命令」槽位,槽位被占着的时候<b>任何</b>触发都被丢掉。于是在 <code>mock_fr4x2</code>(两个 400G 端口)上,端口 1 正在重配时对<b>空闲的端口 2</b> 按 Apply,工具正确地放行了,演示模块却悄悄扔掉——通道 5–8 从没进入 ConfigInProgress,生效的 Application 也没变。</span>
+  </div>
+  <p>一个比规范更严的演示模块,教给人的是一条规范里没有的规矩。现在演示模块<b>每条数据通路各自跑自己的命令、各自计时</b>:两个端口可以同时重配、各自报告结果;一次触发如果同时点到忙和闲的两条数据通路,只在闲的那条上执行;忙的那条仍然照规范忽略。</p>
+
   <h3>上一次 Apply 还没做完,再按一次就被模块悄悄扔掉</h3>
   <p>规范 6.2.4.2:</p>
   <div class="callout">
@@ -2200,7 +2208,7 @@ Read anyway?</pre>
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.115.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.116.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -4189,7 +4197,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.115.0<br>
+    CMIS Module Manager 操作手册 v2.116.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

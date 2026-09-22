@@ -538,7 +538,7 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 |---|---|
 | `mock_dr8` | 800GBASE-DR8（SMF 500m，EML 1310nm） |
 | `mock_sr8` | 800GBASE-SR8（OM4 100m，VCSEL 850nm）—— 故意能力较弱：无逐通道环回、部分 Flag 未实现 |
-| `mock_fr4x2` | 2× 400GBASE-FR4（SMF 2km，CWDM4 EML）—— 无强制 Tx 静默、无 Rx 极性翻转 |
+| `mock_fr4x2` | 2× 400GBASE-FR4（SMF 2km，CWDM4 EML）—— 无强制 Tx 静默、无 Rx 极性翻转；**两个端口可同时重配**（6.2.4.2 的「配置进行中忽略新触发」按数据通路算，不是整个模块）|
 | `mock_coherent` | 800GBASE-LR1 相干 lite（DP-16QAM，SMF 10km，802.3dj） |
 | `mock_coherent_zr` | 800G 相干可调谐（C 波段 DWDM，ZR 级）—— 偏置 180 mA、声明 ×2 刻度 |
 | `mock_1600g_dr8` | 1.6TBASE-DR8（8 × 106.25 GBd PAM4，SMF 500m，802.3dj） |
