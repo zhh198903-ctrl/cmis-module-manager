@@ -3294,15 +3294,19 @@ async function loadSnr() {
   const fmt = (v) => (v == null ? '—' : v.toFixed(2));
   // The two sides are advertised separately, so one can be measured and
   // the other not; a blank row would read as zero rather than as absent.
-  const sideRow = (label, badge, vals, ok, bit) => ok
+  // `present` is the media side's list; the host side has every lane.
+  const sideRow = (label, badge, vals, ok, bit, present) => ok
     ? `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
-      + vals.map(v => `<td>${fmt(v)}</td>`).join('') + '</tr>'
+      + vals.map((v, i) => present && mediaAbsent(present, i)
+          ? noMediaLaneCell(i + 1) : `<td>${fmt(v)}</td>`).join('') + '</tr>'
     : `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
       + `<td colspan="8" class="placeholder-text">not reported `
       + `<span class="reg-badge">13h:130.${bit}</span></td></tr>`;
   tbody.innerHTML =
-    sideRow('Host', '14h/0xC0+16 sel=0x06', res.data.host_snr_db, sup.host, '4') +
-    sideRow('Media', '14h/0xC0+48 sel=0x06', res.data.media_snr_db, sup.media, '5');
+    sideRow('Host', '14h/0xC0+16 sel=0x06', res.data.host_snr_db, sup.host, '4',
+            null) +
+    sideRow('Media', '14h/0xC0+48 sel=0x06', res.data.media_snr_db, sup.media, '5',
+            res.data.media_lanes_present);
 }
 
 // ---------------------------------------------------------------------------
@@ -3504,6 +3508,22 @@ let PRBS_PATTERNS = {};
  * format bottoms out around 1e-24 - which is the sort of number that ends up
  * quoted in a test report as if it had been measured.
  */
+// A diagnostics cell for a media lane the module does not have (00h:210). The
+// registers are there and read as numbers, so without this the SNR, BER and
+// counter tables printed measurements of lanes that do not exist - the same
+// thing Monitoring and Flags already mark.
+function noMediaLaneCell(lane) {
+  return `<td class="text-muted" title="${esc('This module has no media lane '
+    + lane + ' (00h:210). The register exists and reads as a number, but it '
+    + 'measures nothing.')}">n/a</td>`;
+}
+
+// The three endpoints always send the list with the readings, so there is
+// no missing-list case to guard.
+function mediaAbsent(present, i) {
+  return present[i] === false;
+}
+
 function formatBer(ber) {
   if (ber == null || !isFinite(ber)) return '—';
   if (ber === 0) {
@@ -4362,7 +4382,9 @@ async function loadBer() {
   }
   _renderMeasurementWindow('ber-window', res.data);
   const hostCells = res.data.lanes.map(l => `<td>${formatBer(l.host_ber)}</td>`).join('');
-  const mediaCells = res.data.lanes.map(l => `<td>${formatBer(l.media_ber)}</td>`).join('');
+  const mediaCells = res.data.lanes.map((l, i) =>
+    mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
+      : `<td>${formatBer(l.media_ber)}</td>`).join('');
   tbody.innerHTML =
     `<tr><td style="color:var(--text-muted)">Host<span class="reg-badge">14h/0xC0</span></td>${hostCells}</tr>` +
     `<tr><td style="color:var(--text-muted)">Media<span class="reg-badge">14h/0xD0</span></td>${mediaCells}</tr>`;
@@ -4388,20 +4410,27 @@ async function loadCounters() {
   // While the checker has lost pattern sync the counters keep accumulating but
   // mean nothing, so say so rather than rendering a number that reads like a
   // measurement.
+  // formatBer, not its own rule: it prints a zero-error run as 0 and no bits
+  // at all as "—". This used to print both as "—", so a clean measurement
+  // over a trillion bits looked exactly like no measurement.
   const fmtBer = (v, psl) => psl ? '<span class="flag-active">no sync</span>'
-                           : (v != null && v > 0 ? v.toExponential(2) : '—');
+                           : formatBer(v);
   const cell = (l, psl, html) =>
     `<td${psl ? ' class="text-muted" title="Pattern sync lost on this lane — counts are not a valid measurement"' : ''}>${html}</td>`;
 
-  const row = (side, field, fmt) => lanes.map(l =>
-    cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
+  const present = res.data.media_lanes_present;
+  const row = (side, field, fmt) => lanes.map((l, i) =>
+    side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+      : cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
 
   const hostErrCells  = row('host', 'error_count', fmtCount);
   const hostBitCells  = row('host', 'total_bits', fmtCount);
   const hostBerCells  = lanes.map(l => cell(l, l.host_psl, fmtBer(l.host_ber, l.host_psl))).join('');
   const mediaErrCells = row('media', 'error_count', fmtCount);
   const mediaBitCells = row('media', 'total_bits', fmtCount);
-  const mediaBerCells = lanes.map(l => cell(l, l.media_psl, fmtBer(l.media_ber, l.media_psl))).join('');
+  const mediaBerCells = lanes.map((l, i) => mediaAbsent(present, i)
+    ? noMediaLaneCell(l.lane)
+    : cell(l, l.media_psl, fmtBer(l.media_ber, l.media_psl))).join('');
 
   const anyPsl = lanes.some(l => l.host_psl || l.media_psl);
   const note = anyPsl

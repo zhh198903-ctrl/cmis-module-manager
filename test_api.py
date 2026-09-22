@@ -28143,6 +28143,205 @@ class TestARefusalThatChangedNothing(CMISTestCase):
                             '%r is decided after the writes' % refusal)
 
 
+class TestDiagnosticsOfALaneThatIsNotThere(CMISTestCase):
+    """Table 8-139 names the Page 14h diagnostics fields per side:
+    MediaSideSNRLane<i>, MediaSideBERLane<i>, and selectors 04h/05h are
+    "Media Lane 1-4 / 5-8 errors and bits counters". Media lanes.
+
+    A coherent module carries eight host lanes into one optical carrier, so
+    it has one media lane, and 00h:210 says which it lacks. Monitoring and
+    Flags were taught that (the Tx/Rx power and bias of a missing media lane
+    are null, and its Flags are n/a). The Diagnostics tab was not: on
+    mock_coherent the SNR, BER and counter tables printed eight media-side
+    readings, seven of them registers for lanes that do not exist - lane 8's
+    media BER was 9.92e-05, a measurement of nothing.
+
+    The counters had a second fault of the same kind the other way round. A
+    lane that had counted no bits reported BER 0.0 - a result, "no errors" -
+    and the page, which rendered only v > 0, printed a genuine zero-error run
+    over a trillion bits as "—" too. No measurement and a perfect one looked
+    the same."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _present(self):
+        return [l['media_lane_present'] for l in self._get('monitoring')['lanes']]
+
+    # ---- the fixture ------------------------------------------------------------
+    def test_the_coherent_module_has_one_media_lane(self):
+        """Without it every check below passes by having nothing to hide."""
+        self._connect()
+        self.assertEqual(self._present(), [True] + [False] * 7)
+
+    # ---- the three endpoints ----------------------------------------------------
+    def test_snr_of_a_missing_media_lane_is_null(self):
+        self._connect()
+        d = self._get('snr')
+        self.assertIsNotNone(d['media_snr_db'][0])
+        self.assertEqual(d['media_snr_db'][1:], [None] * 7)
+
+    def test_host_snr_is_untouched(self):
+        """The host side has eight lanes on this module; only the media side
+        is short."""
+        self._connect()
+        self.assertTrue(all(v is not None for v in self._get('snr')['host_snr_db']))
+
+    def test_ber_of_a_missing_media_lane_is_null(self):
+        self._connect()
+        lanes = self._get('ber')['lanes']
+        self.assertIsNotNone(lanes[0]['media_ber'])
+        self.assertEqual([l['media_ber'] for l in lanes[1:]], [None] * 7)
+        self.assertTrue(all(l['host_ber'] is not None for l in lanes))
+
+    def test_counters_of_a_missing_media_lane_are_null(self):
+        self._connect()
+        lanes = self._get('counters')['lanes']
+        for field in ('error_count', 'total_bits', 'psl', 'ber'):
+            self.assertIsNotNone(lanes[0]['media_' + field], field)
+            self.assertEqual([l['media_' + field] for l in lanes[1:]],
+                             [None] * 7, field)
+        self.assertTrue(all(l['host_error_count'] is not None for l in lanes))
+
+    def test_every_payload_says_which_media_lanes_exist(self):
+        self._connect()
+        for what in ('snr', 'ber', 'counters'):
+            self.assertEqual(self._get(what)['media_lanes_present'],
+                             self._present(), what)
+
+    def test_a_module_with_every_media_lane_hides_nothing(self):
+        self._connect('mock_dr8')
+        self.assertTrue(all(v is not None for v in self._get('snr')['media_snr_db']))
+        self.assertTrue(all(l['media_ber'] is not None
+                            for l in self._get('ber')['lanes']))
+        self.assertTrue(all(l['media_error_count'] is not None
+                            for l in self._get('counters')['lanes']))
+
+    # ---- no bits is not zero errors ----------------------------------------------
+    def _counters_with(self, error_count, total_bits):
+        backend = _state['backend']
+        real = backend.read_bytes
+
+        def read(addr, length):
+            data = bytearray(real(addr, length))
+            if backend._current_page == 0x14 and addr == 0xC0 and length >= 16:
+                data[0:8] = error_count.to_bytes(8, 'little')
+                data[8:16] = total_bits.to_bytes(8, 'little')
+            return bytes(data)
+
+        backend.read_bytes = read
+        try:
+            return self._get('counters')['lanes'][0]
+        finally:
+            backend.read_bytes = real
+
+    def test_no_bits_counted_is_no_measurement(self):
+        self._connect('mock_dr8')
+        self.assertIsNone(self._counters_with(0, 0)['host_ber'])
+
+    def test_no_errors_over_counted_bits_is_a_zero(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._counters_with(0, 10 ** 12)['host_ber'], 0.0)
+
+    # ---- the page ----------------------------------------------------------------
+    def test_the_three_tables_mark_the_missing_lane(self):
+        js = self._js()
+        for fn in ('async function loadSnr', 'async function loadBer',
+                   'async function loadCounters'):
+            i = js.index(fn)
+            body = js[i:js.index('\nasync function', i + 10)]
+            self.assertIn('mediaAbsent(', body, fn)
+            self.assertIn('noMediaLaneCell(', body, fn)
+
+    def test_the_snr_media_row_is_given_the_list(self):
+        """The host row has every lane and is given none; the media row has
+        to be given the list, or the check inside never runs for it."""
+        js = self._js()
+        i = js.index('async function loadSnr')
+        body = js[i:js.index('\n}', i)]
+        media = body[body.index("sideRow('Media'"):]
+        media = media[:media.index(');')]
+        self.assertIn('res.data.media_lanes_present', media)
+        host = body[body.index("sideRow('Host'"):]
+        host = host[:host.index(')')]
+        self.assertTrue(host.rstrip().endswith('null'), host)
+
+    def test_the_marker_names_the_register_that_says_so(self):
+        js = self._js()
+        i = js.index('function noMediaLaneCell')
+        cell = re.sub(r"'\s*\+\s*'", '', js[i:js.index('function mediaAbsent', i)])
+        self.assertIn('00h:210', cell)
+        self.assertIn('>n/a<', cell)
+
+    def test_the_counters_table_prints_a_zero_as_a_zero(self):
+        js = self._js()
+        i = js.index('async function loadCounters')
+        body = re.sub('//[^' + chr(10) + ']*', '',
+                      js[i:js.index('\n// ---', i)])
+        self.assertIn(': formatBer(v)', body)
+        self.assertNotIn('v > 0', body)
+
+    def _run_js(self, expr, *functions):
+        """Evaluate an expression against the real functions from app.js."""
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        # One eval for all of it: `esc` is a const, and a const declared in
+        # one eval is gone by the next.
+        pick = ' + '.join(
+            ('s.match(/const esc = [\\s\\S]*?;\\r?\\n/)[0]' if fn == 'esc' else
+             's.match(/function %s\\([\\s\\S]*?\\r?\\n}\\r?\\n/)[0]' % fn)
+            for fn in functions)
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'eval(' + pick + ' + "process.stdout.write(JSON.stringify('
+                  + expr.replace('"', '\\"') + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_lane_the_list_marks_absent_is_absent(self):
+        self.assertEqual(
+            self._run_js('[0,1,2].map(i => mediaAbsent([true,false,true], i))',
+                         'mediaAbsent'),
+            [False, True, False])
+
+    def test_the_absent_cell_really_says_n_a(self):
+        html = self._run_js('noMediaLaneCell(3)', 'esc', 'noMediaLaneCell')
+        self.assertIn('>n/a</td>', html)
+        self.assertIn('media lane 3', html)
+
+    def test_format_ber_really_prints_a_zero(self):
+        self.assertEqual(self._run_js('[formatBer(null), formatBer(0)]',
+                                      'formatBer')[0], '—')
+        self.assertIn('>0</span>', self._run_js('formatBer(0)', 'formatBer'))
+
+    def test_format_ber_still_tells_the_two_apart(self):
+        js = self._js()
+        i = js.index('function formatBer')
+        body = js[i:js.index('\n}', i)]
+        self.assertIn("if (ber == null || !isFinite(ber)) return '—'", body)
+        self.assertIn('if (ber === 0)', body)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text

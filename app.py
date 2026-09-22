@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.117.0'
+__version__ = '2.118.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -177,6 +177,11 @@ def _media_lane_present(lane: int) -> bool:
     if mask is None or _state.get('lanes', 8) > 8 or not 1 <= lane <= 8:
         return True
     return not (mask >> (lane - 1)) & 1
+
+
+def _media_lanes_present() -> list:
+    """_media_lane_present for every lane row, lane 1 first."""
+    return [_media_lane_present(i + 1) for i in range(_state['lanes'])]
 
 
 def _require_connected():
@@ -3689,10 +3694,17 @@ def api_module_snr():
                 host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
                 media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
         host_snr = host_snr[:_state['lanes']]
-        media_snr = media_snr[:_state['lanes']]
+        present = _media_lanes_present()
+        # Table 8-139 names these MediaSideSNRLane<i> - media lanes. On a
+        # module with fewer of them than host lanes the rest are registers
+        # for lanes that do not exist, and the numbers in them read as a
+        # measurement. Monitoring and Flags learned this; Diagnostics had not.
+        media_snr = [v if present[i] else None
+                     for i, v in enumerate(media_snr[:_state['lanes']])]
         return _ok({
             'host_snr_db':  host_snr if rep['host_side_snr'] else [],
             'media_snr_db': media_snr if rep['media_side_snr'] else [],
+            'media_lanes_present': present,
             'supported': {'host': rep['host_side_snr'],
                           'media': rep['media_side_snr']},
         })
@@ -3719,15 +3731,23 @@ def api_module_ber():
         # page is Banked and every bank keeps its own selector.
         # Host BER at 0xC0-0xCF, Media BER at 0xD0-0xDF (8 lanes x 2B each)
         lanes = []
+        present = _media_lanes_present()
         for _bank, ber_raw in _read_diag_banks(0x01, 32):
             for i in range(8):
+                lane = len(lanes) + 1
                 lanes.append({
-                    'lane': len(lanes) + 1,
+                    'lane': lane,
                     'host_ber': cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2]),
-                    'media_ber': cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2]),
+                    # MediaSideBERLane<i> (Table 8-139); None for a media
+                    # lane this module does not have (00h:210).
+                    'media_ber': (cmis.parse_f16_ber(
+                        ber_raw[16 + i*2:16 + (i+1)*2])
+                        if lane <= len(present) and present[lane - 1]
+                        else None),
                 })
         lanes = lanes[:_state['lanes']]
         return _ok({'lanes': lanes, 'supported': True,
+                    'media_lanes_present': present,
                     'measurement': _measurement_window()})
     except Exception as e:
         return _err(str(e), 500)
@@ -4170,13 +4190,24 @@ def api_module_counters():
                     entry[f'{side}_error_count'] = error_count
                     entry[f'{side}_total_bits'] = total_bits
                     entry[f'{side}_psl'] = bool(psl)
-                    if total_bits > 0:
-                        entry[f'{side}_ber'] = error_count / total_bits
-                    else:
-                        entry[f'{side}_ber'] = 0.0
+                    # No bits counted is no measurement. 0.0 said "no errors",
+                    # which is a result - and the page, unable to tell the two
+                    # apart, printed a real zero-error run as "—" as well.
+                    entry[f'{side}_ber'] = (error_count / total_bits
+                                            if total_bits > 0 else None)
 
         lanes.sort(key=lambda x: x['lane'])
+        # Selectors 04h/05h are "Media Lane 1-4 / 5-8 errors and bits
+        # counters". A media lane the module does not have has no counters,
+        # and the registers behind it are not a count of anything.
+        present = _media_lanes_present()
+        for entry in lanes:
+            i = entry['lane'] - 1
+            if i < len(present) and not present[i]:
+                for field in ('error_count', 'total_bits', 'psl', 'ber'):
+                    entry['media_' + field] = None
         return _ok({'lanes': lanes, 'supported': True,
+                    'media_lanes_present': present,
                     'measurement': _measurement_window()})
     except Exception as e:
         return _err(str(e), 500)
