@@ -840,6 +840,10 @@ CONFIG_STATUS_NAMES = {
 # "configuration applied" toast.
 CONFIG_STATUS_REJECTED = frozenset(list(range(0x2, 0xC)) + list(range(0xD, 0x10)))
 
+# Table 8-101, Ch: "a new configuration command is ignored for this lane while
+# ConfigInProgress".
+CONFIG_IN_PROGRESS = 0xC
+
 
 def config_status_name(nibble: int) -> str:
     """Table 8-101 leaves the Name column empty for 9h-Bh and Dh-Fh, but not

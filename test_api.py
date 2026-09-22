@@ -13525,13 +13525,24 @@ class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
         return [l['datapath_state'] for l in d['lanes']]
 
     def _make_transient(self):
-        """The release sequence itself starts a transient, which is why this
-        is the shape the guard has to allow and then refuse a second time."""
+        """A transient with no configuration command running.
+
+        This used to be DPDeinit and an Apply together, which also leaves
+        every lane in ConfigInProgress - and 6.2.4.2 has the module ignore a
+        trigger then too, on every module. That is its own refusal
+        (TestAnApplyWhileTheLastIsRunning), and it reaches the second Apply
+        first, so the transient rule these tests are about was never the one
+        answering. DPDeinit alone takes the paths into TxTurnOff with
+        ConfigStatus untouched."""
         import cmis_registers
-        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+        self.assertOk(self._post(dp_deinit_mask=0xFF))
         self.assertTrue(any(s in cmis_registers.DP_STATES_TRANSIENT
                             for s in self._states()),
                         'the paths settled before the test could look')
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertNotIn(cmis_registers.CONFIG_IN_PROGRESS,
+                         [l['config_status_code'] for l in d['lanes']],
+                         'a configuration command is running as well')
 
     # ---- the two sets ------------------------------------------------------
 
@@ -27636,6 +27647,160 @@ class TestACommitTheModuleIgnores(CMISTestCase):
         self.assertIn('m.enabled', hint)
         self.assertIn('tick Enable, then Commit', hint)
         self.assertIn('Table 8-196', hint)
+
+
+class TestAnApplyWhileTheLastIsRunning(CMISTestCase):
+    """Section 6.2.4.2: "When a previously triggered Provision or
+    Provision-and-Commission command is still being processed for lanes of a
+    Data Path, the module ignores new triggers for those lanes", and "Ignoring
+    lane selection or trigger bits due to configuration being in progress is
+    not indicated to the host."
+
+    The tool checked two of the ways 6.2.4 has an Apply thrown away without a
+    word - a Data Path in a transient state, and ApplyImmediate outside the
+    initialized states - and not this one. A second Apply pressed before the
+    first had finished was answered with applied_lanes 1 to 8 while every one
+    of those lanes still read ConfigInProgress, and the module had dropped it.
+
+    Unlike the transient-state rule, which 6.2.4.3 scopes to modules that
+    support intervention-free reconfiguration, this one holds on every
+    module: Tables 6-3 and 6-4 both begin every procedure with
+    "ConfigStatus = ConfigInProgress".
+
+    And it is per Data Path. A module carrying two ports can be reconfiguring
+    one while the host applies to the other, and refusing that would be the
+    tool inventing a restriction."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _apply(self, **body):
+        body.setdefault('apply', True)
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _config(self):
+        return [l['config_status_code'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    # ---- the constant --------------------------------------------------------
+    def test_the_code_is_the_one_table_8_101_names(self):
+        import cmis_registers as c
+        self.assertEqual(c.CONFIG_IN_PROGRESS, 0xC)
+        self.assertEqual(c.config_status_name(c.CONFIG_IN_PROGRESS),
+                         'ConfigInProgress')
+        self.assertNotIn(c.CONFIG_IN_PROGRESS, c.CONFIG_STATUS_REJECTED,
+                         'in progress is not a rejection')
+
+    # ---- the refusal ---------------------------------------------------------
+    def test_a_second_apply_is_refused_while_the_first_runs(self):
+        self._connect()
+        self.assertOk(self._apply())
+        self.assertIn(0xC, self._config(), 'the first Apply is not running')
+        body = self.assertErr(self._apply(), 409)
+        self.assertIn('ConfigInProgress', body['message'])
+        self.assertIn('6.2.4.2', body['message'])
+        self.assertIn('without telling the host', body['message'])
+
+    def test_the_refusal_names_the_lanes(self):
+        self._connect()
+        self.assertOk(self._apply())
+        body = self.assertErr(self._apply(), 409)
+        self.assertIn('Lane 1, 2, 3, 4, 5, 6, 7, 8 ', body['message'])
+
+    def test_no_trigger_is_written_when_it_is_refused(self):
+        """The write the module would drop must not be sent at all - or the
+        tool has only moved the silence, not removed it."""
+        self._connect()
+        self.assertOk(self._apply())
+        backend = _state['backend']
+        real, seen = backend.write_bytes, []
+
+        def spy(addr, data):
+            if backend._current_page == 0x10 and addr in (0x8F, 0x90):
+                seen.append(addr)
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            self.assertErr(self._apply(), 409)
+        finally:
+            backend.write_bytes = real
+        self.assertEqual(seen, [])
+
+    def test_it_is_accepted_once_the_first_has_finished(self):
+        self._connect()
+        self.assertOk(self._apply())
+        deadline = time.time() + 6
+        while 0xC in self._config() and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertNotIn(0xC, self._config())
+        d = self.assertOk(self._apply())['data']
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_a_rejected_command_does_not_block_the_next_one(self):
+        """A rejection is a finished command. Treating every code but
+        ConfigSuccess as busy would lock the operator out of the one thing
+        they need after a rejection: fixing it and applying again."""
+        import cmis_registers as c
+        self._connect('mock_fr4x2')
+        self.assertOk(self._apply(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
+                                  dp_deinit_mask=0x0F))
+        deadline = time.time() + 6
+        while 0xC in self._config() and time.time() < deadline:
+            time.sleep(0.1)
+        rejected = self._config()[0]
+        self.assertIn(rejected, c.CONFIG_STATUS_REJECTED,
+                      'the fixture no longer ends in a rejection')
+        self.assertOk(self._apply(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
+                                  dp_deinit_mask=0x0F))
+
+    def test_it_holds_on_a_module_without_hot_reconfiguration(self):
+        """The transient-state rule is scoped to intervention-free
+        reconfiguration; this one is not, and mock_dr8 advertises none."""
+        self._connect('mock_dr8')
+        caps = self.assertOk(self.client.get(
+            '/api/module/capabilities'))['data']
+        self.assertFalse(caps['config']['hot_reconfig'])
+        self.assertOk(self._apply())
+        self.assertErr(self._apply(), 409)
+
+    def test_apply_immediate_is_refused_as_well(self):
+        """Both triggers start a configuration command, and both are ignored
+        while one is running."""
+        self._connect('mock_coherent')
+        self.assertOk(self._apply(apply=False, apply_immediate=True))
+        self.assertIn(0xC, self._config())
+        body = self.assertErr(self._apply(apply=False, apply_immediate=True),
+                              409)
+        self.assertIn('ConfigInProgress', body['message'])
+
+    # ---- per Data Path -------------------------------------------------------
+    def test_another_data_path_is_not_refused(self):
+        """mock_fr4x2 carries two 400G ports. Reconfiguring the first must
+        not stop the host applying to the second."""
+        self._connect('mock_fr4x2')
+        self.assertOk(self._apply(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
+                                  dp_deinit_mask=0x0F))
+        self.assertEqual(self._config()[:4], [0xC] * 4)
+        self.assertEqual(self._config()[4:], [0x1] * 4)
+        d = self.assertOk(self._apply(app_select=[0] * 8,
+                                      dp_deinit_mask=0xFF))['data']
+        self.assertEqual(d['applied_lanes'], [5, 6, 7, 8])
+
+    def test_only_the_lanes_being_applied_are_judged(self):
+        """The busy lanes of the other port are not part of this request, so
+        they must not appear in a refusal either."""
+        self._connect('mock_fr4x2')
+        self.assertOk(self._apply(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
+                                  dp_deinit_mask=0x0F))
+        body = self.assertErr(self._apply(app_select=[1, 1, 1, 1, 2, 2, 2, 2],
+                                          dp_deinit_mask=0x0F), 409)
+        self.assertIn('Lane 1, 2, 3, 4 ', body['message'])
+        self.assertNotIn('5', body['message'].split('still')[0])
 
 
 if __name__ == '__main__':

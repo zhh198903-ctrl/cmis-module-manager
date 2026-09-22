@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.114.0'
+__version__ = '2.115.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2468,9 +2468,15 @@ def api_datapath_set():
         # Apply in one write is the release sequence 6.2.4.3 mandates, and it
         # would have refused itself.
         dp_states_before = []
+        config_before = []
         if apply or apply_now:
             for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
                 dp_states_before += cmis.parse_dp_states(raw)
+            # Read at the same moment and for the same reason: the question
+            # is whether a configuration command is already running, and this
+            # request's own trigger would start one.
+            for _bank, raw in _read_banks(*cmis.REG_CONFIG_STATUS):
+                config_before += cmis.parse_config_status_codes(raw)
 
         # What is staged right now, and how wide each Application is - both
         # are needed to work out which Data Paths this write actually touches.
@@ -2601,6 +2607,26 @@ def api_datapath_set():
                 return ', '.join('%d (%s)' % (i + 1, dp_states_before[i])
                                  for i in idxs)
 
+            # Section 6.2.4.2: "When a previously triggered Provision or
+            # Provision-and-Commission command is still being processed for
+            # lanes of a Data Path, the module ignores new triggers for those
+            # lanes", and "ignoring ... is not indicated to the host". Unlike
+            # the transient-state rule below this holds whether or not
+            # intervention-free reconfiguration is supported - Tables 6-3 and
+            # 6-4 both start every procedure with ConfigStatus =
+            # ConfigInProgress. A second Apply pressed before the first had
+            # finished was reported as applied to every lane.
+            busy = sorted(i for i in need
+                          if i < len(config_before)
+                          and config_before[i] == cmis.CONFIG_IN_PROGRESS)
+            if busy:
+                return _err(
+                    'Lane %s still reports ConfigInProgress (11h:202-205), '
+                    'and section 6.2.4.2 has the module ignore a new trigger '
+                    'for those lanes without telling the host - this would '
+                    'report success and change nothing. Wait for the '
+                    'previous command to finish'
+                    % ', '.join(str(i + 1) for i in busy), 409)
             if hot:
                 stuck = sorted(i for i in need
                                if i < len(dp_states_before)
