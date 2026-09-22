@@ -143,6 +143,9 @@ DataPath 面板的下拉框每项都写明了，例如 `App 2 — 400GBASE-DR4 4
 1. **提示里说什么** —— 越权的请求在**写入之前**就被拒绝，提示会引用它依据的
    声明寄存器（例如 `channel 9999 is outside the range the module advertises
    for the 100 GHz grid (-40 to 40, 04h:150-153)`）。
+   DataPath 的 Apply 被拒绝（400 / 409）时**一个字节都没写**——
+   包括同一请求里的 DPDeinit、Tx 关闭和极性翻转（v2.117.0 之前不是这样：
+   拒绝判断在写完之后才做，被拒绝的请求可能已经把数据通路拆掉了）。
 2. **Monitoring 页的 Config Status 列** —— `ConfigRejected*` 就是模块拒绝了。
    `ConfigRejectedInvalidAppSel` = 选了它没声明的 AppSelCode；
    `ConfigRejectedLanesInUse` = 有通道不在 DPDeactivated；

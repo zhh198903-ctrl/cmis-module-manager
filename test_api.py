@@ -9212,7 +9212,10 @@ class TestReleasingADeinitHoldCommissionsWhatWasStaged(CMISTestCase):
             src = f.read()
         body = src[src.index('        for bank in range(banks):\n'
                              '            _set_page(0x10, bank)'):]
-        body = body[:body.index('        applied = []')]
+        # The loop ends where the trigger writes begin; the refusals that
+        # used to sit between the two now come before the loop.
+        body = body[:body.index('        if apply or apply_now:\n'
+                                '            if need:')]
         self.assertLess(body.index('REG_APP_SELECT'), body.index('REG_DP_DEINIT'),
                         'DPDeinit is written before the Staged Control Set, so '
                         'releasing a hold restarts the path on the old '
@@ -9226,7 +9229,10 @@ class TestReleasingADeinitHoldCommissionsWhatWasStaged(CMISTestCase):
             src = f.read()
         body = src[src.index('        for bank in range(banks):\n'
                              '            _set_page(0x10, bank)'):]
-        body = body[:body.index('        applied = []')]
+        # The loop ends where the trigger writes begin; the refusals that
+        # used to sit between the two now come before the loop.
+        body = body[:body.index('        if apply or apply_now:\n'
+                                '            if need:')]
         for reg in ('REG_TX_POL_FLIP', 'REG_RX_POL_FLIP'):
             self.assertLess(body.index(reg), body.index('REG_DP_DEINIT'),
                             '%s is written after the hold is released' % reg)
@@ -27988,6 +27994,153 @@ class TestTwoPortsReconfigureApart(CMISTestCase):
                                 [0x10] * 8)]
         backend._update_state_machine()
         self.assertEqual([c.mask for c in backend._commands], [0xF0])
+
+
+class TestARefusalThatChangedNothing(CMISTestCase):
+    """The DataPath endpoint refuses an Apply the module would discard in
+    silence, and says so: "this would report success and change nothing".
+
+    It decided that after writing. The lane controls (10h:129-130, 137),
+    the staged Application (145-152) and DPDeinit (128) all went down first,
+    and only then were the Apply refusals checked. DPDeinit and the lane
+    controls act on the write (Tables 8-77, 8-78). So a refused Apply that
+    carried a deinit took every Data Path to DPDeactivated, and one that
+    carried a Tx disable turned outputs off - under a message telling the
+    operator nothing had changed. Measured on mock_dr8: refused 409, and a
+    second later every lane DPDeactivated and Tx 1-4 disabled.
+
+    A refusal that has already acted is worse than no refusal: the operator
+    is told to look elsewhere at the one moment the module changed."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def _writes_to_page_10h(self, fn):
+        backend = _state['backend']
+        real, seen = backend.write_bytes, []
+
+        def spy(addr, data):
+            if addr >= 0x80 and backend._current_page == 0x10:
+                seen.append(addr)
+            return real(addr, data)
+
+        backend.write_bytes = spy
+        try:
+            rv = fn()
+        finally:
+            backend.write_bytes = real
+        return rv, seen
+
+    # A request that asks for every immediate change at once, so a refusal
+    # that let any one of them through is visible.
+    EVERYTHING = dict(dp_deinit_mask=[0xFF], tx_disable_mask=[0x0F],
+                      tx_polarity_flip_mask=[0x01],
+                      rx_polarity_flip_mask=[0x01])
+
+    def _snapshot(self):
+        d = self._dp()
+        return (d['dp_deinit_mask'], d['tx_disable_mask'],
+                d['tx_polarity_flip_mask'], d['rx_polarity_flip_mask'],
+                d['app_select'])
+
+    def _assert_refused_without_writing(self, code, **body):
+        before = self._snapshot()
+        rv, seen = self._writes_to_page_10h(
+            lambda: self._post(**dict(self.EVERYTHING, **body)))
+        self.assertErr(rv, code)
+        self.assertEqual(seen, [], 'the refused request wrote 10h:%s'
+                         % ', '.join('%d' % a for a in seen))
+        self.assertEqual(self._snapshot(), before)
+        return rv
+
+    # ---- each refusal ---------------------------------------------------------
+    def test_config_in_progress_writes_nothing(self):
+        self._connect()
+        self.assertOk(self._post(apply=True))
+        rv = self._assert_refused_without_writing(409, apply=True)
+        self.assertIn('ConfigInProgress', json.loads(rv.data)['message'])
+
+    def test_the_data_paths_stay_up(self):
+        """The measured failure, end to end: the module does not come down."""
+        self._connect()
+        self.assertOk(self._post(apply=True))
+        self.assertErr(self._post(**dict(self.EVERYTHING, apply=True)), 409)
+        time.sleep(1.2)
+        lanes = self.assertOk(self.client.get(
+            '/api/module/monitoring'))['data']['lanes']
+        self.assertEqual({l['datapath_state'] for l in lanes}, {'Activated'})
+
+    def test_a_transient_data_path_writes_nothing(self):
+        self._connect('mock_coherent')
+        self.assertOk(self._post(dp_deinit_mask=0xFF))
+        lanes = self.assertOk(self.client.get(
+            '/api/module/monitoring'))['data']['lanes']
+        self.assertTrue(any(l['datapath_state'] == 'TxTurnOff'
+                            for l in lanes), 'no transient to refuse on')
+        rv = self._writes_to_page_10h(
+            lambda: self._post(tx_disable_mask=[0x0F], apply=True))
+        self.assertErr(rv[0], 409)
+        self.assertIn('transient', json.loads(rv[0].data)['message'])
+        self.assertEqual(rv[1], [])
+
+    def test_apply_immediate_outside_the_initialized_states_writes_nothing(self):
+        self._connect('mock_coherent')
+        deactivated(self.client)
+        rv = self._assert_refused_without_writing(
+            409, dp_deinit_mask=[0xFF], apply_immediate=True)
+        self.assertIn('ApplyImmediate', json.loads(rv.data)['message'])
+
+    def test_apply_immediate_on_a_module_without_it_writes_nothing(self):
+        self._connect('mock_dr8')
+        self._assert_refused_without_writing(400, apply_immediate=True)
+
+    def test_both_triggers_at_once_writes_nothing(self):
+        self._connect()
+        self._assert_refused_without_writing(400, apply=True,
+                                             apply_immediate=True)
+
+    # ---- what still goes through ----------------------------------------------
+    def test_a_request_that_is_not_refused_still_writes(self):
+        """The move must not turn every request into a refusal's silence."""
+        self._connect()
+        rv, seen = self._writes_to_page_10h(
+            lambda: self._post(tx_disable_mask=[0x0F]))
+        self.assertOk(rv)
+        self.assertIn(0x81, seen)
+        self.assertEqual(self._dp()['tx_disable_mask'], 0x0F)
+
+    def test_the_release_sequence_is_still_one_request(self):
+        """6.2.4.3's DPDeinit-and-Apply together must still be accepted and
+        written - it is the procedure the refusals must not catch."""
+        self._connect()
+        deactivated(self.client)
+        self.assertOk(self._post(dp_deinit_mask=0x00, apply=True))
+
+    # ---- where the decision lives ---------------------------------------------
+    def test_every_refusal_is_decided_before_the_write_loop(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        i = src.index('def api_datapath_set')
+        body = src[i:src.index('@app.route', i)]
+        loop = body.index("            _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],")
+        for refusal in ('Choose one Apply trigger',
+                        'does not support intervention-free hot',
+                        'still reports ConfigInProgress',
+                        'silently ignores an Apply aimed at a Data',
+                        'ApplyImmediate is ignored outside DPInitialized'):
+            self.assertLess(body.index(refusal), loop,
+                            '%r is decided after the writes' % refusal)
 
 
 if __name__ == '__main__':
