@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.124.0'
+__version__ = '2.125.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -646,7 +646,9 @@ def _read_chunked(addr: int, length: int) -> bytes:
     Splitting is safe for what is read here: CMIS scalars are at most 8 bytes
     and sit on 8-byte boundaries, so a chunk never lands in the middle of
     one, and the specification does not promise coherency across register
-    arrays in the first place (section 5.2.5.1).
+    arrays in the first place (section 5.2.5.1). Nor, for the same reason,
+    for a changing value read as part of one - those go through
+    _read_scalars.
     """
     limit = _state.get('max_read') or 8
     if length <= limit:
@@ -656,6 +658,31 @@ def _read_chunked(addr: int, length: int) -> bytes:
         n = min(limit, length - len(out))
         out += _state['backend'].read_bytes(addr + len(out), n)
     return bytes(out)
+
+
+def _read_scalars(addr: int, length: int, size: int) -> bytes:
+    """Read `length` bytes of back-to-back `size`-byte scalars, one READ each.
+
+    5.2.5.1: a size-matched READ of one scalar multi-byte read-only register
+    is atomic - "the module ensures not to update parts of a scalar read-only
+    register during a size-matched READ of that multi-byte register" - and
+    this "applies in particular to any scalar 2-byte, 4-byte, or 8-byte
+    status or monitoring register". But "READ access to ... multiple
+    registers or register arrays does not guarantee coherency": a monitor
+    read as part of a block can come back with its high byte from one sample
+    and its low byte from the next, 256 counts off, looking like a reading.
+    """
+    return b''.join(_state['backend'].read_bytes(addr + pos, size)
+                    for pos in range(0, length, size))
+
+
+def _read_upper_scalars(page: int, addr: int, length: int, size: int,
+                        bank: int = 0) -> bytes:
+    _set_page(page, bank)
+    return _checked(_read_scalars(addr, length, size),
+                    '%02Xh:0x%02X%s' % (page, addr,
+                                        '' if bank == 0 else ' bank %d' % bank),
+                    length)
 
 
 # 5.2.2.2: "A successful WRITE writes a sequence of up to eight given byte
@@ -709,6 +736,15 @@ def _read_banks(page: int, addr: int, length: int, lanes: int = 0):
         yield bank, _read_upper(page, addr, length, bank)
 
 
+def _read_banks_scalars(page: int, addr: int, length: int, size: int,
+                        lanes: int = 0):
+    """_read_banks for arrays of changing multi-byte values - monitors,
+    counters, latencies - each read with a READ of its own size (5.2.5.1)."""
+    lanes = lanes or _state['lanes']
+    for bank in range((lanes + 7) // 8):
+        yield bank, _read_upper_scalars(page, addr, length, size, bank)
+
+
 def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
     """Yield (bank, data) from Page 14h, selecting the window in each bank.
 
@@ -732,7 +768,11 @@ def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
         # selector's sixty-four bytes decoded as whatever this selector
         # means - BER values read as error counters, and no error anywhere.
         time.sleep(cmis.TIMING_SECONDS['tDDCS'])
-        yield bank, _read_upper(page, addr, length or full, bank)
+        # Table 8-139: selectors 02h-05h are U64 counters, 01h F16 BERs and
+        # 06h U16 SNRs - each read at its own size, since the window is
+        # updated while a measurement runs.
+        size = 8 if 2 <= sel <= 5 else 2
+        yield bank, _read_upper_scalars(page, addr, length or full, size, bank)
 
 
 def _masks_per_bank(value, banks: int) -> list:
@@ -888,6 +928,16 @@ def _read_banked(page: int, addr: int, per_lane: int, lanes: int = 0) -> bytes:
     return bytes(out[:per_lane * lanes])
 
 
+def _read_banked_scalars(page: int, addr: int, size: int) -> bytes:
+    """_read_banked for one changing `size`-byte value per lane (a monitor, a
+    measured frequency), each read on its own so it is coherent (5.2.5.1)."""
+    lanes = _state['lanes']
+    out = bytearray()
+    for bank in range((lanes + 7) // 8):
+        out += _read_upper_scalars(page, addr, size * 8, size, bank)
+    return bytes(out[:size * lanes])
+
+
 def _verify_page_checksums(caps: dict) -> list:
     """Check each static page against the checksum the module puts on it.
 
@@ -976,7 +1026,7 @@ def _read_dp_latency(lanes: int):
     for kind, reg in (('rx', cmis.REG_DP_RX_LATENCY),
                       ('tx', cmis.REG_DP_TX_LATENCY)):
         vals = []
-        for _bank, chunk in _read_banks(*reg, lanes):
+        for _bank, chunk in _read_banks_scalars(*reg, 2, lanes):
             vals += cmis.parse_dp_latency(chunk)
         out[kind] = vals[:lanes]
     return out
@@ -1689,7 +1739,7 @@ def api_module_ext54():
 
         if caps.get('page_61h_supported'):
             counters = []
-            for _b, raw in _read_banks(*cmis.REG_ACQ_COUNTERS):
+            for _b, raw in _read_banks_scalars(*cmis.REG_ACQ_COUNTERS, 2):
                 counters += cmis.parse_acquisition_counters(raw)
             for i, c in enumerate(counters):
                 c['lane'] = i + 1
@@ -2021,9 +2071,9 @@ def api_module_monitoring():
         if (_state.get('caps') or {}).get('page_62h_supported'):
             for _bank, raw in _read_banks(*cmis.REG_LANE_PWR_THRESHOLDS):
                 lane_thr += cmis.parse_lane_power_thresholds(raw)
-        tx_power_raw  = _read_banked(*cmis.REG_TX_POWER[:2], 2)
-        tx_bias_raw   = _read_banked(*cmis.REG_TX_BIAS[:2], 2)
-        rx_power_raw  = _read_banked(*cmis.REG_RX_POWER[:2], 2)
+        tx_power_raw  = _read_banked_scalars(*cmis.REG_TX_POWER[:2], 2)
+        tx_bias_raw   = _read_banked_scalars(*cmis.REG_TX_BIAS[:2], 2)
+        rx_power_raw  = _read_banked_scalars(*cmis.REG_RX_POWER[:2], 2)
 
         # 01h:160.0-2 (Table 8-53): each of these three lane monitors is
         # optional. An unimplemented one reads zero, and zero is not a
@@ -4289,7 +4339,7 @@ def api_laser_get():
         grid_spacing = _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)
         channel_num  = _read_banked(*cmis.REG_CHANNEL_NUM_TX[:2], 2)
         fine_offset  = _read_banked(*cmis.REG_FINE_OFFSET_TX[:2], 2)
-        current_freq = _read_banked(*cmis.REG_CURRENT_FREQ_TX[:2], 4)
+        current_freq = _read_banked_scalars(*cmis.REG_CURRENT_FREQ_TX[:2], 4)
         target_pwr   = _read_banked(*cmis.REG_TARGET_PWR_TX[:2], 2)
         tuning_status= _read_banked(*cmis.REG_TUNING_STATUS_TX[:2], 1)
         tuning_flags = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)

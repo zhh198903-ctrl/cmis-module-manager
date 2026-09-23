@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.124.0<br>
+      <b>版本</b>　2.125.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.124.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.124.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.125.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.125.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1716,6 +1716,20 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>会变的多字节量,一个一个读</h3>
+  <p>规范 5.2.5.1:用<b>和寄存器同样长</b>的一次 READ 读一个多字节只读标量,模块保证读到的是同一时刻的值——「这条尤其适用于任何 2、4、8 字节的状态或监控寄存器」。而「对多个寄存器或寄存器数组的 READ 不保证一致」。</p>
+  <p>工具显示的会变的多字节量,之前都是<b>整块</b>读的:</p>
+  <ul>
+    <li>通道监控(Tx 光功率、偏置、Rx 光功率,Page 11h,每个 U16)</li>
+    <li>诊断窗口(Page 14h:192–255):BER、SNR、误码与总比特计数——支持整页读的模块上是<b>一次 64 字节</b></li>
+    <li>实测激光频率(Page 12h,每个 U32)、采集计数器(Page 61h)、数据通路时延(Page 15h)</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>模块在一次 READ 进行中更新数值时,整块读出的某个值可能高字节是上一次采样、低字节是下一次采样,差出 256 个计数——看起来就是一个正常读数。模块级监控(温度、Vcc、Aux)早就是逐个读的,其它都不是。</span>
+  </div>
+  <p>现在这些量都按各自的长度逐个读取:U16 读 2 字节,U32 读 4 字节,计数器(U64)读 8 字节。代价是读寄存器的次数变多,刷新会略慢一点。Raw Registers 仍按你给的长度读取——在监控区整块读时,单个值同样不保证一致。</p>
 
   <h3>一次 WRITE 最多 8 字节</h3>
   <p>规范 5.2.2.2:「一次成功的 WRITE 写入<b>最多 8 个</b>字节」;更长的只有第 8 章明确允许的地方才行。被拒绝的 WRITE「对模块没有任何作用」。</p>
@@ -4331,7 +4345,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.124.0<br>
+    CMIS Module Manager 操作手册 v2.125.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

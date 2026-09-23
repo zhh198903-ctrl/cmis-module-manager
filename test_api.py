@@ -17801,18 +17801,19 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         import cmis_registers as c
         self._connect()
         seen = []
-        original = app_module._read_upper
+        # The window is read value by value (5.2.5.1), through this.
+        original = app_module._read_upper_scalars
 
-        def traced(page, addr, length, bank=0):
+        def traced(page, addr, length, size, bank=0):
             if (page, addr) == c.REG_DIAG_DATA[:2]:
                 seen.append(bank)
-            return original(page, addr, length, bank)
+            return original(page, addr, length, size, bank)
 
-        app_module._read_upper = traced
+        app_module._read_upper_scalars = traced
         try:
             self.assertOk(self.client.get('/api/module/snr'))
         finally:
-            app_module._read_upper = original
+            app_module._read_upper_scalars = original
         self.assertEqual(sorted(set(seen)), [0, 1],
                          'the diagnostics window was read from banks %s; '
                          'lanes 9-16 come from bank 1' % sorted(set(seen)))
@@ -28278,11 +28279,18 @@ class TestDiagnosticsOfALaneThatIsNotThere(CMISTestCase):
         backend = _state['backend']
         real = backend.read_bytes
 
+        # By address rather than by the shape of the READ: the window is read
+        # one U64 at a time (5.2.5.1), so a READ of 16 bytes never comes.
+        inject = dict(zip(range(0xC0, 0xD0),
+                          error_count.to_bytes(8, 'little')
+                          + total_bits.to_bytes(8, 'little')))
+
         def read(addr, length):
             data = bytearray(real(addr, length))
-            if backend._current_page == 0x14 and addr == 0xC0 and length >= 16:
-                data[0:8] = error_count.to_bytes(8, 'little')
-                data[8:16] = total_bits.to_bytes(8, 'little')
+            if backend._current_page == 0x14:
+                for i in range(length):
+                    if addr + i in inject:
+                        data[i] = inject[addr + i]
             return bytes(data)
 
         backend.read_bytes = read
@@ -29303,6 +29311,159 @@ class TestAWriteCarriesEightBytes(CMISTestCase):
         body = js_function_body(js, 'async function rawWrite(')
         self.assertIn('res.data.writes > 1', body)
         self.assertIn('WRITEs of up to 8 bytes each (5.2.2.2)', body)
+
+class TestAMonitorIsReadAtItsOwnSize(CMISTestCase):
+    """5.2.5.1: a size-matched READ of one scalar multi-byte read-only
+    register is atomic - the module "ensures not to update parts of a scalar
+    read-only register during a size-matched READ" - and this "applies in
+    particular to any scalar 2-byte, 4-byte, or 8-byte status or monitoring
+    register when read by the host with a single 2-byte, 4-byte, or 8-byte
+    READ". But "READ access to ... multiple registers or register arrays does
+    not guarantee coherency".
+
+    Every changing multi-byte value the tool shows was read as part of a
+    block: the lane monitors eight at a time, the Page 14h window as one
+    64-byte READ on a module with full page read, the measured laser
+    frequencies, the acquisition counters, the Data Path latencies. A value
+    updated mid-READ can come back with its high byte from one sample and its
+    low byte from the next - 256 counts off, and nothing about it looks
+    wrong. The module-wide monitors in lower memory were already read two
+    bytes at a time; nothing else was."""
+
+    # (page, first byte, end, scalar size): the lane monitors of Table 8-99,
+    # the U32 measured laser frequencies of Table 8-109,
+    # the U16 Data Path latencies of Page 15h and the U16 acquisition
+    # counters of Page 61h.
+    DYNAMIC = ((0x11, 0x9A, 0xCA, 2), (0x12, 0xA8, 0xC8, 4),
+               (0x15, 0xE0, 0x100, 2), (0x61, 0x80, 0xC0, 2))
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _trace(self):
+        """(page, bank, address, length, selector) of every READ."""
+        backend = _state['backend']
+        seen, selector = [], {}
+        real_r, real_w = backend.read_bytes, backend.write_bytes
+
+        def read(addr, length):
+            seen.append((backend._current_page, backend._current_bank, addr,
+                         length, selector.get(backend._current_bank)))
+            return real_r(addr, length)
+
+        def write(addr, data):
+            if backend._current_page == 0x14 and addr == 0x80:
+                selector[backend._current_bank] = data[0]
+            return real_w(addr, data)
+        backend.read_bytes, backend.write_bytes = read, write
+        self.addCleanup(setattr, backend, 'read_bytes', real_r)
+        self.addCleanup(setattr, backend, 'write_bytes', real_w)
+        return seen
+
+    def _mismatched(self, seen):
+        bad = []
+        for page, bank, addr, n, sel in seen:
+            for p, lo, hi, size in self.DYNAMIC:
+                if page == p and lo <= addr < hi and (
+                        n != size or (addr - lo) % size):
+                    bad.append((hex(page), bank, hex(addr), n))
+            if page == 0x14 and addr >= 0xC0:
+                # Table 8-139: 02h-05h are U64 counters, 01h the F16 BERs,
+                # 06h the U16 SNRs.
+                size = 8 if sel is not None and 2 <= sel <= 5 else 2
+                if n != size or (addr - 0xC0) % size:
+                    bad.append((hex(page), bank, hex(addr), n, sel))
+        return bad
+
+    # ---- the sweep --------------------------------------------------------------
+    def test_no_panel_reads_a_changing_value_in_a_block(self):
+        """Every GET the page makes, on a module with full page read (so the
+        tool is free to read 128 bytes at once), a banked one, a tunable one
+        and a sixteen lane tunable one."""
+        endpoints = sorted(
+            r.rule for r in app_module.app.url_map.iter_rules()
+            if 'GET' in r.methods and r.rule.startswith('/api/module'))
+        for backend in ('mock_dr8', 'mock_24lane', 'mock_coherent_zr',
+                        'mock_zr16'):
+            self._connect(backend)
+            seen = self._trace()
+            for ep in endpoints:
+                self.assertEqual(self.client.get(ep).status_code, 200,
+                                 '%s %s' % (backend, ep))
+            self.assertEqual(self._mismatched(seen), [], backend)
+            self.assertTrue(any(s[0] == 0x11 and s[2] == 0x9A for s in seen),
+                            'the monitors were not read at all')
+            self.assertTrue(any(s[0] == 0x14 and s[2] >= 0xC0 for s in seen),
+                            'the diagnostics window was not read at all')
+
+    def test_the_counters_are_read_eight_bytes_at_a_time(self):
+        self._connect('mock_dr8')
+        seen = self._trace()
+        self.assertOk(self.client.get('/api/module/counters'))
+        window = [s for s in seen if s[0] == 0x14 and s[2] >= 0xC0]
+        self.assertTrue(window)
+        self.assertEqual({s[3] for s in window}, {8})
+
+    def test_the_ber_and_snr_are_read_two_bytes_at_a_time(self):
+        self._connect('mock_dr8')
+        seen = self._trace()
+        self.assertOk(self.client.get('/api/module/ber'))
+        self.assertOk(self.client.get('/api/module/snr'))
+        window = [s for s in seen if s[0] == 0x14 and s[2] >= 0xC0]
+        self.assertTrue(window)
+        self.assertEqual({s[3] for s in window}, {2})
+
+    def test_the_measured_frequency_is_read_four_bytes_at_a_time(self):
+        self._connect('mock_coherent_zr')
+        seen = self._trace()
+        self.assertOk(self.client.get('/api/module/laser'))
+        freq = [s for s in seen if s[0] == 0x12 and 0xA8 <= s[2] < 0xC8]
+        self.assertTrue(freq)
+        self.assertEqual({s[3] for s in freq}, {4})
+
+    # ---- why ---------------------------------------------------------------------
+    def test_a_value_updated_mid_read_is_not_shown(self):
+        """The module updates its Tx power monitors while a READ is in
+        progress. A READ of one monitor is protected (5.2.5.1); a READ of
+        several hands back each value's low byte from the next sample - here
+        one that crossed a carry, 128 counts (12.8 uW) away. The mock's own
+        monitors wander by a count or so between reads, hence the margin."""
+        self._connect('mock_dr8')
+        backend = _state['backend']
+        truth = self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes'][0]['tx_power_uw']
+        real = backend.read_bytes
+
+        def tearing(addr, length):
+            data = bytearray(real(addr, length))
+            if (backend._current_page == 0x11 and 0x9A <= addr < 0xAA
+                    and length > 2):
+                for i in range(1, length, 2):
+                    data[i] ^= 0x80
+            return bytes(data)
+        backend.read_bytes = tearing
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+        got = self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes'][0]['tx_power_uw']
+        self.assertLess(abs(got - truth), 1.0)
+
+    def test_a_block_read_would_have_shown_it(self):
+        """The same module, read as a block: the fixture above really does
+        corrupt a multi-register READ, so the test above is not passing for
+        want of a tear."""
+        self._connect('mock_dr8')
+        backend = _state['backend']
+        real = backend.read_bytes
+        app_module._set_page(0x11, 0)
+        whole = int.from_bytes(real(0x9A, 2), 'big')
+        data = bytearray(real(0x9A, 16))
+        for i in range(1, 16, 2):
+            data[i] ^= 0x80
+        torn = int.from_bytes(bytes(data[:2]), 'big')
+        self.assertGreaterEqual(abs(torn - whole), 120)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
