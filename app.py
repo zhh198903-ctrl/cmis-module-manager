@@ -1,18 +1,21 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.119.0'
+__version__ = '2.120.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
 
 import sys
 import os
+import json
 import shutil
+import socket
 import struct
 import threading
 import time
 import urllib.parse
+import urllib.request
 import webbrowser
 
 from flask import Flask, jsonify, render_template, request
@@ -21,9 +24,14 @@ import cmis_registers as cmis
 import updater
 from i2c_interface import list_backends, create_backend
 
-# The port appears in the bind call, the accepted Host/Origin values and the
-# updater's health probe; keep them from drifting apart.
-PORT = 5000
+# The port the server listens on when nothing says otherwise. The one actually
+# in use is _port_state['active']: the user can choose another, and the default
+# may be taken by another program (macOS's AirPlay Receiver listens on 5000).
+DEFAULT_PORT = 5000
+# Below 1024 are the well-known ports; a local tool has no business there, and
+# on most systems an unprivileged process cannot bind them anyway.
+PORT_MIN, PORT_MAX = 1024, 65535
+SETTINGS_FILE = 'cmis_settings.json'
 
 _BASE = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__,
@@ -243,11 +251,24 @@ def _require_paged(what: str):
 # I2C writes on whatever module is plugged in. So provenance is checked here
 # instead of being assumed from same-origin hosting.
 _LOCAL_NAMES = ('127.0.0.1', 'localhost', '[::1]')
-_ALLOWED_HOSTS = frozenset(
-    list(_LOCAL_NAMES) + [f'{n}:{PORT}' for n in _LOCAL_NAMES])
-_ALLOWED_ORIGINS = frozenset(
-    [f'http://{n}:{PORT}' for n in _LOCAL_NAMES] +
-    [f'http://{n}' for n in _LOCAL_NAMES])
+
+
+def _allowed_hosts():
+    """Host values the real UI sends - on the port this server is using now.
+
+    Worked out per request rather than once at import: the port can be chosen
+    by the user and moved while the server runs, and a list frozen at 5000
+    would refuse every request the page makes on any other port.
+    """
+    port = _port_state['active']
+    return frozenset(list(_LOCAL_NAMES)
+                     + [f'{n}:{port}' for n in _LOCAL_NAMES])
+
+
+def _allowed_origins():
+    port = _port_state['active']
+    return frozenset([f'http://{n}:{port}' for n in _LOCAL_NAMES]
+                     + [f'http://{n}' for n in _LOCAL_NAMES])
 
 
 @app.before_request
@@ -274,13 +295,13 @@ def _reject_foreign_requests():
         return _err('Refused: this request came from another site', 403)
 
     origin = request.headers.get('Origin')
-    if origin and origin not in _ALLOWED_ORIGINS:
+    if origin and origin not in _allowed_origins():
         return _err('Refused: cross-origin request', 403)
 
     # DNS rebinding: the attacker points a name they own at 127.0.0.1, so the
     # browser calls their page same-origin and can read the replies too. The
     # Host header is what gives that away - the real UI never sends another.
-    if request.host not in _ALLOWED_HOSTS:
+    if request.host not in _allowed_hosts():
         return _err('Refused: unexpected Host header', 403)
 
     # application/json is not a CORS-simple content type, so requiring it forces
@@ -289,6 +310,244 @@ def _reject_foreign_requests():
     if request.method == 'POST' and request.content_length and not request.is_json:
         return _err('Expected Content-Type: application/json', 415)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Local port: which one, where it is kept, and moving to another
+# ---------------------------------------------------------------------------
+# active     - the port this process is serving on right now
+# configured - the one it was asked to use (CMIS_PORT, then the settings file,
+#              then DEFAULT_PORT), and `source` says which of the three
+# conflict   - set when `configured` was taken at start-up and the server fell
+#              back to a port the system picked; the page asks the user for one
+_port_state = {'active': DEFAULT_PORT, 'configured': DEFAULT_PORT,
+               'source': 'default', 'conflict': None}
+
+# The server this process runs, and the one to switch to when it stops. Only
+# the entry point sets these; under the test client or `flask run` they stay
+# None and a port change is saved for the next start instead.
+_servers = {'current': None, 'next': None}
+
+
+def _settings_path() -> str:
+    """Beside the exe, or beside app.py when run from source.
+
+    The same place update.log goes. A portable zip keeps its settings with it,
+    and the self-update swap only replaces the files the release carries.
+    """
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, SETTINGS_FILE)
+
+
+def _load_settings() -> dict:
+    try:
+        with open(_settings_path(), encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_settings(**changes) -> None:
+    """Merge into the settings file. Written beside and renamed over it, so a
+    crash mid-write cannot leave a half file that the next start reads as no
+    settings at all."""
+    data = _load_settings()
+    data.update(changes)
+    path = _settings_path()
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def _parse_port(value):
+    """A port number from a request body, the environment or the file, or None.
+
+    Strings of digits are accepted because a hand-edited file and an
+    environment variable both arrive as text. True and False are ints in
+    Python, 1 and 0, and the range turns them away with no case of their own.
+    """
+    if isinstance(value, str):
+        value = value.strip()
+        if not value.isdigit():
+            return None
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    return value if PORT_MIN <= value <= PORT_MAX else None
+
+
+def _configured_port():
+    """(port, source): CMIS_PORT beats the settings file beats the default.
+
+    The environment wins so a script, or the updater relaunching the app, can
+    say where it wants the server without editing anyone's saved choice.
+    """
+    env = _parse_port(os.environ.get('CMIS_PORT', ''))
+    if env:
+        return env, 'env'
+    saved = _parse_port(_load_settings().get('port'))
+    if saved:
+        return saved, 'file'
+    return DEFAULT_PORT, 'default'
+
+
+def _listening(port: int) -> bool:
+    """Whether something already accepts connections on 127.0.0.1:port.
+
+    Asked by connecting rather than by trying to bind. The server binds with
+    SO_REUSEADDR, and on Windows that lets a second process take over a port
+    another one is listening on - both then answer, and the browser reaches
+    whichever the system picks. A trial bind without that option has the
+    opposite fault: it fails on sockets merely left in TIME_WAIT by the last
+    run, and would report the tool's own port as taken after every restart.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+def _cmis_answers_on(port: int) -> bool:
+    """Whether what is listening there is this tool - a second double-click
+    on the exe, say - rather than some other program."""
+    # No proxy: urllib otherwise takes the system's, and a machine that routes
+    # its traffic through one would send this loopback probe to it.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f'http://127.0.0.1:{port}/api/version',
+                         timeout=1.5) as r:
+            data = json.loads(r.read().decode('utf-8')).get('data') or {}
+    except Exception:
+        return False
+    return isinstance(data, dict) and 'cmis_revision_supported' in data
+
+
+def _make_server(port: int):
+    from werkzeug.serving import make_server
+    # threaded=False as before: one request at a time is what keeps two
+    # panels' reads from interleaving on the one I2C bus.
+    return make_server('127.0.0.1', port, app, threaded=False)
+
+
+def _start_server():
+    """Bind the server for this run. Returns (server, None), or (None, port)
+    when this tool is already serving on the configured port.
+
+    When the configured port is taken by something else, the server comes up
+    on a port the system chooses instead, and _port_state['conflict'] makes
+    the page ask the user which port to use. Refusing to start would leave no
+    page to ask it on.
+    """
+    wanted, source = _configured_port()
+    _port_state.update(configured=wanted, source=source, conflict=None)
+    if _listening(wanted):
+        if _cmis_answers_on(wanted):
+            return None, wanted
+        reason = 'another program is already listening on it'
+    else:
+        try:
+            return _make_server(wanted), None
+        except OSError as exc:
+            # Windows reserves port ranges (Hyper-V, WSL) that nothing listens
+            # on and nothing can bind: WinError 10013.
+            reason = str(exc)
+    _port_state['conflict'] = {'port': wanted, 'reason': reason}
+    return _make_server(0), None
+
+
+def _serve(server) -> None:
+    """Serve until stopped; when a port change queued a successor, go on
+    serving that one. Returns when the process should exit."""
+    while server is not None:
+        _servers['current'] = server
+        _port_state['active'] = server.server_port
+        server.serve_forever()
+        server.server_close()
+        server, _servers['next'] = _servers['next'], None
+
+
+@app.route('/api/settings/port', methods=['GET'])
+def api_port_get():
+    """Which port is in use, which was asked for and why, and where it is kept."""
+    env = _parse_port(os.environ.get('CMIS_PORT', ''))
+    return _ok(dict(_port_state,
+                    default=DEFAULT_PORT, min=PORT_MIN, max=PORT_MAX,
+                    saved=_parse_port(_load_settings().get('port')),
+                    env_override=env,
+                    settings_file=_settings_path(),
+                    url=f'http://127.0.0.1:{_port_state["active"]}/'))
+
+
+@app.route('/api/settings/port', methods=['POST'])
+def api_port_set():
+    """Keep a port for the next start and, where this process runs its own
+    server, move to it now.
+
+    The new socket is bound before anything is saved or stopped: a port that
+    turns out to be unusable is reported with the server still where it was.
+    """
+    body = request.get_json(silent=True) or {}
+    bad = _reject_unknown(body, ('port',))
+    if bad:
+        return bad
+    port = _parse_port(body.get('port'))
+    if port is None:
+        return _err('The port must be a whole number from %d to %d'
+                    % (PORT_MIN, PORT_MAX), 400)
+    active = _port_state['active']
+    note = None
+    env = _parse_port(os.environ.get('CMIS_PORT', ''))
+    if env and env != port:
+        note = ('CMIS_PORT=%d is set in the environment and takes precedence '
+                'at the next start' % env)
+
+    if port == active:
+        try:
+            _save_settings(port=port)
+        except OSError as exc:
+            return _err('Could not save the port to %s: %s'
+                        % (_settings_path(), exc), 500)
+        _port_state.update(configured=port, source='file', conflict=None)
+        return _ok({'port': port, 'switched': False, 'note': note,
+                    'url': f'http://127.0.0.1:{port}/'})
+
+    if _listening(port):
+        return _err('Port %d is already in use by another program on this '
+                    'computer; choose another' % port, 409)
+
+    current = _servers['current']
+    successor = None
+    if current is not None:
+        try:
+            successor = _make_server(port)
+        except OSError as exc:
+            return _err('Port %d cannot be used: %s' % (port, exc), 409)
+    try:
+        _save_settings(port=port)
+    except OSError as exc:
+        if successor is not None:
+            successor.server_close()
+        return _err('Could not save the port to %s: %s'
+                    % (_settings_path(), exc), 500)
+    _port_state.update(configured=port, source='file', conflict=None)
+
+    if successor is None:
+        # No server of our own to move (the test client, `flask run`): the
+        # choice is saved and applies from the next start.
+        return _ok({'port': port, 'switched': False, 'restart_needed': True,
+                    'note': note, 'url': f'http://127.0.0.1:{port}/'})
+
+    _servers['next'] = successor
+    # shutdown() waits for serve_forever() to return, and that cannot happen
+    # while this very request is being handled on the serving thread - so it
+    # is called from another one. The reply below goes out first.
+    threading.Thread(target=current.shutdown, daemon=True).start()
+    return _ok({'port': port, 'switched': True, 'note': note,
+                'url': f'http://127.0.0.1:{port}/'})
 
 
 # ---------------------------------------------------------------------------
@@ -4514,7 +4773,9 @@ def _run_update(rel):
     # worker thread would die and leave the UI polling 'installing' for ever,
     # which is how an update fails without anyone being told.
     try:
-        updater.stage_and_swap(staged)
+        # The port this instance is on, so the helper probes the right one
+        # and the relaunched build comes back where the open page is.
+        updater.stage_and_swap(staged, port=_port_state['active'])
     except Exception as e:
         _fail_update(
             f'The update was downloaded and verified but could not be '
@@ -4587,12 +4848,29 @@ def index():
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    url = f'http://127.0.0.1:{PORT}'
-    print(f"CMIS Module Manager v{__version__} starting on {url}")
     # Set CMIS_NO_BROWSER=1 to start the server without opening a tab. Repeated
     # automated launches otherwise leave a pile of tabs behind, and after a
     # self-update the relaunched instance would open yet another one on top of
     # the page the user is already looking at.
-    if os.environ.get('CMIS_NO_BROWSER', '').strip() not in ('1', 'true', 'True'):
+    _open_browser = os.environ.get('CMIS_NO_BROWSER', '').strip() not in (
+        '1', 'true', 'True')
+    _server, _already = _start_server()
+    if _server is None:
+        # A second launch while the first is running: show that one rather
+        # than asking the user to pick a port to get away from ourselves.
+        url = f'http://127.0.0.1:{_already}/'
+        print(f"CMIS Module Manager is already running at {url}")
+        if _open_browser:
+            webbrowser.open(url)
+        sys.exit(0)
+    _port_state['active'] = _server.server_port
+    url = f'http://127.0.0.1:{_server.server_port}/'
+    print(f"CMIS Module Manager v{__version__} starting on {url}")
+    _conflict = _port_state['conflict']
+    if _conflict:
+        print(f"Port {_conflict['port']} could not be used "
+              f"({_conflict['reason']}). Running on {_server.server_port} "
+              f"for now - the page will ask which port to use from now on.")
+    if _open_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    app.run(host='127.0.0.1', port=PORT, debug=False, threaded=False)
+    _serve(_server)

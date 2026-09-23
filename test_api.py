@@ -4,11 +4,14 @@ import re
 import sys
 import json
 import math
+import socket
 import struct
+import threading
 import time
 import shutil
 import tempfile
 import unittest
+import urllib.parse
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -4686,19 +4689,39 @@ class TestTheServerStaysSingleThreaded(unittest.TestCase):
     """
 
     def test_app_run_is_not_threaded(self):
+        """The server is built with werkzeug's make_server rather than
+        app.run(), so that a port change can move it while the process runs.
+        The rule is the same either way."""
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
                   encoding='utf-8') as f:
             src = f.read()
-        m = re.search(r'app\.run\(([^)]*)\)', src)
-        self.assertIsNotNone(m, 'app.run() is gone; the serving model changed')
+        self.assertNotIn('app.run(', src,
+                         'a second way to start the server would be a second '
+                         'place to get threading wrong')
+        # werkzeug's own make_server, not the _make_server wrapper around it.
+        m = re.search(r'(?<![\w.])make_server\(([^)]*)\)', src)
+        self.assertIsNotNone(m, 'make_server() is gone; the serving model changed')
         args = m.group(1)
         self.assertIn('threaded=False', args,
                       'the server must stay single-threaded: with threading on, '
                       'reads come back from whatever page another request '
                       'selected in between')
-        self.assertNotIn('debug=True', args,
-                         "the reloader would run two copies, each holding the "
-                         "same adapter open")
+        self.assertNotIn('processes=', args)
+
+    def test_a_port_change_never_serves_two_at_once(self):
+        """Moving to a new port binds the new server first and starts serving
+        it only after the old one's loop has returned, on the same thread -
+        so the one-request-at-a-time rule holds across the move."""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'),
+                  encoding='utf-8') as f:
+            src = f.read()
+        i = src.index('def _serve(server)')
+        body = src[i:src.index('\n\n\n', i)]
+        self.assertLess(body.index('server.serve_forever()'),
+                        body.index("_servers['next']"))
+        self.assertNotIn('Thread(', body,
+                         'serving the next port on another thread would run '
+                         'two servers at once')
 
     def test_the_page_helper_still_assumes_it(self):
         """_set_page caches what it wrote. That is only sound while no other
@@ -28492,6 +28515,459 @@ class TestAControlForALaneThatIsNotThere(CMISTestCase):
         body = re.sub(r"'\s*\+\s*'", '', js[i:js.index('\n}', i)])
         self.assertIn('00h:210', body)
         self.assertIn('Table 8-79', body)
+
+
+class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
+    """The server used to listen on 127.0.0.1:5000 and nowhere else.
+
+    Nothing could change it, and nothing noticed when another program already
+    had it. On macOS the AirPlay Receiver listens on 5000 and answers 403; on
+    Windows the server binds with SO_REUSEADDR, which lets it share a port
+    another program is listening on, and the browser then reaches whichever
+    one the system picks.
+
+    Now the port is shown and can be changed from the settings dialog, the
+    choice is kept in cmis_settings.json beside the exe, and when the port is
+    taken at start-up the server comes up on one the system picks and the page
+    asks the user which to use. A second launch of the tool itself is not a
+    conflict: it opens the one already running."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.mkdtemp()
+        self._path = os.path.join(self._tmp, 'cmis_settings.json')
+        self._real_path = app_module._settings_path
+        app_module._settings_path = lambda: self._path
+        self._state = dict(app_module._port_state)
+        self._servers = dict(app_module._servers)
+        self._env = os.environ.pop('CMIS_PORT', None)
+        self._real_make = app_module._make_server
+        self._sockets = []
+
+    def tearDown(self):
+        app_module._settings_path = self._real_path
+        app_module._port_state.clear()
+        app_module._port_state.update(self._state)
+        app_module._servers.clear()
+        app_module._servers.update(self._servers)
+        app_module._make_server = self._real_make
+        os.environ.pop('CMIS_PORT', None)
+        if self._env is not None:
+            os.environ['CMIS_PORT'] = self._env
+        for s in self._sockets:
+            s.close()
+        shutil.rmtree(self._tmp, ignore_errors=True)
+        super().tearDown()
+
+    # ---- helpers -----------------------------------------------------------------
+    def _occupy(self):
+        """A port something else is listening on, and returns its number."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('127.0.0.1', 0))
+        s.listen(1)
+        self._sockets.append(s)
+        return s.getsockname()[1]
+
+    def _free_port(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _post(self, **body):
+        return self.client.post('/api/settings/port', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _saved(self):
+        try:
+            with open(self._path, encoding='utf-8') as fh:
+                return json.load(fh)
+        except OSError:
+            return None
+
+    class _FakeServer(object):
+        def __init__(self, port):
+            self.server_port = port
+            self.served = self.closed = self.shut = False
+            self.on_serve = None
+
+        def serve_forever(self):
+            self.served = True
+            if self.on_serve:
+                self.on_serve()
+
+        def server_close(self):
+            self.closed = True
+
+        def shutdown(self):
+            self.shut = True
+
+    # ---- parsing a port ---------------------------------------------------------------
+    def test_a_port_is_a_whole_number_in_range(self):
+        p = app_module._parse_port
+        self.assertEqual(p(5001), 5001)
+        self.assertEqual(p(' 5001 '), 5001)
+        self.assertEqual(p(1024), 1024)
+        self.assertEqual(p(65535), 65535)
+        for bad in (1023, 65536, 0, -1, 'abc', '50.1', 5001.0, None, True,
+                    False, '', [5001]):
+            self.assertIsNone(p(bad), repr(bad))
+
+    # ---- where the port comes from ----------------------------------------------------
+    def test_the_default_is_5000(self):
+        self.assertEqual(app_module._configured_port(), (5000, 'default'))
+
+    def test_a_saved_port_is_used(self):
+        app_module._save_settings(port=5123)
+        self.assertEqual(app_module._configured_port(), (5123, 'file'))
+
+    def test_cmis_port_outranks_the_saved_one(self):
+        app_module._save_settings(port=5123)
+        os.environ['CMIS_PORT'] = '5124'
+        self.assertEqual(app_module._configured_port(), (5124, 'env'))
+
+    def test_a_bad_value_is_passed_over_not_trusted(self):
+        os.environ['CMIS_PORT'] = 'eighty'
+        with open(self._path, 'w', encoding='utf-8') as fh:
+            fh.write('{"port": 80}')
+        self.assertEqual(app_module._configured_port(), (5000, 'default'))
+        with open(self._path, 'w', encoding='utf-8') as fh:
+            fh.write('not json')
+        self.assertEqual(app_module._configured_port(), (5000, 'default'))
+
+    def test_saving_merges_and_leaves_no_temporary_file(self):
+        with open(self._path, 'w', encoding='utf-8') as fh:
+            fh.write('{"other": 1}')
+        app_module._save_settings(port=5125)
+        self.assertEqual(self._saved(), {'other': 1, 'port': 5125})
+        self.assertFalse(os.path.exists(self._path + '.tmp'))
+
+    def test_the_settings_file_sits_beside_the_program(self):
+        path = self._real_path()
+        self.assertEqual(os.path.basename(path), 'cmis_settings.json')
+        self.assertEqual(os.path.dirname(path),
+                         os.path.dirname(os.path.abspath(app_module.__file__)))
+
+    # ---- telling a taken port from a free one -----------------------------------------
+    def test_a_listening_port_is_seen_as_taken(self):
+        self.assertTrue(app_module._listening(self._occupy()))
+        self.assertFalse(app_module._listening(self._free_port()))
+
+    def test_a_taken_port_starts_the_server_elsewhere_and_says_why(self):
+        taken = self._occupy()
+        os.environ['CMIS_PORT'] = str(taken)
+        app_module._make_server = lambda port: self._FakeServer(port)
+        server, elsewhere = app_module._start_server()
+        self.assertIsNone(elsewhere)
+        self.assertEqual(server.server_port, 0,
+                         'the fallback is a port the system chooses')
+        conflict = app_module._port_state['conflict']
+        self.assertEqual(conflict['port'], taken)
+        self.assertIn('another program', conflict['reason'])
+
+    def test_a_free_port_is_used_as_asked(self):
+        free = self._free_port()
+        os.environ['CMIS_PORT'] = str(free)
+        app_module._make_server = lambda port: self._FakeServer(port)
+        server, _ = app_module._start_server()
+        self.assertEqual(server.server_port, free)
+        self.assertIsNone(app_module._port_state['conflict'])
+
+    def test_a_port_that_cannot_be_bound_is_a_conflict_too(self):
+        """Windows reserves ranges nothing listens on and nothing can bind
+        (WinError 10013). Not listening is not the same as usable."""
+        free = self._free_port()
+        os.environ['CMIS_PORT'] = str(free)
+
+        def make(port):
+            if port == free:
+                raise OSError('[WinError 10013] access forbidden')
+            return self._FakeServer(port)
+
+        app_module._make_server = make
+        server, _ = app_module._start_server()
+        self.assertEqual(server.server_port, 0)
+        self.assertIn('10013', app_module._port_state['conflict']['reason'])
+
+    def test_the_tool_itself_on_the_port_is_not_a_conflict(self):
+        """A second double-click must open the running one, not ask the user
+        to move away from it."""
+        import http.server
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({'status': 'ok', 'data': {
+                    'version': '9', 'cmis_revision_supported': '5.4'}}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            os.environ['CMIS_PORT'] = str(srv.server_port)
+            server, elsewhere = app_module._start_server()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertIsNone(server)
+        self.assertEqual(elsewhere, srv.server_port)
+
+    def test_another_program_answering_http_is_still_a_conflict(self):
+        self.assertFalse(app_module._cmis_answers_on(self._occupy()))
+
+    # ---- the API ----------------------------------------------------------------------
+    def test_the_page_can_see_the_port_and_why(self):
+        d = self.assertOk(self.client.get('/api/settings/port'))['data']
+        for key in ('active', 'configured', 'source', 'conflict', 'default',
+                    'min', 'max', 'saved', 'env_override', 'settings_file',
+                    'url'):
+            self.assertIn(key, d)
+        self.assertEqual(d['default'], 5000)
+        self.assertEqual(d['url'], 'http://127.0.0.1:%d/' % d['active'])
+        self.assertEqual(d['settings_file'], self._path)
+
+    def test_a_bad_port_is_refused(self):
+        for bad in ('abc', 80, 70000, True, None, 50.5):
+            self.assertErr(self._post(port=bad), 400)
+        self.assertErr(self._post(), 400)
+        self.assertIsNone(self._saved())
+
+    def test_an_unknown_field_is_refused(self):
+        self.assertErr(self._post(port=5001, host='0.0.0.0'), 400)
+
+    def test_a_port_in_use_is_refused_and_nothing_saved(self):
+        taken = self._occupy()
+        body = self.assertErr(self._post(port=taken), 409)
+        self.assertIn('in use', body['message'])
+        self.assertIsNone(self._saved())
+
+    def test_without_a_server_of_its_own_the_choice_is_saved_for_next_time(self):
+        free = self._free_port()
+        d = self.assertOk(self._post(port=free))['data']
+        self.assertFalse(d['switched'])
+        self.assertTrue(d['restart_needed'])
+        self.assertEqual(self._saved(), {'port': free})
+
+    def test_choosing_the_port_in_use_saves_it_and_ends_the_conflict(self):
+        active = app_module._port_state['active']
+        app_module._port_state['conflict'] = {'port': 5000, 'reason': 'x'}
+        d = self.assertOk(self._post(port=active))['data']
+        self.assertFalse(d['switched'])
+        self.assertEqual(self._saved(), {'port': active})
+        self.assertIsNone(app_module._port_state['conflict'])
+
+    def test_the_running_server_moves_to_the_new_port(self):
+        free = self._free_port()
+        current = self._FakeServer(app_module._port_state['active'])
+        app_module._servers['current'] = current
+        app_module._make_server = lambda port: self._FakeServer(port)
+        app_module._port_state['conflict'] = {'port': 5000, 'reason': 'x'}
+        d = self.assertOk(self._post(port=free))['data']
+        self.assertTrue(d['switched'])
+        self.assertEqual(d['url'], 'http://127.0.0.1:%d/' % free)
+        self.assertEqual(app_module._servers['next'].server_port, free)
+        deadline = time.time() + 2
+        while not current.shut and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(current.shut, 'the old server was never stopped')
+        self.assertEqual(self._saved(), {'port': free})
+        self.assertIsNone(app_module._port_state['conflict'])
+
+    def test_a_port_that_will_not_bind_leaves_everything_as_it_was(self):
+        free = self._free_port()
+        current = self._FakeServer(app_module._port_state['active'])
+        app_module._servers['current'] = current
+
+        def refuse(port):
+            raise OSError('[WinError 10013] access forbidden')
+
+        app_module._make_server = refuse
+        body = self.assertErr(self._post(port=free), 409)
+        self.assertIn('10013', body['message'])
+        self.assertIsNone(self._saved())
+        self.assertIsNone(app_module._servers['next'])
+        time.sleep(0.05)
+        self.assertFalse(current.shut)
+
+    def test_a_save_that_fails_does_not_move_the_server(self):
+        free = self._free_port()
+        current = self._FakeServer(app_module._port_state['active'])
+        app_module._servers['current'] = current
+        made = []
+        app_module._make_server = lambda port: made.append(
+            self._FakeServer(port)) or made[-1]
+        real_save = app_module._save_settings
+
+        def broken(**kw):
+            raise OSError('read-only folder')
+
+        app_module._save_settings = broken
+        try:
+            body = self.assertErr(self._post(port=free), 500)
+        finally:
+            app_module._save_settings = real_save
+        self.assertIn('read-only folder', body['message'])
+        self.assertTrue(made[0].closed, 'the new socket was left open')
+        self.assertIsNone(app_module._servers['next'])
+        self.assertFalse(current.shut)
+
+    def test_cmis_port_is_mentioned_when_it_will_win(self):
+        os.environ['CMIS_PORT'] = '5999'
+        d = self.assertOk(self._post(port=self._free_port()))['data']
+        self.assertIn('CMIS_PORT=5999', d['note'])
+
+    # ---- the rest of the server follows the port ---------------------------------------
+    def test_the_request_guard_follows_the_active_port(self):
+        app_module._port_state['active'] = 5123
+        ok = self.client.get('/api/version', headers={
+            'Host': '127.0.0.1:5123', 'Origin': 'http://127.0.0.1:5123',
+            'Sec-Fetch-Site': 'same-origin'})
+        self.assertOk(ok)
+        old = self.client.get('/api/version', headers={
+            'Host': '127.0.0.1:5000', 'Sec-Fetch-Site': 'same-origin'})
+        self.assertErr(old, 403)
+
+    def test_serving_moves_on_to_the_next_server(self):
+        first, second = self._FakeServer(5001), self._FakeServer(5002)
+        first.on_serve = lambda: app_module._servers.__setitem__('next', second)
+        seen = []
+        second.on_serve = lambda: seen.append(app_module._port_state['active'])
+        app_module._serve(first)
+        self.assertTrue(first.closed and second.served and second.closed)
+        self.assertEqual(seen, [5002])
+        self.assertIsNone(app_module._servers['next'])
+
+    def test_the_update_helper_is_told_the_port(self):
+        import updater as u
+        ps = u.build_swap_script(r'C:\s', r'C:\t', port=5123)
+        self.assertIn('http://127.0.0.1:5123/api/version', ps)
+        self.assertIn('$psi.EnvironmentVariables["CMIS_PORT"] = \'5123\'', ps)
+        self.assertIn(u.HEALTH_URL, u.build_swap_script(r'C:\s', r'C:\t'))
+        src = self._read('app.py')
+        self.assertIn("updater.stage_and_swap(staged, port=_port_state['active'])",
+                      src)
+        self.assertIn('relaunch=relaunch, port=port',
+                      self._read('updater.py'))
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_runtime_files_are_left_out_of_the_release(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        'packaging'))
+        try:
+            import make_dist_zip as mdz
+        finally:
+            sys.path.pop(0)
+        real = mdz.PAYLOAD_DIR
+        mdz.PAYLOAD_DIR = self._tmp
+        try:
+            for name in ('CMIS_Module_Manager.exe', 'cmis_settings.json',
+                         'update.log', 'manual.html'):
+                with open(os.path.join(self._tmp, name), 'w') as fh:
+                    fh.write('x')
+            names = [n for _p, n in mdz.members()]
+        finally:
+            mdz.PAYLOAD_DIR = real
+        self.assertIn('CMIS_Module_Manager.exe', names)
+        self.assertIn('manual.html', names)
+        self.assertNotIn('cmis_settings.json', names)
+        self.assertNotIn('update.log', names)
+
+    def test_stop_app_finds_a_changed_port(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        'packaging'))
+        try:
+            import stop_app
+        finally:
+            sys.path.pop(0)
+        os.environ['CMIS_PORT'] = '5321'
+        self.assertEqual(stop_app.configured_port(), 5321)
+
+    # ---- the page ---------------------------------------------------------------------
+    def test_the_settings_dialog_shows_and_changes_the_port(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('<dialog id="settings-dialog">')
+        dlg = html[i:html.index('</dialog>', i)]
+        self.assertIn('id="set-port"', dlg)
+        self.assertIn('id="btn-port-apply"', dlg)
+        self.assertIn('id="port-current"', dlg)
+
+    def test_the_conflict_popup_asks_for_a_port(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('<dialog id="port-dialog">')
+        dlg = html[i:html.index('</dialog>', i)]
+        self.assertIn('id="port-dlg-input"', dlg)
+        self.assertIn('id="btn-port-use"', dlg)
+        self.assertIn('id="btn-port-later"', dlg)
+
+    def test_the_popup_opens_only_on_a_conflict(self):
+        js = self._read('static', 'app.js')
+        i = js.index('async function initPort')
+        body = js[i:js.index('\n}\n', i)]
+        self.assertLess(body.index('if (!d || !d.conflict) return;'),
+                        body.index('dialog.showModal()'))
+
+    def test_preferences_are_adopted_before_anything_reads_them(self):
+        js = self._read('static', 'app.js')
+        i = js.index("document.addEventListener('DOMContentLoaded'")
+        body = js[i:i + 800]
+        self.assertLess(body.index('adoptCarriedPrefs();'),
+                        body.index('initSettings();'))
+        self.assertIn('initPort();', body)
+
+    def _node(self, expr):
+        import shutil as _sh
+        import subprocess
+        node = _sh.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const store={};'
+                  'global.localStorage={getItem:k=>k in store?store[k]:null,'
+                  'setItem:(k,v)=>{store[k]=String(v)}};'
+                  'eval(s.match(/const PREFS_KEY = [^;]*;/)[0]'
+                  '+s.match(/const PREFS_HASH = [^;]*;/)[0]'
+                  '+s.match(/function withCarriedPrefs\\([\\s\\S]*?\\r?\\n}\\r?\\n/)[0]'
+                  '+s.match(/function describePort\\([\\s\\S]*?\\r?\\n}\\r?\\n/)[0]'
+                  '+"process.stdout.write(JSON.stringify(' + expr.replace('"', '\\"')
+                  + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_move_carries_the_display_preferences(self):
+        url = self._node(
+            '(localStorage.setItem("cmis.ui", JSON.stringify({theme:"light"})),'
+            ' withCarriedPrefs("http://127.0.0.1:5123/"))')
+        self.assertTrue(url.startswith('http://127.0.0.1:5123/#cmis-prefs='))
+        self.assertIn('light', urllib.parse.unquote(url))
+
+    def test_the_port_line_says_why_it_is_that_port(self):
+        temp = self._node('describePort({url:"http://127.0.0.1:51234/", '
+                          'active:51234, source:"default", settings_file:"f", '
+                          'conflict:{port:5000, reason:"r"}})')
+        self.assertIn('for this session only', temp)
+        self.assertIn('5000 was in use', temp)
+        saved = self._node('describePort({url:"u", active:5123, source:"file", '
+                           'settings_file:"C:/x/cmis_settings.json", '
+                           'conflict:null})')
+        self.assertIn('saved in C:/x/cmis_settings.json', saved)
 
 
 if __name__ == '__main__':

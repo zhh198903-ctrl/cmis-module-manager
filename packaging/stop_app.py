@@ -56,9 +56,38 @@ def kill_image(name: str) -> str:
     return _run(["taskkill", "/F", "/T", "/IM", name]).strip()
 
 
+def configured_port() -> int:
+    """app.py 实际会用的端口：CMIS_PORT > 仓库根目录的 cmis_settings.json > 5000。
+
+    端口可以在界面里改，改完存进 cmis_settings.json。写死 5000 的话，
+    改过端口的开发实例就停不掉了——而这个脚本是唯一允许的清场方式。
+    """
+    import json
+    import os
+
+    def valid(v):
+        try:
+            v = int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+        return v if 1024 <= v <= 65535 else None
+
+    env = valid(os.environ.get("CMIS_PORT", ""))
+    if env:
+        return env
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "cmis_settings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            saved = valid((json.load(fh) or {}).get("port"))
+    except (OSError, ValueError, AttributeError):
+        saved = None
+    return saved or 5000
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="停掉 CMIS 自己的服务进程（按端口 PID + 自家 exe 名），不按 python.exe 镜像名杀")
-    ap.add_argument("--port", type=int, default=5000)
+    ap.add_argument("--port", type=int, default=configured_port())
     ap.add_argument("--exe", default="CMIS_Module_Manager.exe")
     args = ap.parse_args()
     if sys.platform != "win32":

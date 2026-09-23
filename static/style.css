@@ -985,7 +985,8 @@ input[type="checkbox"] {
 /* ---- Display settings dialog ----
    A native <dialog> brings the top layer, a backdrop, Escape-to-close and a
    focus trap with it; this app had no modal layer at all before. */
-#settings-dialog {
+#settings-dialog,
+#port-dialog {
   zoom: var(--ui-zoom);
   background: var(--surface);
   color: var(--text);
@@ -994,11 +995,30 @@ input[type="checkbox"] {
   padding: 20px;
   min-width: 340px;
   max-width: 92vw;
+  /* The global `* { margin: 0 }` reset takes away the auto margin a modal
+     dialog is centred by, and both dialogs sat in the top-left corner. */
+  margin: auto;
   box-shadow: 0 8px 32px var(--shadow-color);
 }
 
-#settings-dialog::backdrop {
+/* A paragraph of explanation would otherwise stretch it across the screen. */
+#port-dialog {
+  width: min(560px, 92vw);
+}
+
+#settings-dialog::backdrop,
+#port-dialog::backdrop {
   background: var(--shadow-color);
+}
+
+/* A message under a port field: empty until there is something to say, and
+   no rule above it then, or an empty line would still draw one. */
+.port-msg:empty {
+  display: none;
+}
+
+.port-msg.is-error {
+  color: var(--danger);
 }
 
 .settings-form {

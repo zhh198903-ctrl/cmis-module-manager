@@ -235,6 +235,129 @@ function initSettings() {
 }
 
 // ---------------------------------------------------------------------------
+// Server port
+// ---------------------------------------------------------------------------
+// The display preferences live in localStorage, which a browser keeps per
+// origin - and the port is part of the origin. Moving to another port would
+// start the page over on the default theme, scale and font, so the move
+// carries them across in the address and the new page stores them.
+const PREFS_HASH = 'cmis-prefs=';
+
+function adoptCarriedPrefs() {
+  const h = location.hash || '';
+  const i = h.indexOf(PREFS_HASH);
+  if (i < 0) return;
+  try {
+    const raw = decodeURIComponent(h.slice(i + PREFS_HASH.length));
+    JSON.parse(raw);                     // store only what parses
+    localStorage.setItem(PREFS_KEY, raw);
+  } catch (e) { /* a bad fragment is ignored, not trusted */ }
+  history.replaceState(null, '', location.pathname + location.search);
+}
+
+function withCarriedPrefs(url) {
+  let raw = null;
+  try { raw = localStorage.getItem(PREFS_KEY); } catch (e) { /* none */ }
+  return raw ? url + '#' + PREFS_HASH + encodeURIComponent(raw) : url;
+}
+
+function describePort(d) {
+  const from = {
+    default: 'the default',
+    file: 'saved in ' + d.settings_file,
+    env: 'set by the CMIS_PORT environment variable',
+  }[d.source] || d.source;
+  let s = `Serving on ${d.url} — port ${d.active}`;
+  s += d.conflict
+    ? ` for this session only: port ${d.conflict.port} was in use at start-up.`
+    : ` (${from}).`;
+  if (d.env_override && d.source !== 'env') {
+    s += ` CMIS_PORT=${d.env_override} is set and takes precedence at the next start.`;
+  }
+  return s;
+}
+
+// Saves the port and, where the server can move, follows it there.
+async function applyPort(input, msg) {
+  const say = (text, isError) => {
+    msg.textContent = text;
+    msg.classList.toggle('is-error', !!isError);
+  };
+  const port = parseInt(String(input.value).trim(), 10);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    say('Enter a whole number from 1024 to 65535.', true);
+    input.focus();
+    return false;
+  }
+  const res = await apiPost('/api/settings/port', { port });
+  if (res.status !== 'ok') { say(res.message, true); return false; }
+  const d = res.data;
+  const note = d.note ? ' ' + d.note : '';
+  if (d.switched) {
+    say(`Moving to ${d.url} …` + note);
+    setTimeout(() => { location.href = withCarriedPrefs(d.url); }, 300);
+  } else if (d.restart_needed) {
+    say(`Saved. The server uses port ${d.port} from its next start.` + note);
+  } else {
+    say(`Saved: port ${d.port} is used from now on.` + note);
+  }
+  return true;
+}
+
+async function refreshPortSection() {
+  const res = await apiGet('/api/settings/port');
+  if (res.status !== 'ok') return null;
+  const d = res.data;
+  const cur = document.getElementById('port-current');
+  if (cur) cur.textContent = describePort(d);
+  const input = document.getElementById('set-port');
+  if (input && document.activeElement !== input) input.value = d.active;
+  return d;
+}
+
+async function initPort() {
+  const input = document.getElementById('set-port');
+  const msg = document.getElementById('port-msg');
+  document.getElementById('btn-port-apply')?.addEventListener(
+    'click', () => applyPort(input, msg));
+  // Enter would submit the settings form, which only closes the dialog.
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); applyPort(input, msg); }
+  });
+  document.getElementById('btn-settings')?.addEventListener('click', () => {
+    if (msg) { msg.textContent = ''; msg.classList.remove('is-error'); }
+    refreshPortSection();
+  });
+
+  const d = await refreshPortSection();
+  if (!d || !d.conflict) return;
+
+  // The configured port was taken at start-up. The server came up on a port
+  // the system picked so that there is a page to ask on; which port to use
+  // from now on is the user's to type.
+  const dialog = document.getElementById('port-dialog');
+  const dlgInput = document.getElementById('port-dlg-input');
+  const dlgMsg = document.getElementById('port-dlg-msg');
+  if (!dialog) return;
+  document.getElementById('port-dlg-wanted').textContent = d.conflict.port;
+  document.getElementById('port-dlg-why').textContent =
+    `Port ${d.conflict.port} could not be used: ${d.conflict.reason}. This `
+    + `session is running on port ${d.active} instead. Enter the port CMIS `
+    + `Module Manager should use - it is saved, and the page reopens on it.`;
+  document.getElementById('port-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    applyPort(dlgInput, dlgMsg);
+  });
+  document.getElementById('btn-port-later').addEventListener('click', () => {
+    dialog.close();
+    toast(`Running on port ${d.active} for this session. Change it any time `
+      + `under Display settings.`, 'info', 8000);
+  });
+  dialog.showModal();
+  dlgInput.focus();
+}
+
+// ---------------------------------------------------------------------------
 // Connection panel
 // ---------------------------------------------------------------------------
 async function loadBackends() {
@@ -4716,9 +4839,14 @@ async function applyLaser() {
 // Init
 // ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
+  // Preferences carried over from a port change go into this origin's storage
+  // before anything reads it.
+  adoptCarriedPrefs();
   // Display settings — wired first so the controls work even before a module
   // is connected, which is exactly when someone needs to fix an unreadable UI.
   initSettings();
+  // The port, and the question to ask when the configured one was taken.
+  initPort();
 
   // Load backends
   loadBackends();

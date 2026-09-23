@@ -54,6 +54,14 @@ CMIS2Customer.zip
 CMIS2Customer/CMIS_Module_Manager.exe
 
 # ═══════════════════════════════════════════════════
+#  Written by the app at run time, beside app.py or the exe
+# ═══════════════════════════════════════════════════
+# The port the user chose. Per machine, never source.
+cmis_settings.json
+cmis_settings.json.tmp
+update.log
+
+# ═══════════════════════════════════════════════════
 #  IDE / editor
 # ═══════════════════════════════════════════════════
 .vscode/

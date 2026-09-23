@@ -58,9 +58,9 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and click *Connect* to explore without hardware.
+Then open **http://127.0.0.1:5000** in your browser (the default port — change it under *⚙ Display → Server port*; if 5000 is taken at start-up the page asks which port to use). Pick a `mock_*` backend and click *Connect* to explore without hardware.
 
-浏览器打开 `http://127.0.0.1:5000`，选择任一 `mock_*` 后端点击 Connect 即可无硬件体验全部功能。
+浏览器打开 `http://127.0.0.1:5000`（默认端口，可在 ⚙ Display → Server port 修改；启动时 5000 被占用会弹窗让你选端口），选择任一 `mock_*` 后端点击 Connect 即可无硬件体验全部功能。
 
 ## Tests / 测试
 
@@ -68,7 +68,7 @@ Then open **http://127.0.0.1:5000** in your browser. Pick a `mock_*` backend and
 python test_api.py
 ```
 
-2065 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+2100 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

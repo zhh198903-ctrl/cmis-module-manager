@@ -33,7 +33,8 @@ if errorlevel 1 (
 
 :run
 echo Starting CMIS Module Manager...
-echo Open browser: http://127.0.0.1:5000
+echo The address it serves on is printed below and opened in your browser
+echo (http://127.0.0.1:5000 unless you chose another port).
 %PYTHON% app.py
 set EXITCODE=%errorlevel%
 

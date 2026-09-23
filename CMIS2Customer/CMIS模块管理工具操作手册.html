@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.119.0<br>
+      <b>版本</b>　2.120.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.119.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.119.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.120.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.120.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -838,8 +838,32 @@
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>如果浏览器未自动打开，请手动在地址栏输入：<code>http://127.0.0.1:5000</code></span>
+    <span>如果浏览器未自动打开，请手动在地址栏输入控制台上显示的地址
+    （默认 <code>http://127.0.0.1:5000</code>）。</span>
   </div>
+
+  <h3>本机端口:查看、修改,以及被占用时</h3>
+  <p>程序只监听本机 <code>127.0.0.1</code>,默认端口 <b>5000</b>。</p>
+  <ul>
+    <li><b>查看和修改</b>:点标题栏的 <b>⚙ Display</b>,在 <b>Server port</b> 一栏能看到当前地址、
+    这个端口是怎么来的(默认 / 已保存 / 环境变量),输入新端口(1024–65535)后点
+    <b>Save &amp; switch port</b>:服务器<b>当场</b>切到新端口,页面自动在新地址上重新打开,
+    主题、缩放、字体等显示设置会一起带过去。</li>
+    <li><b>保存在哪</b>:<code>cmis_settings.json</code>,和 EXE 放在同一个文件夹里;
+    下次启动直接用它。删掉这个文件就回到默认的 5000。</li>
+    <li><b>默认端口被别的程序占用时</b>:程序<b>不会</b>启动失败,而是先在系统分配的一个空闲端口上启动,
+    浏览器打开后<b>弹出对话框</b>,说明哪个端口被占用、原因是什么,请你<b>手动输入</b>以后要用的端口;
+    确定后保存并切换过去。点 <b>Not now</b> 则本次先用临时端口,之后随时可在 ⚙ Display 里修改。
+    控制台上也会打印同样的说明。</li>
+    <li><b>占用端口的其实是本工具自己</b>(比如双击了两次 EXE):不会弹窗,
+    第二个程序直接打开已在运行的那一个,然后退出。</li>
+    <li><b>高级</b>:设置环境变量 <code>CMIS_PORT=5005</code> 可临时指定端口,它优先于已保存的设置
+    (界面上会注明)。</li>
+  </ul>
+  <p class="note">为什么要这样:macOS 上的「隔空播放接收器」就占用 5000 端口;在 Windows 上,
+  服务器绑定端口时的方式允许与已经在监听的程序<b>共用</b>同一个端口,
+  结果浏览器连到哪一个由系统决定——你可能看到的是别的程序,甚至是一个 403 错误页。
+  现在启动时会先检测,被占用就明确告诉你。</p>
 </div>
 
 <!-- ══════════════ 5. 界面总览 ══════════════ -->
@@ -923,14 +947,14 @@
   </div>
   <div class="callout">
     <span class="callout-icon">🔒</span>
-    <span><b>关于本机 5000 端口的安全性</b>：程序只监听 127.0.0.1，外部机器无法访问。
+    <span><b>关于本机端口的安全性</b>：程序只监听 127.0.0.1，外部机器无法访问。
     自 <b>v2.1.0</b> 起，所有 <code>/api/</code> 接口还会拒绝<b>由其它网页发起</b>的请求——
     你在浏览器里打开的任何站点，都无法借你的浏览器去连接模块、改寄存器或触发升级。
     即便有人把自己的域名解析到你本机（DNS rebinding），接口同样会因 Host 不在白名单而被拒。
     <br><b>需要说清的一点</b>：自 v2.2.0 起，界面页面本身和 css/js 等静态文件<b>不设此限制</b>，
-    从任何地方点链接打开 <code>http://127.0.0.1:5000</code> 都能正常显示界面——
+    从任何地方点链接打开 <code>http://127.0.0.1:5000</code>（或你设置的端口）都能正常显示界面——
     因为光是拿到页面并不能操作模块，所有能碰模块的入口都在 <code>/api/</code> 下面。
-    可用的本机地址有三个：<code>127.0.0.1</code>、<code>localhost</code>、<code>[::1]</code>（带或不带 <code>:5000</code>）。
+    可用的本机地址有三个：<code>127.0.0.1</code>、<code>localhost</code>、<code>[::1]</code>（带或不带当前端口号，默认 <code>:5000</code>）。
     <br>你自己写的脚本、curl、Python 程序<b>不受此限制影响</b>，但有两条硬要求：
     带 body 的 POST 必须是 <code>Content-Type: application/json</code>，否则返回 <b>415</b>；
     且必须用上面三个本机地址访问，用本机主机名会被拒。</span>
@@ -2244,7 +2268,7 @@ Read anyway?</pre>
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.119.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.120.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -4012,11 +4036,12 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q1</span>双击 EXE 后控制台窗口一闪而过</div>
-    <div class="faq-reason">原因：程序启动异常，通常是端口 5000 已被占用（常见的是上一次没退干净，还留着一个实例）。</div>
-    <div class="faq-solve">解决：找到并结束占用 5000 端口的进程后重试。命令行执行
-      <code>netstat -ano | findstr :5000</code> 看最后一列的 PID，再到任务管理器"详细信息"页按 PID 结束它。
-      <br><b>不要试图用"以管理员身份运行"解决</b>：监听 127.0.0.1:5000 本来就不需要管理员权限，
-      提权也不会把已占用端口的进程赶走。本工具的端口是固定的 5000，没有自动改用其它端口的机制。</div>
+    <div class="faq-reason">原因：程序启动异常。<b>端口被占用已不再是原因</b>——
+      被别的程序占用时会换一个临时端口启动并弹窗让你选端口（见第 4 章「本机端口」），
+      被本工具自己占用时会直接打开已在运行的那一个。</div>
+    <div class="faq-solve">解决：从命令行（<code>cmd</code>）里运行 EXE，窗口就不会关闭，
+      最后几行会写明失败原因。
+      <br><b>不要试图用"以管理员身份运行"解决</b>：监听 127.0.0.1 上的端口本来就不需要管理员权限。</div>
   </div>
 
   <div class="faq-item">
@@ -4233,7 +4258,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.119.0<br>
+    CMIS Module Manager 操作手册 v2.120.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

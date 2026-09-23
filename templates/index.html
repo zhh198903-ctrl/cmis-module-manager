@@ -832,9 +832,40 @@
       you pick here, so digits keep lining up.
     </p>
 
+    <!-- The local port the server listens on. Changing it moves the running
+         server there and reopens this page on the new address; the choice is
+         kept in cmis_settings.json beside the exe. -->
+    <h3>Server port</h3>
+    <p class="settings-note" id="port-current">—</p>
+    <div class="field-group">
+      <label for="set-port">Port (1024–65535)</label>
+      <input type="number" id="set-port" min="1024" max="65535" step="1" inputmode="numeric">
+    </div>
+    <p class="settings-note port-msg" id="port-msg"></p>
+
     <div class="settings-actions">
-      <button type="button" class="btn-secondary btn-sm" id="btn-settings-reset">Reset to defaults</button>
+      <button type="button" class="btn-secondary btn-sm" id="btn-port-apply">Save &amp; switch port</button>
+      <button type="button" class="btn-secondary btn-sm" id="btn-settings-reset">Reset display to defaults</button>
       <button type="submit" class="btn-primary btn-sm">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Opened on load when the configured port was taken at start-up and the
+     server came up on a port the system picked instead. The user chooses the
+     port to use; nothing is chosen for them. -->
+<dialog id="port-dialog">
+  <form method="dialog" class="settings-form" id="port-form">
+    <h3>Port <span id="port-dlg-wanted">5000</span> is already in use</h3>
+    <p class="settings-note" id="port-dlg-why"></p>
+    <div class="field-group">
+      <label for="port-dlg-input">Port to use from now on (1024–65535)</label>
+      <input type="number" id="port-dlg-input" min="1024" max="65535" step="1" inputmode="numeric" placeholder="e.g. 5001">
+    </div>
+    <p class="settings-note port-msg" id="port-dlg-msg"></p>
+    <div class="settings-actions">
+      <button type="button" class="btn-secondary btn-sm" id="btn-port-later">Not now</button>
+      <button type="submit" class="btn-primary btn-sm" id="btn-port-use">Use this port</button>
     </div>
   </form>
 </dialog>

@@ -510,7 +510,19 @@ def current_exe_path() -> str:
 _CREATE_NO_WINDOW = 0x08000000
 
 
-HEALTH_URL = 'http://127.0.0.1:5000/api/version'
+DEFAULT_PORT = 5000
+HEALTH_URL = f'http://127.0.0.1:{DEFAULT_PORT}/api/version'
+
+
+def health_url_for(port: int) -> str:
+    """The endpoint the helper polls to see the relaunched build serving.
+
+    The port is the one the running instance is on - the user can choose it,
+    and the default may be taken. Polling 5000 regardless reported a build
+    that came back on another port as never having come back, and the helper
+    then started it a second time.
+    """
+    return f'http://127.0.0.1:{int(port)}/api/version'
 
 
 def ps_literal(s: str) -> str:
@@ -527,7 +539,8 @@ def ps_literal(s: str) -> str:
 
 
 def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME,
-                      relaunch: bool = True, health_url: str = HEALTH_URL) -> str:
+                      relaunch: bool = True, health_url: Optional[str] = None,
+                      port: int = DEFAULT_PORT) -> str:
     """PowerShell helper that swaps the install and brings the app back.
 
     A cmd script could move the files but could not tell whether the relaunched
@@ -551,7 +564,11 @@ def build_swap_script(staged_dir: str, target_dir: str, exe_name: str = EXE_NAME
     q_staged_exe = ps_literal(os.path.join(staged_dir, exe_name))
     q_target_exe = ps_literal(os.path.join(target_dir, exe_name))
     q_log = ps_literal(os.path.join(target_dir, 'update.log'))
-    q_health = ps_literal(health_url)
+    q_health = ps_literal(health_url or health_url_for(port))
+    # The relaunched build is told the port through CMIS_PORT, which outranks
+    # its saved setting: the page left open is on this port, and it reconnects
+    # only if the new build comes back on it.
+    q_port = ps_literal(str(int(port)))
     # Start-Process goes through ShellExecute, which needs a usable window
     # station; spawned from an exiting console app it silently created nothing
     # while reporting no error. Going straight to CreateProcess avoids that.
@@ -571,6 +588,7 @@ for ($attempt = 1; $attempt -le 2; $attempt++) {{
             $_ -like "_MEI*" -or $_ -like "_PYI*"
         }} | ForEach-Object {{ $psi.EnvironmentVariables.Remove($_) }}
         $psi.EnvironmentVariables["CMIS_NO_BROWSER"] = "1"
+        $psi.EnvironmentVariables["CMIS_PORT"] = {q_port}
         $proc = [System.Diagnostics.Process]::Start($psi)
         Log ("started pid " + $proc.Id)
     }} catch {{
@@ -621,7 +639,8 @@ Log "supporting files replaced"
 
 
 def stage_and_swap(staged_dir: str, target_dir: Optional[str] = None,
-                   relaunch: bool = True) -> subprocess.Popen:
+                   relaunch: bool = True,
+                   port: int = DEFAULT_PORT) -> subprocess.Popen:
     """Launch the helper that replaces this install and brings the app back.
 
     Frozen-only. The caller must exit promptly afterwards so the exe's file
@@ -636,7 +655,7 @@ def stage_and_swap(staged_dir: str, target_dir: Optional[str] = None,
     script = os.path.join(tempfile.gettempdir(), f'cmis_update_{os.getpid()}.ps1')
     with open(script, 'w', encoding='utf-8') as fh:
         fh.write(build_swap_script(os.path.abspath(staged_dir), target,
-                                   relaunch=relaunch))
+                                   relaunch=relaunch, port=port))
     return subprocess.Popen(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
          '-WindowStyle', 'Hidden', '-File', script],

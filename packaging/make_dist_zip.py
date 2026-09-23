@@ -36,11 +36,20 @@ def version() -> str:
     return m.group(1)
 
 
+# Files the exe writes beside itself when it runs. Running the build from
+# CMIS2Customer to check it - which is what happens before every release -
+# leaves them there, and shipping them would hand every user the port this
+# machine chose and this machine's update log.
+RUNTIME_FILES = frozenset({'cmis_settings.json', 'cmis_settings.json.tmp',
+                           'update.log'})
+
+
 def members() -> list:
     """(source path, name inside the archive) for everything shipped."""
     out = [(os.path.join(PAYLOAD_DIR, n), n)
            for n in sorted(os.listdir(PAYLOAD_DIR))
-           if os.path.isfile(os.path.join(PAYLOAD_DIR, n))]
+           if os.path.isfile(os.path.join(PAYLOAD_DIR, n))
+           and n not in RUNTIME_FILES]
     if not any(n.lower().endswith('.exe') for _p, n in out):
         raise SystemExit('no exe in %s - run packaging/build_exe.bat first'
                          % PAYLOAD_DIR)
