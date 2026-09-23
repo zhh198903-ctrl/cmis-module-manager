@@ -245,6 +245,8 @@ Table 8-99 的标题就是「Media Lane-Specific Monitors」。而 Monitoring �
 
 DataPath State / Config Status 是**主机侧**的,每行照常。
 
+过渡状态的 `state_max_seconds` / `state_overrun` 按 01h:144/168 声明判断；但 **DPTxTurnOn / DPTxTurnOff** 另有规范上限（Table 10-8：开启 400 ms、关断 100 ms，注 1 明说是声明值的上限）。模块声明得更长时取规范上限，此时 `state_max_from_spec` 为 true，`/api/module/capabilities` 的 `durations.dp_tx_turn_on/off.exceeds_spec` 标出超标的声明。
+
 **`Output` 那一列两侧各占一个**:Table 8-95 把 `OutputStatusRx`(`11h:132`)给了
 **Rx 输出主机通道**,把 `OutputStatusTx`(`11h:133`)给了 **Tx 输出媒介通道**。
 同一格里的两个点说的是模块两侧不同的通道。表头现在标着「Rx host · Tx media」。

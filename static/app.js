@@ -2288,14 +2288,21 @@ function dpStateNote(lane) {
   // was fine.
   if (lane.datapath_state_kind === 'transient') {
     const held = lane.state_seconds != null ? ` It has been in this state for ${lane.state_seconds} s.` : '';
+    // Table 10-8 caps the Tx turn-on and turn-off advertisements; where the
+    // module advertised more, the limit shown is the table's, and says so.
     if (lane.state_overrun) {
-      return 'Transient state, and it has taken longer than this module said '
-           + `it can take (at most ${lane.state_max_label}, 01h:144/168): `
+      return (lane.state_max_from_spec
+          ? 'Transient state, and it has taken longer than CMIS allows '
+            + `(${lane.state_max_label}): `
+          : 'Transient state, and it has taken longer than this module said '
+            + `it can take (at most ${lane.state_max_label}, 01h:144/168): `)
            + 'something in the module may have stopped.' + held;
     }
     return 'Transient state: the Data Path is moving between steady states'
          + (lane.state_max_label
-            ? `, and this module allows up to ${lane.state_max_label} for it`
+            ? (lane.state_max_from_spec
+               ? `, and CMIS allows up to ${lane.state_max_label} for it`
+               : `, and this module allows up to ${lane.state_max_label} for it`)
             : '') + '.' + held;
   }
   return {

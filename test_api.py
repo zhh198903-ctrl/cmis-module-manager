@@ -19007,6 +19007,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '10-4': 'Maximum ACCESS Hold-Off Durations',
         '10-5': 'Content Dependency Timings',
         '10-6': 'Condition to Interrupt Timings',
+        '10-8': 'Register to High-Speed Signal Timings',
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-191': 'Acquisition Counters (Page 61h)',
         '8-192': 'Page 62h Overview',
@@ -29615,6 +29616,157 @@ class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
                          'hold-off retry')
         for pos in direct:
             self.assertIn('_retry_rejected(', src[pos - 40:pos])
+
+class TestTheTxTurnOnBudgetHasACeiling(CMISTestCase):
+    """Table 10-8, Note 1: "Values specified here place an upper limit on
+    advertised timings like MaxDurationDPTxTurnOff and MaxDurationDPTxTurnOn
+    (01h:168)" - ton_txdis, 100 ms for a Tx output to go off, and toff_txdis,
+    400 ms for it to come on.
+
+    The tool took 01h:168 at its word. A lane in DPTxTurnOn was judged
+    against whatever the module advertised, so one that said "1-5 s" could
+    sit in the state for four seconds under a tooltip calling it normal -
+    the situation the MaxDuration fields exist to catch ("so that hosts can
+    determine when something failed in the module during these states"),
+    with a limit the specification does not allow the module to claim."""
+
+    def _durations(self, on_code, off_code=3):
+        import cmis_registers as c
+        return c.parse_durations(0, 0, bytes([0, (off_code << 4) | on_code, 0]))
+
+    def _judge(self, state, elapsed, on_code=3, off_code=3):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['caps']['durations'] = self._durations(on_code, off_code)
+        _state['dp_state_since'][1] = (state, time.time() - elapsed)
+        lane = {'lane': 1, 'datapath_state': state}
+        app_module._dp_state_overruns([lane])
+        return lane
+
+    # ---- the advertisement ------------------------------------------------------
+    def test_turn_off_past_100_ms_is_flagged(self):
+        self.assertFalse(self._durations(3, 4)['dp_tx_turn_off']['exceeds_spec'],
+                         '50-100 ms is within ton_txdis')
+        self.assertTrue(self._durations(3, 5)['dp_tx_turn_off']['exceeds_spec'],
+                        '100-500 ms starts where ton_txdis ends')
+
+    def test_turn_on_past_400_ms_is_flagged(self):
+        """100-500 ms straddles 400 ms, so it is not certainly over it."""
+        self.assertFalse(self._durations(5)['dp_tx_turn_on']['exceeds_spec'])
+        self.assertTrue(self._durations(6)['dp_tx_turn_on']['exceeds_spec'])
+        self.assertTrue(self._durations(13)['dp_tx_turn_on']['exceeds_spec'],
+                        '"50 min or more" is over any ceiling')
+
+    def test_a_reserved_code_is_not_called_non_compliant(self):
+        self.assertFalse(self._durations(14)['dp_tx_turn_on']['exceeds_spec'])
+
+    def test_the_ceiling_travels_with_the_advertisement(self):
+        d = self._durations(3)
+        self.assertEqual(d['dp_tx_turn_on']['spec_ceiling_s'], 0.4)
+        self.assertEqual(d['dp_tx_turn_on']['spec_symbol'], 'toff_txdis')
+        self.assertEqual(d['dp_tx_turn_off']['spec_ceiling_s'], 0.1)
+        self.assertEqual(d['dp_tx_turn_off']['spec_symbol'], 'ton_txdis')
+        self.assertNotIn('spec_ceiling_s', d['dp_init'],
+                         'Table 10-8 says nothing about DPInit')
+
+    def test_the_capabilities_carry_it(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['durations']['dp_tx_turn_on']['exceeds_spec'], False)
+
+    # ---- the overrun ---------------------------------------------------------------
+    def test_a_generous_advertisement_does_not_hide_an_overrun(self):
+        lane = self._judge('TxTurnOn', 0.6, on_code=7)       # "1-5 s"
+        self.assertTrue(lane['state_overrun'])
+        self.assertEqual(lane['state_max_seconds'], 0.4)
+        self.assertTrue(lane['state_max_from_spec'])
+        self.assertIn('Table 10-8', lane['state_max_label'])
+        self.assertIn('1-5 s', lane['state_max_label'])
+
+    def test_turn_off_uses_its_own_ceiling(self):
+        lane = self._judge('TxTurnOff', 0.2, off_code=7)
+        self.assertTrue(lane['state_overrun'])
+        self.assertEqual(lane['state_max_seconds'], 0.1)
+
+    def test_an_open_ended_advertisement_gets_the_ceiling_too(self):
+        """"50 min or more" has no number at all; without the ceiling there
+        would be no overrun ever."""
+        lane = self._judge('TxTurnOn', 0.6, on_code=13)
+        self.assertTrue(lane['state_overrun'])
+        self.assertEqual(lane['state_max_seconds'], 0.4)
+
+    def test_a_tighter_advertisement_is_still_the_module_s(self):
+        lane = self._judge('TxTurnOn', 0.03, on_code=3)      # "10-50 ms"
+        self.assertFalse(lane['state_overrun'])
+        self.assertEqual(lane['state_max_seconds'], 0.05)
+        self.assertFalse(lane['state_max_from_spec'])
+        self.assertEqual(lane['state_max_label'], '10-50 ms')
+
+    def test_dpinit_keeps_whatever_was_advertised(self):
+        import cmis_registers as c
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['caps']['durations'] = c.parse_durations(0, 0x07, bytes(3))
+        _state['dp_state_since'][1] = ('Init', time.time() - 0.6)
+        lane = {'lane': 1, 'datapath_state': 'Init'}
+        app_module._dp_state_overruns([lane])
+        self.assertFalse(lane['state_overrun'])
+        self.assertEqual(lane['state_max_seconds'], 5.0)
+
+    # ---- the page -------------------------------------------------------------------
+    def test_the_tooltip_says_whose_limit_it_is(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = re.sub(r'(?m)^\s*//.*$', '', f.read().replace('\r\n', '\n'))
+        i = js.index("if (lane.datapath_state_kind === 'transient') {")
+        body = js[i:js.index('\n  }\n', i)]
+        self.assertIn('lane.state_max_from_spec', body)
+        self.assertIn('longer than CMIS allows', body)
+        self.assertIn('CMIS allows up to', body)
+        self.assertIn('this module said', body)
+
+    def _run_js(self, expr, *functions):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        pick = ' + '.join('s.match(/function %s\\([\\s\\S]*?\\r?\\n}\\r?\\n/)[0]'
+                          % fn for fn in functions)
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'eval(' + pick + ' + "process.stdout.write(JSON.stringify('
+                  + expr.replace('"', '\\"') + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_overrun_tooltip_really_names_whose_limit(self):
+        base = ("datapath_state_kind: 'transient', state_overrun: true, "
+                "state_seconds: 0.6, ")
+        spec = self._run_js(
+            "dpStateNote({" + base + "state_max_from_spec: true, "
+            "state_max_label: '400 ms (Table 10-8 toff_txdis; the module "
+            "advertises 1-5 s)'})", 'dpStateNote')
+        self.assertIn('longer than CMIS allows', spec)
+        self.assertNotIn('this module said', spec)
+        own = self._run_js(
+            "dpStateNote({" + base + "state_max_from_spec: false, "
+            "state_max_label: '10-50 ms'})", 'dpStateNote')
+        self.assertIn('this module said', own)
+        self.assertNotIn('CMIS allows', own)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

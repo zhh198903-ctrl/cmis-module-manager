@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.126.0<br>
+      <b>版本</b>　2.127.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.126.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.126.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.127.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.127.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1716,6 +1716,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Tx 开关的时间上限,模块说了不算</h3>
+  <p>规范 Table 10-8 的注 1:「这里给出的数值是 <code>MaxDurationDPTxTurnOff</code> 和 <code>MaxDurationDPTxTurnOn</code>(01h:168)这类声明时长的上限」——Tx 输出关断最长 <b>100 ms</b>(ton_txdis),开启最长 <b>400 ms</b>(toff_txdis)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具判断一条通道是否卡在 DPTxTurnOn / DPTxTurnOff 时,只看模块自己声明的时长。声明「1–5 s」的模块,通道在 DPTxTurnOn 停了 4 秒,悬停提示还说这是正常的——而这个声明本身就超出了规范允许的范围。</span>
+  </div>
+  <p>现在这两个状态取「模块声明」和「规范上限」中<b>更严</b>的那个来判断;上限来自规范时,提示会写明「超过了 CMIS 允许的时间(Table 10-8,模块声明的是……)」,而不是说模块自己怎么声明的。模块声明得比规范更严时,仍按模块的来。DPInit / DPDeinit 规范没有另设上限,照旧按声明判断。</p>
 
   <h3>写入之后,模块可以暂时不应答</h3>
   <p>规范 Table 10-4:一次 WRITE 之后,模块可以在最长 <b>10 ms</b>(tWRITE,总线上叫 tNACK)内拒绝接下来的任何读写;写非易失存储器(Page 03h 用户 EEPROM,规范 8.7)之后最长 <b>80 ms</b>。5.2.3 给主机的办法是:按最坏时序等待、被拒后重试,或先探测模块是否就绪。</p>
@@ -3074,6 +3082,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     稳态（Activated / Deactivated / Initialized）<b>没有上限可超</b>——
     模块被放在那儿多久就是多久，不会被误报。</span>
   </div>
+  <p>DPTxTurnOn / DPTxTurnOff 另有规范上限：Table 10-8 规定 Tx 输出关断最长 100 ms、开启最长 400 ms，并明确说它们是 <code>01h:168</code> 声明值的上限。模块声明得更长时，工具按规范上限判断是否超时，提示里会写明这一点。</p>
 
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -4359,7 +4368,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.126.0<br>
+    CMIS Module Manager 操作手册 v2.127.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

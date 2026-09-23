@@ -2869,6 +2869,33 @@ def state_duration(code: int) -> dict:
     return {'code': code, 'max_seconds': limit, 'label': label}
 
 
+# Table 10-8, Note 1: "Values specified here place an upper limit on
+# advertised timings like MaxDurationDPTxTurnOff and MaxDurationDPTxTurnOn
+# (01h:168)" - ton_txdis, 100 ms for a Tx output to go off, and toff_txdis,
+# 400 ms for it to come on. An advertisement past them is the module's own
+# statement that it does not keep to the table.
+DP_STATE_SPEC_CEILING = {
+    'dp_tx_turn_off': (0.100, 'ton_txdis'),
+    'dp_tx_turn_on': (0.400, 'toff_txdis'),
+}
+
+
+def _with_ceiling(field: str, d: dict) -> dict:
+    """Add the Table 10-8 ceiling to a DPTxTurnOn/Off advertisement, and say
+    whether the advertised range lies wholly above it.
+
+    A Table 8-49 code is a range - "100-500 ms" - so it only certainly
+    exceeds the ceiling when its lower end does. Code 0 and the reserved
+    codes claim nothing, and count from zero.
+    """
+    ceiling, symbol = DP_STATE_SPEC_CEILING[field]
+    code = d['code']
+    lower = (_STATE_DURATIONS[code - 1][0]
+             if 0 < code < len(_STATE_DURATIONS) else 0.0)
+    return dict(d, spec_ceiling_s=ceiling, spec_symbol=symbol,
+                exceeds_spec=lower >= ceiling)
+
+
 def is_multi_wavelength(media_lane_map) -> bool:
     """Whether a module carries more than one media wavelength.
 
@@ -2999,8 +3026,10 @@ def parse_durations(b143: int, b144: int, ext: bytes = b'') -> dict:
     if len(ext) >= 3:
         out['module_pwr_up'] = state_duration(ext[0] & 0x0F)
         out['module_pwr_dn'] = state_duration((ext[0] >> 4) & 0x0F)
-        out['dp_tx_turn_on'] = state_duration(ext[1] & 0x0F)
-        out['dp_tx_turn_off'] = state_duration((ext[1] >> 4) & 0x0F)
+        out['dp_tx_turn_on'] = _with_ceiling(
+            'dp_tx_turn_on', state_duration(ext[1] & 0x0F))
+        out['dp_tx_turn_off'] = _with_ceiling(
+            'dp_tx_turn_off', state_duration((ext[1] >> 4) & 0x0F))
         # tBPC is 10 ms; the module may need only tBPC / 2^i of it.
         bpc = ext[2] & 0x0F
         out['bpc_shift'] = bpc

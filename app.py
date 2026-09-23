@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.126.0'
+__version__ = '2.127.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2060,12 +2060,23 @@ def _dp_state_overruns(lanes) -> None:
             seen[num] = (state, now)
             was = seen[num]
         field = cmis.DP_STATE_DURATION_FIELD.get(state)
-        limit = (durations.get(field) or {}).get('max_seconds') if field else None
+        adv = (durations.get(field) or {}) if field else {}
+        limit = adv.get('max_seconds')
+        label = adv.get('label')
+        # Table 10-8 caps what may be advertised for turning a Tx output on
+        # or off. A module that advertises more has not bought itself the
+        # extra time: the lane has overrun at the table's limit.
+        ceiling = adv.get('spec_ceiling_s')
+        from_spec = bool(ceiling and (limit is None or ceiling < limit))
+        if from_spec:
+            limit = ceiling
+            label = '%d ms (Table 10-8 %s; the module advertises %s)' % (
+                round(ceiling * 1000), adv.get('spec_symbol'), adv.get('label'))
         elapsed = now - was[1]
         lane['state_seconds'] = round(elapsed, 1)
         lane['state_max_seconds'] = limit
-        lane['state_max_label'] = (
-            (durations.get(field) or {}).get('label') if field else None)
+        lane['state_max_label'] = label
+        lane['state_max_from_spec'] = from_spec
         # Only a transient state can overrun: the steady ones last as long as
         # the module is left in them.
         lane['state_overrun'] = bool(limit and elapsed > limit)
