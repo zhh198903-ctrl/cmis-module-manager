@@ -11142,7 +11142,8 @@ class TestTheWindowTheseNumbersCover(CMISTestCase):
         self._connect()
         for endpoint in ('/api/module/ber', '/api/module/counters'):
             m = self._window(endpoint)
-            self.assertEqual(sorted(m), ['capabilities', 'controls'],
+            self.assertEqual(sorted(m), ['capabilities', 'controls',
+                                         'start_stop_scope'],
                              '%s reports no window' % endpoint)
             self.assertEqual(sorted(m['controls']),
                              ['auto_restart_gating', 'custom_gate',
@@ -18985,6 +18986,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-123': 'Host Side Pattern Checker Controls (Page 13h)',
         '8-125': 'Media Side Pattern Checker Controls (Page 13h)',
         '8-127': 'Clocking and Measurement Controls (Page 13h)',
+        '8-128': 'PRBS Checker Behavior Un-Gated Mode',
         '8-129': 'PRBS Checker Behavior Single Gate Timer',
         '8-131': 'Loopback Controls (Page 13h)',
         '8-133': 'Diagnostics Masks (Page 13h)',
@@ -20723,9 +20725,11 @@ class TestTheMeasurementWindowAsksTheCapability(CMISTestCase):
 
     13h:177.7 StartStopIsGlobal was parsed and dropped. It decides whether
     starting or stopping a measurement in one Bank does so in all of them -
-    one result or thirty-two on a banked module - and Table 8-129 makes it
-    inert where the module has only the two global gating timers
-    ("Since 13h:129.3=0 the control 13h:177.7 is ignored")."""
+    one result or thirty-two on a banked module. Table 8-129 makes it inert
+    while a *gated* measurement runs on the single global timer ("Since
+    13h:129.3=0 the control 13h:177.7 is ignored"); ungated, Table 8-128
+    gives it a row of its own. Where it applies is now worked out by the
+    server - see TestWhereAStartOrStopReaches."""
 
     def _body(self):
         here = os.path.dirname(os.path.abspath(__file__))
@@ -20771,21 +20775,24 @@ class TestTheMeasurementWindowAsksTheCapability(CMISTestCase):
     def test_the_global_start_stop_bit_is_reported_at_all(self):
         """It was parsed and thrown away."""
         code = self._code()
-        self.assertIn('ctl.start_stop_is_global', code)
+        self.assertIn('m.start_stop_scope', code)
 
     def test_it_is_reported_as_inert_where_the_table_says_so(self):
+        """The condition itself is the server's now (it used to be
+        `caps.per_lane_gating_timers === false` here, which also covered
+        ungated measurements, where Table 8-129 says nothing)."""
         code = self._code()
-        self.assertIn('caps.per_lane_gating_timers === false', code,
-                      'Table 8-129 conditions 177.7 on 129.3')
-        self.assertIn('13h:129.3 = 0', code,
+        self.assertIn("m.start_stop_scope === 'ignored'", code)
+        self.assertIn('13h:129.3 = 0, Table 8-129', code,
                       'the reader has to be able to check the condition')
 
     def test_nothing_is_said_when_the_bit_is_clear(self):
         """The default - a start/stop acting on the current Bank - is
         unremarkable, and printing it on every module would bury the two
-        sentences that matter."""
+        sentences that matter. Both sentences sit behind a scope the server
+        leaves null when the bit is clear."""
         code = self._code()
-        self.assertIn('if (ctl.start_stop_is_global) {', code)
+        self.assertIn("} else if (m.start_stop_scope === 'all_banks') {", code)
 
     def test_the_periodic_update_gate_is_untouched(self):
         """It was already asking its capability, and is the precedent the two
@@ -29042,6 +29049,113 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
             body = src[i:src.index('\n@app.route', i)]
             self.assertLess(body.index(guard), body.index('write_bytes('),
                             name)
+
+class TestWhereAStartOrStopReaches(CMISTestCase):
+    """13h:177.7 StartStopIsGlobal (Table 8-127): set, a start/stop control
+    written in one Bank - ResetErrorInformation at 177.5, the checker enables
+    at 160 and 168 - acts "across all Banks as if the same control value
+    change had occurred in all supported Banks".
+
+    Table 8-129 exempts one case: a gated measurement on the single global
+    timer, "Since 13h:129.3=0 the control 13h:177.7 is ignored". The
+    measurement line took that for the whole rule and said "ignored" on
+    every module without per-lane timers - ungated ones too, where Table
+    8-128 gives 177.7 = 1 a row of its own ("toggling 13h:177.5 causes the
+    error information registers of all lanes in all Banks to reset").
+
+    And the checker enables are ticked on the PRBS card, which said nothing:
+    with the bit in effect, a box ticked for lane 1 starts lanes 9 and 17
+    too."""
+
+    def _module(self, backend, b177, per_lane_timers=None, gating=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        for key, regs in _state['backend']._registers.items():
+            if key == 0x13 or (isinstance(key, tuple) and key[0] == 0x13):
+                regs[0xB1] = b177
+                if per_lane_timers is not None:
+                    regs[0x81] = ((regs[0x81] & ~0x08)
+                                  | (0x08 if per_lane_timers else 0))
+                if gating is not None:
+                    regs[0x81] = (regs[0x81] & 0x3F) | (gating << 6)
+        app_module._invalidate_page()
+
+    def _scope(self, path='ber'):
+        d = self.assertOk(self.client.get('/api/module/' + path))['data']
+        return (d['start_stop_scope'] if path == 'prbs'
+                else d['measurement']['start_stop_scope'])
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return re.sub(r'(?m)^\s*//.*$', '',
+                          f.read().replace('\r\n', '\n'))
+
+    # ---- the rule --------------------------------------------------------------
+    def test_ungated_on_the_single_timer_it_still_reaches_every_bank(self):
+        """The case the page got wrong: Table 8-129 is about gating."""
+        self._module('mock_24lane', 0x80, per_lane_timers=False)
+        self.assertEqual(self._scope(), 'all_banks')
+
+    def test_gated_on_the_single_timer_it_is_ignored(self):
+        self._module('mock_24lane', 0x88, per_lane_timers=False)
+        self.assertEqual(self._scope(), 'ignored')
+
+    def test_gated_with_per_lane_timers_it_reaches_every_bank(self):
+        self._module('mock_24lane', 0x88, per_lane_timers=True)
+        self.assertEqual(self._scope(), 'all_banks')
+
+    def test_a_module_that_cannot_gate_is_not_gating(self):
+        """13h:129.7-6 = 00b: the byte may ask for a gate time, but the module
+        has none - the measurement is ungated, so the exemption is not it."""
+        self._module('mock_24lane', 0x88, per_lane_timers=False, gating=0)
+        self.assertEqual(self._scope(), 'all_banks')
+
+    def test_nothing_is_said_when_the_bit_is_clear(self):
+        self._module('mock_24lane', 0x08, per_lane_timers=False)
+        self.assertIsNone(self._scope())
+
+    def test_one_bank_has_nowhere_else_to_go(self):
+        self._module('mock_dr8', 0x80, per_lane_timers=True)
+        self.assertIsNone(self._scope())
+
+    def test_every_panel_is_told_the_same(self):
+        self._module('mock_24lane', 0x80, per_lane_timers=False)
+        self.assertEqual({self._scope('ber'), self._scope('counters'),
+                          self._scope('prbs')}, {'all_banks'})
+
+    # ---- the page -----------------------------------------------------------------
+    def test_the_measurement_line_no_longer_decides_it_alone(self):
+        js = self._js()
+        body = js_function_body(js, 'function _renderMeasurementWindow(')
+        self.assertNotIn('ctl.start_stop_is_global', body)
+        self.assertNotIn('caps.per_lane_gating_timers', body,
+                         'the page used to condition 177.7 on 129.3 alone')
+
+    def test_the_checker_card_says_it_where_the_boxes_are(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        i = html.index('<h3>PRBS Checker</h3>')
+        self.assertIn('id="prbs-chk-scope"', html[i:i + 120])
+        js = self._js()
+        i = js.index('async function loadPrbs')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertIn("scopeNote.innerHTML = d.start_stop_scope === 'all_banks'",
+                      body)
+        self.assertIn('13h:177.7, Table 8-127', body)
+
+    def test_the_card_names_the_lanes_that_move_together(self):
+        js = self._js()
+        i = js.index('async function loadPrbs')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertIn('Array.from({length: Math.ceil(AppState.lanes / 8)},',
+                      body)
+        self.assertIn('(_, b) => 8 * b + 1)', body)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

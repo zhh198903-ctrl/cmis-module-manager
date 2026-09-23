@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.122.0<br>
+      <b>版本</b>　2.123.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.122.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.122.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.123.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.123.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,21 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>13h:177.7 作用到哪里:「被忽略」只在门控测量时成立</h3>
+  <p><code>13h:177.7</code> StartStopIsGlobal(Table 8-127)置 1 时,在一个 Bank 上写启停控制——<code>177.5</code> 的复位、<code>160</code> / <code>168</code> 的检测器使能——等同于在所有 Bank 上同时写。</p>
+  <p>Table 8-129 给了一个例外:<b>门控测量</b>、并且模块只有一个全局 gate 定时器(<code>13h:129.3 = 0</code>)时,这个位被忽略。测量窗口那一行把这个例外当成了整条规则:只要 <code>129.3 = 0</code> 就说「被忽略」,<b>不门控时也这么说</b>。而不门控的情况归 Table 8-128 管,那里 177.7 = 1 有专门的一行:切换 177.5 会复位「所有 Bank 的所有通道」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>于是在不门控、只有全局定时器的多 Bank 模块上,页面说这一位无效,而它其实让每一次启停都作用到所有 Bank。另外,勾选检测器使能是在 <b>PRBS Checker</b> 卡片上,那里对此一个字都没有:这一位生效时,勾 lane 1 会连带启动 lane 9、17。</span>
+  </div>
+  <p>现在:</p>
+  <ul>
+    <li>这一位作用到哪里由服务端统一判断,BER、Counters、PRBS 三张卡片用同一个结论:只有门控测量 + 全局定时器时说「被忽略」(标注 Table 8-129);其余情况说「作用于所有 Bank」。模块不做门控(<code>13h:129.7-6 = 00b</code>)时按不门控处理。</li>
+    <li>该位为 0,或模块只有一个 Bank(无处可去)时,什么都不说。</li>
+    <li>PRBS Checker 卡片顶部会写明哪些通道一起启停,例如 24 通道模块上「lanes 1, 9, 17 start and stop together」。</li>
+  </ul>
+  <p class="note">这一节规范带着编辑注释「应改写以更清楚」,Table 8-130 里还有「因为 129.3 = 0 所以被忽略」这种与表名矛盾的行。工具只采用规范说得明确的部分,不自己补全。</p>
+
   <h3>Bank 广播:每一个按 Bank 写入的地方都要检查</h3>
   <p>Table 8-11:<code>Lower 0x1A[7]</code> BankBroadcastEnable 置 1 时,对通道分 Bank 的页上任何控制寄存器的写入,都会同时写进<b>所有 Bank</b>。</p>
   <p>工具早先给 DataPath 和 Squelch 的写入加了这项检查,后来媒体通道切换也加了。另外四个同样逐 Bank 写入的地方却没有:</p>
@@ -2326,7 +2341,7 @@ Read anyway?</pre>
     <span><b>13h:129.2</b> 的说明里直接点了名:「AutoRestartGating 控制(13h:177.4)<b>不支持</b>」。而这一行只看 177.4,于是<b>任何一块该位恰好置 1 的模块</b>都会被写成「gate 到期后自动重启」——不管它实现没实现。</span>
   </div>
   <p>现在:模块宣称支持时照旧写「restarting automatically」;宣称不支持而该位又置着时,明确写出「寄存器要求自动重启,但本模块未实现」并标注 13h:129.2 —— <b>不是默默不显示</b>,因为寄存器里确实写着,拿寄存器对照面板的人需要看到工具注意到了这件事。</p>
-  <p>另外,<b>13h:177.7(StartStopIsGlobal)</b>此前解析出来就丢掉了。它决定在一个 Bank 上启停测量是否等同于在所有 Bank 上启停——在多 Bank 模块上,这是「一个结果」和「三十二个结果」的区别。现在该位置 1 时会说明;而按 Table 8-129,模块只有两个全局 gate 定时器(13h:129.3 = 0)时这个位是被忽略的,那种情况下会直接说明它无效。该位为 0 是默认行为,不再赘述。</p>
+  <p>另外,<b>13h:177.7(StartStopIsGlobal)</b>此前解析出来就丢掉了。它决定在一个 Bank 上启停测量是否等同于在所有 Bank 上启停——在多 Bank 模块上,这是「一个结果」和「三十二个结果」的区别。现在该位置 1 时会说明;而按 Table 8-129,模块只有两个全局 gate 定时器(13h:129.3 = 0)时这个位是被忽略的,那种情况下会直接说明它无效。该位为 0 是默认行为,不再赘述。<b>更正:</b>Table 8-129 的「被忽略」只针对门控测量;不门控时 Table 8-128 仍让这一位作用到所有 Bank。现在的判断见「13h:177.7 作用到哪里」一节。</p>
 
   <h3>被模块忽略的均衡目标值,现在会标出来</h3>
   <p>规范 Table 6-5 按类型把 Tx 输入均衡的控制分成两组,并写明模块看哪一个:</p>
@@ -3838,6 +3853,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <p><b>PostFEC</b> 这一列同样由 <code>13h:131</code> 决定，
      规则与 10.2 的 PreFEC 一致。</p>
+  <p>多 Bank 模块上若 <code>13h:177.7</code>(StartStopIsGlobal)生效,卡片顶部会提示:在一个 Bank 里启用或停用检测器,等于在每个 Bank 的同一位置都这样做(Table 8-127)。</p>
   <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
   <p>媒体侧发生器和检测器按<b>媒体通道</b>运行。模块没有的媒体通道(<code>00h:210</code>),整行置灰,LOL 列显示 <b>n/a</b>。</p>
   <div class="callout callout-note">
@@ -4297,7 +4313,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.122.0<br>
+    CMIS Module Manager 操作手册 v2.123.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

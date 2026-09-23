@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.122.0'
+__version__ = '2.123.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3644,10 +3644,34 @@ def _measurement_window() -> dict:
     """
     caps = _diag_caps()['measurement']
     raw = _read_upper(*cmis.REG_CLOCK_MEAS)
+    controls = cmis.parse_measurement_controls(raw[1])
     return {
         'capabilities': caps,
-        'controls': cmis.parse_measurement_controls(raw[1]),
+        'controls': controls,
+        'start_stop_scope': _start_stop_scope(caps, controls),
     }
+
+
+def _start_stop_scope(caps: dict, controls: dict):
+    """Where 13h:177.7 StartStopIsGlobal sends a start or a stop.
+
+    Table 8-127: set, a start/stop control written in one Bank - the reset
+    at 177.5 and the checker enables at 160 and 168 - acts "across all Banks
+    as if the same control value change had occurred in all supported
+    Banks". Table 8-129 exempts one case, a gated measurement on the single
+    global timer (13h:129.3 = 0): "the control 13h:177.7 is ignored". That
+    is the only exemption; ungated, Table 8-128 gives 177.7 = 1 a row of its
+    own - a reset reaching "all lanes in all Banks" - whatever 129.3 says.
+
+    None where the bit is clear or there is one Bank, which leaves nowhere
+    else for a start or stop to go.
+    """
+    if (_state['lanes'] + 7) // 8 < 2 or not controls.get('start_stop_is_global'):
+        return None
+    gated = caps.get('gating_support', 0) != 0 and controls.get('gated')
+    if gated and caps.get('per_lane_gating_timers') is False:
+        return 'ignored'
+    return 'all_banks'
 
 
 def _user_pattern() -> dict:
@@ -3750,6 +3774,12 @@ def api_prbs_get():
             # clock do not stop working because the reference clock went away.
             clk = _read_upper(*cmis.REG_CLOCK_MEAS)
             clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
+            # The checker enables below are start/stop controls in the sense
+            # of Table 8-127, so 177.7 decides whether ticking one in this
+            # Bank starts the same lane in every other.
+            start_stop_scope = _start_stop_scope(
+                _diag_caps()['measurement'],
+                cmis.parse_measurement_controls(clk[1]))
         except Exception:
             _z = [0] * banks
             host_lol_banks = media_lol_banks = list(_z)
@@ -3758,6 +3788,7 @@ def api_prbs_get():
             diag_mask_banks = []
             ref_clock_lost = False
             clock_sources = {}
+            start_stop_scope = None
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
@@ -3871,6 +3902,7 @@ def api_prbs_get():
             'reference_clock_lost': ref_clock_lost,
             'reference_clock_lost_seen': ref_clock_seen,
             'clock_sources': clock_sources,
+            'start_stop_scope': start_stop_scope,
         })
     except Exception as e:
         return _err(str(e), 500)

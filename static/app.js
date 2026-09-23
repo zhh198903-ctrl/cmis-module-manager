@@ -4419,6 +4419,19 @@ async function loadPrbs() {
         + '<span class="reg-meta">' + addr + '</span>'
       : '';
   }
+  // The checker enables are start/stop controls (Table 8-127), so with
+  // 13h:177.7 in effect a box ticked in one Bank starts the same lane of every
+  // Bank. Said on the card where the boxes are, not only beside the results.
+  const scopeNote = document.getElementById('prbs-chk-scope');
+  if (scopeNote) {
+    const firsts = Array.from({length: Math.ceil(AppState.lanes / 8)},
+                              (_, b) => 8 * b + 1).join(', ');
+    scopeNote.innerHTML = d.start_stop_scope === 'all_banks'
+      ? 'Enabling or disabling a checker in one Bank does the same in every '
+        + 'Bank: lanes ' + firsts + ' start and stop together, and so on for '
+        + 'each lane. <span class="reg-meta">13h:177.7, Table 8-127</span>'
+      : '';
+  }
   // 14h:132.7 is module-wide and latched. Condemning the whole page on it was
   // a claim the module never made: a generator on the internal clock and a
   // checker on a recovered clock keep working without a reference clock.
@@ -4525,19 +4538,19 @@ function _renderMeasurementWindow(elId, data) {
     parts.push(`<b>${ctl.gate_seconds} s gate</b> ` + reg('13h:177.3-1')
       + restart);
   }
-  // 13h:177.7 was read and dropped. It decides whether starting or stopping a
-  // measurement in one Bank does so in all of them, which is the difference
-  // between one result and thirty-two on a banked module - and Table 8-129
-  // makes it inert where the module has only the two global gating timers.
-  // Said only when the bit is set: the other way round is the default and
-  // stating it on every module would be noise.
-  if (ctl.start_stop_is_global) {
-    parts.push(caps.per_lane_gating_timers === false
-      ? 'the byte asks for start/stop across all Banks, which is ignored on '
-        + 'a module with only the two global gating timers '
-        + reg('13h:129.3 = 0')
-      : 'starting or stopping a measurement acts on <b>all Banks</b> '
-        + reg('13h:177.7'));
+  // 13h:177.7 decides whether starting or stopping a measurement in one Bank
+  // does so in all of them. The server works out where it applies: Table
+  // 8-129 exempts only a gated measurement on the single global timer, and
+  // this line used to extend that to ungated ones, where Table 8-128 gives
+  // the bit a row of its own. Nothing is said where the bit is clear or the
+  // module has one Bank - there is nowhere else for a start or stop to go.
+  if (m.start_stop_scope === 'ignored') {
+    parts.push('the byte asks for start/stop across all Banks, which is '
+      + 'ignored while gating on the single global timer '
+      + reg('13h:129.3 = 0, Table 8-129'));
+  } else if (m.start_stop_scope === 'all_banks') {
+    parts.push('starting or stopping a measurement acts on <b>all Banks</b> '
+      + reg('13h:177.7'));
   }
   if (caps.periodic_updates === false) {
     parts.push('these values do not move while a measurement is running '
