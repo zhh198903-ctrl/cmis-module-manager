@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.120.0'
+__version__ = '2.121.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3348,6 +3348,9 @@ def api_loopback_get():
             'host_side_output':  cols[2][0],
             'host_side_input':   cols[3][0],
             'capabilities': _diag_caps()['loopback'],
+            # The media rows loop media lanes (Figure 8-2); greyed on the page
+            # for a media lane this module does not have.
+            'media_lanes_present': _media_lanes_present(),
             'media_side_output_banks': cols[0],
             'media_side_input_banks':  cols[1],
             'host_side_output_banks':  cols[2],
@@ -3394,6 +3397,16 @@ def api_loopback_set():
                                ('media_side_output', 'media_side_input',
                                 'host_side_output', 'host_side_input').index(name)),
                             400)
+        # The media side loops media lanes (Figure 8-2: "only one media lane
+        # shown"), and a coherent module has one. Per lane only: without
+        # per-lane control any bit means every lane, and that is handled below.
+        if caps['per_lane_media']:
+            refused = _refuse_absent_media_lanes((
+                ('MediaSideOutputLoopbackEnable', media_out, cur[0]),
+                ('MediaSideInputLoopbackEnable', media_in, cur[1]),
+            ), 'Table 8-131')
+            if refused:
+                return refused
         # Table 8-131 spells out what a module without per-lane loopback
         # does: "If the Per-lane ... Loopback Supported field=1, loopback
         # control is per lane. Otherwise, if any loopback enable bit is set to
@@ -3472,11 +3485,13 @@ def _refuse_unsupported(requested):
     return None
 
 
-def _refuse_absent_media_lanes(requested):
+def _refuse_absent_media_lanes(requested, table='Table 8-79'):
     """`requested` is (register name, requested masks, current masks) for a
-    control Table 8-79 indexes by *media* lane - OutputDisableTx,
-    AutoSquelchDisableTx, OutputSquelchForceTx. Returns an error for the
-    first change aimed at a media lane this module does not have, else None.
+    control indexed by *media* lane - OutputDisableTx, AutoSquelchDisableTx
+    and OutputSquelchForceTx (Table 8-79), the media side loopbacks
+    (Table 8-131) and the media side pattern generator and checker
+    (Tables 8-121, 8-125). Returns an error for the first change aimed at a
+    media lane this module does not have, else None.
 
     The panels lay these out in host-lane rows, so on a module with fewer
     media lanes than host lanes - a coherent one has one - most of the boxes
@@ -3491,10 +3506,10 @@ def _refuse_absent_media_lanes(requested):
                 continue
             bit = 1 << lane
             if (masks[0] ^ current[0]) & bit:
-                return _err('%s is set per media lane (Table 8-79), and this '
+                return _err('%s is set per media lane (%s), and this '
                             'module has no media lane %d (00h:210) - the '
                             'change would report success and do nothing'
-                            % (name, lane + 1), 400)
+                            % (name, table, lane + 1), 400)
     return None
 
 
@@ -3715,8 +3730,15 @@ def api_prbs_get():
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
 
+        present = _media_lanes_present()
+
         def lol_seen(name):
-            return [bool(name in history.get(lane + 1, ()))
+            # The media side's are per media lane (Table 8-138, "Latched
+            # per-media lane ..."): a lane the module does not have has no
+            # history, and False would read as "never lost".
+            media = name.startswith('media')
+            return [None if media and not present[lane]
+                    else bool(name in history.get(lane + 1, ()))
                     for lane in range(_state['lanes'])]
 
         def diag_masked(flag_addr):
@@ -3742,6 +3764,9 @@ def api_prbs_get():
 
         return _ok({
             'pattern_capabilities': _diag_caps()['patterns'],
+            # The media side engines run per media lane; the page greys the
+            # rows of a media lane the module does not have.
+            'media_lanes_present': present,
             # Table 8-115. The page used to carry its own list of names and it
             # stopped at ID 12, so a module advertising Custom or User Pattern
             # had them dropped from the dropdown without a word. Two lists
@@ -3926,6 +3951,19 @@ def api_prbs_set():
                            133 + 2 * ('host_gen', 'media_gen', 'host_chk',
                                       'media_chk').index(key)),
                         400)
+            # "individually toggle host (13h:160) or media (13h:168) lane
+            # checker enable bits to restart error counting of specific host
+            # or media lanes" (8.16.11.1): the media side engines are enabled per
+            # media lane. Only the enable is judged - it is the bit that makes
+            # something run, and the page sends a FEC location that has one
+            # legal value for every lane at once.
+            if key.startswith('media_'):
+                refused = _refuse_absent_media_lanes(
+                    (('The %s enable' % role, enabled,
+                      current['enable_mask_banks']),),
+                    'Table 8-121' if is_gen else 'Table 8-125')
+                if refused:
+                    return refused
             en  = enabled
             inv = _keep(section, 'invert_mask',
                         current['invert_mask_banks'], banks)

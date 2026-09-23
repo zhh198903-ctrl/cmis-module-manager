@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.120.0<br>
+      <b>版本</b>　2.121.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.120.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.120.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.121.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.121.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,25 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>媒体侧环回与媒体侧 PRBS,同样按媒体通道</h3>
+  <p>上一版把「按媒体通道」这条规则教给了 Page 10h 的通道控制。Page 13h 上有同一类控制,却被漏掉了:</p>
+  <ul>
+    <li><b>媒体侧环回</b>(<code>MediaSideOutputLoopbackEnable</code> / <code>MediaSideInputLoopbackEnable</code>,Table 8-131)环回的是媒体通道——Figure 8-2 的示意图上就写着「只画出一条媒体通道」。</li>
+    <li><b>媒体侧 PRBS 发生器与检测器</b>(Table 8-121 / 8-125)按媒体通道运行:规范 8.16.11.1 说的是逐个切换「媒体(13h:168)通道的检测器使能位」,Table 8-138 也把它们的失锁标志记为「按媒体通道」。</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>两个面板都按<b>主机通道</b>排行。在相干模块上(8 条主机通道、1 条媒体通道),每一行媒体侧里有 7 个勾选框<b>控制的是模块不存在的通道</b>:勾上就在一条不存在的通道上开了发生器,写入照样报告成功。PRBS 表随后还把那条通道的失锁历史显示成<b>「从未失锁」</b>——那是对一条不存在的通道所作的报告。</span>
+  </div>
+  <p>现在:</p>
+  <ul>
+    <li>媒体侧环回的两行、媒体侧发生器和检测器的整行(En / Invert / ByteSwap / FEC / Pattern),在模块没有的媒体通道上<b>置灰</b>,悬停说明依据 <code>00h:210</code> 和对应的表;置灰但<b>保留原值</b>。</li>
+    <li>对不存在媒体通道的<b>使能位</b>做改动会被拒绝并说明原因;原值不变照常放行。只判使能位:它才是让东西跑起来的那一位,而页面回写的 FEC 位置对所有通道只有一个合法值。</li>
+    <li>不支持逐通道环回的模块不受影响:规范规定那种模块上任何一位都代表<b>全部</b>通道,那一位并不指向哪条通道。</li>
+    <li>失锁历史:不存在的媒体通道显示 <b>n/a</b>,接口里为 <code>null</code>。主机侧照旧。</li>
+  </ul>
+  <p class="note">规则属于寄存器家族:凡是按媒体通道索引的控制,都要问一句「这条媒体通道在不在」。</p>
+
   <h3>Tx 输出与 Tx 静噪的开关,也是按媒体通道的</h3>
   <p>Table 8-79 把 Page 10h 上的三项通道控制定义为<b>按媒体通道</b>:<code>OutputDisableTx</code>(「媒体通道 &lt;i&gt; 的 Tx 输出禁用」)、<code>AutoSquelchDisableTx</code> 和 <code>OutputSquelchForceTx</code>。</p>
   <p>写这三项的两个面板——DataPath 表的 <b>TX Enable</b> 列、Squelch 表的两行 Tx——都按<b>主机通道</b>排行,也没有说明索引的其实是另一侧。</p>
@@ -2268,7 +2287,7 @@ Read anyway?</pre>
     <span class="callout-icon">⚠</span>
     <span>这个字节<b>连接时本来就会读</b>,所以少掉的四个字段<b>不是为省一次读写而跳过的</b>,而是在解析那一步就被丢掉了。其中 <b>TxInputClockingCapabilities</b> 是有实际后果的一个:它说明<b>哪些 Tx 输入通道必须频率同步</b>(1-8 / 1-4 与 5-8 / 两两一组 / 可异步),这直接约束主机能怎么划分数据通路——而数据通路面板就在隔壁。模块超过 8 通道时,该分组按每个 Bank 分别适用。</span>
   </div>
-  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.120.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
+  <p>现在模块能力面板新增四行,并各自标注来源位。Page 15h 那一行当时如实写明「本工具并不读 Page 15h」,因为写成单纯的「支持」会让人去找一个并不存在的面板;<b>自 v2.91.0 起那个面板存在了</b>,该行改为指向 DataPath 页签,详见下一节。</p>
 
   <h3>数据通路的分组,现在读模块自己的说法</h3>
   <p>规范 Table 8-102 给 DPConfigLane 的每个字节定义了三个字段,在活动控制集里<b>全部是 RO / 必备</b>:</p>
@@ -3766,6 +3785,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <span class="callout-icon">⚠</span>
     <span>开启环回会影响正常业务。测试完毕后请全部取消勾选并 Apply 恢复。</span>
   </div>
+  <p>媒体侧的两行环回的是<b>媒体通道</b>(Figure 8-2)。模块在 <code>00h:210</code> 里声明没有的媒体通道,对应格子置灰;模块不支持逐通道环回时则不置灰——那时任何一个格子都代表全部通道。</p>
 
   <h3>10.2 PRBS Generator（PRBS 发生器）</h3>
   <p>每个 PRBS 块为 8 字节：Enable（使能位图）/ Invert（数据反转位图）/ ByteSwap（PAM4 MSB/LSB 交换位图）/ PreFEC（FEC 编码前注入）/ Pattern×4（4 字节, 4 bits/lane）。</p>
@@ -3801,6 +3821,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p><b>PostFEC</b> 这一列同样由 <code>13h:131</code> 决定，
      规则与 10.2 的 PreFEC 一致。</p>
   <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
+  <p>媒体侧发生器和检测器按<b>媒体通道</b>运行。模块没有的媒体通道(<code>00h:210</code>),整行置灰,LOL 列显示 <b>n/a</b>。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>Checker 卡片没有自己的 Apply 按钮</b>——不要在这张卡上找。改完 Checker 的设置后，
@@ -4258,7 +4279,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.120.0<br>
+    CMIS Module Manager 操作手册 v2.121.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

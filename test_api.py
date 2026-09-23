@@ -17526,7 +17526,7 @@ class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
         """Each engine is programmed differently on purpose. With the same
         values in both, an implementation that read host_gen's registers and
         wrote them back over media_gen would look correct."""
-        self._connect()
+        self._connect('mock_dr8')  # eight media lanes
         self._program('host_gen', patterns=[11] * 8, invert_mask=0xFF)
         self._program('media_gen', patterns=[12] * 8, invert_mask=0x0F,
                       byte_swap_mask=0x00)
@@ -17541,7 +17541,7 @@ class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
     def test_an_engine_keeps_its_own_values_not_another_engines(self):
         """Naming one field of media_chk must carry media_chk's other fields
         forward, not whichever engine happens to be read first."""
-        self._connect()
+        self._connect('mock_dr8')  # eight media lanes
         self._program('host_gen', patterns=[11] * 8, invert_mask=0xFF)
         self._program('media_chk', patterns=[12] * 8, invert_mask=0x33,
                       byte_swap_mask=0x0F, fec_mask=0x00)
@@ -17584,7 +17584,7 @@ class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
         self.assertEqual(self._prbs()['host_gen'], before)
 
     def test_an_omitted_section_is_untouched(self):
-        self._connect()
+        self._connect('mock_dr8')  # eight media lanes
         self._program('media_chk')
         before = self._prbs()['media_chk']
         self._post('/api/module/prbs', {'host_gen': {'enable_mask': 0x03}})
@@ -17948,6 +17948,11 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
     The shape is what makes it easy to miss: the refusal sits textually
     *before* the write, and only the loop puts it after one."""
 
+    # The engine tests run the media side on all eight lanes, so they use a
+    # module with eight media lanes. A coherent module has one (00h:210),
+    # and a media-side enable for a lane it lacks is refused for that
+    # reason - which would stand in for the refusal under test. The
+    # user-pattern tests stay here: only this module advertises Pattern 15.
     def _connect(self, backend='mock_coherent'):
         self.assertOk(self.client.post(
             '/api/connect',
@@ -17976,7 +17981,7 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
     def test_an_invalid_engine_does_not_let_the_valid_ones_through(self):
         """host_gen is fine and media_gen asks for a pattern the module never
         advertised. Before, host_gen was written and the reply said error."""
-        self._connect()
+        self._connect('mock_dr8')
         self._program_all()
         before = self._prbs()
         r = self._post('/api/module/prbs',
@@ -17994,7 +17999,7 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
     def test_the_order_of_the_engines_does_not_decide_it(self):
         """With the bad engine first, nothing was written before the refusal
         anyway - so a test that only tries that order proves nothing."""
-        self._connect()
+        self._connect('mock_dr8')
         self._program_all()
         before = self._prbs()
         r = self._post('/api/module/prbs',
@@ -18007,7 +18012,7 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
     def test_an_invalid_user_pattern_writes_no_engine(self):
         """The user pattern is part of the same request and used to be written
         before the engines were even looked at."""
-        self._connect()
+        self._connect('mock_dr8')
         self._program_all()
         before = self._prbs()
         r = self._post('/api/module/prbs',
@@ -18018,7 +18023,7 @@ class TestARefusedWriteLeavesTheModuleAlone(CMISTestCase):
 
     def test_a_valid_request_still_writes_every_engine(self):
         """A handler that refused everything would pass all of the above."""
-        self._connect()
+        self._connect('mock_dr8')
         self._program_all()
         r = self._post('/api/module/prbs',
                        {'host_gen': {'enable_mask': 0x0F},
@@ -28516,6 +28521,254 @@ class TestAControlForALaneThatIsNotThere(CMISTestCase):
         self.assertIn('00h:210', body)
         self.assertIn('Table 8-79', body)
 
+
+class TestAMediaSideEngineForALaneThatIsNotThere(CMISTestCase):
+    """Round 70 taught the Page 10h lane controls that some of them are set
+    per *media* lane. Page 13h has the same kind of controls and was left out.
+
+    The media side loopbacks loop media lanes - Figure 8-2 draws "only one
+    media lane shown" - and the media side pattern generator and checker run
+    per media lane: 8.16.11.1 speaks of toggling "media (13h:168) lane checker
+    enable bits", and Table 8-138 reports their loss of lock "per-media lane".
+
+    Both panels lay them out in host-lane rows. On a coherent module, which
+    carries eight host lanes into one media lane (00h:210), seven of the boxes
+    in each media row controlled nothing: ticking one enabled a generator on a
+    lane the module does not have, and the write reported success. The PRBS
+    table then printed that lane's LOL history as "never lost", which is a
+    report on nothing."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, what, body):
+        return self.client.post('/api/module/' + what, data=json.dumps(body),
+                                content_type='application/json')
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read().replace('\r\n', '\n')
+        # Comments quote the spec, and a quote is not code.
+        return re.sub(r'(?m)^\s*//.*$', '', js)
+
+    # ---- loopback -----------------------------------------------------------------
+    def test_media_output_loopback_of_a_missing_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('loopback',
+                                         {'media_side_output': [0x02]}), 400)
+        self.assertIn('MediaSideOutputLoopbackEnable', body['message'])
+        self.assertIn('media lane 2', body['message'])
+        self.assertIn('00h:210', body['message'])
+        self.assertIn('Table 8-131', body['message'])
+
+    def test_media_input_loopback_of_a_missing_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('loopback',
+                                         {'media_side_input': [0x80]}), 400)
+        self.assertIn('MediaSideInputLoopbackEnable', body['message'])
+        self.assertIn('media lane 8', body['message'])
+
+    def test_a_refused_loopback_writes_nothing(self):
+        self._connect()
+        before = self._get('loopback')
+        self.assertErr(self._post('loopback', {'host_side_output': [0x01],
+                                               'media_side_output': [0x04]}),
+                       400)
+        self.assertEqual(self._get('loopback'), before)
+
+    def test_the_media_lane_it_has_still_loops(self):
+        self._connect()
+        self.assertOk(self._post('loopback', {'media_side_output': [0x01]}))
+        self.assertEqual(self._get('loopback')['media_side_output'], 0x01)
+
+    def test_the_host_side_loopbacks_are_not_judged(self):
+        """Host lanes are host lanes: a coherent module has all eight."""
+        self._connect()
+        self.assertOk(self._post('loopback', {'host_side_output': [0x10]}))
+        self.assertEqual(self._get('loopback')['host_side_output'], 0x10)
+
+    def test_without_per_lane_loopback_one_bit_means_every_lane(self):
+        """Table 8-131: without per-lane control, any enable bit loops every
+        lane. The bit then names no lane, so there is nothing to refuse."""
+        self._connect()
+        real = app_module._diag_caps
+
+        def caps():
+            c = real()
+            c['loopback'] = dict(c['loopback'], per_lane_media=False,
+                                 per_lane_host=False)
+            return c
+        app_module._diag_caps = caps
+        try:
+            r = self._post('loopback', {'media_side_output': [0x02]})
+        finally:
+            app_module._diag_caps = real
+        self.assertOk(r)
+
+    def test_an_unchanged_loopback_bit_is_not_a_change(self):
+        """The page writes whole bytes back. A bit the module already holds
+        for a lane it lacks has to pass, or every Apply would be refused."""
+        self._connect()
+        app_module._set_page(0x13, 0)
+        _state['backend'].write_bytes(0xB4, bytes([0x02]))
+        self.assertOk(self._post('loopback', {'media_side_output': [0x02]}))
+
+    # ---- pattern generator and checker ---------------------------------------------
+    def test_a_media_generator_on_a_missing_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('prbs', {'media_gen':
+                                                  {'enable_mask': 0x02}}), 400)
+        self.assertIn('media lane 2', body['message'])
+        self.assertIn('Table 8-121', body['message'])
+        self.assertIn('00h:210', body['message'])
+
+    def test_a_media_checker_on_a_missing_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('prbs', {'media_chk':
+                                                  {'enable_mask': 0x04}}), 400)
+        self.assertIn('media lane 3', body['message'])
+        self.assertIn('Table 8-125', body['message'])
+
+    def test_a_refused_engine_writes_no_engine(self):
+        """The host generator named in the same request is a lane this module
+        has, and must still not move: the refusal is decided before any write."""
+        self._connect()
+        before = self._get('prbs')['host_gen']
+        self.assertErr(self._post('prbs', {'host_gen': {'enable_mask': 0x0F},
+                                           'media_gen': {'enable_mask': 0x02}}),
+                       400)
+        self.assertEqual(self._get('prbs')['host_gen'], before)
+
+    def test_the_media_lane_it_has_still_runs(self):
+        self._connect()
+        self.assertOk(self._post('prbs', {'media_gen': {'enable_mask': 0x01},
+                                          'media_chk': {'enable_mask': 0x01}}))
+        d = self._get('prbs')
+        self.assertEqual(d['media_gen']['enable_mask'], 0x01)
+        self.assertEqual(d['media_chk']['enable_mask'], 0x01)
+
+    def test_the_host_side_engines_are_not_judged(self):
+        self._connect()
+        self.assertOk(self._post('prbs', {'host_gen': {'enable_mask': 0xF0},
+                                          'host_chk': {'enable_mask': 0xF0}}))
+
+    def test_only_the_enable_is_judged(self):
+        """The page sends every field of every row. A FEC location is one
+        value for every lane at once, so judging it per lane would refuse
+        every Apply on this module."""
+        self._connect()
+        self.assertOk(self._post('prbs', {'media_gen': {'enable_mask': 0x01,
+                                                        'fec_mask': 0xFF,
+                                                        'invert_mask': 0xFF}}))
+
+    def test_an_unchanged_enable_bit_is_not_a_change(self):
+        self._connect()
+        app_module._set_page(0x13, 0)
+        _state['backend'].write_bytes(0x98, bytes([0x02]))  # 13h:152
+        self.assertOk(self._post('prbs', {'media_gen': {'enable_mask': 0x03}}))
+
+    def test_a_module_with_every_media_lane_is_not_restricted(self):
+        self._connect('mock_dr8')
+        self.assertOk(self._post('prbs', {'media_gen': {'enable_mask': 0xFF}}))
+        self.assertOk(self._post('loopback', {'media_side_output': [0xFF]}))
+
+    # ---- what the panels are told ------------------------------------------------------
+    def test_both_panels_are_told_which_media_lanes_exist(self):
+        self._connect()
+        expected = [True] + [False] * 7
+        self.assertEqual(self._get('prbs')['media_lanes_present'], expected)
+        self.assertEqual(self._get('loopback')['media_lanes_present'], expected)
+
+    def test_a_missing_media_lane_has_no_lol_history(self):
+        """False would read as "never lost lock" - a report on a lane that is
+        not there. The host side keeps its history on every lane."""
+        self._connect()
+        d = self._get('prbs')
+        for key in ('media_gen_lol_seen', 'media_chk_lol_seen'):
+            self.assertIsNotNone(d[key][0], key)
+            self.assertEqual(d[key][1:], [None] * 7, key)
+        for key in ('host_gen_lol_seen', 'host_chk_lol_seen'):
+            self.assertNotIn(None, d[key], key)
+
+    def test_a_full_module_keeps_every_lol_history(self):
+        self._connect('mock_dr8')
+        d = self._get('prbs')
+        self.assertNotIn(None, d['media_gen_lol_seen'])
+        self.assertNotIn(None, d['media_chk_lol_seen'])
+
+    # ---- the page -----------------------------------------------------------------------
+    def test_only_the_media_loopback_rows_are_greyed(self):
+        js = self._js()
+        i = js.index('async function loadLoopback')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertIn("_gateAbsentMediaLane(`lb-cb-mso-${i}`, i + 1, "
+                      "'Table 8-131');", body)
+        self.assertIn("_gateAbsentMediaLane(`lb-cb-msi-${i}`, i + 1, "
+                      "'Table 8-131');", body)
+        self.assertIn('if (mediaAbsent(res.data.media_lanes_present, i)) {',
+                      body)
+        self.assertNotIn('_gateAbsentMediaLane(`lb-cb-hso', body)
+        self.assertNotIn('_gateAbsentMediaLane(`lb-cb-hsi', body)
+
+    def test_the_loopback_rows_are_greyed_only_with_per_lane_control(self):
+        """Without it one box stands for every lane, and greying the other
+        seven would take away the only way to ask for loopback."""
+        js = self._js()
+        i = js.index('async function loadLoopback')
+        body = js[i:js.index('\nasync function', i + 10)]
+        g = body.index('_gateAbsentMediaLane(`lb-cb-mso-')
+        self.assertIn('if (caps.per_lane_media !== false) {',
+                      body[body.rindex('\n  if ', 0, g):g])
+
+    def test_every_field_of_a_missing_media_row_is_greyed(self):
+        js = self._js()
+        i = js.index('async function loadPrbs')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertIn("['tbl-prbs-media-gen', 'Table 8-121']", body)
+        self.assertIn("['tbl-prbs-media-chk', 'Table 8-125']", body)
+        self.assertIn("for (const f of ['en', 'inv', 'sw', 'fec', 'pat'])",
+                      body)
+        self.assertIn('_gateAbsentMediaLane(`${tbodyId}-${f}-${i}`, i + 1, '
+                      'table);', body)
+        self.assertIn('if (!mediaAbsent(d.media_lanes_present, i)) continue;',
+                      body)
+        self.assertNotIn("['tbl-prbs-host-", body)
+
+    def test_the_rows_are_greyed_after_they_are_drawn(self):
+        """Gating an element that the renderer is about to replace gates
+        nothing."""
+        js = self._js()
+        i = js.index('async function loadPrbs')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertLess(body.index("_renderPrbsTable('tbl-prbs-media-chk'"),
+                        body.index("['tbl-prbs-media-chk', 'Table 8-125']"))
+
+    def test_a_missing_media_lane_shows_no_lol(self):
+        js = self._js()
+        i = js.index('function _renderPrbsTable(')
+        body = js[i:js.index('\n}\n', i)]
+        self.assertIn('if (hasLol && lolSeen && lolSeen[i] === null) {', body)
+        cell = body[body.index('lolSeen[i] === null'):
+                    body.index('} else if (hasLol) {')]
+        cell = re.sub(r"'\s*\+\s*'", '', cell)
+        self.assertIn('>n/a</td>', cell)
+        self.assertIn('00h:210', cell)
+
+    def test_the_gate_names_the_table_it_was_given(self):
+        js = self._js()
+        i = js.index('function _gateAbsentMediaLane')
+        body = js[i:js.index('\n}', i)]
+        self.assertIn("function _gateAbsentMediaLane(id, lane, "
+                      "table = 'Table 8-79')", body)
+        self.assertIn("+ table +", body)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

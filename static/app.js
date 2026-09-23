@@ -3920,12 +3920,12 @@ function _gateControl(id, supported, why) {
 // On a module with fewer media lanes - a coherent one has one - the other
 // boxes control nothing. Disabled but not cleared: the page writes whole
 // bytes, so clearing a box would be a change the server refuses.
-function _gateAbsentMediaLane(id, lane) {
+function _gateAbsentMediaLane(id, lane, table = 'Table 8-79') {
   const el = document.getElementById(id);
   if (!el) return;
   el.disabled = true;
   el.title = 'This module has no media lane ' + lane + ' (00h:210). This '
-    + 'control is set per media lane (Table 8-79), so the box controls '
+    + 'control is set per media lane (' + table + '), so the box controls '
     + 'nothing.';
   if (el.parentElement) el.parentElement.classList.add('control-unavailable');
 }
@@ -4063,6 +4063,17 @@ async function loadLoopback() {
     { field: 'HostSideOutputLoopbackEnable', addr: 0xB6 }, caps, 'host_side_output');
   _populateLoopbackRow('hsi', res.data.host_side_input_banks || res.data.host_side_input,
     { field: 'HostSideInputLoopbackEnable', addr: 0xB7 }, caps, 'host_side_input');
+  // The media rows loop media lanes (Figure 8-2). Per lane only: without
+  // per-lane control one box stands for every lane, and ticking it must still
+  // move them all.
+  if (caps.per_lane_media !== false) {
+    for (let i = 0; i < AppState.lanes; i++) {
+      if (mediaAbsent(res.data.media_lanes_present, i)) {
+        _gateAbsentMediaLane(`lb-cb-mso-${i}`, i + 1, 'Table 8-131');
+        _gateAbsentMediaLane(`lb-cb-msi-${i}`, i + 1, 'Table 8-131');
+      }
+    }
+  }
   const note = document.getElementById('loopback-caps');
   if (note) {
     const missing = ['media_side_output', 'media_side_input',
@@ -4189,7 +4200,12 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
        : `<option value="${pattern}" selected>${PRBS_PATTERNS[pattern] || pattern}`
          + ` — not advertised</option>`);
     let lolCell = '';
-    if (hasLol) {
+    if (hasLol && lolSeen && lolSeen[i] === null) {
+      // The server nulls a media lane the module does not have: its Flag
+      // bit is a register, not a report on anything.
+      lolCell = `<td class="text-muted" title="${esc('This module has no media '
+        + 'lane ' + (i + 1) + ' (00h:210), so this Flag reports nothing.')}">n/a</td>`;
+    } else if (hasLol) {
       // One bit per lane means one byte per bank of eight. Taking the bit
       // out of bank 0's byte for every lane gave lane 9 lane 1's flag, and
       // hid lane 16's entirely.
@@ -4371,6 +4387,19 @@ async function loadPrbs() {
                    (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
                    pl.media_chk, d.media_chk_lol_mask_banks,
                    d.media_chk_lol_masked);
+  // The media side engines run per media lane ("individually toggle ...
+  // media (13h:168) lane checker enable bits", 8.16.11.1). A row for a media
+  // lane the module lacks is greyed whole, its values kept: the page writes
+  // every field back.
+  for (const [tbodyId, table] of [['tbl-prbs-media-gen', 'Table 8-121'],
+                                  ['tbl-prbs-media-chk', 'Table 8-125']]) {
+    for (let i = 0; i < AppState.lanes; i++) {
+      if (!mediaAbsent(d.media_lanes_present, i)) continue;
+      for (const f of ['en', 'inv', 'sw', 'fec', 'pat']) {
+        _gateAbsentMediaLane(`${tbodyId}-${f}-${i}`, i + 1, table);
+      }
+    }
+  }
   // 13h:176 and 178 (Table 8-127) say where each engine takes its clock
   // from. It changes what a pattern run means - an internally clocked
   // generator is not being driven by the host's clock at all - and it is what

@@ -226,6 +226,8 @@ Table 8-79：`OutputDisableTx`（`10h:130`）、`AutoSquelchDisableTx`（`10h:13
 `/api/module/datapath` 和 `/api/module/squelch` 的 GET 都附 `media_lanes_present`；POST 时**改动**不存在媒体通道的那一位会 400（原值不变可以照写）。
 两行 Rx（`OutputDisableRx`、`AutoSquelchDisableRx`）不在此列。
 
+媒体侧的环回和 PRBS 也一样：`MediaSideOutputLoopbackEnable` / `MediaSideInputLoopbackEnable`（`13h:180/181`，Table 8-131）、媒体侧发生器 / 检测器的使能（`13h:152` / `13h:168`，Table 8-121 / 8-125）的第 i 位是**媒体通道 i**。`/api/module/loopback` 和 `/api/module/prbs` 的 GET 都附 `media_lanes_present`；POST 时改动不存在媒体通道的那一位会 400。PRBS 只判**使能**位；不支持逐通道环回的模块不判（那时任何一位都代表全部通道）。`media_gen_lol_seen` / `media_chk_lol_seen` 对不存在的媒体通道是 `null`，不是「从未失锁」。
+
 ## 诊断数据的媒体侧也按**媒体通道**算
 
 `/api/module/snr`、`/api/module/ber`、`/api/module/counters` 的媒体侧字段（`media_snr_db`、`media_ber`、`media_error_count` 等）
