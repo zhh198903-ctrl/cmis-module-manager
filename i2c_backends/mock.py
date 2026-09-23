@@ -913,6 +913,8 @@ class MockBackend(I2CInterface):
     """
 
     PROFILE = _COHERENT_800G  # default (overridden by subclasses)
+    # Seconds a WRITE holds off the next ACCESS (Table 10-4); see _held_off.
+    HOLDOFF_S = 0.0
 
     def __init__(self):
         self._profile = self.PROFILE
@@ -927,6 +929,7 @@ class MockBackend(I2CInterface):
         self._current_bank = 0x00
         self._prev_selected = None
         self._page_changed_at = 0.0
+        self._holdoff_until = 0.0
         self._last_module_state = None
         self._start_time = time.time()
         # State machine tracking
@@ -3209,6 +3212,7 @@ class MockBackend(I2CInterface):
     def read_bytes(self, register: int, length: int) -> bytes:
         if not self._connected:
             raise IOError("Not connected")
+        self._held_off()
         # Section 5.2.2.1: a READ may ask for at most Nmax bytes, which is 8
         # unless the module advertises full page read. A mock that answers
         # any length lets the host ask for 64 and never find out, which is
@@ -3294,9 +3298,18 @@ class MockBackend(I2CInterface):
             if addr in span:
                 page_dict[addr] = 0x00
 
+    def _held_off(self) -> None:
+        """Table 10-4: after a WRITE a module may reject every ACCESS for up
+        to tWRITE. Off by default (HOLDOFF_S = 0); a test that wants a
+        module which does it sets the attribute."""
+        if time.perf_counter() < self._holdoff_until:
+            raise IOError('NACK: the module is completing the last WRITE '
+                          '(ACCESS hold-off, Table 10-4)')
+
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:
             raise IOError("Not connected")
+        self._held_off()
         # 5.2.2.2: "A successful WRITE writes a sequence of up to eight given
         # byte values", more only where chapter 8 says so - nothing modelled
         # here. "A rejected WRITE access has no effect in the target."
@@ -3329,6 +3342,7 @@ class MockBackend(I2CInterface):
             for page_dict in self._write_targets():
                 for i, b in enumerate(data):
                     page_dict[register + i] = b
+        self._holdoff_until = time.perf_counter() + self.HOLDOFF_S
 
 
 # ============================================================================

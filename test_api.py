@@ -17931,7 +17931,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         with open(os.path.join(here, 'app.py'), encoding='utf-8') as f:
             src = f.read()
         self.assertEqual(
-            src.count("write_bytes(cmis.REG_DIAG_SELECTOR[1]"), 1,
+            src.count("_bus_write(cmis.REG_DIAG_SELECTOR[1]"), 1,
             'the selector is written in more than one place again')
         self.assertIn('def _read_diag_banks(', src)
 
@@ -28178,7 +28178,7 @@ class TestARefusalThatChangedNothing(CMISTestCase):
             src = f.read()
         i = src.index('def api_datapath_set')
         body = src[i:src.index('@app.route', i)]
-        loop = body.index("            _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],")
+        loop = body.index("            _bus_write(cmis.REG_TX_POL_FLIP[1],")
         for refusal in ('Choose one Apply trigger',
                         'does not support intervention-free hot',
                         'still reports ConfigInProgress',
@@ -29022,7 +29022,7 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
         writers = {}
         for chunk in re.split(r'\n(?=def )', src):
             m = re.match(r'def (\w+)', chunk)
-            if (m and ('write_bytes' in chunk or '_write_chunked(' in chunk) and
+            if (m and ('_bus_write(' in chunk or '_write_chunked(' in chunk) and
                     re.search(r'_set_page\(0x[0-9A-Fa-f]+, *[a-z_]\w*\)',
                               chunk)):
                 writers[m.group(1)] = chunk
@@ -29055,7 +29055,7 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
                             ('api_laser_set', '_refuse_broadcast_tuning(')):
             i = src.index('def %s(' % name)
             body = src[i:src.index('\n@app.route', i)]
-            self.assertLess(body.index(guard), body.index('write_bytes('),
+            self.assertLess(body.index(guard), body.index('_bus_write('),
                             name)
 
 class TestWhereAStartOrStopReaches(CMISTestCase):
@@ -29464,6 +29464,157 @@ class TestAMonitorIsReadAtItsOwnSize(CMISTestCase):
             data[i] ^= 0x80
         torn = int.from_bytes(bytes(data[:2]), 'big')
         self.assertGreaterEqual(abs(torn - whole), 120)
+
+class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
+    """Table 10-4: after a WRITE the module may reject every ACCESS for up to
+    tWRITE (10 ms; tNACK on the I2C bus), and for up to tWRITENV (80 ms)
+    after a write to non-volatile memory - the user EEPROM on Page 03h
+    (8.7). 5.2.3 gives the host three ways through: wait out the worst
+    case, retry a rejected access until it succeeds, or poll for readiness.
+
+    The tool did none of them. Every adapter reports a NACK as an IOError,
+    and the tool turned that into a 500 - so on a module that holds off
+    after a write, Apply on the DataPath, Squelch, Loopback and PRBS panels
+    all failed, and a raw write could not be read back. The previous release
+    made it likelier: a long write is now several WRITEs in a row, and the
+    second can land in the first one's hold-off.
+
+    Only page changes waited, for tBPC, and only because that wait was needed
+    anyway."""
+
+    HOLDOFF = 0.003
+
+    def _connect(self, backend, holdoff=HOLDOFF):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['backend'].HOLDOFF_S = holdoff
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps(body),
+                                content_type='application/json')
+
+    # ---- a module that holds off ------------------------------------------------
+    def test_every_write_path_gets_through(self):
+        self._connect('mock_coherent')
+        for path, body in (
+                ('/api/module/control', {'low_pwr': False}),
+                ('/api/module/datapath', {'tx_disable_mask': 0x00}),
+                ('/api/module/squelch', {'tx_squelch_force': 0x00}),
+                ('/api/module/loopback', {'host_side_output': 0x01}),
+                ('/api/module/prbs', {'user_pattern': list(range(1, 33)),
+                                      'host_gen': {'enable_mask': 0x01}}),
+                ('/api/module/flags/clear', {})):
+            self.assertOk(self._post(path, body))
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['user_pattern']['pattern'][:32],
+                         list(range(1, 33)),
+                         'four WRITEs in a row, each one after the last '
+                         "one's hold-off")
+        self.assertEqual(d['host_gen']['enable_mask'], 0x01)
+        self.assertEqual(self.assertOk(self.client.get(
+            '/api/module/loopback'))['data']['host_side_output'], 0x01)
+
+    def test_a_raw_write_is_read_back(self):
+        self._connect('mock_dr8')
+        self.assertOk(self._post('/api/register/write', {
+            'page': 0x13, 'address': 0xE0, 'data': list(range(16))}))
+        back = self.assertOk(self._post('/api/register/read', {
+            'page': 0x13, 'address': 0xE0, 'length': 16}))['data']['data']
+        self.assertEqual(back, list(range(16)))
+
+    def test_a_tunable_and_a_banked_module_too(self):
+        self._connect('mock_coherent_zr')
+        self.assertOk(self._post('/api/module/laser', {'lanes': [
+            {'lane': 1, 'channel': 1}]}))
+        self._connect('mock_24lane')
+        self.assertOk(self._post('/api/module/acq_counters/reset',
+                                 {'lanes': [1, 9, 17]}))
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_disable_mask': [0x01] * 3}))
+
+    def test_every_panel_reads_after_a_write(self):
+        self._connect('mock_dr8')
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_disable_mask': 0x00}))
+        for rule in sorted(r.rule for r in app_module.app.url_map.iter_rules()
+                           if 'GET' in r.methods
+                           and r.rule.startswith('/api/module')):
+            self.assertEqual(self.client.get(rule).status_code, 200, rule)
+
+    # ---- where the patience ends -----------------------------------------------------
+    def test_a_module_that_never_answers_is_still_an_error(self):
+        """The window is Table 10-4's. Past it a NACK is a fault, and the
+        retry must not turn into a hang."""
+        self._connect('mock_dr8', holdoff=5.0)
+        started = time.monotonic()
+        body = self.assertErr(self._post('/api/module/squelch',
+                                         {'tx_squelch_force': 0x00}), 500)
+        self.assertIn('NACK', body['message'])
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_nothing_is_retried_without_a_write_before_it(self):
+        """No hold-off is running, so a rejected READ is a real failure."""
+        self._connect('mock_dr8', holdoff=0.0)
+        backend = _state['backend']
+        calls = []
+
+        def refuse(addr, length):
+            calls.append(addr)
+            raise IOError('no ACK')
+        _state['holdoff_until'] = 0.0
+        real = backend.read_bytes
+        backend.read_bytes = refuse
+        try:
+            with self.assertRaises(IOError):
+                app_module._bus_read(0x00, 1)
+        finally:
+            backend.read_bytes = real
+        self.assertEqual(calls, [0x00])
+
+    def test_the_user_eeprom_gets_the_longer_window(self):
+        self._connect('mock_dr8', holdoff=0.0)
+        saved = _state['page']
+        try:
+            for page, window in ((0x03, 0.080), (0x10, 0.010)):
+                _state['page'] = page
+                before = time.monotonic()
+                app_module._bus_write(0x90, bytes([0]))
+                left = _state['holdoff_until'] - before
+                self.assertAlmostEqual(left, window, delta=0.005,
+                                       msg='Page %02Xh' % page)
+        finally:
+            _state['page'] = saved
+            app_module._invalidate_page()
+
+    def test_a_lower_memory_write_is_not_the_eeprom(self):
+        """Page 03h is upper memory; a write below 0x80 is the lower page
+        whatever is mapped above it."""
+        self._connect('mock_dr8', holdoff=0.0)
+        saved = _state['page']
+        try:
+            _state['page'] = 0x03
+            before = time.monotonic()
+            app_module._bus_write(0x1A, _state['backend'].read_bytes(0x1A, 1))
+            self.assertAlmostEqual(_state['holdoff_until'] - before, 0.010,
+                                   delta=0.005)
+        finally:
+            _state['page'] = saved
+            app_module._invalidate_page()
+
+    # ---- nothing goes round it ---------------------------------------------------------
+    def test_every_access_goes_through_the_retry(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        direct = [m.start() for m in re.finditer(
+            r"_state\['backend'\]\.(read|write)_bytes", src)]
+        self.assertEqual(len(direct), 2, 'a backend access bypasses the '
+                         'hold-off retry')
+        for pos in direct:
+            self.assertIn('_retry_rejected(', src[pos - 40:pos])
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

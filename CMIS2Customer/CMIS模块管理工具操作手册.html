@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.125.0<br>
+      <b>版本</b>　2.126.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.125.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.125.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.126.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.126.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1716,6 +1716,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>写入之后,模块可以暂时不应答</h3>
+  <p>规范 Table 10-4:一次 WRITE 之后,模块可以在最长 <b>10 ms</b>(tWRITE,总线上叫 tNACK)内拒绝接下来的任何读写;写非易失存储器(Page 03h 用户 EEPROM,规范 8.7)之后最长 <b>80 ms</b>。5.2.3 给主机的办法是:按最坏时序等待、被拒后重试,或先探测模块是否就绪。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具三样都没做:所有适配器把「模块没应答」报成错误,工具直接当作失败返回。于是在写入后会短暂不应答的模块上,DataPath、Squelch、Loopback、PRBS 的 Apply 都会报错,Raw Registers 写完也读不回来。上一版把长写入拆成连续几次写入之后,第二段更容易落进第一段的拒绝期。</span>
+  </div>
+  <p>现在每次写入之后,工具会在规范允许的拒绝期内(一般 10 ms,Page 03h 为 80 ms)对被拒的读写自动重试;超过这个时限仍被拒,才作为真正的错误报告——不会无限等下去。没有写入在先时,被拒就是被拒,不重试。</p>
 
   <h3>会变的多字节量,一个一个读</h3>
   <p>规范 5.2.5.1:用<b>和寄存器同样长</b>的一次 READ 读一个多字节只读标量,模块保证读到的是同一时刻的值——「这条尤其适用于任何 2、4、8 字节的状态或监控寄存器」。而「对多个寄存器或寄存器数组的 READ 不保证一致」。</p>
@@ -4179,6 +4187,12 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <div class="faq-reason">2× 400G-FR4 模块通过 CMIS 广告两个独立的 400GBASE-FR4 应用（AppSel#1 占用 host 通道 1-4，AppSel#2 占用 host 通道 5-8），两个应用并发运行得到 800G 总容量。</div>
     <div class="faq-solve">GUI 会遍历所有 Application Descriptors 并计算最大并发通道数（非重叠应用相加）。Host Lanes 后括号中显示了每个 AppSel 的明细。</div>
   </div>
+
+  <div class="faq-item">
+    <div class="faq-q"><span class="tag">Q9</span>Apply 之后偶尔报 <code>read failed</code> / <code>write failed</code> / NACK</div>
+    <div class="faq-reason">原因:写入之后,模块在规范允许的时间内(一般 10 ms,Page 03h 为 80 ms,Table 10-4)可以暂时不应答。工具会在这段时间里自动重试,所以正常情况下不会看到这类报错。</div>
+    <div class="faq-solve">仍然出现,说明模块超过了规范允许的时间还不应答,或者连线 / 适配器有问题:检查 I2C 连线与上拉、换一个适配器或降低速率再试;同一操作反复出现,记下操作步骤联系模块厂商。</div>
+  </div>
 </div>
 
 <!-- ══════════════ 12b. CMIS 5.4 扩展功能 ══════════════ -->
@@ -4345,7 +4359,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.125.0<br>
+    CMIS Module Manager 操作手册 v2.126.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

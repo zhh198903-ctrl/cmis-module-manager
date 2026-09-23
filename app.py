@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.125.0'
+__version__ = '2.126.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -603,11 +603,11 @@ def _set_page(page: int, bank: int = 0):
         return
     _state['page'] = None  # unknown while the writes are in flight
     _state['bank'] = None
-    _state['backend'].write_bytes(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
+    _bus_write(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
     time.sleep(_state.get('bpc_sleep')
                or cmis.TIMING_SECONDS['tBPC'])
     if page and page not in _state['pages_ok']:
-        got = _state['backend'].read_bytes(cmis.REG_PAGE_SELECT[1], 1)
+        got = _bus_read(cmis.REG_PAGE_SELECT[1], 1)
         if len(got) == 1 and got[0] != page:
             raise IOError(
                 'this module does not have Page %02Xh: it answered the page '
@@ -634,6 +634,48 @@ def _checked(raw: bytes, where: str, length: int) -> bytes:
     return raw
 
 
+def _bus_read(addr: int, length: int) -> bytes:
+    return _retry_rejected(_state['backend'].read_bytes, addr, length)
+
+
+def _bus_write(addr: int, data: bytes) -> None:
+    """One WRITE, and the hold-off it may start.
+
+    Table 10-4: after a WRITE the module may reject every ACCESS for up to
+    tWRITE (10 ms), or tWRITENV (80 ms) after a write to non-volatile memory
+    - the user EEPROM on Page 03h: "The module rejects register ACCESS until
+    a WRITE to EEPROM is completed internally" (8.7). The next access, read
+    or write, may be refused in that window, and 5.2.3 lets a host retry.
+    """
+    _retry_rejected(_state['backend'].write_bytes, addr, data)
+    nv = addr >= 0x80 and _state.get('page') == 0x03
+    _state['holdoff_until'] = time.monotonic() + cmis.TIMING_SECONDS[
+        'tWRITENV' if nv else 'tWRITE']
+
+
+def _retry_rejected(access, *args):
+    """Run one ACCESS, retrying it while the module may still be holding
+    off after the last WRITE.
+
+    5.2.2.1/5.2.2.2: "A rejected READ access can simply be retried until
+    eventual success", and a rejected WRITE "has no effect in the target", so
+    retrying it is safe too. Every adapter here reports a NACK as an IOError.
+    An attempt that fails after the longest hold-off Table 10-4 allows is a
+    real failure and is raised - the window is the specification's, not a
+    patience setting.
+    """
+    while True:
+        started = time.monotonic()
+        try:
+            return access(*args)
+        except (IOError, OSError):
+            if started >= _state.get('holdoff_until', 0.0):
+                raise
+            # A polling cadence, not a Chapter 10 number: Table 10-4 bounds
+            # how long the module may refuse, not how often to ask.
+            time.sleep(0.001)
+
+
 def _read_chunked(addr: int, length: int) -> bytes:
     """Read `length` bytes without asking for more at once than Nmax.
 
@@ -652,11 +694,11 @@ def _read_chunked(addr: int, length: int) -> bytes:
     """
     limit = _state.get('max_read') or 8
     if length <= limit:
-        return _state['backend'].read_bytes(addr, length)
+        return _bus_read(addr, length)
     out = bytearray()
     while len(out) < length:
         n = min(limit, length - len(out))
-        out += _state['backend'].read_bytes(addr + len(out), n)
+        out += _bus_read(addr + len(out), n)
     return bytes(out)
 
 
@@ -672,7 +714,7 @@ def _read_scalars(addr: int, length: int, size: int) -> bytes:
     read as part of a block can come back with its high byte from one sample
     and its low byte from the next, 256 counts off, looking like a reading.
     """
-    return b''.join(_state['backend'].read_bytes(addr + pos, size)
+    return b''.join(_bus_read(addr + pos, size)
                     for pos in range(0, length, size))
 
 
@@ -702,11 +744,11 @@ def _write_chunked(addr: int, data: bytes) -> int:
     nothing is lost by splitting.
     """
     if len(data) <= MAX_WRITE:
-        _state['backend'].write_bytes(addr, data)
+        _bus_write(addr, data)
         return 1
     count = 0
     for pos in range(0, len(data), MAX_WRITE):
-        _state['backend'].write_bytes(addr + pos, data[pos:pos + MAX_WRITE])
+        _bus_write(addr + pos, data[pos:pos + MAX_WRITE])
         count += 1
     return count
 
@@ -761,7 +803,7 @@ def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
     lanes = lanes or _state['lanes']
     for bank in range((lanes + 7) // 8):
         _set_page(page, bank)
-        _state['backend'].write_bytes(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
+        _bus_write(cmis.REG_DIAG_SELECTOR[1], bytes([sel]))
         # tDDCS, Table 10-5. Five milliseconds was half of it, and this is
         # the class of wait the module does not enforce: "ACCESS that is too
         # early is not rejected". A short wait here returns the previous
@@ -1829,9 +1871,9 @@ def api_reset_acq_counters():
         for bank, mask in by_bank.items():
             _set_page(0x60, bank)
             if side in ('rx', 'both'):
-                _state['backend'].write_bytes(cmis.REG_RESET_ACQ_RX[1], bytes([mask]))
+                _bus_write(cmis.REG_RESET_ACQ_RX[1], bytes([mask]))
             if side in ('tx', 'both'):
-                _state['backend'].write_bytes(cmis.REG_RESET_ACQ_TX[1], bytes([mask]))
+                _bus_write(cmis.REG_RESET_ACQ_TX[1], bytes([mask]))
         return _ok({'lanes': lanes, 'side': side})
     except Exception as e:
         return _err(str(e), 500)
@@ -1862,7 +1904,7 @@ def _await_mls_commit(banks: int) -> dict:
         running = False
         for bank in range(banks):
             _set_page(0x6D, bank)
-            if 2 in _state['backend'].read_bytes(cmis.REG_MLS_RESULT[1],
+            if 2 in _bus_read(cmis.REG_MLS_RESULT[1],
                                                  cmis.REG_MLS_RESULT[2]):
                 running = True
                 break
@@ -1961,7 +2003,7 @@ def api_media_lane_switching():
                 return err
             for bank, group in enumerate(groups):
                 _set_page(0x6D, bank)
-                _state['backend'].write_bytes(cmis.REG_MLS_REDIRECTION[1],
+                _bus_write(cmis.REG_MLS_REDIRECTION[1],
                                               bytes(group))
         # Enable and commit are per bank too, and doing them in bank 0 alone
         # left the other groups neither enabled nor committed while the panel
@@ -1969,13 +2011,13 @@ def api_media_lane_switching():
         if enable is not None:
             for bank in range(banks):
                 _set_page(0x6D, bank)
-                _state['backend'].write_bytes(cmis.REG_MLS_ENABLE[1],
+                _bus_write(cmis.REG_MLS_ENABLE[1],
                                               bytes([1 if enable else 0]))
         out = {'committed': commit, 'banks': banks}
         if commit:
             for bank in range(banks):
                 _set_page(0x6D, bank)
-                _state['backend'].write_bytes(cmis.REG_MLS_COMMIT[1], bytes([1]))
+                _bus_write(cmis.REG_MLS_COMMIT[1], bytes([1]))
             out.update(_await_mls_commit(banks))
         return _ok(out)
     except Exception as e:
@@ -2598,7 +2640,7 @@ def api_module_control_set():
                 bank_broadcast=body.get('bank_broadcast'),
             )
 
-        _state['backend'].write_bytes(cmis.REG_MODULE_CONTROL[1], bytes([val]))
+        _bus_write(cmis.REG_MODULE_CONTROL[1], bytes([val]))
         time.sleep(0.05)
         # A reset restarts the module, which restores PageMapping to its
         # default, so the page we think is selected no longer applies.
@@ -3041,14 +3083,14 @@ def api_datapath_set():
             # only sequence 6.2.4.3 allows for a width change, so the one
             # procedure the standard mandates was the one that did not work.
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
-            _state['backend'].write_bytes(cmis.REG_TX_POL_FLIP[1],
+            _bus_write(cmis.REG_TX_POL_FLIP[1],
                                           bytes([tx_pol[bank], tx_disable[bank]]))
-            _state['backend'].write_bytes(cmis.REG_RX_POL_FLIP[1],
+            _bus_write(cmis.REG_RX_POL_FLIP[1],
                                           bytes([rx_pol[bank]]))
-            _state['backend'].write_bytes(
+            _bus_write(
                 cmis.REG_APP_SELECT[1],
                 cmis.pack_appselect(app_select[bank * 8:bank * 8 + 8]))
-            _state['backend'].write_bytes(cmis.REG_DP_DEINIT[1],
+            _bus_write(cmis.REG_DP_DEINIT[1],
                                           bytes([dp_deinit[bank]]))
 
         if apply or apply_now:
@@ -3063,7 +3105,7 @@ def api_datapath_set():
                     _set_page(0x10, bank)
                     trigger = (cmis.REG_APPLY_IMM if apply_now
                                else cmis.REG_APPLY_DATAPATH)
-                    _state['backend'].write_bytes(trigger[1], bytes([mask]))
+                    _bus_write(trigger[1], bytes([mask]))
                 applied = sorted(l + 1 for l in need)
                 # A settle before returning, not a wait this reply depends on:
                 # nothing is read back here, and the page fetches ConfigStatus
@@ -3440,9 +3482,9 @@ def api_squelch_set():
 
         for b in range(banks):
             _set_page(0x10, b)
-            _state['backend'].write_bytes(cmis.REG_TX_SQUELCH_DIS[1],
+            _bus_write(cmis.REG_TX_SQUELCH_DIS[1],
                                           bytes([tx_sq[b], tx_sf[b]]))
-            _state['backend'].write_bytes(cmis.REG_RX_OUTPUT_DIS[1],
+            _bus_write(cmis.REG_RX_OUTPUT_DIS[1],
                                           bytes([rx_od[b], rx_sq[b]]))
         return _ok({'message': 'Squelch/output controls written'})
     except Exception as e:
@@ -3576,7 +3618,7 @@ def api_loopback_set():
 
         for b in range(banks):
             _set_page(0x13, b)
-            _state['backend'].write_bytes(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
+            _bus_write(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
                                                        host_out[b], host_in[b]]))
         out = {'message': 'Loopback configuration written'}
         if widened:
@@ -4169,7 +4211,7 @@ def api_prbs_set():
 
         for bank, base_addr, block in plan:
             _set_page(0x13, bank)
-            _state['backend'].write_bytes(base_addr, block)
+            _bus_write(base_addr, block)
         return _ok({'message': 'PRBS configuration written'})
     except Exception as e:
         return _err(str(e), 500)
@@ -4624,7 +4666,7 @@ def api_laser_set():
         # happened to leave selected.
         for bank, addr, payload in plan:
             _set_page(0x12, bank)
-            _state['backend'].write_bytes(addr, payload)
+            _bus_write(addr, payload)
         # Writing is not tuning. The module answers in the Page 12h Flags, and
         # reporting success on the strength of the write alone told the
         # operator a refused channel had been applied.

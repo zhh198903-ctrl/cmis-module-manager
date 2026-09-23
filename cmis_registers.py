@@ -349,6 +349,11 @@ TIMING_SECONDS = {
     # associated Flag bit raised". Reading a Flag sooner than this and
     # finding it clear says nothing.
     'ton_flag': 0.200,
+    # Table 10-4 again: the longest ACCESS hold-off after a WRITE - tWRITE
+    # for a volatile register (the I2C tNACK), tWRITENV for non-volatile
+    # memory (tWR), which Page 03h, the user EEPROM, is (8.7).
+    'tWRITE': 0.010,
+    'tWRITENV': 0.080,
 }
 
 
