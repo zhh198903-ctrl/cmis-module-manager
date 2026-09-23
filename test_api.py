@@ -29014,7 +29014,7 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
         writers = {}
         for chunk in re.split(r'\n(?=def )', src):
             m = re.match(r'def (\w+)', chunk)
-            if (m and 'write_bytes' in chunk and
+            if (m and ('write_bytes' in chunk or '_write_chunked(' in chunk) and
                     re.search(r'_set_page\(0x[0-9A-Fa-f]+, *[a-z_]\w*\)',
                               chunk)):
                 writers[m.group(1)] = chunk
@@ -29028,7 +29028,7 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
             if name == '_write_user_pattern':
                 # One pattern, written unchanged into every bank: broadcast
                 # repeats what was going to be written anyway.
-                self.assertIn('write_bytes(cmis.REG_USER_PATTERN[1], '
+                self.assertIn('_write_chunked(cmis.REG_USER_PATTERN[1], '
                               'bytes(data))', body)
                 continue
             self.assertTrue(
@@ -29156,6 +29156,153 @@ class TestWhereAStartOrStopReaches(CMISTestCase):
         self.assertIn('Array.from({length: Math.ceil(AppState.lanes / 8)},',
                       body)
         self.assertIn('(_, b) => 8 * b + 1)', body)
+
+class TestAWriteCarriesEightBytes(CMISTestCase):
+    """5.2.2.2: "A successful WRITE writes a sequence of up to eight given
+    byte values into the addressable memory of the module". More is allowed
+    only "when specified explicitly in chapter 8", and "a rejected WRITE
+    access has no effect in the target".
+
+    Reads were split to Nmax long ago; writes never were. Two paths sent
+    more than eight bytes in one WRITE: the PRBS user pattern (13h:224-255,
+    up to 32 bytes - Table 8-134 allows no longer WRITE) and the raw
+    register write (anything up to the end of the page). No adapter splits
+    at eight: the CH341 sends a write whole, the CP2112 and MCP2221 split at
+    about sixty, which is their packet size. So a module keeping to the rule
+    could refuse the pattern the panel then called written.
+
+    The mock now refuses a WRITE of more than eight bytes, as a module may.
+    That makes the whole suite the sweep: every endpoint's tests drive the
+    real write paths, and only these two ever sent more."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps(body),
+                                content_type='application/json')
+
+    def _trace(self):
+        """(page, address, length) of every WRITE the API sends."""
+        backend = _state['backend']
+        seen = []
+        real = backend.write_bytes
+
+        def traced(addr, data):
+            seen.append((backend._current_page, addr, len(data)))
+            return real(addr, data)
+        backend.write_bytes = traced
+        self.addCleanup(setattr, backend, 'write_bytes', real)
+        return seen
+
+    # ---- the module -------------------------------------------------------------
+    def test_the_mock_refuses_a_longer_write(self):
+        self._connect()
+        app_module._set_page(0x13, 0)
+        with self.assertRaises(IOError) as cm:
+            _state['backend'].write_bytes(0xE0, bytes(9))
+        self.assertIn('5.2.2.2', str(cm.exception))
+        _state['backend'].write_bytes(0xE0, bytes(8))
+
+    # ---- the user pattern ----------------------------------------------------------
+    def test_a_32_byte_user_pattern_reaches_the_module(self):
+        self._connect()
+        pattern = list(range(1, 33))
+        self.assertOk(self._post('/api/module/prbs', {'user_pattern': pattern}))
+        got = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(got['user_pattern']['pattern'][:32], pattern)
+
+    def test_the_pattern_goes_as_writes_of_eight(self):
+        self._connect()
+        seen = self._trace()
+        self.assertOk(self._post('/api/module/prbs',
+                                 {'user_pattern': list(range(1, 33))}))
+        pattern = [(a, n) for page, a, n in seen
+                   if page == 0x13 and 0xE0 <= a <= 0xFF]
+        self.assertEqual(pattern, [(0xE0, 8), (0xE8, 8), (0xF0, 8),
+                                   (0xF8, 8)])
+
+    def test_a_short_pattern_is_one_write(self):
+        self._connect()
+        seen = self._trace()
+        self.assertOk(self._post('/api/module/prbs',
+                                 {'user_pattern': [0xAA, 0x55]}))
+        self.assertIn((0x13, 0xE0, 2), seen)
+
+    # ---- what was already legal stays one WRITE ------------------------------------
+    def test_an_eight_byte_block_is_not_split(self):
+        """A PRBS engine block is exactly eight bytes and the AppSel bytes
+        are eight starting at 145 - each is one WRITE, and splitting it would
+        only cost atomicity for nothing."""
+        self._connect()
+        seen = self._trace()
+        self.assertOk(self._post('/api/module/prbs',
+                                 {'host_gen': {'enable_mask': 0x01}}))
+        self.assertIn((0x13, 0x90, 8), seen)
+        self.assertOk(self._post('/api/module/datapath',
+                                 {'tx_disable_mask': 0x00}))
+        self.assertIn((0x10, 0x91, 8), seen)
+
+    # ---- the raw register write ------------------------------------------------------
+    def test_a_long_raw_write_is_split_and_lands(self):
+        self._connect()
+        seen = self._trace()
+        data = list(range(100, 116))
+        body = self.assertOk(self._post('/api/register/write', {
+            'page': 0x13, 'address': 0xE0, 'data': data}))['data']
+        self.assertEqual(body['writes'], 2)
+        self.assertEqual(body['bytes_written'], 16)
+        self.assertEqual([(a, n) for _p, a, n in seen if a >= 0x80],
+                         [(0xE0, 8), (0xE8, 8)])
+        back = self.assertOk(self._post('/api/register/read', {
+            'page': 0x13, 'address': 0xE0, 'length': 16}))['data']['data']
+        self.assertEqual(back, data)
+
+    def test_a_short_raw_write_is_one_write(self):
+        self._connect()
+        body = self.assertOk(self._post('/api/register/write', {
+            'page': 0x13, 'address': 0xE0, 'data': [1, 2, 3]}))['data']
+        self.assertEqual(body['writes'], 1)
+
+    def test_the_cdb_header_is_not_split_for_you(self):
+        """Writing 9Fh:129 sends the CDB command (7.2.3). Split, the piece
+        holding byte 129 would send it before the rest of the header."""
+        self._connect()
+        seen = self._trace()
+        body = self.assertErr(self._post('/api/register/write', {
+            'page': 0x9F, 'address': 0x80, 'data': [0] * 12}), 400)
+        self.assertIn('5.2.2.2', body['message'])
+        self.assertIn('7.2.3', body['message'])
+        self.assertEqual([s for s in seen if s[0] == 0x9F], [])
+
+    def test_only_a_long_write_through_byte_129_is_held_back(self):
+        """No profile models Page 9Fh, so these go on to the page check and
+        fail there - which is the point: it is not the CDB rule stopping
+        them. Past byte 129, eight bytes or fewer, or in lower memory (which
+        no page select reaches), a write is split (or not) like any other."""
+        self._connect()
+        for address, n in ((0x90, 16), (0x80, 8), (0x82, 12), (0x10, 9)):
+            rv = self._post('/api/register/write', {
+                'page': 0x9F, 'address': address, 'data': [0] * n})
+            self.assertNotIn('7.2.3', json.loads(rv.data).get('message', ''),
+                             '9Fh:0x%02X, %d bytes' % (address, n))
+        for address, n in ((0x81, 9), (0x7F + 1, 9)):
+            body = self.assertErr(self._post('/api/register/write', {
+                'page': 0x9F, 'address': address, 'data': [0] * n}), 400)
+            self.assertIn('7.2.3', body['message'])
+
+    # ---- the page ----------------------------------------------------------------------
+    def test_the_raw_panel_says_it_was_several_writes(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = re.sub(r'(?m)^\s*//.*$', '', f.read().replace('\r\n', '\n'))
+        body = js_function_body(js, 'async function rawWrite(')
+        self.assertIn('res.data.writes > 1', body)
+        self.assertIn('WRITEs of up to 8 bytes each (5.2.2.2)', body)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

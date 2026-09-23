@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.123.0'
+__version__ = '2.124.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -656,6 +656,32 @@ def _read_chunked(addr: int, length: int) -> bytes:
         n = min(limit, length - len(out))
         out += _state['backend'].read_bytes(addr + len(out), n)
     return bytes(out)
+
+
+# 5.2.2.2: "A successful WRITE writes a sequence of up to eight given byte
+# values". Longer is allowed only "when specified explicitly in chapter 8",
+# and nothing this tool writes is such a place.
+MAX_WRITE = 8
+
+
+def _write_chunked(addr: int, data: bytes) -> int:
+    """Write `data` as WRITEs of at most MAX_WRITE bytes; returns how many.
+
+    Every adapter here sends a write as one transaction however long it is -
+    the CH341 in one piece, the CP2112 and MCP2221 in pieces of about sixty,
+    which is their packet size and not the module's limit. A module may
+    reject a longer WRITE, and "a rejected WRITE access has no effect".
+    Multi-byte WRITEs are not atomic in any case (section 5.2.5.2), so
+    nothing is lost by splitting.
+    """
+    if len(data) <= MAX_WRITE:
+        _state['backend'].write_bytes(addr, data)
+        return 1
+    count = 0
+    for pos in range(0, len(data), MAX_WRITE):
+        _state['backend'].write_bytes(addr + pos, data[pos:pos + MAX_WRITE])
+        count += 1
+    return count
 
 
 def _read_lower(addr: int, length: int) -> bytes:
@@ -3927,7 +3953,7 @@ def _write_user_pattern(values, caps, banks):
     # trailing run of zeros is a different pattern.
     for bank in range(banks):
         _set_page(0x13, bank)
-        _state['backend'].write_bytes(cmis.REG_USER_PATTERN[1], bytes(data))
+        _write_chunked(cmis.REG_USER_PATTERN[1], bytes(data))
     return None
 
 
@@ -4790,12 +4816,27 @@ def api_register_write():
             return _err(f"Write from 0x{address:02X} would run through the page "
                         f"select register at 0x7F; split it into two writes")
 
+        # A write longer than one WRITE goes as several (5.2.2.2) - except
+        # on the CDB header, where writing 9Fh:129 is what sends the command
+        # (7.2.3): split, the piece holding 129 would send it before the rest
+        # of the header had arrived.
+        # (Starting at 0x80 or later and longer than one WRITE, it reaches
+        # byte 129 whenever it starts at or before it.)
+        if (page == 0x9F and 0x80 <= address <= 129
+                and len(data) > MAX_WRITE):
+            return _err('A WRITE carries at most %d bytes (5.2.2.2), and on '
+                        'Page 9Fh the one that includes byte 129 sends the '
+                        'CDB command (7.2.3) - so this cannot be split for '
+                        'you. Write the rest of the header first, then the '
+                        'part with byte 129, each in %d bytes or fewer'
+                        % (MAX_WRITE, MAX_WRITE))
+
         err = _check_bank(page, address, bank)
         if err:
             return err
         if address >= 0x80:
             _set_page(page, bank)
-        _state['backend'].write_bytes(address, data)
+        writes = _write_chunked(address, data)
         # A raw write may land on the PageMapping register itself, or on the
         # control byte that resets the module - either moves the selected page
         # out from under us.
@@ -4807,6 +4848,9 @@ def api_register_write():
             'address': address,
             'bank': bank,
             'bytes_written': len(data),
+            # Said, because it is not one transaction: a register array
+            # written in pieces is not written atomically (5.2.5.2).
+            'writes': writes,
         })
     except Exception as e:
         return _err(str(e), 500)

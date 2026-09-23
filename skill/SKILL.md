@@ -398,6 +398,8 @@ Table 8-96 到 8-98 对每行都写明了：
 
 **`13h:177.7` StartStopIsGlobal**：`/api/module/ber`、`/api/module/counters` 的 `measurement.start_stop_scope` 和 `/api/module/prbs` 的 `start_stop_scope` 是服务端判断好的结论——`null`（位为 0 或只有一个 Bank）、`"ignored"`（门控测量 + 全局定时器，Table 8-129）、`"all_banks"`（其余情况，启停作用到所有 Bank）。为 `"all_banks"` 时，一个 Bank 里的检测器使能改动会作用到每个 Bank 的同一位置。别自己拿 `13h:129.3` 判断：`129.3 = 0` 只在门控测量时让它失效。
 
+**一次 WRITE 最多 8 字节**（5.2.2.2）。`register/write` 超过 8 字节时会拆成多次写入，回复里的 `writes` 是实际发了几次（这样写的一段寄存器不是一次整体写入）；`Page 9Fh` 上超过 8 字节又包含字节 129 的写入会 400——写 `9Fh:129` 就会发出 CDB 命令（7.2.3），只能你自己分段、最后写含 129 的那段。PRBS 的 `user_pattern` 同样按 8 字节分次写。
+
 第二条比看起来重要：拼错字段名如果被静默忽略，接口会回「成功」而什么都没改 ——比报错难查得多。PRBS 的嵌套字段（`host_gen` 等四个引擎里面的 `patterns` / `enable_mask` …）同样逐个校验，报错会指明是哪个引擎。
 
 ## 读某一页之前，先确认模块有这一页

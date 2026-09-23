@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.123.0<br>
+      <b>版本</b>　2.124.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.123.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.123.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.124.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.124.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1716,6 +1716,21 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>一次 WRITE 最多 8 字节</h3>
+  <p>规范 5.2.2.2:「一次成功的 WRITE 写入<b>最多 8 个</b>字节」;更长的只有第 8 章明确允许的地方才行。被拒绝的 WRITE「对模块没有任何作用」。</p>
+  <p>读取早就按这个上限分块了,写入却没有。两处会一次写超过 8 字节:</p>
+  <ul>
+    <li><b>PRBS 用户码型</b>(<code>13h:224–255</code>,最长 32 字节;Table 8-134 并没有放宽)</li>
+    <li><b>Raw Registers 写入</b>(可以一直写到页尾)</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>没有哪个适配器会按 8 字节切:CH341 整段一次发出,CP2112 和 MCP2221 按 60 字节左右切——那是它们自己的包长,不是模块的上限。守规矩的模块可以拒绝这次写入,而面板照样说「已写入」。</span>
+  </div>
+  <p>现在超过 8 字节的写入会拆成多次、每次最多 8 字节;Raw Registers 写完会注明分了几次(规范 5.2.5.2:多字节写入本来就不保证是一次整体写入)。刚好 8 字节的写入(比如一个 PRBS 引擎块、8 个 AppSel 字节)照旧一次写完。</p>
+  <p>唯一的例外是 <b>Page 9Fh</b> 的 CDB 消息头:写到 <code>9Fh:129</code> 就会发出 CDB 命令(规范 7.2.3),拆开写会让命令在消息头还没写完时就发出。所以超过 8 字节、又包含字节 129 的写入会被拒绝,并提示先写其余部分、最后写含 129 的那段。</p>
+  <p class="note">内置模拟模块现在也会拒绝超过 8 字节的 WRITE,于是整套测试就成了一次全面检查:其它所有写入口都没有超过这个上限。</p>
 
   <h3>13h:177.7 作用到哪里:「被忽略」只在门控测量时成立</h3>
   <p><code>13h:177.7</code> StartStopIsGlobal(Table 8-127)置 1 时,在一个 Bank 上写启停控制——<code>177.5</code> 的复位、<code>160</code> / <code>168</code> 的检测器使能——等同于在所有 Bank 上同时写。</p>
@@ -4051,9 +4066,12 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>唯一会被拒绝的是<b>跨页越界</b>（起始地址 + 长度超过 0xFF），因为那不是一次能成立的传输。
+    <span>会被拒绝的只有三种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；从 <code>0x7F</code> 以下一直写过 <code>0x7F</code>（中途会改掉页选择）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
     只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
   </div>
+
+  <h4>超过 8 字节的写入会分几次完成</h4>
+  <p>规范 5.2.2.2 规定一次 WRITE 最多 8 字节，所以更长的写入会拆成若干次、每次最多 8 字节，结果区会写明 <code>as N WRITEs of up to 8 bytes each (5.2.2.2)</code>。这样写入的一段寄存器<b>不是一次整体写入</b>的（规范 5.2.5.2）。<code>Page 9Fh</code> 例外：写到 <code>9Fh:129</code> 就会发出 CDB 命令（规范 7.2.3），所以超过 8 字节又包含 129 的写入不会替你拆，而是提示你先写其余部分、最后写含 129 的那段。</p>
 
   <h4>写完之后工具会回读比对——看懂那条红色提示</h4>
   <p>写操作返回成功只代表 I2C 传输完成，<b>不代表模块真的接受了这个值</b>。所以工具写完会立刻
@@ -4313,7 +4331,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.123.0<br>
+    CMIS Module Manager 操作手册 v2.124.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

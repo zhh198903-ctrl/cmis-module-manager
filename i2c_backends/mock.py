@@ -3297,6 +3297,13 @@ class MockBackend(I2CInterface):
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:
             raise IOError("Not connected")
+        # 5.2.2.2: "A successful WRITE writes a sequence of up to eight given
+        # byte values", more only where chapter 8 says so - nothing modelled
+        # here. "A rejected WRITE access has no effect in the target."
+        if len(data) > 8:
+            raise IOError('WRITE of %d bytes at 0x%02X rejected: a WRITE '
+                          'carries at most 8 bytes (5.2.2.2)'
+                          % (len(data), register))
         data = self._intercept_write(register, data)
         if register < 0x80:
             page_dict = self._registers.setdefault(None, {})

@@ -3588,6 +3588,12 @@ async function rawWrite() {
         `Wrote ${data.length} byte(s) to `
         + `${_rawWhere(page, bank, back.data.banked)} `
         + `addr 0x${address.toString(16).toUpperCase().padStart(2,'0')}\n`
+        // A WRITE carries at most 8 bytes (5.2.2.2), so a longer one went as
+        // several - and a register array written in pieces was not written
+        // in one indivisible step (5.2.5.2).
+        + (res.data.writes > 1
+           ? `as ${res.data.writes} WRITEs of up to 8 bytes each (5.2.2.2)\n`
+           : '')
         + `read back:\n${formatHexDump(got, address)}`;
       toast(same ? `Written and verified ${data.length} byte(s)`
                  : 'Write completed but the module reports different values — '
