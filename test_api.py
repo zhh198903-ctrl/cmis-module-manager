@@ -28770,6 +28770,279 @@ class TestAMediaSideEngineForALaneThatIsNotThere(CMISTestCase):
                       "table = 'Table 8-79')", body)
         self.assertIn("+ table +", body)
 
+class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
+    """Table 8-11: with BankBroadcastEnable (Lower 0x1A.7) set, "a WRITE to a
+    control register (i.e. to a register with RW or WO access) in any bank of
+    a lane-banked page is executed as a bank broadcast".
+
+    TestBankBroadcastChangesWhatAWriteMeans taught that to the DataPath and
+    Squelch writes, and media lane switching learned it later. Every other
+    handler that writes a lane-banked page bank by bank was left out: the
+    loopback and PRBS controls (Page 13h), the laser tuning (Page 12h, banked
+    by media lane, 8.15) and the acquisition counter resets (Page 60h, "Each
+    Bank of Page 60h refers to 8 lanes", 8.30).
+
+    Each writes one bank after another. Under broadcast every write lands in
+    every bank, so the last bank's value ends up on all lanes: a PRBS request
+    for lanes 1-4 of a 24-lane module ran nothing, a reset of lanes 1 and 3
+    cleared lanes 9, 11, 17 and 19 as well, and tuning media lane 3 retuned
+    lane 11 - each reported as a success."""
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, path, body):
+        return self.client.post('/api/module/' + path, data=json.dumps(body),
+                                content_type='application/json')
+
+    def _get(self, path):
+        return self.assertOk(self.client.get('/api/module/' + path))['data']
+
+    def _broadcast(self):
+        self.assertOk(self._post('control', {'bank_broadcast': True}))
+
+    def _tunable_broadcast(self):
+        """No tunable profile advertises broadcast, and no broadcasting
+        profile is tunable - so the advertisement is forced on the sixteen
+        media lane one."""
+        self._connect('mock_zr16')
+        _state['backend']._registers[0x01][0x9C] |= 0x80
+        _state['caps']['controls']['bank_broadcast'] = True
+        self._broadcast()
+
+    def _channels(self, *lanes):
+        rows = {l['lane']: l['channel'] for l in self._get('laser')['lanes']}
+        return [rows[n] for n in lanes]
+
+    # ---- PRBS ------------------------------------------------------------------
+    def test_a_prbs_engine_that_differs_by_bank_is_refused(self):
+        self._connect()
+        self._broadcast()
+        body = self.assertErr(self._post('prbs', {'host_gen': {
+            'enable_mask': [0x0F, 0x00, 0x00]}}), 400)
+        self.assertIn('Lower 0x1A.7', body['message'])
+        self.assertIn('host_gen.enable_mask', body['message'])
+        self.assertEqual(self._get('prbs')['host_gen']['enable_mask_banks'],
+                         [0, 0, 0])
+
+    def test_before_the_guard_the_request_ran_nothing(self):
+        """What the module does with the three writes, behind the API: the
+        last bank's zero lands on lanes 1-8 too."""
+        self._connect()
+        self._broadcast()
+        for bank, en in enumerate((0x0F, 0x00, 0x00)):
+            app_module._set_page(0x13, bank)
+            _state['backend'].write_bytes(0x90, bytes([en]))
+        app_module._invalidate_page()
+        self.assertEqual(self._get('prbs')['host_gen']['enable_mask_banks'],
+                         [0, 0, 0])
+
+    def test_one_value_for_every_bank_still_runs(self):
+        self._connect()
+        self._broadcast()
+        self.assertOk(self._post('prbs', {'host_gen': {
+            'enable_mask': [0x0F] * 3}}))
+        self.assertEqual(self._get('prbs')['host_gen']['enable_mask_banks'],
+                         [0x0F] * 3)
+
+    def test_a_kept_field_that_differs_is_refused_too(self):
+        """The page and the API both send each bank's whole block, carrying
+        forward whatever a field was not named as. Patterns set per bank
+        before broadcast was switched on would be flattened by a request that
+        only names the enable."""
+        self._connect()
+        self.assertOk(self._post('prbs', {'host_gen': {
+            'patterns': [11] * 8 + [12] * 8 + [11] * 8}}))
+        self._broadcast()
+        body = self.assertErr(self._post('prbs', {'host_gen': {
+            'enable_mask': [0x01] * 3}}), 400)
+        self.assertIn('host_gen.patterns', body['message'])
+
+    def test_a_refused_engine_writes_no_engine(self):
+        self._connect()
+        self._broadcast()
+        self.assertErr(self._post('prbs', {
+            'host_gen': {'enable_mask': [0x03] * 3},
+            'media_gen': {'enable_mask': [0x01, 0x02, 0x04]}}), 400)
+        self.assertEqual(self._get('prbs')['host_gen']['enable_mask_banks'],
+                         [0, 0, 0])
+
+    # ---- loopback -----------------------------------------------------------------
+    def test_a_loopback_that_differs_by_bank_is_refused(self):
+        self._connect()
+        self._broadcast()
+        body = self.assertErr(self._post('loopback', {
+            'host_side_output': [0x01, 0x00, 0x00]}), 400)
+        self.assertIn('host_side_output', body['message'])
+        self.assertEqual(self._get('loopback')['host_side_output_banks'],
+                         [0, 0, 0])
+
+    def test_one_loopback_for_every_bank_still_loops(self):
+        self._connect()
+        self._broadcast()
+        self.assertOk(self._post('loopback', {'host_side_output': [0x01] * 3}))
+        self.assertEqual(self._get('loopback')['host_side_output_banks'],
+                         [0x01] * 3)
+
+    # ---- acquisition counter resets ------------------------------------------------
+    def _trace_resets(self):
+        import cmis_registers as c
+        seen = []
+        backend = _state['backend']
+        real = backend.write_bytes
+
+        def traced(addr, data):
+            if backend._current_page == 0x60 and addr in (
+                    c.REG_RESET_ACQ_RX[1], c.REG_RESET_ACQ_TX[1]):
+                seen.append((backend._current_bank, addr, bytes(data)))
+            return real(addr, data)
+        backend.write_bytes = traced
+        self.addCleanup(setattr, backend, 'write_bytes', real)
+        return seen
+
+    def test_a_reset_of_some_lanes_is_refused(self):
+        self._connect()
+        self._broadcast()
+        seen = self._trace_resets()
+        body = self.assertErr(self._post('acq_counters/reset',
+                                         {'lanes': [1, 3]}), 400)
+        self.assertIn('60h:192-193', body['message'])
+        self.assertEqual(seen, [], 'a refused reset was still written')
+
+    def test_a_reset_of_the_same_lanes_in_every_bank_goes_through(self):
+        self._connect()
+        self._broadcast()
+        seen = self._trace_resets()
+        self.assertOk(self._post('acq_counters/reset',
+                                 {'lanes': [2, 10, 18], 'side': 'rx'}))
+        self.assertTrue(seen)
+        self.assertEqual({d for _b, _a, d in seen}, {bytes([0x02])})
+
+    # ---- laser tuning ----------------------------------------------------------------
+    def test_tuning_one_lane_is_refused(self):
+        self._tunable_broadcast()
+        before = self._channels(3, 11)
+        body = self.assertErr(self._post('laser', {'lanes': [
+            {'lane': 3, 'channel': before[0] + 1}]}), 400)
+        self.assertIn('Lower 0x1A.7', body['message'])
+        self.assertIn('Table 8-11', body['message'])
+        self.assertIn('media lane 3', body['message'])
+        self.assertIn('media lane 11 too', body['message'])
+        self.assertEqual(self._channels(3, 11), before)
+
+    def test_two_lanes_tuned_apart_are_refused(self):
+        self._tunable_broadcast()
+        before = self._channels(3, 11)
+        body = self.assertErr(self._post('laser', {'lanes': [
+            {'lane': 3, 'channel': 1}, {'lane': 11, 'channel': 2}]}), 400)
+        self.assertIn('differs between media lanes 3, 11', body['message'])
+        self.assertEqual(self._channels(3, 11), before)
+
+    def test_the_field_is_named_from_its_address(self):
+        """The four Page 12h fields share one plan; the message has to say
+        which of them would have spread."""
+        self._tunable_broadcast()
+        body = self.assertErr(self._post('laser', {'lanes': [
+            {'lane': 11, 'target_power_dbm': 0.5}]}), 400)
+        self.assertIn('target output power of media lane 11', body['message'])
+        self.assertIn('media lane 3 too', body['message'])
+
+    def test_the_same_tuning_on_every_bank_goes_through(self):
+        self._tunable_broadcast()
+        self.assertOk(self._post('laser', {'lanes': [
+            {'lane': 3, 'channel': 1}, {'lane': 11, 'channel': 1}]}))
+        self.assertEqual(self._channels(3, 11), [1, 1])
+
+    # ---- only under broadcast ----------------------------------------------------------
+    def test_without_broadcast_each_bank_keeps_its_own_value(self):
+        self._connect()
+        self.assertOk(self._post('prbs', {'host_gen': {
+            'enable_mask': [0x0F, 0x00, 0x00]}}))
+        self.assertOk(self._post('loopback', {
+            'host_side_output': [0x01, 0x00, 0x00]}))
+        self.assertOk(self._post('acq_counters/reset', {'lanes': [1, 3]}))
+        self.assertEqual(self._get('prbs')['host_gen']['enable_mask_banks'],
+                         [0x0F, 0, 0])
+
+    def test_tuning_one_lane_without_broadcast_is_fine(self):
+        self._connect('mock_zr16')
+        self.assertOk(self._post('laser', {'lanes': [
+            {'lane': 3, 'channel': 1}]}))
+        self.assertEqual(self._channels(3), [1])
+
+    def test_an_eight_lane_tunable_module_is_not_even_asked(self):
+        """One bank cannot differ from itself, so the verdict never depends
+        on Lower 0x1A there - and reading it anyway is an I2C transaction on
+        every tuning write for nothing. Forced on, so it is the bank count
+        that stops the read."""
+        self._connect('mock_coherent_zr')
+        _state['caps']['controls']['bank_broadcast'] = True
+        backend = _state['backend']
+        backend.write_bytes(0x1A, bytes([0x80]))
+        reads = []
+        real = backend.read_bytes
+
+        def traced(addr, length):
+            reads.append(addr)
+            return real(addr, length)
+        backend.read_bytes = traced
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+        self.assertOk(self._post('laser', {'lanes': [
+            {'lane': 1, 'channel': 1}]}))
+        self.assertNotIn(0x1A, reads)
+
+    # ---- the family -----------------------------------------------------------------
+    def test_every_banked_writer_asks_about_broadcast(self):
+        """The first fix guarded the two writers it knew and said so in a
+        test; four more were missed because nothing listed them. This lists
+        them: a function that selects a bank and writes must ask, or write
+        the same bytes to every bank."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read().replace('\r\n', '\n')
+        writers = {}
+        for chunk in re.split(r'\n(?=def )', src):
+            m = re.match(r'def (\w+)', chunk)
+            if (m and 'write_bytes' in chunk and
+                    re.search(r'_set_page\(0x[0-9A-Fa-f]+, *[a-z_]\w*\)',
+                              chunk)):
+                writers[m.group(1)] = chunk
+        self.assertEqual(sorted(writers), sorted([
+            'api_reset_acq_counters', 'api_media_lane_switching',
+            'api_datapath_set', 'api_squelch_set', 'api_loopback_set',
+            '_write_user_pattern', 'api_prbs_set', 'api_laser_set']),
+            'a banked writer was added or removed - decide whether it needs '
+            'the broadcast guard, then update this list')
+        for name, body in writers.items():
+            if name == '_write_user_pattern':
+                # One pattern, written unchanged into every bank: broadcast
+                # repeats what was going to be written anyway.
+                self.assertIn('write_bytes(cmis.REG_USER_PATTERN[1], '
+                              'bytes(data))', body)
+                continue
+            self.assertTrue(
+                '_refuse_broadcast_divergence(' in body
+                or '_refuse_broadcast_tuning(' in body, name)
+
+    def test_each_guard_comes_before_its_writes(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'app.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read().replace('\r\n', '\n')
+        for name, guard in (('api_loopback_set', '_refuse_broadcast_divergence('),
+                            ('api_prbs_set', '_refuse_broadcast_divergence('),
+                            ('api_reset_acq_counters',
+                             '_refuse_broadcast_divergence('),
+                            ('api_laser_set', '_refuse_broadcast_tuning(')):
+            i = src.index('def %s(' % name)
+            body = src[i:src.index('\n@app.route', i)]
+            self.assertLess(body.index(guard), body.index('write_bytes('),
+                            name)
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

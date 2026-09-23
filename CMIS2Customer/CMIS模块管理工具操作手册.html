@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.121.0<br>
+      <b>版本</b>　2.122.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.121.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.121.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.122.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.122.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1716,6 +1716,21 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Bank 广播:每一个按 Bank 写入的地方都要检查</h3>
+  <p>Table 8-11:<code>Lower 0x1A[7]</code> BankBroadcastEnable 置 1 时,对通道分 Bank 的页上任何控制寄存器的写入,都会同时写进<b>所有 Bank</b>。</p>
+  <p>工具早先给 DataPath 和 Squelch 的写入加了这项检查,后来媒体通道切换也加了。另外四个同样逐 Bank 写入的地方却没有:</p>
+  <ul>
+    <li><b>Loopback</b> 和 <b>PRBS</b>(Page 13h)</li>
+    <li><b>激光调谐</b>(Page 12h,按媒体通道分 Bank,规范 8.15)</li>
+    <li><b>采集计数器清零</b>(Page 60h,「每个 Bank 对应 8 条通道」,规范 8.30)</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>它们一个 Bank 接一个 Bank 地写。开了广播,每一次写都落到全部 Bank,<b>最后一个 Bank 的值盖掉前面所有</b>:在 24 通道模块上只开 lane 1–4 的 PRBS,结果一条都没开;清零 lane 1 和 3,lane 9、11、17、19 也被清掉;只调媒体通道 3 的激光,媒体通道 11 也跟着变——每一次都报告成功。</span>
+  </div>
+  <p>现在这四处也会<b>拒绝</b>各 Bank 不一致的请求,说明是哪一项,原配置不动;各 Bank 取同一个值时照常写入。激光调谐会指出会被连带改动的媒体通道,例如 <code>setting the channel of media lane 3 would set it on media lane 11 too</code>。PRBS 检查的是每个 Bank 实际要写的整块内容,包括请求里没提、沿用原值的字段。</p>
+  <p class="note">规则属于写入方式,不属于最先发现它的那个面板:凡是选 Bank 再写的地方都要问这一句。</p>
 
   <h3>媒体侧环回与媒体侧 PRBS,同样按媒体通道</h3>
   <p>上一版把「按媒体通道」这条规则教给了 Page 10h 的通道控制。Page 13h 上有同一类控制,却被漏掉了:</p>
@@ -3732,6 +3747,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     现在遇到这种情况工具会<b>直接拒绝</b>并
     告诉你是哪一项逐 Bank 不一致，而不是写下去
     再报成功；原来的配置不会被动。
+    这项检查覆盖每一个按 Bank 写入的地方：DataPath、Squelch、
+    媒体通道切换、Loopback、PRBS、激光调谐（Page 12h）
+    和采集计数器清零（Page 60h）。
     所有 Bank 取<b>同一个值</b>时照常写入（那本来
     就是广播能表达的）。</span>
   </div>
@@ -4279,7 +4297,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.121.0<br>
+    CMIS Module Manager 操作手册 v2.122.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

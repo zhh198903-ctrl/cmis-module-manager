@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.121.0'
+__version__ = '2.122.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -756,6 +756,45 @@ def _refuse_broadcast_divergence(named: dict):
                 'bank lands in all of them. %s differs between banks (%s) and '
                 'cannot be written while it is on - clear bank broadcast '
                 'first, or send one value for every bank' % (name, vals), 400)
+    return None
+
+
+def _refuse_broadcast_tuning(plan):
+    """The laser tuning plan is (bank, address, bytes) per field and lane,
+    and Page 12h is lane-banked by media lane (8.15). Under bank broadcast
+    (Table 8-11) each of those writes lands at the same address of every
+    bank, so tuning media lane 3 would retune lanes 11 and 19 alike. The plan
+    is only what gets done if every bank is written with the same value.
+    """
+    banks = (_state['lanes'] + 7) // 8
+    if banks < 2 or not _bank_broadcast_active():
+        return None
+    fields = (('grid', cmis.REG_GRID_SPACING_TX[1], 1),
+              ('channel', cmis.REG_CHANNEL_NUM_TX[1], 2),
+              ('fine-tuning offset', cmis.REG_FINE_OFFSET_TX[1], 2),
+              ('target output power', cmis.REG_TARGET_PWR_TX[1], 2))
+    by_addr = {}
+    for bank, addr, payload in plan:
+        by_addr.setdefault(addr, {})[bank] = payload
+    for addr, per_bank in by_addr.items():
+        if len(per_bank) == banks and len(set(per_bank.values())) == 1:
+            continue
+        name, slot = next((n, (addr - base) // width)
+                          for n, base, width in fields
+                          if base <= addr < base + 8 * width)
+        lanes = lambda bs: ', '.join(str(8 * b + slot + 1) for b in bs)
+        others = [b for b in range(banks) if b not in per_bank]
+        what = ('setting the %s of media lane %s would set it on media lane%s '
+                '%s too' % (name, lanes(sorted(per_bank)),
+                            '' if len(others) == 1 else 's', lanes(others))
+                if others else
+                'the %s asked for differs between media lanes %s, and each '
+                'write lands on all of them' % (name, lanes(range(banks))))
+        return _err(
+            'Bank broadcast is enabled (Lower 0x1A.7, Table 8-11), so a write '
+            'to any bank of Page 12h lands in all of them: %s. Clear bank '
+            'broadcast first, or give media lanes %s one value together'
+            % (what, lanes(range(banks))), 400)
     return None
 
 
@@ -1702,6 +1741,15 @@ def api_reset_acq_counters():
         for lane in lanes:
             b, bit = divmod(int(lane) - 1, 8)
             by_bank[b] = by_bank.get(b, 0) | (1 << bit)
+        # Page 60h is lane-banked ("Each Bank of Page 60h refers to 8 lanes",
+        # 8.30). Under bank broadcast a reset written to one bank resets the
+        # same lanes of every bank - counters nobody asked to clear.
+        bad = _refuse_broadcast_divergence({
+            'The lanes to reset (60h:192-193)':
+                [by_bank.get(b, 0) for b in range((_state['lanes'] + 7) // 8)],
+        })
+        if bad:
+            return bad
         for bank, mask in by_bank.items():
             _set_page(0x60, bank)
             if side in ('rx', 'both'):
@@ -3441,6 +3489,14 @@ def api_loopback_set():
                 any(any(m) for n, m in requested if n.startswith('host')):
             return _err('This module cannot hold a host side and a media side '
                         'loopback at the same time (13h:128 bit 6 is clear)', 400)
+        # Page 13h is lane-banked like 10h, so bank broadcast turns these four
+        # bytes per bank into four bytes for every bank, the last one winning.
+        bad = _refuse_broadcast_divergence({
+            'media_side_output': media_out, 'media_side_input': media_in,
+            'host_side_output': host_out, 'host_side_input': host_in,
+        })
+        if bad:
+            return bad
 
         for b in range(banks):
             _set_page(0x13, b)
@@ -3976,6 +4032,20 @@ def api_prbs_set():
             # not lane after lane of pattern 0.
             patterns = list(section.get('patterns') or current['patterns'])
             patterns += [0] * (banks * 8 - len(patterns))
+            # Each bank gets its own eight-byte block, and under bank
+            # broadcast every block lands in every bank - so the last bank's
+            # lanes would be what all of them run. Decided here, with the
+            # rest of the plan, so a refusal still writes nothing.
+            bad = _refuse_broadcast_divergence({
+                '%s.enable_mask' % key: en,
+                '%s.invert_mask' % key: inv,
+                '%s.byte_swap_mask' % key: sw,
+                '%s.fec_mask' % key: fec,
+                '%s.patterns' % key: [tuple(patterns[b * 8:b * 8 + 8])
+                                      for b in range(banks)],
+            })
+            if bad:
+                return bad
             for b in range(banks):
                 block = (bytes([en[b], inv[b], sw[b], fec[b]])
                          + cmis.pack_prbs_patterns(patterns[b * 8:b * 8 + 8]))
@@ -4438,6 +4508,9 @@ def api_laser_set():
             return _err('No lane entry carried anything to write; expected at '
                         'least one of grid_code, channel, fine_offset_ghz or '
                         'target_power_dbm', 400)
+        bad = _refuse_broadcast_tuning(plan)
+        if bad:
+            return bad
         # Bank first, then the byte. Page 12h is banked by media lane, so a
         # write that names only the page lands in whichever bank the last read
         # happened to leave selected.
