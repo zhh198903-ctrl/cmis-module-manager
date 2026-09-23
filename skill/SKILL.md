@@ -212,6 +212,12 @@ CMIS 的每一项监控都是可选的，模块在 `01h:159-160` 广告自己有
 - 媒介宽度超过一个 bank 的数据通路也不给答案。
 - 支持媒介通道交换的模块标 **nominal**——实际提交的映射在 `Page 6Dh`。
 
+## Tx 输出禁用和 Tx 静噪也按**媒体通道**算
+
+Table 8-79：`OutputDisableTx`（`10h:130`）、`AutoSquelchDisableTx`（`10h:131`）、`OutputSquelchForceTx`（`10h:132`）的第 i 位是**媒体通道 i**。
+`/api/module/datapath` 和 `/api/module/squelch` 的 GET 都附 `media_lanes_present`；POST 时**改动**不存在媒体通道的那一位会 400（原值不变可以照写）。
+两行 Rx（`OutputDisableRx`、`AutoSquelchDisableRx`）不在此列。
+
 ## 诊断数据的媒体侧也按**媒体通道**算
 
 `/api/module/snr`、`/api/module/ber`、`/api/module/counters` 的媒体侧字段（`media_snr_db`、`media_ber`、`media_error_count` 等）

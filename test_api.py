@@ -5628,7 +5628,13 @@ class TestRegisterTooltips(CMISTestCase):
                            ('TX Pol Flip', c.REG_TX_POL_FLIP),
                            ('RX Pol Flip', c.REG_RX_POL_FLIP),
                            ('DP Deinit', c.REG_DP_DEINIT)]:
-            head = html.split(f'<th>{label}<span class="reg-meta">')[1].split('</span>')[0]
+            # A header may carry a title and a side label ahead of the
+            # address - both are there to be read, and neither is the address.
+            m = re.search(r'<th[^>]*>' + re.escape(label)
+                          + r'(?:<span class="reg-meta-strong">[^<]*</span>)?'
+                          r'<span class="reg-meta">([^<]*)</span>', html)
+            self.assertIsNotNone(m, '%s header not found' % label)
+            head = m.group(1)
             page, addr = reg[0], reg[1]
             self.assertIn(f'{page:02X}h', head,
                           f'{label} header names the wrong page: {head}')
@@ -28088,7 +28094,9 @@ class TestARefusalThatChangedNothing(CMISTestCase):
         self.assertTrue(any(l['datapath_state'] == 'TxTurnOff'
                             for l in lanes), 'no transient to refuse on')
         rv = self._writes_to_page_10h(
-            lambda: self._post(tx_disable_mask=[0x0F], apply=True))
+            # Media lane 1 only: this module has one media lane, and
+            # asking for lanes 2-4 is refused by a different rule first.
+            lambda: self._post(tx_disable_mask=[0x01], apply=True))
         self.assertErr(rv[0], 409)
         self.assertIn('transient', json.loads(rv[0].data)['message'])
         self.assertEqual(rv[1], [])
@@ -28097,7 +28105,8 @@ class TestARefusalThatChangedNothing(CMISTestCase):
         self._connect('mock_coherent')
         deactivated(self.client)
         rv = self._assert_refused_without_writing(
-            409, dp_deinit_mask=[0xFF], apply_immediate=True)
+            409, dp_deinit_mask=[0xFF], tx_disable_mask=[0x01],
+            apply_immediate=True)
         self.assertIn('ApplyImmediate', json.loads(rv.data)['message'])
 
     def test_apply_immediate_on_a_module_without_it_writes_nothing(self):
@@ -28340,6 +28349,149 @@ class TestDiagnosticsOfALaneThatIsNotThere(CMISTestCase):
         body = js[i:js.index('\n}', i)]
         self.assertIn("if (ber == null || !isFinite(ber)) return '—'", body)
         self.assertIn('if (ber === 0)', body)
+
+
+class TestAControlForALaneThatIsNotThere(CMISTestCase):
+    """Table 8-79 sets three of the Page 10h lane controls per *media* lane:
+    OutputDisableTx ("Tx output disabled for media lane <i>"),
+    AutoSquelchDisableTx and OutputSquelchForceTx.
+
+    Both panels that write them lay them out in host-lane rows - the DataPath
+    table's TX Enable column and the Squelch table's two Tx rows - with no
+    word that the index is a different lane. On a coherent module, which
+    carries eight host lanes into one media lane (00h:210), seven of the boxes
+    in each of those rows controlled nothing: ticking one wrote a bit for a
+    lane the module does not have, and the write reported success.
+
+    Round 69 taught the Diagnostics tab the same rule Monitoring and Flags
+    already had. This is the write side of it: the rule belongs to the
+    register family, and these three registers are in it."""
+
+    def _connect(self, backend='mock_coherent'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, what, **body):
+        return self.client.post('/api/module/' + what, data=json.dumps(body),
+                                content_type='application/json')
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the refusals -------------------------------------------------------------
+    def test_tx_disable_of_a_missing_media_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('datapath', tx_disable_mask=[0x10]),
+                              400)
+        self.assertIn('OutputDisableTx', body['message'])
+        self.assertIn('media lane 5', body['message'])
+        self.assertIn('00h:210', body['message'])
+        self.assertIn('Table 8-79', body['message'])
+
+    def test_force_squelch_of_a_missing_media_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('squelch', tx_squelch_force=[0x04]),
+                              400)
+        self.assertIn('OutputSquelchForceTx', body['message'])
+        self.assertIn('media lane 3', body['message'])
+
+    def test_auto_squelch_of_a_missing_media_lane_is_refused(self):
+        self._connect()
+        body = self.assertErr(self._post('squelch', tx_squelch_disable=[0x80]),
+                              400)
+        self.assertIn('AutoSquelchDisableTx', body['message'])
+        self.assertIn('media lane 8', body['message'])
+
+    def test_nothing_is_written_when_refused(self):
+        self._connect()
+        before = self._get('squelch')['tx_squelch_force']
+        self.assertErr(self._post('squelch', tx_squelch_force=[0x04]), 400)
+        self.assertEqual(self._get('squelch')['tx_squelch_force'], before)
+
+    # ---- what still goes through ----------------------------------------------------
+    def test_the_media_lane_it_has_still_works(self):
+        self._connect()
+        self.assertOk(self._post('datapath', tx_disable_mask=[0x01]))
+        self.assertEqual(self._get('datapath')['tx_disable_mask'], 0x01)
+        self.assertOk(self._post('squelch', tx_squelch_force=[0x01]))
+
+    def test_the_host_side_rows_are_not_judged(self):
+        """OutputDisableRx and AutoSquelchDisableRx are not media-lane
+        controls; lane 3 of them is a lane this module has."""
+        self._connect()
+        self.assertOk(self._post('squelch', rx_output_disable=[0x04],
+                                 rx_squelch_disable=[0x04]))
+
+    def test_an_unchanged_bit_is_not_a_change(self):
+        """The page writes whole bytes. A bit the module already holds for a
+        lane it lacks must pass untouched, or every Apply would be refused."""
+        self._connect()
+        backend = _state['backend']
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x84, bytes([0x04]))    # already set, lane 3
+        self.assertOk(self._post('squelch', tx_squelch_force=[0x04]))
+
+    def test_a_module_with_every_media_lane_is_not_restricted(self):
+        self._connect('mock_dr8')
+        self.assertOk(self._post('datapath', tx_disable_mask=[0x10]))
+        self.assertOk(self._post('squelch', tx_squelch_force=[0x04]))
+
+    # ---- what the panels are told ------------------------------------------------------
+    def test_both_panels_are_told_which_media_lanes_exist(self):
+        self._connect()
+        expected = [True] + [False] * 7
+        self.assertEqual(self._get('datapath')['media_lanes_present'], expected)
+        self.assertEqual(self._get('squelch')['media_lanes_present'], expected)
+
+    def test_the_datapath_tx_box_is_greyed_for_a_missing_lane(self):
+        js = self._read('static', 'app.js')
+        self.assertIn('if (mediaAbsent(d.media_lanes_present, lane.lane - 1)) {\n'
+                      '      _gateAbsentMediaLane(`tx-en-${lane.lane}`, lane.lane);',
+                      js.replace('\r\n', '\n'))
+
+    def test_only_the_two_tx_squelch_rows_are_greyed(self):
+        js = self._read('static', 'app.js').replace('\r\n', '\n')
+        i = js.index('async function loadSquelch')
+        body = js[i:js.index('\nasync function', i + 10)]
+        self.assertIn("_gateAbsentMediaLane(`sq-cb-${i}`, i + 1);", body)
+        self.assertIn("_gateAbsentMediaLane(`sf-cb-${i}`, i + 1);", body)
+        self.assertNotIn('_gateAbsentMediaLane(`od-', body)
+        self.assertNotIn('_gateAbsentMediaLane(`rd-', body)
+
+    def test_a_greyed_box_keeps_its_bit(self):
+        """_gateControl clears a box it disables. Doing that here would turn
+        a held bit into a change, and the server would refuse the Apply."""
+        js = self._read('static', 'app.js')
+        i = js.index('function _gateAbsentMediaLane')
+        body = js[i:js.index('\n}', i)]
+        self.assertIn('el.disabled = true', body)
+        self.assertNotIn('checked', body)
+
+    def test_module_wide_tx_disable_does_not_move_a_greyed_box(self):
+        js = self._read('static', 'app.js')
+        self.assertIn('if (o && !o.disabled) o.checked = el.checked;', js)
+
+    def test_the_headers_say_which_side(self):
+        html = self._read('templates', 'index.html')
+        th = html[html.index('>TX Enable<') - 400:html.index('>TX Enable<') + 80]
+        self.assertIn('reg-meta-strong">media lane<', th)
+        for row in ('AutoSquelchDisableTx<span', 'OutputSquelchForceTx<span'):
+            i = html.index(row)
+            self.assertIn('reg-meta-strong">media lane<', html[i:i + 120], row)
+
+    def test_the_gate_names_the_reason(self):
+        js = self._read('static', 'app.js')
+        i = js.index('function _gateAbsentMediaLane')
+        body = re.sub(r"'\s*\+\s*'", '', js[i:js.index('\n}', i)])
+        self.assertIn('00h:210', body)
+        self.assertIn('Table 8-79', body)
 
 
 if __name__ == '__main__':

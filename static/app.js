@@ -2460,10 +2460,15 @@ async function loadDatapath() {
         el.addEventListener('change', () => {
           for (const other of d.lanes) {
             const o = document.getElementById(`tx-en-${other.lane}`);
-            if (o) o.checked = el.checked;
+            // A box greyed for a media lane the module lacks keeps its bit;
+            // moving it would be a change the server refuses.
+            if (o && !o.disabled) o.checked = el.checked;
           }
         });
       }
+    }
+    if (mediaAbsent(d.media_lanes_present, lane.lane - 1)) {
+      _gateAbsentMediaLane(`tx-en-${lane.lane}`, lane.lane);
     }
     _gateControl(`tx-pol-${lane.lane}`, ctl.input_polarity_flip_tx !== false,
       say('Tx input polarity cannot be flipped', '155.0'));
@@ -3787,6 +3792,21 @@ function _gateControl(id, supported, why) {
   }
 }
 
+// OutputDisableTx, AutoSquelchDisableTx and OutputSquelchForceTx are set per
+// *media* lane (Table 8-79), and both panels lay them out in host-lane rows.
+// On a module with fewer media lanes - a coherent one has one - the other
+// boxes control nothing. Disabled but not cleared: the page writes whole
+// bytes, so clearing a box would be a change the server refuses.
+function _gateAbsentMediaLane(id, lane) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.disabled = true;
+  el.title = 'This module has no media lane ' + lane + ' (00h:210). This '
+    + 'control is set per media lane (Table 8-79), so the box controls '
+    + 'nothing.';
+  if (el.parentElement) el.parentElement.classList.add('control-unavailable');
+}
+
 function _gateBitmaskRow(prefix, supported, why) {
   for (let i = 0; i < AppState.lanes; i++) {
     _gateControl(`${prefix}-cb-${i}`, supported, why);
@@ -3823,6 +3843,14 @@ async function loadSquelch() {
     say('Rx outputs cannot be disabled', '156.1'));
   _gateBitmaskRow('rd', ctl.auto_squelch_disable_rx !== false,
     say('automatic Rx squelching cannot be disabled', '156.2'));
+  // The two Tx rows only: the Rx rows are the host side.
+  const present = res.data.media_lanes_present;
+  for (let i = 0; i < AppState.lanes; i++) {
+    if (mediaAbsent(present, i)) {
+      _gateAbsentMediaLane(`sq-cb-${i}`, i + 1);
+      _gateAbsentMediaLane(`sf-cb-${i}`, i + 1);
+    }
+  }
 
   const note = document.getElementById('squelch-caps');
   if (note) {

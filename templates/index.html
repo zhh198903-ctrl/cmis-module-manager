@@ -357,7 +357,7 @@
             <tr>
               <th>Lane</th>
               <th>AppSelect<span class="reg-meta">10h / 0x91+(n−1), bits [7:4]</span></th>
-              <th>TX Enable<span class="reg-meta">10h / 0x82[n−1] (inv.)</span></th>
+              <th title="OutputDisableTx, Table 8-79: &quot;media lane &lt;i&gt;&quot; - in a table whose rows are host lanes. A box for a media lane the module does not have (00h:210) is greyed.">TX Enable<span class="reg-meta-strong">media lane</span><span class="reg-meta">10h / 0x82[n−1] (inv.)</span></th>
               <th>TX Pol Flip<span class="reg-meta">10h / 0x81[n−1]</span></th>
               <th>RX Pol Flip<span class="reg-meta">10h / 0x89[n−1]</span></th>
               <th>DP Deinit<span class="reg-meta">10h / 0x80[n−1]</span></th>
@@ -434,12 +434,12 @@
           </thead>
           <tbody>
             <tr>
-              <td style="color:var(--text-muted)">AutoSquelchDisableTx<span class="reg-badge">10h/0x83</span></td>
+              <td style="color:var(--text-muted)" title="Table 8-79: &quot;media lane &lt;i&gt;&quot;">AutoSquelchDisableTx<span class="reg-meta-strong">media lane</span><span class="reg-badge">10h/0x83</span></td>
               <td id="sq-td-0"></td><td id="sq-td-1"></td><td id="sq-td-2"></td><td id="sq-td-3"></td>
               <td id="sq-td-4"></td><td id="sq-td-5"></td><td id="sq-td-6"></td><td id="sq-td-7"></td>
             </tr>
             <tr>
-              <td style="color:var(--text-muted)">OutputSquelchForceTx<span class="reg-badge">10h/0x84</span></td>
+              <td style="color:var(--text-muted)" title="Table 8-79: &quot;media lane &lt;i&gt;&quot;">OutputSquelchForceTx<span class="reg-meta-strong">media lane</span><span class="reg-badge">10h/0x84</span></td>
               <td id="sf-td-0"></td><td id="sf-td-1"></td><td id="sf-td-2"></td><td id="sf-td-3"></td>
               <td id="sf-td-4"></td><td id="sf-td-5"></td><td id="sf-td-6"></td><td id="sf-td-7"></td>
             </tr>

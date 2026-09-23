@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.118.0'
+__version__ = '2.119.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2025,6 +2025,9 @@ def api_datapath_get():
                 si.get('tx_eq_recall') or [],
                 si_adv.get('tx_input_eq_recall_buffers') or 0),
             'tx_disable_mask': tx_disable_mask,
+            # OutputDisableTx is per media lane (Table 8-79) in a table of
+            # host-lane rows; this says which rows' Tx box controls a lane.
+            'media_lanes_present': _media_lanes_present(),
             'dp_deinit_mask':  dp_deinit_mask,
             'tx_polarity_flip_mask': tx_pol_mask,
             'rx_polarity_flip_mask': rx_pol_mask,
@@ -2428,8 +2431,8 @@ def api_datapath_set():
 
         # A caller changing the Application must not silently un-flip every
         # polarity it did not mention.
-        tx_disable = _keep(body, 'tx_disable_mask',
-                           _mask_now(cmis.REG_TX_OUTPUT_DIS), banks)
+        tx_disable_now = _mask_now(cmis.REG_TX_OUTPUT_DIS)
+        tx_disable = _keep(body, 'tx_disable_mask', tx_disable_now, banks)
         tx_pol = _keep(body, 'tx_polarity_flip_mask',
                        _mask_now(cmis.REG_TX_POL_FLIP), banks)
         rx_pol = _keep(body, 'rx_polarity_flip_mask',
@@ -2513,6 +2516,8 @@ def api_datapath_set():
             ('output_disable_tx', tx_disable),
             ('input_polarity_flip_tx', tx_pol),
             ('output_polarity_flip_rx', rx_pol),
+        )) or _refuse_absent_media_lanes((
+            ('OutputDisableTx', tx_disable, tx_disable_now),
         ))
         if refused:
             return refused
@@ -2992,6 +2997,10 @@ def api_squelch_get():
             'tx_squelch_force_banks':   tx_sfs,
             'rx_output_disable_banks':  rx_ods,
             'rx_squelch_disable_banks': rx_sqs,
+            # The two Tx rows are per media lane (Table 8-79), the two Rx
+            # rows per host lane; the page greys the Tx boxes of a media lane
+            # the module does not have.
+            'media_lanes_present': _media_lanes_present(),
         })
     except Exception as e:
         return _err(str(e), 500)
@@ -3032,6 +3041,9 @@ def api_squelch_set():
             ('forced_squelch_tx', tx_sf),
             ('output_disable_rx', rx_od),
             ('auto_squelch_disable_rx', rx_sq),
+        )) or _refuse_absent_media_lanes((
+            ('AutoSquelchDisableTx', tx_sq, cur_sq),
+            ('OutputSquelchForceTx', tx_sf, cur_sf),
         ))
         if refused:
             return refused
@@ -3198,6 +3210,32 @@ def _refuse_unsupported(requested):
             why, bit = _CONTROL_NAMES[name]
             return _err('This module advertises that %s (01h:%s is clear)'
                         % (why, bit), 400)
+    return None
+
+
+def _refuse_absent_media_lanes(requested):
+    """`requested` is (register name, requested masks, current masks) for a
+    control Table 8-79 indexes by *media* lane - OutputDisableTx,
+    AutoSquelchDisableTx, OutputSquelchForceTx. Returns an error for the
+    first change aimed at a media lane this module does not have, else None.
+
+    The panels lay these out in host-lane rows, so on a module with fewer
+    media lanes than host lanes - a coherent one has one - most of the boxes
+    control nothing, and ticking one is a write the module has no lane to
+    act on. Only a change is refused: the page writes whole bytes, so an
+    untouched bit arrives as whatever the module already holds.
+    """
+    present = _media_lanes_present()
+    for name, masks, current in requested:
+        for lane in range(min(8, len(present))):
+            if present[lane]:
+                continue
+            bit = 1 << lane
+            if (masks[0] ^ current[0]) & bit:
+                return _err('%s is set per media lane (Table 8-79), and this '
+                            'module has no media lane %d (00h:210) - the '
+                            'change would report success and do nothing'
+                            % (name, lane + 1), 400)
     return None
 
 
