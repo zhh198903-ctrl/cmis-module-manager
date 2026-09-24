@@ -30188,6 +30188,118 @@ class TestDiagnosticsSayWhenTheyHaveNoSample(CMISTestCase):
             self.assertIn('l.frequency_na', before,
                           'frequency_thz formatted without asking for NA')
 
+class TestEveryBankHasItsOwnOutputs(CMISTestCase):
+    """Seen in the rendered page on the 24-lane demo module: switching off
+    lane 1 turned lane 9's (and lane 17's) Tx output status off as well,
+    while lane 9's own power stayed on.
+
+    The tool reads 11h:132-133 bank by bank correctly. The mock computed
+    Output Status (Table 8-95) from bank 0's eight lanes and wrote that byte
+    into every bank of Page 11h - so lanes 9-16 and 17-24 always reported
+    whatever lanes 1-8 did, whatever their own controls said. Each bank now
+    derives its outputs from its own OutputDisableTx, OutputSquelchForceTx,
+    OutputDisableRx and Data Path states, and a lane switched off in a later
+    bank goes dark like one in bank 0."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_24lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, what, body):
+        self.assertOk(self.client.post(
+            '/api/module/' + what, data=json.dumps(body),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes']
+
+    def _tx_valid(self):
+        return [l['output_valid_tx'] for l in self._lanes()]
+
+    def test_every_lane_starts_with_its_output_on(self):
+        """The first fix wrote bank 0 only and left the later banks on the
+        byte they were built with - zero, all twenty-four off."""
+        self._connect()
+        self.assertEqual(self._tx_valid(), [True] * 24)
+
+    def test_lane_1_off_leaves_lanes_9_and_17_alone(self):
+        self._connect()
+        self._post('datapath', {'tx_disable_mask': [0x01, 0x00, 0x00]})
+        valid = self._tx_valid()
+        self.assertFalse(valid[0])
+        self.assertTrue(valid[8], 'lane 9 followed lane 1')
+        self.assertTrue(valid[16], 'lane 17 followed lane 1')
+
+    def test_lane_9_off_is_lane_9_only(self):
+        self._connect()
+        self._post('datapath', {'tx_disable_mask': [0x00, 0x01, 0x00]})
+        lanes = self._lanes()
+        self.assertFalse(lanes[8]['output_valid_tx'])
+        self.assertTrue(lanes[0]['output_valid_tx'])
+        self.assertTrue(lanes[16]['output_valid_tx'])
+        self.assertIsNone(lanes[8]['tx_power_uw'],
+                          'the output is off, so its power is not a reading')
+        self.assertIsNotNone(lanes[9]['tx_power_uw'])
+
+    def test_lane_9_comes_back(self):
+        self._connect()
+        before = self._lanes()[8]['tx_power_uw']
+        self._post('datapath', {'tx_disable_mask': [0x00, 0x01, 0x00]})
+        self._post('datapath', {'tx_disable_mask': [0x00, 0x00, 0x00]})
+        lane = self._lanes()[8]
+        self.assertTrue(lane['output_valid_tx'])
+        self.assertEqual(lane['tx_power_uw'], before)
+
+    def test_a_force_squelch_in_bank_2_is_its_own(self):
+        self._connect()
+        self._post('squelch', {'tx_squelch_force': [0x00, 0x00, 0x01]})
+        valid = self._tx_valid()
+        self.assertFalse(valid[16])
+        self.assertTrue(valid[0])
+        self.assertTrue(valid[8])
+
+    def test_an_rx_output_disable_in_bank_1(self):
+        self._connect()
+        self._post('squelch', {'rx_output_disable': [0x00, 0x01, 0x00]})
+        rx = [l['output_valid_rx'] for l in self._lanes()]
+        self.assertFalse(rx[8])
+        self.assertTrue(rx[0])
+        self.assertTrue(rx[16])
+
+    def test_the_rx_change_flag_latches_for_that_lane_only(self):
+        self._connect()
+        self.client.get('/api/module/flags')           # clear what is latched
+        self._post('squelch', {'rx_output_disable': [0x00, 0x01, 0x00]})
+        self._lanes()                                   # a refresh
+        lanes = self.assertOk(self.client.get('/api/module/flags'))[
+            'data']['lanes']
+        changed = [l['lane'] for l in lanes if l.get('rx_output_changed')]
+        self.assertEqual(changed, [9])
+
+    def test_a_lane_that_is_not_activated_has_no_output(self):
+        """Table 8-95: valid means a signal is really being sent. The later
+        banks' Data Path states are not modelled dynamically, so lane 9's is
+        set by hand to DPDeactivated (1h)."""
+        self._connect()
+        _state['backend']._registers[(0x11, 1)][0x80] = 0x41   # lane 9 -> 1h
+        lanes = self._lanes()
+        self.assertFalse(lanes[8]['output_valid_tx'])
+        self.assertFalse(lanes[8]['output_valid_rx'])
+        self.assertTrue(lanes[9]['output_valid_tx'], 'lane 10 is still up')
+
+    def test_connecting_latches_no_change_in_later_banks(self):
+        """The first computation of a bank is its starting point, not a
+        change - or every connect would report lanes 9-24 as having
+        switched their Rx outputs."""
+        self._connect()
+        lanes = self.assertOk(self.client.get('/api/module/flags'))[
+            'data']['lanes']
+        self.assertEqual([l['lane'] for l in lanes[8:]
+                          if l.get('rx_output_changed')], [])
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

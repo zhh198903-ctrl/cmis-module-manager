@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.130.0<br>
+      <b>版本</b>　2.131.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.130.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.130.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.131.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.131.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>演示模块:后面几个 Bank 的输出状态不再照抄 Bank 0</h3>
+  <p>在 24 通道演示模块上关掉通道 1,通道 9 和 17 的 Tx 输出状态也跟着显示「关」,而它们自己的光功率照常——这是演示模块的问题,不是工具读错:工具按 Bank 逐个读 <code>11h:132–133</code>(Table 8-95),演示模块却把 Bank 0 算出来的输出状态写进了 Page 11h 的每一个 Bank。</p>
+  <p>现在演示模块的每个 Bank 按自己的 Tx 关闭、强制静噪、Rx 输出关闭和通路状态给出输出状态;后面 Bank 的通道关掉后光功率也会随之变暗,重新打开恢复原值。连接时不会在这些通道上误报「Rx 输出变化」标志。真实模块不受影响。</p>
 
   <h3>诊断页和激光调谐表的「NA」</h3>
   <p>上一版把 Table 7-8 的 NA 值用到了监控面板。同一张表还规定了:实测激光频率(Page 12h,U32)的 NA 值是 <code>0</code>;SNR(U16)是 <code>0</code>;码型 BER(F16)是 <code>0.5</code>;码型误码数(U64)是最大值。</p>
@@ -4394,7 +4398,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.130.0<br>
+    CMIS Module Manager 操作手册 v2.131.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

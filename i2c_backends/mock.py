@@ -947,6 +947,8 @@ class MockBackend(I2CInterface):
             8, self.PROFILE.get('lanes', 8))
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
+        self._rx_output_valid_banks = {}  # the same, banks 1 and up
+        self._built_tx_power_banks = {}  # banks 1 and up, as built
         self._deinit_time = 0.0          # walking a path down 6h -> 3h -> 1h
         self._deinit_mask = 0x00
         self._absolute_tx_thr = None      # 62h quad when no lane is relative
@@ -2468,11 +2470,46 @@ class MockBackend(I2CInterface):
         # squelch that came and went between two polls still leaves a trace.
         changed = out_rx ^ self._rx_output_valid
         self._rx_output_valid = out_rx
-        for page_dict in self._page_dicts(0x11):
-            page_dict[0x84] = out_rx
-            page_dict[0x85] = out_tx
-            if changed:
-                page_dict[0x99] = page_dict.get(0x99, 0) | changed
+        p11 = self._registers[0x11]
+        p11[0x84] = out_rx
+        p11[0x85] = out_tx
+        if changed:
+            p11[0x99] = p11.get(0x99, 0) | changed
+        # Every other bank from its own controls and Data Path states. Bank
+        # 0's result used to be written into all of them, so lane 9's Tx
+        # output went off whenever lane 1's did while lane 9's own power
+        # stayed on.
+        for lane_base, p11b in self._banked_page_dicts(0x11):
+            if lane_base == 0:
+                continue
+            bank = lane_base // 8
+            p10b = self._registers.get((0x10, bank), {})
+            muted_tx = p10b.get(0x82, 0) | p10b.get(0x84, 0)
+            muted_rx = p10b.get(0x8A, 0)
+            # The power a lane was built with, kept so a lane switched back
+            # on returns to it; dark, it reads 0 as bank 0's lanes do.
+            built = self._built_tx_power_banks.setdefault(bank, {
+                lane: (p11b.get(0x9A + 2 * lane, 0), p11b.get(0x9B + 2 * lane, 0))
+                for lane in range(8)})
+            tx_b = rx_b = 0
+            for lane in range(8):
+                state = (p11b.get(0x80 + lane // 2, 0) >> (4 * (lane % 2))) & 0x0F
+                disabled = (p10b.get(0x82, 0) >> lane) & 1
+                a = 0x9A + 2 * lane
+                p11b[a], p11b[a + 1] = ((0, 0) if disabled or state != 0x4
+                                        else built[lane])
+                if state != 0x4:
+                    continue
+                if not (muted_tx >> lane) & 1:
+                    tx_b |= 1 << lane
+                if not (muted_rx >> lane) & 1:
+                    rx_b |= 1 << lane
+            was = self._rx_output_valid_banks.setdefault(bank, rx_b)
+            self._rx_output_valid_banks[bank] = rx_b
+            p11b[0x84] = rx_b
+            p11b[0x85] = tx_b
+            if rx_b ^ was:
+                p11b[0x99] = p11b.get(0x99, 0) | (rx_b ^ was)
 
         self._refresh_lane_thresholds()
         self._set_module_flags(temp_c)
