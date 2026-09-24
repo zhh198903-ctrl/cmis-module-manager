@@ -406,6 +406,8 @@ Table 8-96 到 8-98 对每行都写明了：
 
 **写入之后模块可以短暂不应答**（Table 10-4：一般 10 ms，Page 03h 用户 EEPROM 80 ms）。工具在这段时间内自动重试被拒的读写，超时才报错；所以接口返回的 NACK / `read failed` / `write failed` 是超出规范时限的真问题（连线、适配器或模块），不是时序没等够。你自己用 `register/write` 后立刻 `register/read` 也受同样保护。
 
+**软件复位**（`control` 的 `reset`）之后，这个窗口是 **2 秒**（Table 10-2 tMgmtInit：复位释放到能读出默认值的最长时间）；回复里 `transition.max_seconds` 是 2 秒加上 ModulePwrUp 的声明时长（01h:167）。复位后 2 秒内的读取慢一点是正常的。
+
 第二条比看起来重要：拼错字段名如果被静默忽略，接口会回「成功」而什么都没改 ——比报错难查得多。PRBS 的嵌套字段（`host_gen` 等四个引擎里面的 `patterns` / `enable_mask` …）同样逐个校验，报错会指明是哪个引擎。
 
 ## 读某一页之前，先确认模块有这一页

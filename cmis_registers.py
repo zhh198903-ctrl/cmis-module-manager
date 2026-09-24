@@ -354,6 +354,11 @@ TIMING_SECONDS = {
     # memory (tWR), which Page 03h, the user EEPROM, is (8.7).
     'tWRITE': 0.010,
     'tWRITENV': 0.080,
+    # Table 10-2: from "Reset release until the START condition of a READ
+    # retrieving the default register value". A SoftwareReset is that release
+    # too - "the same as asserting the Reset hardware signal ... followed by
+    # its de-assertion" (Table 8-11).
+    'tMgmtInit': 2.0,
 }
 
 

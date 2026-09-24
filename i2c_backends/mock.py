@@ -915,6 +915,9 @@ class MockBackend(I2CInterface):
     PROFILE = _COHERENT_800G  # default (overridden by subclasses)
     # Seconds a WRITE holds off the next ACCESS (Table 10-4); see _held_off.
     HOLDOFF_S = 0.0
+    # Seconds a SoftwareReset leaves the module unmanageable (MgmtInit,
+    # Table 10-2 allows up to two). Off by default, like HOLDOFF_S.
+    MGMT_INIT_S = 0.0
 
     def __init__(self):
         self._profile = self.PROFILE
@@ -930,6 +933,7 @@ class MockBackend(I2CInterface):
         self._prev_selected = None
         self._page_changed_at = 0.0
         self._holdoff_until = 0.0
+        self._mgmt_init_until = 0.0
         self._last_module_state = None
         self._start_time = time.time()
         # State machine tracking
@@ -2603,6 +2607,8 @@ class MockBackend(I2CInterface):
                 ctrl = data[0]
                 if ctrl & 0x08:
                     self._reset_time = time.time()
+                    self._mgmt_init_until = (time.perf_counter()
+                                             + self.MGMT_INIT_S)
                     self._module_state = 0b001
                     self._dp_lane_states = [0x1] * 8
                     self._lp_request_time = 0
@@ -3305,6 +3311,9 @@ class MockBackend(I2CInterface):
         if time.perf_counter() < self._holdoff_until:
             raise IOError('NACK: the module is completing the last WRITE '
                           '(ACCESS hold-off, Table 10-4)')
+        if time.perf_counter() < self._mgmt_init_until:
+            raise IOError('NACK: the module is still in MgmtInit after a '
+                          'reset (tMgmtInit, Table 10-2)')
 
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:

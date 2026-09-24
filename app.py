@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.127.0'
+__version__ = '2.128.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2652,6 +2652,12 @@ def api_module_control_set():
             )
 
         _bus_write(cmis.REG_MODULE_CONTROL[1], bytes([val]))
+        # SoftwareReset (bit 3) restarts the module, and until it is
+        # manageable again - up to tMgmtInit (Table 10-2) - it may refuse
+        # every access. The first read after a reset was a failure.
+        if val & 0x08:
+            _state['holdoff_until'] = (time.monotonic()
+                                       + cmis.TIMING_SECONDS['tMgmtInit'])
         time.sleep(0.05)
         # A reset restarts the module, which restores PageMapping to its
         # default, so the page we think is selected no longer applies.
@@ -2689,9 +2695,21 @@ def _control_transition(action, body) -> dict:
     else:
         return {}
     d = dur.get(which) or {}
-    return {'requested': action or 'fields', 'target_state': target,
-            'max_seconds': d.get('max_seconds'), 'label': d.get('label'),
-            'advertisement': '01h:167 %s' % which}
+    out = {'requested': action or 'fields', 'target_state': target,
+           'max_seconds': d.get('max_seconds'), 'label': d.get('label'),
+           'advertisement': '01h:167 %s' % which}
+    if target is None:
+        # Before powering up, the module has to become manageable at all:
+        # tMgmtInit (Table 10-2), which 01h:167 does not include. Measured
+        # against ModulePwrUp alone, the wait was over before a module
+        # taking its full two seconds had answered once.
+        init = cmis.TIMING_SECONDS['tMgmtInit']
+        out['max_seconds'] = (None if d.get('max_seconds') is None
+                              else init + d['max_seconds'])
+        out['label'] = '%g s MgmtInit (Table 10-2) + %s' % (
+            init, d.get('label') or 'an unadvertised ModulePwrUp')
+        out['advertisement'] = 'Table 10-2 tMgmtInit + 01h:167 %s' % which
+    return out
 
 
 def _nominal_media_lanes(groups, app_select, apps):

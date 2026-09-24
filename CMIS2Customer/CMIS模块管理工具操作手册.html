@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.127.0<br>
+      <b>版本</b>　2.128.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.127.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.127.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.128.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.128.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1531,6 +1531,7 @@
     <b>软复位不宣称目标状态</b>：它要先走 MgmtInit，
     最后停在低功耗还是 <code>ModuleReady</code>，取决于它回来时那两个低功耗请求位——
     所以只等到「状态不再变化」为止。<br>
+    软复位的等待时长是 MgmtInit 的最长 <b>2 秒</b>（Table 10-2 tMgmtInit）<b>加上</b> ModulePwrUp 的声明时长；MgmtInit 期间模块可能完全不应答，工具会在这段时间内自动重试读取。<br>
     模块没声明这个时间时，退回到原来的等待时长。<br>
     <b>演示模块是瞬间切换的</b>，所以这个问题在演示里看不出来——
     它只在按自己声明的时间走的真实模块上出现。</span>
@@ -1716,6 +1717,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>软复位之后,先等模块能被管理</h3>
+  <p>规范 Table 10-2:从复位释放到模块能读出寄存器默认值,最长 <b>2 秒</b>(tMgmtInit);Table 8-11 说软件复位「和把 Reset 硬件信号拉低足够时间再释放效果相同」,所以这 2 秒同样适用于 Control 面板上的复位按钮。这段时间里模块可以对任何读写都不应答,之后才开始上电(ModulePwrUp)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具等待复位完成时只按 ModulePwrUp 的声明时长(<code>01h:167</code>,演示模块是 100–500 ms)算,复位后的第一次读取也不重试。在一个真用满 MgmtInit 时间的模块上,复位后第一次读状态就直接报错,页面的等待也可能在模块一次都没应答之前就结束了。</span>
+  </div>
+  <p>现在复位的等待预算是「2 秒 MgmtInit(Table 10-2)+ ModulePwrUp 声明时长」,复位后的读写在这 2 秒内被拒会自动重试;超过仍不应答,才报错。进入/退出低功耗不经过 MgmtInit,照旧只按声明时长等。</p>
 
   <h3>Tx 开关的时间上限,模块说了不算</h3>
   <p>规范 Table 10-8 的注 1:「这里给出的数值是 <code>MaxDurationDPTxTurnOff</code> 和 <code>MaxDurationDPTxTurnOn</code>(01h:168)这类声明时长的上限」——Tx 输出关断最长 <b>100 ms</b>(ton_txdis),开启最长 <b>400 ms</b>(toff_txdis)。</p>
@@ -4368,7 +4377,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.127.0<br>
+    CMIS Module Manager 操作手册 v2.128.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

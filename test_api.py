@@ -13837,8 +13837,10 @@ class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):
         self._connect()
         t = self._control(action='reset')['transition']
         self.assertIsNone(t['target_state'])
+        # MgmtInit first (tMgmtInit, Table 10-2), then ModulePwrUp - see
+        # TestAResetIsWaitedOutFromMgmtInit.
         self.assertEqual(t['max_seconds'],
-                         app_module._state['caps']['durations']
+                         2.0 + app_module._state['caps']['durations']
                          ['module_pwr_up']['max_seconds'])
 
     def test_the_direct_field_form_is_covered_too(self):
@@ -19004,6 +19006,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
+        '10-2': 'Effect Latency Timings',
         '10-4': 'Maximum ACCESS Hold-Off Durations',
         '10-5': 'Content Dependency Timings',
         '10-6': 'Condition to Interrupt Timings',
@@ -29767,6 +29770,111 @@ class TestTheTxTurnOnBudgetHasACeiling(CMISTestCase):
             "state_max_label: '10-50 ms'})", 'dpStateNote')
         self.assertIn('this module said', own)
         self.assertNotIn('CMIS allows', own)
+
+class TestAResetIsWaitedOutFromMgmtInit(CMISTestCase):
+    """Table 10-2: tMgmtInit, up to 2000 ms "from power-on, hot plug, or Reset
+    release until the START condition of a READ retrieving the default
+    register value of an arbitrary register". Table 8-11: the effect of a
+    SoftwareReset "is the same as asserting the Reset hardware signal for the
+    appropriate hold time, followed by its de-assertion".
+
+    So after the Control panel's Reset the module may answer nothing for two
+    seconds, and only then power up. The tool measured the wait against
+    ModulePwrUp alone (01h:167, 100-500 ms on the demo modules), and the first
+    read after the reset was not retried at all: on a module still in
+    MgmtInit it failed, and the page's wait for the new state could be over
+    before the module had answered once."""
+
+    def _connect(self, mgmt_init=0.0):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['backend'].MGMT_INIT_S = mgmt_init
+
+    def _control(self, body):
+        return self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    # ---- the budget -------------------------------------------------------------
+    def test_a_reset_budget_starts_with_mgmt_init(self):
+        self._connect()
+        t = self._control({'action': 'reset'})['transition']
+        pwr_up = _state['caps']['durations']['module_pwr_up']['max_seconds']
+        self.assertAlmostEqual(t['max_seconds'], 2.0 + pwr_up)
+        self.assertIn('Table 10-2', t['label'])
+        self.assertIn(_state['caps']['durations']['module_pwr_up']['label'],
+                      t['label'])
+        self.assertIn('tMgmtInit', t['advertisement'])
+        self.assertIsNone(t['target_state'])
+
+    def test_the_reset_field_gets_the_same_budget(self):
+        self._connect()
+        t = self._control({'software_reset': True})['transition']
+        self.assertIn('Table 10-2', t['label'])
+
+    def test_power_transitions_are_unchanged(self):
+        """MgmtInit is a reset's; going to or from low power does not pass
+        through it."""
+        self._connect()
+        for body, which in (({'action': 'low_power'}, 'module_pwr_dn'),
+                            ({'action': 'high_power'}, 'module_pwr_up')):
+            t = self._control(body)['transition']
+            self.assertEqual(t['max_seconds'], _state['caps']['durations'][
+                which]['max_seconds'], which)
+            self.assertNotIn('Table 10-2', t['label'])
+
+    def test_an_unadvertised_power_up_is_not_invented(self):
+        self._connect()
+        _state['caps']['durations']['module_pwr_up'] = {}
+        t = self._control({'action': 'reset'})['transition']
+        self.assertIsNone(t['max_seconds'])
+        self.assertIn('unadvertised', t['label'])
+
+    # ---- the first read ------------------------------------------------------------
+    def test_the_first_read_after_a_reset_waits_for_the_module(self):
+        self._connect(mgmt_init=0.3)
+        self._control({'action': 'reset'})
+        started = time.monotonic()
+        d = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        self.assertIsNotNone(d['module_state'])
+
+    def test_every_panel_reads_after_a_reset(self):
+        self._connect(mgmt_init=0.2)
+        self._control({'action': 'reset'})
+        for rule in ('/api/module/status', '/api/module/info',
+                     '/api/module/monitoring', '/api/module/datapath'):
+            self.assertEqual(self.client.get(rule).status_code, 200, rule)
+
+    def test_a_module_that_never_comes_back_is_still_an_error(self):
+        """The window is Table 10-2's; past it the silence is a fault."""
+        import cmis_registers as c
+        self._connect(mgmt_init=5.0)
+        saved = c.TIMING_SECONDS['tMgmtInit']
+        c.TIMING_SECONDS['tMgmtInit'] = 0.2
+        try:
+            self._control({'action': 'reset'})
+            started = time.monotonic()
+            rv = self.client.get('/api/module/status')
+        finally:
+            c.TIMING_SECONDS['tMgmtInit'] = saved
+        self.assertNotEqual(rv.status_code, 200)
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_only_a_reset_opens_the_long_window(self):
+        self._connect()
+        self._control({'action': 'low_power'})
+        left = _state['holdoff_until'] - time.monotonic()
+        self.assertLess(left, 0.05, 'a low power request is not a reset')
+        self._control({'action': 'reset'})
+        left = _state['holdoff_until'] - time.monotonic()
+        self.assertGreater(left, 1.5)
+
+    def test_the_constant_is_the_table_s(self):
+        import cmis_registers as c
+        self.assertEqual(c.TIMING_SECONDS['tMgmtInit'], 2.0)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
