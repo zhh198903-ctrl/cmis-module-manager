@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.128.0<br>
+      <b>版本</b>　2.129.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.128.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.128.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.129.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.129.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>监控读数里的「NA」:模块自己说「没有有效采样」</h3>
+  <p>规范 7.10.2 / Table 7-8 给每个基础监控量规定了一个 <b>NA 值</b>——模块拿不到有效采样时填的特殊数值:温度、TEC 电流、激光器温度是 <code>-32768</code>;Vcc、Tx 偏置、Tx 光功率是 <code>0</code>;Rx 光功率分两种,<code>0</code> 表示通道未使用,<code>1</code> 表示通道在用但暂时没有有效采样。模块在 <code>0Ch:192.7</code>(NaSupported,Table 8-73)声明它使用这些值。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具在 CMIS 5.4 面板上解析并显示了这一位,却没有用到读数上:温度没有有效采样时显示 <b>-128 °C</b>;Rx 通道没有有效采样时显示 <b>0.1 µW(-40 dBm)</b>——正好是真实接收机会报的范围,看上去就是一个读数。内置的 5 个演示模块(1600G DR8 / 16 lane、24 lane、两个相干可调)都声明了支持。</span>
+  </div>
+  <p>现在模块声明支持 NA 值时,这些读数显示为 <b>NA</b>,并写明原因(Rx 光功率会区分「通道未使用」和「暂无有效采样」);悬停说明依据。没有声明的模块,数值照原样显示——工具不会自己认定 -128 °C 不可能。Tx 关闭的通道在这些模块上报 0,按规范就是 Tx 光功率的 NA 值,所以会显示 NA。</p>
+  <p>顺带修正:Module Info 里的温度 / 电压行,模块没实现该监控时以前会显示「undefined °C」,现在显示「not implemented」。</p>
 
   <h3>软复位之后,先等模块能被管理</h3>
   <p>规范 Table 10-2:从复位释放到模块能读出寄存器默认值,最长 <b>2 秒</b>(tMgmtInit);Table 8-11 说软件复位「和把 Reset 硬件信号拉低足够时间再释放效果相同」,所以这 2 秒同样适用于 Control 面板上的复位按钮。这段时间里模块可以对任何读写都不应答,之后才开始上电(ModulePwrUp)。</p>
@@ -4377,7 +4386,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.128.0<br>
+    CMIS Module Manager 操作手册 v2.129.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -912,8 +912,8 @@ async function loadInfo() {
     ['FW Revision',     firmwareCell(d.fw_revision, d.fw_active),                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
     ['Inactive FW',     firmwareCell(d.fw_inactive_revision, d.fw_inactive_decoded),                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
-    ['Temperature',     `${s.temperature_c?.toFixed(2)} °C`,                                     'Lower', '0x0E–0x0F',   'Module Temperature (s16/256)'],
-    ['Supply Voltage',  `${s.voltage_v?.toFixed(4)} V`,                                          'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV)'],
+    ['Temperature',     moduleMonitorCell(s.temperature_c, 2, '°C', (s.monitors_present || {}).temperature, (s.na || {}).temperature, '01h:159.0'), 'Lower', '0x0E–0x0F',   'Module Temperature (s16/256); NA value -32768 (Table 7-8)'],
+    ['Supply Voltage',  moduleMonitorCell(s.voltage_v, 4, 'V', (s.monitors_present || {}).vcc, (s.na || {}).vcc, '01h:159.1'), 'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV); NA value 0 (Table 7-8)'],
     ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
     // The API has computed this from Lower 0x03 since the beginning and
     // nothing displayed it. CMIS defines the line in one sentence - it is
@@ -949,7 +949,8 @@ async function loadInfo() {
     const shown = a.unit === 'degC' ? `${a.value} °C`
                 : a.unit ? `${a.value} ${a.unit}` : `${a.value}`;
     rows.push([`Aux${a.index} — ${a.name}`,
-               esc(shown) + monitorFlagVerdict(a.flags), 'Lower', addr,
+               (a.na ? naCell('no valid sample') : esc(shown))
+               + monitorFlagVerdict(a.flags), 'Lower', addr,
                `Aux${a.index}MonValue; observable advertised in 01h:145.${a.index - 1}`
                + (a.observable === 'tec_current'
                   ? ' — signed percentage of the maximum TEC current: '
@@ -2064,13 +2065,18 @@ async function _loadMonitoringOnce() {
         + what + ' monitor (' + reg + '), so there is no reading to show')}">`
       + `${what}: not implemented <span class="reg-meta">${reg}</span></span>`;
 
+    const na = s.na || {};
     summaryEl.innerHTML =
-      (tempHas
+      (tempHas && na.temperature
+        ? 'Temp: ' + naCell('no valid sample', true)
+        : tempHas
         ? `<span class="${tempClass}" title="${esc(tempWhy)}">Temp: ${s.temperature_c?.toFixed(2)} °C</span>`
           + (tMax != null ? `<span class="reg-meta"> rated ${tMin}…${tMax} °C</span>` : '')
         : absent('Temp', '01h:159.0')) +
       `&ensp;|&ensp;` +
-      (vccHas
+      (vccHas && na.vcc
+        ? 'Voltage: ' + naCell('no valid sample', true)
+        : vccHas
         ? `<span class="${vClass}" title="${esc(vWhy)}">Voltage: ${s.voltage_v?.toFixed(4)} V</span>`
           + (vMin != null ? `<span class="reg-meta"> min ${vMin} V</span>` : '')
         : absent('Voltage', '01h:159.1')) +
@@ -2158,6 +2164,7 @@ async function _loadMonitoringOnce() {
         + 'power are per media lane (Table 8-99), so there is nothing here '
         + 'to measure')}">no such media lane<br><small>00h:210</small></span>`;
     const absentLane = lane.media_lane_present === false;
+    const laneNa = lane.na || [];
     // A monitor the module does not implement has no reading to colour. It
     // read zero, which the threshold comparison called an alarm - the tool
     // announcing a dark laser on a module that never claimed to measure one.
@@ -2198,13 +2205,16 @@ async function _loadMonitoringOnce() {
     return `<tr>
       <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
       <td class="${txCls}" title="${esc(txTip)}">${txDbm == null
-        ? (absentLane ? noLane : noMon('01h:160.1'))
+        ? (absentLane ? noLane : laneNa.includes('tx_power')
+           ? naCell('no valid sample') : noMon('01h:160.1'))
         : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${
-        lane.tx_bias_ma == null ? (absentLane ? noLane : noMon('01h:160.0'))
+        lane.tx_bias_ma == null ? (absentLane ? noLane : laneNa.includes('tx_bias')
+                                   ? naCell('no valid sample') : noMon('01h:160.0'))
                                 : `${lane.tx_bias_ma.toFixed(3)} mA`}</td>
       <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${rxDbm == null
-        ? (absentLane ? noLane : noMon('01h:160.2'))
+        ? (absentLane ? noLane : laneNa.includes('rx_power')
+           ? naCell(lane.rx_power_na || 'no valid sample') : noMon('01h:160.2'))
         : `${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
           title="${esc(dpStateNote(lane))}">${lane.datapath_state}${
@@ -3182,6 +3192,30 @@ async function applyDatapath(immediate) {
 // So wait on the module's own budget rather than a number chosen here, and
 // stop as soon as it arrives. Where the module advertises nothing, fall back
 // to what the old code did rather than waiting forever.
+// Table 7-8: the module's own "no valid sample" for a monitor, which it
+// reports as a special raw value where it advertises NA values (0Ch:192.7).
+// That value is a flag, not a reading - -32768 is not -128 C, and Rx power 1
+// is not 0.1 uW.
+function naCell(why, inline) {
+  const tip = esc('The module reports its NA value for this monitor: ' + why
+    + '. Table 7-8 defines a special value per monitor for "when the relevant '
+    + 'monitor cannot provide a valid sample"; this module advertises that it '
+    + 'uses them (NaSupported, 0Ch:192.7).');
+  return `<span class="reg-meta" title="${tip}">NA`
+    + (inline ? ` (${esc(why)})` : `<br><small>${esc(why)}</small>`) + '</span>';
+}
+
+// Module Info's monitor rows formatted a null, so a module without the
+// monitor showed "undefined °C". Absent, NA and a reading are three answers.
+function moduleMonitorCell(value, digits, unit, present, na, reg) {
+  if (present === false) {
+    return `<span class="reg-meta">not implemented <small>${reg}</small></span>`;
+  }
+  if (na) return naCell('no valid sample', true);
+  if (value == null) return '\u2014';
+  return `${value.toFixed(digits)} ${unit}`;
+}
+
 async function awaitModuleTransition(transition, onTick) {
   const budgetMs = transition && typeof transition.max_seconds === 'number'
     ? Math.min(transition.max_seconds * 1000, 30000) : 400;

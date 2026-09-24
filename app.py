@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.128.0'
+__version__ = '2.129.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1269,6 +1269,13 @@ def _discover_capabilities() -> dict:
         # otherwise. The lane mapping is what knows.
         caps['wavelength']['multi_wavelength'] = cmis.is_multi_wavelength(
             caps['media_lane_map'])
+        # Static, so read once: whether the monitors report Table 7-8's NA
+        # values. Parsed on the 5.4 panel and applied nowhere, it let a
+        # temperature with no valid sample read -128 C.
+        caps['na_values'] = bool(caps.get('page_0ch_supported')) and \
+            cmis.na_values_advertised(
+                _read_upper(*cmis.REG_CONSOLIDATED_PM),
+                _read_upper(*cmis.REG_FEATURE_DETAILS)[0])
         # Last: which pages exist is decided by advertisements read above, so
         # checking earlier would gate on a capability block that is not
         # filled in yet and quietly skip every page but 00h.
@@ -1638,6 +1645,17 @@ def api_module_status():
             if not _monitor_present(_MODULE_FLAG_MONITOR[name]):
                 temp_alarms[name] = None
 
+        # Table 7-8: where the module uses NA values, these raw readings are
+        # its statement that there is no valid sample - not a temperature of
+        # -128 C or a supply of 0 V.
+        na_on = bool(_caps.get('na_values'))
+        na = {
+            'temperature': na_on and (struct.unpack('>h', temp_raw[:2])[0]
+                                      == cmis.NA_TEMPERATURE),
+            'vcc': na_on and (struct.unpack('>H', volt_raw[:2])[0]
+                              == cmis.NA_VCC),
+        }
+
         aux_monitors = []
         for idx, raw in ((1, aux1_raw), (2, aux2_raw), (3, aux3_raw)):
             key = 'aux%d' % idx
@@ -1645,10 +1663,13 @@ def api_module_status():
                 continue                  # the module says it has no such monitor
             observable = _obs.get(key, 'custom')
             value, unit = cmis.parse_aux_value(raw, observable)
+            aux_na = (na_on and observable in cmis.NA_AUX and
+                      struct.unpack('>h', raw[:2])[0] == cmis.NA_AUX[observable])
             name_en, name_zh = cmis.AUX_OBSERVABLE_NAMES[observable]
             aux_monitors.append({
                 'index': idx, 'observable': observable, 'name': name_en,
-                'name_zh': name_zh, 'value': value, 'unit': unit,
+                'name_zh': name_zh, 'value': None if aux_na else value,
+                'unit': unit, 'na': aux_na,
                 # The value and its thresholds were already on screen; this is
                 # the module's own verdict on them, and it is destroyed by the
                 # read that produced the value.
@@ -1683,9 +1704,12 @@ def api_module_status():
                 k for k, v in temp_alarms.items()
                 if v and module_flag_masks.get(k)),
             'temperature_c': (round(cmis.parse_temperature(temp_raw), 4)
-                              if _monitor_present('temperature') else None),
+                              if _monitor_present('temperature')
+                              and not na['temperature'] else None),
             'voltage_v': (round(cmis.parse_voltage(volt_raw), 4)
-                          if _monitor_present('vcc') else None),
+                          if _monitor_present('vcc') and not na['vcc']
+                          else None),
+            'na': na,
             # So the panel can say which reading is missing and why, rather
             # than leaving a blank cell that reads as a failed poll.
             'monitors_present': {
@@ -2136,11 +2160,31 @@ def api_module_monitoring():
         has_rx_pwr = _monitor_present('rx_optical_power')
         has_bias = _monitor_present('tx_bias')
 
+        # Table 7-8's NA values, where the module advertises them: 0 for Tx
+        # power and bias, and for Rx power 0 (lane not in use) or 1 (in use,
+        # no valid sample) - the last one reads as 0.1 uW, -40 dBm, and was
+        # shown as a measurement.
+        na_on = bool((_state.get('caps') or {}).get('na_values'))
+
         lanes = []
         for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
             rx_uw = cmis.parse_power_uw(rx_power_raw[i*2:(i+1)*2])
             bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2], bias_scale)
+            raw_of = lambda block: int.from_bytes(block[i*2:(i+1)*2], 'big')
+            lane_na = []
+            rx_na = None
+            if na_on:
+                if raw_of(tx_power_raw) == cmis.NA_TX_POWER:
+                    lane_na.append('tx_power')
+                if raw_of(tx_bias_raw) == cmis.NA_TX_BIAS:
+                    lane_na.append('tx_bias')
+                rx_na = cmis.NA_RX_POWER.get(raw_of(rx_power_raw))
+                if rx_na:
+                    lane_na.append('rx_power')
+            has_tx = has_tx_pwr and 'tx_power' not in lane_na
+            has_rx = has_rx_pwr and 'rx_power' not in lane_na
+            has_b = has_bias and 'tx_bias' not in lane_na
             # Table 8-99 calls these three "Media Lane-Specific Monitors", and
             # the rows are host lanes. On a module that carries more host
             # lanes than media lanes - a coherent one takes eight into a
@@ -2152,13 +2196,16 @@ def api_module_monitoring():
             lanes.append({
                 'lane': i + 1,
                 'media_lane_present': media,
-                'tx_power_uw': round(tx_uw, 2) if has_tx_pwr and media else None,
+                'tx_power_uw': round(tx_uw, 2) if has_tx and media else None,
                 'tx_power_dbm': (round(cmis.uw_to_dbm(tx_uw), 2)
-                                 if has_tx_pwr and media else None),
-                'rx_power_uw': round(rx_uw, 2) if has_rx_pwr and media else None,
+                                 if has_tx and media else None),
+                'rx_power_uw': round(rx_uw, 2) if has_rx and media else None,
                 'rx_power_dbm': (round(cmis.uw_to_dbm(rx_uw), 2)
-                                 if has_rx_pwr and media else None),
-                'tx_bias_ma': round(bias_ma, 3) if has_bias and media else None,
+                                 if has_rx and media else None),
+                'tx_bias_ma': round(bias_ma, 3) if has_b and media else None,
+                # Which readings were the module's NA, and for Rx power why.
+                'na': lane_na if media else [],
+                'rx_power_na': rx_na if media else None,
                 'datapath_state': dp_states[i],
                 'datapath_state_kind': cmis.dp_state_kind(dp_states[i]),
                 # 6.3.3: the Flags of this lane's monitors are assured only in

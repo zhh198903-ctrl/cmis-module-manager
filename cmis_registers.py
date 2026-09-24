@@ -3253,6 +3253,33 @@ def feature_claim_conflicts(feature: dict, details: dict, label: str) -> list:
     }]
 
 
+# Table 7-8 (7.10.2): each basic performance monitor has a pseudo-NA value,
+# "a special sample value ... representing the situation when the relevant
+# monitor cannot provide a valid sample, for any reason". A module says it
+# uses them with NaSupported (0Ch:192.7, Table 8-73), under the Consolidated
+# PM feature (0Ch:160-161). Raw register values, before any scaling.
+NA_TEMPERATURE = -32768                 # TempMon, S16
+NA_VCC = 0                              # VccMon, U16
+NA_AUX = {'tec_current': -32768,        # S16
+          'laser_temperature': -32768,  # S16
+          'vcc2': 0}                    # Aux3 additional voltage
+NA_TX_POWER = 0                         # OpticalPowerTx, U16
+NA_TX_BIAS = 0                          # LaserBiasTx, U16
+# "Optical Power is the only monitor where static and dynamic reasons of
+# unavailability are distinguished" (note 3): 0 for a lane not in use, 1 for
+# a lane in use that has no valid sample.
+NA_RX_POWER = {0: 'lane not in use', 1: 'no valid sample'}
+
+
+def na_values_advertised(pm_adv: bytes, details_byte: int) -> bool:
+    """Whether this module reports Table 7-8's NA values: Consolidated PM
+    advertised (Table 8-71), and NaSupported set in its details (Table 8-73).
+    "When a module advertises that a named feature is not supported, the
+    feature details of that feature ... should be ignored by the host"."""
+    return (parse_feature_advertisement(pm_adv)['supported']
+            and bool(details_byte & 0x80))
+
+
 def parse_feature_advertisement(raw: bytes) -> dict:
     """Table 8-71. Byte 0 is the CMIS revision the feature is defined by, and
     zero there means the feature is absent - not "revision 0.0"."""

@@ -8135,8 +8135,11 @@ class TestAShippedProfileDemonstratesTheLaneEscape(CMISTestCase):
             content_type='application/json'))
         lanes = self.assertOk(
             self.client.get('/api/module/monitoring'))['data']['lanes']
-        self.assertEqual(lanes[0]['tx_power_uw'], 0)
-        self.assertEqual(lanes[2]['tx_power_uw'], 0)
+        # This profile advertises NA values (0Ch:192.7), and 0 is Tx power's
+        # (Table 7-8): the dark laser is reported as no valid sample.
+        for lane in (lanes[0], lanes[2]):
+            self.assertIsNone(lane['tx_power_uw'])
+            self.assertIn('tx_power', lane['na'])
 
     def test_a_profile_the_legacy_field_can_spell_does_not_use_the_escape(self):
         """01h:174 is not required to exist on a module answering 00b/01b/10b,
@@ -16033,7 +16036,7 @@ class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
     def test_each_lane_cell_checks_for_a_missing_reading_first(self):
         js = self._js()
         i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
-        row = js[i:i + 900]
+        row = js[i:js.index('</tr>', i)]
         for guard in ('txDbm == null', 'lane.tx_bias_ma == null',
                       'rxDbm == null'):
             self.assertIn(guard, row, guard)
@@ -16049,7 +16052,7 @@ class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
         self.assertIn('${reg}', body,
                       'the cell does not print the register it was given')
         i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
-        row = js[i:i + 900]
+        row = js[i:js.index('</tr>', i)]
         for reg in ('01h:160.0', '01h:160.1', '01h:160.2'):
             self.assertIn(reg, row, reg)
 
@@ -19006,6 +19009,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
+        '7-8': 'CMIS Performance Monitors and NA Values',
         '10-2': 'Effect Latency Timings',
         '10-4': 'Maximum ACCESS Hold-Off Durations',
         '10-5': 'Content Dependency Timings',
@@ -29875,6 +29879,174 @@ class TestAResetIsWaitedOutFromMgmtInit(CMISTestCase):
     def test_the_constant_is_the_table_s(self):
         import cmis_registers as c
         self.assertEqual(c.TIMING_SECONDS['tMgmtInit'], 2.0)
+
+class TestAMonitorSaysWhenItHasNoSample(CMISTestCase):
+    """Table 7-8 (7.10.2) gives each basic performance monitor a pseudo-NA
+    value, "a special sample value ... representing the situation when the
+    relevant monitor cannot provide a valid sample": -32768 for temperature,
+    TEC current and laser temperature, 0 for Vcc, Tx bias and Tx power, and
+    for Rx power 0 (lane not in use) or 1 (in use, no valid sample).
+
+    A module says it uses them with NaSupported (0Ch:192.7, Table 8-73), and
+    five demo modules do. The tool decoded that bit on the CMIS 5.4 panel and
+    applied it nowhere, so a temperature with no valid sample read -128 C
+    and an Rx lane with no valid sample read 0.1 uW - -40 dBm, a number in
+    the range a real receiver reports."""
+
+    _run_js = TestDiagnosticsOfALaneThatIsNotThere._run_js
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _force(self, backend, lower=None, p11=None):
+        """Set raw registers after the mock's own monitor refresh."""
+        real = backend._update_dynamic_values
+
+        def forced():
+            real()
+            for addr, val in (lower or {}).items():
+                backend._registers[None][addr] = val
+            for addr, val in (p11 or {}).items():
+                backend._registers[0x11][addr] = val
+        backend._update_dynamic_values = forced
+        self.addCleanup(setattr, backend, '_update_dynamic_values', real)
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _lanes(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes']
+
+    # ---- the advertisement ---------------------------------------------------------
+    def test_the_advertisement_is_read_at_connect(self):
+        self._connect('mock_24lane')
+        self.assertIs(_state['caps']['na_values'], True)
+        self._connect('mock_dr8')
+        self.assertIs(_state['caps']['na_values'], False)
+
+    def test_details_count_only_under_the_feature(self):
+        import cmis_registers as c
+        self.assertTrue(c.na_values_advertised(bytes([0x54, 0x00]), 0x80))
+        self.assertFalse(c.na_values_advertised(bytes([0x00, 0x00]), 0x80),
+                         'feature not supported: its details are ignored')
+        self.assertFalse(c.na_values_advertised(bytes([0x54, 0x00]), 0x7F))
+
+    # ---- module monitors ---------------------------------------------------------------
+    def test_a_temperature_with_no_sample_is_not_minus_128(self):
+        self._force(self._connect(), lower={0x0E: 0x80, 0x0F: 0x00})
+        s = self._status()
+        self.assertIsNone(s['temperature_c'])
+        self.assertTrue(s['na']['temperature'])
+
+    def test_without_the_advertisement_the_number_stands(self):
+        """The tool does not decide on its own that -128 C is impossible."""
+        self._force(self._connect('mock_dr8'), lower={0x0E: 0x80, 0x0F: 0x00})
+        s = self._status()
+        self.assertEqual(s['temperature_c'], -128.0)
+        self.assertFalse(s['na']['temperature'])
+
+    def test_a_supply_with_no_sample(self):
+        self._force(self._connect(), lower={0x10: 0x00, 0x11: 0x00})
+        s = self._status()
+        self.assertIsNone(s['voltage_v'])
+        self.assertTrue(s['na']['vcc'])
+
+    def test_each_aux_monitor_has_its_own_na_value(self):
+        be = self._connect('mock_coherent_zr')
+        self._force(be, lower={0x12: 0x80, 0x13: 0x00,     # TEC current
+                               0x14: 0x80, 0x15: 0x00,     # laser temp
+                               0x16: 0x00, 0x17: 0x00})    # Aux3 voltage
+        aux = {a['observable']: a for a in self._status()['aux']}
+        for name in ('tec_current', 'laser_temperature', 'vcc2'):
+            self.assertTrue(aux[name]['na'], name)
+            self.assertIsNone(aux[name]['value'], name)
+
+    def test_an_aux_value_that_is_not_its_na_is_a_reading(self):
+        be = self._connect('mock_coherent_zr')
+        self._force(be, lower={0x16: 0x80, 0x17: 0x00})   # -32768 on Aux3
+        aux = {a['observable']: a for a in self._status()['aux']}
+        self.assertFalse(aux['vcc2']['na'],
+                         'Aux3 voltage uses 0 for NA, not -32768')
+        self.assertIsNotNone(aux['vcc2']['value'])
+
+    # ---- lane monitors -------------------------------------------------------------------
+    def test_rx_power_names_both_reasons(self):
+        self._force(self._connect(), p11={0xBA: 0, 0xBB: 1, 0xBC: 0, 0xBD: 0})
+        lanes = self._lanes()
+        self.assertIsNone(lanes[0]['rx_power_uw'])
+        self.assertIsNone(lanes[0]['rx_power_dbm'])
+        self.assertEqual(lanes[0]['rx_power_na'], 'no valid sample')
+        self.assertEqual(lanes[1]['rx_power_na'], 'lane not in use')
+        self.assertIn('rx_power', lanes[0]['na'])
+
+    def test_tx_power_and_bias(self):
+        self._force(self._connect(), p11={0x9A: 0, 0x9B: 0, 0xAA: 0, 0xAB: 0})
+        lane = self._lanes()[0]
+        self.assertIsNone(lane['tx_power_uw'])
+        self.assertIsNone(lane['tx_bias_ma'])
+        self.assertEqual(sorted(lane['na']), ['tx_bias', 'tx_power'])
+
+    def test_a_real_reading_is_untouched(self):
+        self._connect()
+        lane = self._lanes()[2]
+        self.assertEqual(lane['na'], [])
+        self.assertIsNone(lane['rx_power_na'])
+        self.assertIsNotNone(lane['rx_power_uw'])
+
+    def test_a_missing_media_lane_is_not_called_na(self):
+        """No media lane is a different answer, with its own register - even
+        where the register for that lane happens to hold an NA value."""
+        be = self._connect('mock_coherent_zr')
+        self._force(be, p11={0xC0: 0, 0xC1: 1,        # lane 4 Rx power = 1
+                             0xA0: 0, 0xA1: 0})       # lane 4 Tx power = 0
+        lane = self._lanes()[3]
+        self.assertFalse(lane['media_lane_present'])
+        self.assertEqual(lane['na'], [])
+        self.assertIsNone(lane['rx_power_na'])
+
+    def test_a_module_without_na_keeps_its_zero(self):
+        self._force(self._connect('mock_dr8'), p11={0xBA: 0, 0xBB: 1})
+        lane = self._lanes()[0]
+        self.assertEqual(lane['rx_power_uw'], 0.1)
+        self.assertEqual(lane['na'], [])
+
+    # ---- the page ------------------------------------------------------------------------
+    def test_the_na_cell_says_what_it_is(self):
+        html = self._run_js("naCell('no valid sample')", 'esc', 'naCell')
+        self.assertIn('>NA', html)
+        self.assertIn('no valid sample', html)
+        self.assertIn('Table 7-8', html)
+        self.assertIn('0Ch:192.7', html)
+
+    def test_module_info_no_longer_prints_undefined(self):
+        """Formatting a null printed "undefined °C" for a module without the
+        monitor. Absent, NA and a reading are three different answers."""
+        out = self._run_js(
+            "[moduleMonitorCell(null, 2, '°C', false, false, '01h:159.0'),"
+            " moduleMonitorCell(null, 2, '°C', true, true, '01h:159.0'),"
+            " moduleMonitorCell(null, 2, '°C', true, false, '01h:159.0'),"
+            " moduleMonitorCell(41.5, 2, '°C', true, false, '01h:159.0')]",
+            'esc', 'naCell', 'moduleMonitorCell')
+        self.assertIn('not implemented', out[0])
+        self.assertIn('>NA', out[1])
+        self.assertEqual(out[2], '—')
+        self.assertEqual(out[3], '41.50 °C')
+        for cell in out:
+            self.assertNotIn('undefined', cell)
+
+    def test_every_lane_cell_asks(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read().replace('\r\n', '\n')
+        for field in ('tx_power', 'tx_bias', 'rx_power'):
+            self.assertIn("laneNa.includes('%s')" % field, js)
+        self.assertIn('naCell(lane.rx_power_na', js)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
