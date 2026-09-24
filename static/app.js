@@ -3464,18 +3464,20 @@ async function loadSnr() {
   // The two sides are advertised separately, so one can be measured and
   // the other not; a blank row would read as zero rather than as absent.
   // `present` is the media side's list; the host side has every lane.
-  const sideRow = (label, badge, vals, ok, bit, present) => ok
+  const sideRow = (label, badge, vals, ok, bit, present, na) => ok
     ? `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
       + vals.map((v, i) => present && mediaAbsent(present, i)
-          ? noMediaLaneCell(i + 1) : `<td>${fmt(v)}</td>`).join('') + '</tr>'
+          ? noMediaLaneCell(i + 1)
+          : (na || [])[i] ? `<td>${naCell('no valid sample')}</td>`
+          : `<td>${fmt(v)}</td>`).join('') + '</tr>'
     : `<tr><td style="color:var(--text-muted)">${label}<span class="reg-badge">${badge}</span></td>`
       + `<td colspan="8" class="placeholder-text">not reported `
       + `<span class="reg-badge">13h:130.${bit}</span></td></tr>`;
   tbody.innerHTML =
     sideRow('Host', '14h/0xC0+16 sel=0x06', res.data.host_snr_db, sup.host, '4',
-            null) +
+            null, res.data.host_snr_na) +
     sideRow('Media', '14h/0xC0+48 sel=0x06', res.data.media_snr_db, sup.media, '5',
-            res.data.media_lanes_present);
+            res.data.media_lanes_present, res.data.media_snr_na);
 }
 
 // ---------------------------------------------------------------------------
@@ -4621,10 +4623,13 @@ async function loadBer() {
     return;
   }
   _renderMeasurementWindow('ber-window', res.data);
-  const hostCells = res.data.lanes.map(l => `<td>${formatBer(l.host_ber)}</td>`).join('');
+  // Table 7-8: 0.5 is the BER's NA value, reported as such where the module
+  // advertises NA values - not a link failing every other bit.
+  const berCell = (v, na) => `<td>${na ? naCell('no valid sample') : formatBer(v)}</td>`;
+  const hostCells = res.data.lanes.map(l => berCell(l.host_ber, l.host_ber_na)).join('');
   const mediaCells = res.data.lanes.map((l, i) =>
     mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
-      : `<td>${formatBer(l.media_ber)}</td>`).join('');
+      : berCell(l.media_ber, l.media_ber_na)).join('');
   tbody.innerHTML =
     `<tr><td style="color:var(--text-muted)">Host<span class="reg-badge">14h/0xC0</span></td>${hostCells}</tr>` +
     `<tr><td style="color:var(--text-muted)">Media<span class="reg-badge">14h/0xD0</span></td>${mediaCells}</tr>`;
@@ -4659,17 +4664,24 @@ async function loadCounters() {
     `<td${psl ? ' class="text-muted" title="Pattern sync lost on this lane — counts are not a valid measurement"' : ''}>${html}</td>`;
 
   const present = res.data.media_lanes_present;
+  // MAX(U64) is the error count's NA value (Table 7-8); the BER built on it
+  // is no measurement either.
   const row = (side, field, fmt) => lanes.map((l, i) =>
     side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+      : field === 'error_count' && l[`${side}_errors_na`]
+        ? cell(l, false, naCell('no valid sample'))
       : cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
 
   const hostErrCells  = row('host', 'error_count', fmtCount);
   const hostBitCells  = row('host', 'total_bits', fmtCount);
-  const hostBerCells  = lanes.map(l => cell(l, l.host_psl, fmtBer(l.host_ber, l.host_psl))).join('');
+  const hostBerCells  = lanes.map(l => l.host_errors_na
+    ? cell(l, false, naCell('no valid error count'))
+    : cell(l, l.host_psl, fmtBer(l.host_ber, l.host_psl))).join('');
   const mediaErrCells = row('media', 'error_count', fmtCount);
   const mediaBitCells = row('media', 'total_bits', fmtCount);
   const mediaBerCells = lanes.map((l, i) => mediaAbsent(present, i)
     ? noMediaLaneCell(l.lane)
+    : l.media_errors_na ? cell(l, false, naCell('no valid error count'))
     : cell(l, l.media_psl, fmtBer(l.media_ber, l.media_psl))).join('');
 
   const anyPsl = lanes.some(l => l.host_psl || l.media_psl);
@@ -4839,7 +4851,8 @@ async function loadLaser() {
     const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}`, 0x12, 0x98 + i * 2, 2,
       `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`));
     const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}`, 0x12, 0xA8 + i * 4, 4,
-      `U32 in units of 0.001 GHz, current ${l.frequency_thz.toFixed(6)} THz (read-only)`));
+      `U32 in units of 0.001 GHz, current ${l.frequency_na ? 'NA (Table 7-8)'
+        : l.frequency_thz.toFixed(6) + ' THz'} (read-only)`));
     const tipPwr = esc(regTipRange(`TargetOutputPowerTx${l.lane}`, 0x12, 0xC8 + i * 2, 2,
       `S16 in units of 0.01 dBm, current ${l.target_power_dbm} dBm`));
     const tipStat = esc(regTip({
@@ -4854,7 +4867,8 @@ async function loadLaser() {
       <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code, l.grid)}</select></td>
       <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
-      <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_thz.toFixed(6)}</td>
+      <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_na
+        ? naCell('no valid sample') : l.frequency_thz.toFixed(6)}</td>
       <td title="${tipPwr}"><input type="number" id="laser-pwr-${l.lane}" title="${tipPwr}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>
       <td>${supervisionCell(l, _relThresholds)}</td>
       <td title="${tipStat}">${lockIcon}</td>

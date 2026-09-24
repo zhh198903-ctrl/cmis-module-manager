@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.129.0<br>
+      <b>版本</b>　2.130.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.129.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.129.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.130.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.130.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>诊断页和激光调谐表的「NA」</h3>
+  <p>上一版把 Table 7-8 的 NA 值用到了监控面板。同一张表还规定了:实测激光频率(Page 12h,U32)的 NA 值是 <code>0</code>;SNR(U16)是 <code>0</code>;码型 BER(F16)是 <code>0.5</code>;码型误码数(U64)是最大值。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>在声明支持 NA 值的模块上,这些读数分别显示成 0 THz 的激光、0 dB 的 SNR、每两个比特错一个的链路、一千八百亿亿个误码——最后这个还会被除以比特数算成一个 BER。激光表更糟:实测频率一旦为空,表格根本画不出来。</span>
+  </div>
+  <p>现在这四处都显示 <b>NA</b> 并写明依据;误码数是 NA 时,由它算出的 BER 也显示 NA(「no valid error count」)。F16 的 0.5 有不止一种编码,按数值识别。未声明支持的模块照原样显示。</p>
 
   <h3>监控读数里的「NA」:模块自己说「没有有效采样」</h3>
   <p>规范 7.10.2 / Table 7-8 给每个基础监控量规定了一个 <b>NA 值</b>——模块拿不到有效采样时填的特殊数值:温度、TEC 电流、激光器温度是 <code>-32768</code>;Vcc、Tx 偏置、Tx 光功率是 <code>0</code>;Rx 光功率分两种,<code>0</code> 表示通道未使用,<code>1</code> 表示通道在用但暂时没有有效采样。模块在 <code>0Ch:192.7</code>(NaSupported,Table 8-73)声明它使用这些值。</p>
@@ -4386,7 +4394,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.129.0<br>
+    CMIS Module Manager 操作手册 v2.130.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

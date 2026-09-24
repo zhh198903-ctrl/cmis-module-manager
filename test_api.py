@@ -28336,7 +28336,9 @@ class TestDiagnosticsOfALaneThatIsNotThere(CMISTestCase):
         self.assertIn('res.data.media_lanes_present', media)
         host = body[body.index("sideRow('Host'"):]
         host = host[:host.index(')')]
-        self.assertTrue(host.rstrip().endswith('null'), host)
+        # The sixth argument is the media-lane list; the NA list follows it.
+        args = [a.strip() for a in host[host.index('(') + 1:].split(',')]
+        self.assertEqual(args[5], 'null', host)
 
     def test_the_marker_names_the_register_that_says_so(self):
         js = self._js()
@@ -30047,6 +30049,144 @@ class TestAMonitorSaysWhenItHasNoSample(CMISTestCase):
         for field in ('tx_power', 'tx_bias', 'rx_power'):
             self.assertIn("laneNa.includes('%s')" % field, js)
         self.assertIn('naCell(lane.rx_power_na', js)
+
+class TestDiagnosticsSayWhenTheyHaveNoSample(CMISTestCase):
+    """Round 79 applied Table 7-8's NA values to the Monitoring panel. The
+    same table gives them for the rest of what the tool shows: 0 for the
+    measured laser frequency (U32, Page 12h) and for SNR (U16), 0.5 for the
+    pattern BER (F16) and MAX(U64) for the pattern bit error count (Page
+    14h).
+
+    On a module that advertises NA values (NaSupported, 0Ch:192.7) these
+    read as a laser at 0 THz, an SNR of 0 dB, a link failing every other
+    bit, and eighteen quintillion errors - the last one divided by the bit
+    count into a BER. The laser table did worse: frequency_thz.toFixed() on
+    a null would have stopped it drawing at all."""
+
+    _run_js = TestDiagnosticsOfALaneThatIsNotThere._run_js
+
+    def _connect(self, backend='mock_zr16'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _overlay(self, backend, page, values, selector=None):
+        """Overlay bytes on every READ of `page` (and of the diagnostics
+        window only under `selector`), whatever the transaction size."""
+        real = backend.read_bytes
+
+        def read(addr, length):
+            data = bytearray(real(addr, length))
+            sel = backend._registers.get(0x14, {}).get(0x80)
+            if backend._current_page == page and (selector is None
+                                                  or sel == selector):
+                for i in range(length):
+                    if addr + i in values:
+                        data[i] = values[addr + i]
+            return bytes(data)
+        backend.read_bytes = read
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    # ---- Page 14h ----------------------------------------------------------------
+    def test_an_snr_of_zero_is_no_sample(self):
+        be = self._connect()
+        self._overlay(be, 0x14, {0xD0: 0, 0xD1: 0, 0xF0: 0, 0xF1: 0}, 0x06)
+        d = self._get('snr')
+        self.assertIsNone(d['host_snr_db'][0])
+        self.assertTrue(d['host_snr_na'][0])
+        self.assertIsNone(d['media_snr_db'][0])
+        self.assertTrue(d['media_snr_na'][0])
+        self.assertFalse(d['host_snr_na'][1])
+        self.assertIsNotNone(d['host_snr_db'][1])
+
+    def test_without_the_advertisement_zero_is_zero_db(self):
+        be = self._connect('mock_dr8')
+        self._overlay(be, 0x14, {0xD0: 0, 0xD1: 0}, 0x06)
+        d = self._get('snr')
+        self.assertEqual(d['host_snr_db'][0], 0.0)
+        self.assertFalse(d['host_snr_na'][0])
+
+    def test_a_ber_of_one_half_is_no_sample(self):
+        be = self._connect()
+        self._overlay(be, 0x14, {0xC0: 0xA9, 0xC1: 0xF4}, 0x01)   # 500e-3
+        lane = self._get('ber')['lanes'][0]
+        self.assertIsNone(lane['host_ber'])
+        self.assertTrue(lane['host_ber_na'])
+
+    def test_any_encoding_of_one_half(self):
+        """F16 spells 0.5 more than one way; 5e-1 is 0xB805."""
+        be = self._connect()
+        self._overlay(be, 0x14, {0xC0: 0xB8, 0xC1: 0x05}, 0x01)
+        self.assertTrue(self._get('ber')['lanes'][0]['host_ber_na'])
+
+    def test_media_ber_too(self):
+        be = self._connect()
+        self._overlay(be, 0x14, {0xD0: 0xA9, 0xD1: 0xF4}, 0x01)
+        lane = self._get('ber')['lanes'][0]
+        self.assertTrue(lane['media_ber_na'])
+        self.assertIsNone(lane['media_ber'])
+        self.assertFalse(lane['host_ber_na'])
+
+    def test_a_full_error_counter_is_no_count(self):
+        be = self._connect()
+        self._overlay(be, 0x14, {a: 0xFF for a in range(0xC0, 0xC8)}, 0x02)
+        lane = self._get('counters')['lanes'][0]
+        self.assertTrue(lane['host_errors_na'])
+        self.assertIsNone(lane['host_error_count'])
+        self.assertIsNone(lane['host_ber'],
+                          'a ratio built on the NA count is no measurement')
+        self.assertIsNotNone(lane['host_total_bits'])
+
+    def test_an_ordinary_count_is_a_count(self):
+        self._connect()
+        lane = self._get('counters')['lanes'][0]
+        self.assertFalse(lane['host_errors_na'])
+        self.assertIsNotNone(lane['host_error_count'])
+
+    # ---- Page 12h ------------------------------------------------------------------
+    def test_a_laser_at_zero_thz_is_no_sample(self):
+        be = self._connect()
+        self._overlay(be, 0x12, {0xA8: 0, 0xA9: 0, 0xAA: 0, 0xAB: 0})
+        lane = self._get('laser')['lanes'][0]
+        self.assertIsNone(lane['frequency_thz'])
+        self.assertTrue(lane['frequency_na'])
+
+    def test_a_tuned_laser_keeps_its_frequency(self):
+        self._connect()
+        lane = self._get('laser')['lanes'][0]
+        self.assertFalse(lane['frequency_na'])
+        self.assertGreater(lane['frequency_thz'], 180)
+
+    # ---- the page --------------------------------------------------------------------
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return re.sub(r'(?m)^\s*//.*$', '', f.read().replace('\r\n', '\n'))
+
+    def test_every_table_asks(self):
+        js = self._js()
+        for fn, needle in (
+                ('async function loadSnr', "(na || [])[i] ? `<td>${naCell("),
+                ('async function loadBer', 'berCell(l.host_ber, l.host_ber_na)'),
+                ('async function loadCounters', "l[`${side}_errors_na`]"),
+                ('async function loadCounters', 'l.host_errors_na'),
+                ('async function loadCounters', 'l.media_errors_na')):
+            i = js.index(fn)
+            body = js[i:js.index('\nasync function', i + 10)]
+            self.assertIn(needle, body, fn)
+
+    def test_the_laser_row_never_formats_a_null(self):
+        js = self._js()
+        for m in re.finditer(r'l\.frequency_thz\.toFixed', js):
+            before = js[max(0, m.start() - 120):m.start()]
+            self.assertIn('l.frequency_na', before,
+                          'frequency_thz formatted without asking for NA')
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

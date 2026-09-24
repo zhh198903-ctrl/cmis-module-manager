@@ -3269,6 +3269,16 @@ NA_TX_BIAS = 0                          # LaserBiasTx, U16
 # unavailability are distinguished" (note 3): 0 for a lane not in use, 1 for
 # a lane in use that has no valid sample.
 NA_RX_POWER = {0: 'lane not in use', 1: 'no valid sample'}
+NA_LASER_FREQ = 0                       # LaserFrequencyTx, U32
+NA_SNR = 0                              # SNR, U16
+NA_BER = 0.5                            # Pattern BER, F16
+NA_ERROR_COUNT = 2 ** 64 - 1            # Pattern bit errors, MAX(U64)
+
+
+def is_na_ber(value: float) -> bool:
+    """F16 has more than one encoding of 0.5 (500e-3, 5e-1), so the NA is
+    recognised by its value."""
+    return abs(value - NA_BER) < 1e-12
 
 
 def na_values_advertised(pm_adv: bytes, details_byte: int) -> bool:

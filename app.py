@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.129.0'
+__version__ = '2.130.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4320,10 +4320,17 @@ def api_module_snr():
         # once in bank 0.
         host_snr = []
         media_snr = []
+        # Table 7-8: 0 is SNR's NA value - no valid sample, not 0 dB.
+        na_on = bool((_state.get('caps') or {}).get('na_values'))
+        host_na, media_na = [], []
         for _bank, data in _read_diag_banks(0x06):
             for i in range(8):
-                host_snr.append(round(cmis.parse_snr_db(data[16 + i*2:18 + i*2]), 3))
-                media_snr.append(round(cmis.parse_snr_db(data[48 + i*2:50 + i*2]), 3))
+                for out, na_out, off in ((host_snr, host_na, 16),
+                                         (media_snr, media_na, 48)):
+                    raw = data[off + i*2:off + 2 + i*2]
+                    na = na_on and int.from_bytes(raw, 'little') == cmis.NA_SNR
+                    na_out.append(na)
+                    out.append(None if na else round(cmis.parse_snr_db(raw), 3))
         host_snr = host_snr[:_state['lanes']]
         present = _media_lanes_present()
         # Table 8-139 names these MediaSideSNRLane<i> - media lanes. On a
@@ -4332,9 +4339,13 @@ def api_module_snr():
         # measurement. Monitoring and Flags learned this; Diagnostics had not.
         media_snr = [v if present[i] else None
                      for i, v in enumerate(media_snr[:_state['lanes']])]
+        media_na = [v and present[i]
+                    for i, v in enumerate(media_na[:_state['lanes']])]
         return _ok({
             'host_snr_db':  host_snr if rep['host_side_snr'] else [],
             'media_snr_db': media_snr if rep['media_side_snr'] else [],
+            'host_snr_na': host_na[:_state['lanes']] if rep['host_side_snr'] else [],
+            'media_snr_na': media_na if rep['media_side_snr'] else [],
             'media_lanes_present': present,
             'supported': {'host': rep['host_side_snr'],
                           'media': rep['media_side_snr']},
@@ -4363,18 +4374,27 @@ def api_module_ber():
         # Host BER at 0xC0-0xCF, Media BER at 0xD0-0xDF (8 lanes x 2B each)
         lanes = []
         present = _media_lanes_present()
+        # Table 7-8: 0.5 is Pattern BER's NA value - no valid sample, not a
+        # link failing every other bit.
+        na_on = bool((_state.get('caps') or {}).get('na_values'))
         for _bank, ber_raw in _read_diag_banks(0x01, 32):
             for i in range(8):
                 lane = len(lanes) + 1
+                host = cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2])
+                # MediaSideBERLane<i> (Table 8-139); None for a media
+                # lane this module does not have (00h:210).
+                media = (cmis.parse_f16_ber(ber_raw[16 + i*2:16 + (i+1)*2])
+                         if lane <= len(present) and present[lane - 1]
+                         else None)
+                host_na = na_on and cmis.is_na_ber(host)
+                media_na = (na_on and media is not None
+                            and cmis.is_na_ber(media))
                 lanes.append({
                     'lane': lane,
-                    'host_ber': cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2]),
-                    # MediaSideBERLane<i> (Table 8-139); None for a media
-                    # lane this module does not have (00h:210).
-                    'media_ber': (cmis.parse_f16_ber(
-                        ber_raw[16 + i*2:16 + (i+1)*2])
-                        if lane <= len(present) and present[lane - 1]
-                        else None),
+                    'host_ber': None if host_na else host,
+                    'media_ber': None if media_na else media,
+                    'host_ber_na': host_na,
+                    'media_ber_na': media_na,
                 })
         lanes = lanes[:_state['lanes']]
         return _ok({'lanes': lanes, 'supported': True,
@@ -4499,6 +4519,10 @@ def api_laser_get():
             ft = struct.unpack(">h", fine_offset[i*2:i*2+2])[0]
             freq_mhz = struct.unpack(">I", current_freq[i*4:i*4+4])[0]
             freq_thz = freq_mhz / 1e6
+            # Table 7-8: 0 is LaserFrequencyTx's NA value - no valid sample,
+            # not a laser at 0 THz.
+            freq_na = bool((_state.get('caps') or {}).get('na_values')
+                           and freq_mhz == cmis.NA_LASER_FREQ)
             tgt_pwr = struct.unpack(">h", target_pwr[i*2:i*2+2])[0] * 0.01
             st = tuning_status[i]
             flags = cmis.parse_tuning_flags(tuning_flags[i])
@@ -4528,7 +4552,8 @@ def api_laser_get():
                 'channel_range': grid_channel_ranges.get(gc),
                 'fine_tuning_enabled': fine_en,
                 'fine_offset_ghz': ft * 0.001,
-                'frequency_thz': round(freq_thz, 6),
+                'frequency_thz': None if freq_na else round(freq_thz, 6),
+                'frequency_na': freq_na,
                 'target_power_dbm': round(tgt_pwr, 2),
                 'tuning_in_progress': bool((st >> 1) & 1),
                 'wavelength_locked': not bool(st & 1),
@@ -4800,6 +4825,9 @@ def api_module_counters():
         if not _diag_caps()['reporting']['bits_and_errors']:
             return _ok({'lanes': [], 'supported': False})
         lanes = []
+        # Table 7-8: MAX(U64) is the NA value of the pattern bit error count,
+        # and a ratio built on it is not a measurement either.
+        na_on = bool((_state.get('caps') or {}).get('na_values'))
         for sel, lane_start, side in [
             (0x02, 0, 'host'), (0x03, 4, 'host'),
             (0x04, 0, 'media'), (0x05, 4, 'media'),
@@ -4821,14 +4849,18 @@ def api_module_counters():
                     if entry is None:
                         entry = {'lane': lane_idx + 1}
                         lanes.append(entry)
-                    entry[f'{side}_error_count'] = error_count
+                    errors_na = na_on and error_count == cmis.NA_ERROR_COUNT
+                    entry[f'{side}_errors_na'] = errors_na
+                    entry[f'{side}_error_count'] = (None if errors_na
+                                                    else error_count)
                     entry[f'{side}_total_bits'] = total_bits
                     entry[f'{side}_psl'] = bool(psl)
                     # No bits counted is no measurement. 0.0 said "no errors",
                     # which is a result - and the page, unable to tell the two
                     # apart, printed a real zero-error run as "—" as well.
                     entry[f'{side}_ber'] = (error_count / total_bits
-                                            if total_bits > 0 else None)
+                                            if total_bits > 0 and not errors_na
+                                            else None)
 
         lanes.sort(key=lambda x: x['lane'])
         # Selectors 04h/05h are "Media Lane 1-4 / 5-8 errors and bits
@@ -4840,6 +4872,7 @@ def api_module_counters():
             if i < len(present) and not present[i]:
                 for field in ('error_count', 'total_bits', 'psl', 'ber'):
                     entry['media_' + field] = None
+                entry['media_errors_na'] = False
         return _ok({'lanes': lanes, 'supported': True,
                     'media_lanes_present': present,
                     'measurement': _measurement_window()})

@@ -245,7 +245,7 @@ Table 8-99 的标题就是「Media Lane-Specific Monitors」。而 Monitoring �
 
 DataPath State / Config Status 是**主机侧**的,每行照常。
 
-**NA 值**（Table 7-8）：模块在 `0Ch:192.7` 声明 NaSupported 时，监控读到 NA 原始值会返回 `null` 并标出来——`/api/module/status` 的 `na.temperature` / `na.vcc`、`aux[].na`；`/api/module/monitoring` 每通道的 `na`（`tx_power` / `tx_bias` / `rx_power`）和 `rx_power_na`（`lane not in use` = 原始值 0，`no valid sample` = 原始值 1）。这时 `null` 是模块自己说没有有效采样，不是没实现、也不是没有这条媒体通道。
+**NA 值**（Table 7-8）：模块在 `0Ch:192.7` 声明 NaSupported 时，监控读到 NA 原始值会返回 `null` 并标出来——`/api/module/status` 的 `na.temperature` / `na.vcc`、`aux[].na`；`/api/module/monitoring` 每通道的 `na`（`tx_power` / `tx_bias` / `rx_power`）和 `rx_power_na`（`lane not in use` = 原始值 0，`no valid sample` = 原始值 1）。这时 `null` 是模块自己说没有有效采样，不是没实现、也不是没有这条媒体通道。同样适用于诊断页和激光表：`/api/module/snr` 的 `host_snr_na` / `media_snr_na`（原始值 0），`/api/module/ber` 每通道的 `host_ber_na` / `media_ber_na`（0.5），`/api/module/counters` 的 `host_errors_na` / `media_errors_na`（误码数 U64 最大值；此时对应 BER 也是 `null`），`/api/module/laser` 的 `frequency_na`（实测频率 0）。
 
 过渡状态的 `state_max_seconds` / `state_overrun` 按 01h:144/168 声明判断；但 **DPTxTurnOn / DPTxTurnOff** 另有规范上限（Table 10-8：开启 400 ms、关断 100 ms，注 1 明说是声明值的上限）。模块声明得更长时取规范上限，此时 `state_max_from_spec` 为 true，`/api/module/capabilities` 的 `durations.dp_tx_turn_on/off.exceeds_spec` 标出超标的声明。
 
