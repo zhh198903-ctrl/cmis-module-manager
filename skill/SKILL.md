@@ -568,6 +568,12 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 固件故障标志
+
+`Lower 0x08` bit 1-3(Table 8-9):ModuleFirmwareErrorFlag、DataPathFirmwareErrorFlag、AbnormalFwIndicationFlag,闩锁读清。
+`GET /api/module/status` 带 `firmware_flags` / `firmware_flag_masks`,置位过的进 `seen`(`module_firmware_error` 等)。
+用户说「页面闪过一次固件错误就没了」:看 Module Info 的 Firmware Faults 行的历史标记,不是故障自己消失了。
+
 ## 门控测量看 last_gate
 
 Table 8-137:选择器 01h–06h 是实时结果,11h–15h 是最近一个已完成门控周期的结果(`13h:129.5` 声明支持)。

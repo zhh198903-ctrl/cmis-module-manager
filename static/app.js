@@ -941,6 +941,7 @@ async function loadInfo() {
      'Lower', '0x03[0]',
      'InterruptDeasserted (Table 8-6) — the module\'s own request for the host\'s attention, reported with its sense inverted. CMIS asserts it "as long as any Flag is set with its associated Mask cleared", so a Flag showing here with no Interrupt is one whose Mask is set'],
     ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
+    ['Firmware Faults', firmwareFlagCell(s), 'Lower', '0x08[3:1]', 'ModuleFirmwareErrorFlag, DataPathFirmwareErrorFlag and AbnormalFwIndicationFlag (Table 8-9) — latched, cleared by the read that reports them'],
   ];
 
   // Aux1-3 are plain S16 registers whose meaning is chosen by 01h:145: Aux2 is
@@ -1051,6 +1052,30 @@ function rebuildLaneColumns() {
         td.id = prefix.startsWith('lb-') ? `${prefix}-${i}` : `${prefix}-td-${i}`;
       }
     });
+}
+
+// Lower 8 bits 1-3 (Table 8-9), latched and clear-on-read like the state
+// change beside them: the module's own firmware, a subordinate one such as a
+// DSP's, and 5.4's "running Firmware content deviates from the Load" -
+// each shown now, or as history once the read has cleared it.
+function firmwareFlagCell(s) {
+  const FIRMWARE_FLAG_NAMES = {
+    module_firmware_error: 'Module firmware error',
+    datapath_firmware_error: 'Data path (DSP) firmware error',
+    abnormal_fw_flag: 'Firmware differs from its load',
+  };
+  const now = s.firmware_flags || {};
+  const seen = s.seen || [];
+  const masks = s.firmware_flag_masks || {};
+  const parts = Object.keys(FIRMWARE_FLAG_NAMES).map(k => {
+    const masked = masks[k]
+      ? ' <span class="flag-none" title="Its Mask (Lower 31) is set: the module raises no Interrupt for it">masked</span>'
+      : '';
+    if (now[k]) return `<span class="text-danger">${FIRMWARE_FLAG_NAMES[k]}</span>${masked}`;
+    if (seen.includes(k)) return `<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">${FIRMWARE_FLAG_NAMES[k]} since last clear</span>${masked}`;
+    return '';
+  }).filter(Boolean);
+  return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
 }
 
 // ModuleStateChangedFlag is latched and clear-on-read, so the poll that
@@ -1675,6 +1700,11 @@ function renderHealthIndicator(s, flags) {
     chips.push(['danger', '⚠', '', 'A monitored value is outside its alarm threshold right now']);
   if ((s.seen || []).includes('module_state_changed'))
     chips.push(['warning', '↺', '', 'The module entered a new Module State since the last Clear flag history - a reset or a power event']);
+  // Table 8-9: the module's own firmware, or a DSP's, reported a failure.
+  const fwFault = ['module_firmware_error', 'datapath_firmware_error']
+    .some(k => (s.firmware_flags || {})[k] || (s.seen || []).includes(k));
+  if (fwFault)
+    chips.push(['danger', '✖', '', 'The module reported a firmware failure (Lower 8, Table 8-9) since the last Clear flag history']);
   if (bounced)
     chips.push(['warning', '↯', String(bounced),
                 `${bounced} data path${bounced > 1 ? 's' : ''} went down and came back since the last Clear flag history`]);

@@ -2519,6 +2519,26 @@ FLAG_MASK_BLOCKS = (
 )
 
 
+# Table 8-9, Lower 8 bits 1-3: the firmware Flags, RO/COR like the rest of
+# the byte. ModuleStateChangedFlag (bit 0) has its own place in the status
+# reply; CdbCmdCompleteFlag1/2 (bits 6-7) are left out because this tool
+# issues no CDB command, so a completion is never its news.
+# (bit, key, register name)
+MODULE_FIRMWARE_FLAGS = (
+    (1, 'module_firmware_error', 'ModuleFirmwareErrorFlag'),
+    (2, 'datapath_firmware_error', 'DataPathFirmwareErrorFlag'),
+    # New in CMIS 5.4; advertised by 0Ch:194.4 AbnormalIndicationSupported.
+    (3, 'abnormal_fw_flag', 'AbnormalFwIndicationFlag'),
+)
+
+
+def parse_module_firmware_flags(byte8: int) -> dict:
+    """Lower 8 bits 1-3 (Table 8-9), or their Masks at Lower 31 (Table
+    8-12) - the Mask byte mirrors the Flag byte bit for bit."""
+    return {key: bool((byte8 >> bit) & 1)
+            for bit, key, _name in MODULE_FIRMWARE_FLAGS}
+
+
 def parse_module_monitor_flags(data: bytes, first: int = 0x08) -> dict:
     """Lower Memory 9-11 (Table 8-9), RO/COR.
 

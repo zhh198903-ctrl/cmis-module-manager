@@ -33442,6 +33442,128 @@ class TestAGateThatEndsSaysSo(CMISTestCase):
         self.assertIn("+ '>●</span>'}${gateNote}</td>`;", fn)
 
 
+class TestAFirmwareFaultIsNotForgotten(CMISTestCase):
+    """Table 8-9, Lower 8: bit 1 ModuleFirmwareErrorFlag ("self-supervision
+    of the main module firmware has detected a failure"), bit 2
+    DataPathFirmwareErrorFlag ("subordinated firmware in an auxiliary device
+    ... (e.g. a DSP) has failed"), bit 3 AbnormalFwIndicationFlag (new in
+    5.4) - all RO/COR, in the byte the status poll already reads.
+
+    The poll kept bit 0 and dropped the rest: a module reporting that its
+    own firmware had failed was read, cleared and forgotten on the next
+    refresh. Now the reply carries them and their Masks (Lower 31), they go
+    into the flag history, the status table has a Firmware Faults row and a
+    firmware error puts a chip in the header. CdbCmdCompleteFlag1/2 stay out:
+    this tool issues no CDB command."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def test_each_bit_is_its_own(self):
+        self._connect()
+        for value, key in ((0x02, 'module_firmware_error'),
+                           (0x04, 'datapath_firmware_error'),
+                           (0x08, 'abnormal_fw_flag')):
+            poke(0, 0x08, value)
+            flags = self._status()['firmware_flags']
+            self.assertEqual([k for k, v in flags.items() if v], [key], hex(value))
+
+    def test_the_history_keeps_them(self):
+        self._connect()
+        poke(0, 0x08, 0x06)
+        self.assertTrue(self._status()['firmware_flags']['module_firmware_error'])
+        d = self._status()
+        self.assertFalse(any(d['firmware_flags'].values()), 'COR: cleared')
+        self.assertIn('module_firmware_error', d['seen'])
+        self.assertIn('datapath_firmware_error', d['seen'])
+        self.assertNotIn('abnormal_fw_flag', d['seen'])
+
+    def test_clearing_the_history_forgets_them(self):
+        self._connect()
+        poke(0, 0x08, 0x02)
+        self._status()
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertNotIn('module_firmware_error', self._status()['seen'])
+
+    def test_the_masks_are_reported(self):
+        self._connect()
+        poke(0, 0x1F, 0x0A)
+        m = self._status()['firmware_flag_masks']
+        self.assertEqual(m, {'module_firmware_error': True,
+                             'datapath_firmware_error': False,
+                             'abnormal_fw_flag': True})
+
+    def test_a_state_change_and_cdb_completions_are_not_firmware(self):
+        self._connect()
+        poke(0, 0x08, 0xC1)
+        d = self._status()
+        self.assertFalse(any(d['firmware_flags'].values()))
+        self.assertTrue(d['module_state_changed'])
+
+    def test_they_are_not_monitor_alarms(self):
+        """alarm_active is "a monitored value is outside its alarm threshold"
+        - a firmware fault has a chip of its own."""
+        self._connect()
+        poke(0, 0x08, 0x06)
+        self.assertFalse(self._status()['alarm_active'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'eval(s.match(/function firmwareFlagCell\\([\\s\\S]*?\\r?\\n}\\r?\\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_cell_says_none_now_and_since(self):
+        self.assertIn('None', self._run("firmwareFlagCell({})"))
+        now = self._run("firmwareFlagCell({firmware_flags: "
+                        "{module_firmware_error: true}})")
+        self.assertIn('text-danger', now)
+        self.assertIn('Module firmware error', now)
+        was = self._run("firmwareFlagCell({seen: ['datapath_firmware_error']})")
+        self.assertIn('flag-was', was)
+        self.assertIn('Data path (DSP) firmware error since last clear', was)
+        masked = self._run("firmwareFlagCell({firmware_flags: "
+                           "{abnormal_fw_flag: true}, firmware_flag_masks: "
+                           "{abnormal_fw_flag: true}})")
+        self.assertIn('Firmware differs from its load', masked)
+        self.assertIn('masked', masked)
+
+    def test_the_status_table_and_header_use_it(self):
+        js = self._js()
+        self.assertIn("['Firmware Faults', firmwareFlagCell(s), 'Lower', "
+                      "'0x08[3:1]'", js)
+        hdr = js[js.index('function renderHealthIndicator'):]
+        hdr = hdr[:hdr.index('\n}')]
+        self.assertIn("const fwFault = ['module_firmware_error', "
+                      "'datapath_firmware_error']", hdr)
+        self.assertIn("(s.firmware_flags || {})[k] || (s.seen || []).includes(k)", hdr)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

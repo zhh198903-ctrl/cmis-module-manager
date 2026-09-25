@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.150.0'
+__version__ = '2.151.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1700,6 +1700,12 @@ def api_module_status():
             })
 
         state_changed = bool(mod_flags_raw[0] & 0x01)
+        # The rest of Lower 8 (Table 8-9): the firmware Flags. The block read
+        # above clears them with everything else, and only bit 0 was kept -
+        # a module reporting that its own firmware or its DSP's had failed
+        # was read, cleared and forgotten.
+        firmware_flags = cmis.parse_module_firmware_flags(mod_flags_raw[0])
+        firmware_masks = cmis.parse_module_firmware_flags(mod_masks_raw[0])
         # A state change is an event, not a fault. Folding it in here lit the
         # alarm indicator every time somebody reset the module on purpose, and
         # an indicator that cries wolf is one people stop reading.
@@ -1712,6 +1718,9 @@ def api_module_status():
             module_seen.add('module_state_changed')
         for name, value in temp_alarms.items():
             if value is True:
+                module_seen.add(name)
+        for name, value in firmware_flags.items():
+            if value:
                 module_seen.add(name)
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
@@ -1744,6 +1753,8 @@ def api_module_status():
             'aux3_raw': struct.unpack(">h", aux3_raw[:2])[0] if len(aux3_raw) >= 2 else 0,
             'aux': aux_monitors,
             'module_state_changed': state_changed,
+            'firmware_flags': firmware_flags,
+            'firmware_flag_masks': firmware_masks,
             'alarm_active': any_alarm,
             'seen': sorted(module_seen),
             # What this module says it is allowed to run in. The summary

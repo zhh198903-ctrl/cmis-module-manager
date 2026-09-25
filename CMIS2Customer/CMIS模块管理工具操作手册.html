@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.150.0<br>
+      <b>版本</b>　2.151.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.150.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.150.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.151.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.151.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>固件故障标志:读到了就不会再丢</h3>
+  <p>规范 Table 8-9:<code>Lower 0x08</code> 除了 bit 0 的 ModuleStateChangedFlag,还有三个固件标志——bit 1 <b>ModuleFirmwareErrorFlag</b>(主固件自检发现故障)、bit 2 <b>DataPathFirmwareErrorFlag</b>(DSP 等辅助器件的固件故障)、bit 3 <b>AbnormalFwIndicationFlag</b>(CMIS 5.4 新增:正在运行的固件与标称版本不一致)。都是闩锁、读清。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>状态刷新每次都读这个字节,却只保留 bit 0:模块报告自己的固件或 DSP 固件出错了,这一读就把标志清掉,下一次刷新什么都看不到。</span>
+  </div>
+  <p>现在 Module Info 多了一行 <b>Firmware Faults</b>:当前置位的显示为红字,已被读清的保留 <span class="flag-was">●<sup>!</sup></span> <i>… since last clear</i>,对应的屏蔽位(<code>Lower 0x1F</code>)置位时标出 masked;前两个固件错误还会在顶部摘要栏出现 <b style="color:#f38ba8">✖</b>。与其它标志共用 <b>Clear flag history</b>。它们不算「监控值超阀值」,不会点亮 ⚠。CdbCmdCompleteFlag(bit 6–7)不显示——本工具不发 CDB 命令。</p>
 
   <h3>门控结束时,PRBS 检测表标出「gate done」</h3>
   <p>规范 Table 8-138:<code>14h:134</code> / <code>14h:135</code> 是逐通道的 PatternCheckGatingCompleteFlag(主机侧 / 媒体侧),「门控完成时,这一位会被置位」——闩锁、读清。它是「上一个门控结果已经就绪」的唯一信号。</p>
@@ -3635,6 +3643,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td><b style="color:#f9e2af">↯&thinsp;N</b></td>
             <td>有 N 条数据通道弹过（自上次 Clear 起）</td>
             <td class="label">11h:134 DPStateChangedFlag</td></tr>
+        <tr><td><b style="color:#f38ba8">✖</b></td>
+            <td>模块报告过固件故障（自上次 Clear 起）</td>
+            <td class="label">Lower 0x08[2:1] ModuleFirmwareErrorFlag / DataPathFirmwareErrorFlag</td></tr>
       </tbody>
     </table>
   </div>
@@ -4582,7 +4593,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.150.0<br>
+    CMIS Module Manager 操作手册 v2.151.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
