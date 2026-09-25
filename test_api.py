@@ -13695,21 +13695,24 @@ class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
                       'the Apply refusal is shown for the default 3 seconds')
 
 
-class TestDataPathWritesWhileTheModuleIsAsleep(CMISTestCase):
-    """8.13.1 says of the DPDeinit byte that "the module evaluates this Byte
-    only in Module State ModuleReady", and 6.3.3 that a DPSM "remains in the
-    DPDeactivated State until the Module State Machine is in the ModuleReady
-    state and an exit condition from the DPDeactivated state is met".
+class TestTheHostConfiguresDataPathsInLowPower(CMISTestCase):
+    """8.13.1: "The module evaluates this Byte only in Module State
+    ModuleReady" - and in the same paragraph, "The host can prevent this
+    auto-initialization behavior by setting all DPDeinit bits while the
+    module is in the ModuleLowPwr state", step 6 of D.1.3's software
+    start-up. Table 6-3 makes ApplyDPInit on DPDeactivated lanes a Provision
+    ("copy only"), and 6.3.3 has the Active Control Set updated "in either
+    the ModuleLowPwr or ModuleReady states".
 
-    So outside ModuleReady a deinit is never read and no Apply can move a
-    Data Path anywhere. Both were written and answered ok, which says the
-    module reconfigured itself while it was asleep.
+    The tool refused DPDeinit and Apply outside ModuleReady as writes that
+    would "change nothing"; the demo modules brought every Data Path up on
+    leaving low power whatever DPDeinit held; and a 16-lane one kept lanes
+    9-16 Activated in ModuleLowPwr, where "The Data Path state of all lanes
+    is still DPDeactivated" (6.3.2.5.4).
 
-    The refusal has to be selective. Table 8-77 puts the lane controls on
-    10h:129-142 - polarity, output disable, squelch - "independent of the Data
-    Path State machine or control sets", and they take effect on the write,
-    so low power is no reason to refuse them. Staging an AppSelect is a write
-    to memory that the DPSM does not see until an Apply arrives."""
+    Table 8-77 puts the lane controls on 10h:129-142 "independent of the Data
+    Path State machine or control sets", and staging is a write to memory,
+    so neither is gated by the Module State at all."""
 
     def _connect(self, backend='mock_dr8'):
         self.assertOk(self.client.post(
@@ -13717,84 +13720,276 @@ class TestDataPathWritesWhileTheModuleIsAsleep(CMISTestCase):
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
 
-    def _low_power(self):
+    def _control(self, action):
         self.assertOk(self.client.post(
-            '/api/module/control', data=json.dumps({'action': 'low_power'}),
+            '/api/module/control', data=json.dumps({'action': action}),
             content_type='application/json'))
-        self.assertEqual(
-            self.assertOk(self.client.get('/api/module/status'))
-            ['data']['module_state'], 'ModuleLowPwr')
+
+    def _low_power(self):
+        self._control('low_power')
+        self.assertEqual(self._module_state(), 'ModuleLowPwr')
+
+    def _module_state(self):
+        return self.assertOk(self.client.get('/api/module/status'))[
+            'data']['module_state']
 
     def _post(self, **body):
         return self.client.post('/api/module/datapath', data=json.dumps(body),
                                 content_type='application/json')
 
-    # ---- what the state machines have to be awake for ----------------------
+    def _lanes(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes']
 
-    def test_a_deinit_is_refused(self):
+    def _states(self):
+        return [l['datapath_state'] for l in self._lanes()]
+
+    def _datapath(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def _settle(self):
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if not any(l['config_status'] == 'ConfigInProgress'
+                       for l in self._lanes()):
+                return
+            time.sleep(0.05)
+        self.fail('ConfigInProgress did not clear')
+
+    def _eventually(self, want):
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if self._states() == want:
+                return
+            time.sleep(0.05)
+        self.assertEqual(self._states(), want)
+
+    def _as_if(self, state):
+        from unittest import mock
+        return mock.patch.object(app_module.cmis, 'parse_module_state',
+                                 return_value=state)
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_a_deinit_is_written_in_low_power(self):
         self._connect()
         self._low_power()
-        rv = self._post(dp_deinit_mask=0xFF)
+        d = self.assertOk(self._post(dp_deinit_mask=0xFF))['data']
+        self.assertTrue(d['held_until_ready'])
+        self.assertIn('evaluated only in ModuleReady', d['message'])
+        self.assertEqual(self._datapath()['dp_deinit_mask'], 0xFF)
+
+    def test_an_apply_provisions_in_low_power(self):
+        self._connect()
+        self._low_power()
+        d = self.assertOk(self._post(app_select=[2] * 8, apply=True))['data']
+        self.assertTrue(d['held_until_ready'])
+        self.assertIn('provisions the Active Control Set only', d['message'])
+        self._settle()
+        dp = self._datapath()
+        self.assertEqual(dp['active_app_select'], [2] * 8)
+        self.assertEqual([l['dp_init_pending'] for l in dp['lanes']],
+                         [True] * 8)
+        self.assertEqual(self._states(), ['Deactivated'] * 8)
+        self.assertEqual(self._module_state(), 'ModuleLowPwr')
+
+    def test_apply_immediate_is_still_refused(self):
+        """Table 6-3 acts on it only in DPInitialized or DPActivated."""
+        self._connect('mock_coherent')
+        self._low_power()
+        rv = self._post(apply_immediate=True)
         self.assertErr(rv, 409)
-        self.assertIn('DPDeinit', json.loads(rv.data)['message'])
+        self.assertIn('ApplyImmediate is ignored outside DPInitialized',
+                      json.loads(rv.data)['message'])
 
-    def test_both_apply_triggers_are_refused(self):
+    def test_a_ready_module_holds_nothing(self):
         self._connect()
-        self._low_power()
-        for key, name in (('apply', 'Apply'),
-                          ('apply_immediate', 'ApplyImmediate')):
-            rv = self._post(**{key: True})
+        d = self.assertOk(self._post(dp_deinit_mask=0x00))['data']
+        self.assertFalse(d['held_until_ready'])
+        self.assertEqual(d['message'], 'DataPath configuration written')
+
+    def test_a_module_in_fault_reacts_only_to_a_reset(self):
+        self._connect()
+        with self._as_if('ModuleFault'):
+            rv = self._post(apply=True)
+        self.assertErr(rv, 409)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('ModuleFault reacts only to a reset', msg)
+
+    def test_a_module_between_states_is_asked_to_wait(self):
+        self._connect()
+        for state in ('ModulePwrUp', 'ModulePwrDn'):
+            with self._as_if(state):
+                rv = self._post(dp_deinit_mask=0xFF)
             self.assertErr(rv, 409)
-            self.assertIn(name, json.loads(rv.data)['message'])
+            msg = json.loads(rv.data)['message']
+            self.assertIn('DPDeinit', msg)
+            self.assertIn(state, msg)
+            self.assertIn('wait for the module to settle', msg)
 
-    def test_the_refusal_names_the_state_the_module_is_in(self):
-        """"Not now" leaves the operator with nothing to act on."""
+    def test_lane_controls_and_staging_are_not_gated(self):
+        self._connect()
+        with self._as_if('ModuleFault'):
+            self.assertOk(self._post(tx_disable_mask=0x01))
+            self.assertOk(self._post(tx_polarity_flip_mask=0x03))
+            self.assertOk(self._post(rx_polarity_flip_mask=0x02))
+            self.assertOk(self._post(app_select=[1] * 8))
+
+    # ---- the demo module ----------------------------------------------------------------------
+    def test_a_hold_set_in_low_power_keeps_the_data_paths_down(self):
         self._connect()
         self._low_power()
-        self.assertIn('ModuleLowPwr',
-                      json.loads(self._post(apply=True).data)['message'])
+        self.assertOk(self._post(dp_deinit_mask=0xFF))
+        self._control('high_power')
+        self.assertEqual(self._module_state(), 'ModuleReady')
+        self.assertEqual(self._states(), ['Deactivated'] * 8)
+        self.assertOk(self._post(dp_deinit_mask=0x00))
+        self._eventually(['Activated'] * 8)
 
-    # ---- what stays writable ------------------------------------------------
+    def test_only_the_held_data_path_stays_down(self):
+        self._connect('mock_fr4x2')
+        self._low_power()
+        self.assertOk(self._post(dp_deinit_mask=0xF0))
+        self._control('high_power')
+        self.assertEqual(self._states(),
+                         ['Activated'] * 4 + ['Deactivated'] * 4)
 
-    def test_the_lane_controls_still_work(self):
-        """Table 8-77 calls these independent of the Data Path state machine
-        and says they take effect on the write, so refusing them would take
-        away a control that does work."""
+    def test_what_was_provisioned_is_commissioned_at_power_up(self):
         self._connect()
         self._low_power()
-        self.assertOk(self._post(tx_disable_mask=0x01))
-        self.assertOk(self._post(tx_polarity_flip_mask=0x03))
-        self.assertOk(self._post(rx_polarity_flip_mask=0x02))
+        self.assertOk(self._post(app_select=[2] * 8, apply=True))
+        self._settle()
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Activated'] * 8)
+        dp = self._datapath()
+        self.assertEqual(dp['active_app_select'], [2] * 8)
+        self.assertEqual([l['dp_init_pending'] for l in dp['lanes']],
+                         [False] * 8)
 
-    def test_staging_an_application_still_works(self):
-        """Staging is a write to memory; the state machines do not see it
-        until an Apply arrives, and that is what gets refused."""
-        self._connect()
+    def test_a_held_lane_stays_pending(self):
+        """8.14.7 clears DPInitPending in DPInit, which a held lane never
+        reaches."""
+        self._connect('mock_fr4x2')
         self._low_power()
+        self.assertOk(self._post(app_select=[1] * 4 + [2] * 4, apply=True,
+                                 dp_deinit_mask=0xF0))
+        self._settle()
+        self._control('high_power')
+        self.assertEqual([l['dp_init_pending']
+                          for l in self._datapath()['lanes']],
+                         [False] * 4 + [True] * 4)
+
+    def test_the_demo_ignores_apply_immediate_in_low_power(self):
+        self._connect('mock_coherent')
+        self._low_power()
+        b = _state['backend']
+        app_module._set_page(0x10)
+        b.write_bytes(0x90, bytes([0xFF]))
+        app_module._invalidate_page()
+        self.assertEqual(b._commands, [])
+        self.assertNotIn('ConfigInProgress',
+                         [l['config_status'] for l in self._lanes()])
+
+    def test_the_thresholds_follow_at_power_up_not_before(self):
+        """8.5: Page 02h follows the commissioned Application, updated "when
+        the relevant Data Path reaches DPInitialized" - which a provision in
+        ModuleLowPwr does not do, and the power-up does."""
+        self._connect('mock_coherent_zr')
+        self._low_power()
+        self.assertOk(self._post(app_select=[2, 2, 2, 2, 0, 0, 0, 0],
+                                 apply=True))
+        self._settle()
+        thr = lambda: self.assertOk(
+            self.client.get('/api/module/thresholds'))['data']
+        self.assertEqual(thr()['tx_power_high_alarm_dbm'], 5.0)
+        # Staged since, and not applied: the power-up commissions what is in
+        # the Active Control Set, not what is staged.
         self.assertOk(self._post(app_select=[1] * 8))
+        self._control('high_power')
+        self.assertEqual(self._datapath()['active_app_select'],
+                         [2, 2, 2, 2, 0, 0, 0, 0])
+        self.assertEqual(thr()['tx_power_high_alarm_dbm'], 3.0)
+        self.assertEqual(thr()['rx_power_low_alarm_dbm'], -14.0)
 
-    def test_a_ready_module_is_unaffected(self):
-        self._connect()
-        self.assertOk(self._post(dp_deinit_mask=0x00))
-        self.assertOk(self._post(apply=True))
-
-    def test_coming_back_to_high_power_restores_it(self):
-        """A guard that latched would leave the Data Path unmanageable."""
-        self._connect()
+    def test_every_lane_of_a_16_lane_module_goes_down(self):
+        self._connect('mock_1600g_16lane')
         self._low_power()
-        self.assertErr(self._post(dp_deinit_mask=0xFF), 409)
-        self.assertOk(self.client.post(
-            '/api/module/control', data=json.dumps({'action': 'high_power'}),
-            content_type='application/json'))
-        self.assertOk(self._post(dp_deinit_mask=0x00))
+        self.assertEqual(self._states(), ['Deactivated'] * 16)
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Activated'] * 16)
 
-    def test_a_request_that_does_not_name_a_deinit_is_not_refused_for_one(self):
-        """The endpoint rewrites the current DPDeinit when the caller does not
-        send one. Refusing on that would block the lane controls, which is
-        exactly what this round set out not to do."""
-        self._connect()
+    def test_a_later_bank_held_in_low_power_stays_down(self):
+        self._connect('mock_1600g_16lane')
         self._low_power()
-        self.assertOk(self._post(tx_disable_mask=0x00))
+        self.assertOk(self._post(dp_deinit_mask=[0x00, 0xFF]))
+        self._control('high_power')
+        self.assertEqual(self._states(),
+                         ['Activated'] * 8 + ['Deactivated'] * 8)
+        self.assertOk(self._post(dp_deinit_mask=[0x00, 0x00]))
+        self._eventually(['Activated'] * 16)
+
+    def test_a_hold_released_in_low_power_is_not_remembered(self):
+        """Lanes 9-16 held in ModuleReady, released in ModuleLowPwr, up at
+        the power-up: a later write of the same clear DPDeinit is not a
+        release, and must not report those lanes as having changed state."""
+        self._connect('mock_1600g_16lane')
+        self.assertOk(self._post(dp_deinit_mask=[0x00, 0xFF]))
+        self._low_power()
+        self.assertOk(self._post(dp_deinit_mask=[0x00, 0x00]))
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Activated'] * 16)
+        flags = lambda: self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes']
+        flags()                        # the take-down's Flags, read and gone
+        self.assertOk(self._post(dp_deinit_mask=[0x00, 0x00]))
+        self.assertEqual([l['dp_state_changed'] for l in flags()][8:],
+                         [False] * 8)
+
+    def test_a_later_bank_lane_with_no_application_stays_down(self):
+        """6.2.3.2.1: an AppSel of 0000b is an unused lane, which the module
+        reports DPDeactivated."""
+        self._connect('mock_1600g_16lane')
+        self._low_power()
+        p11b = _state['backend']._registers[(0x11, 1)]
+        p11b[0xCE + 7] = 0x00
+        self._control('high_power')
+        self.assertEqual(self._states()[8:],
+                         ['Activated'] * 7 + ['Deactivated'])
+
+    def test_a_later_bank_provisions_in_low_power(self):
+        self._connect('mock_1600g_16lane')
+        self._low_power()
+        self.assertOk(self._post(app_select=[1] * 8 + [2] * 8, apply=True))
+        self._settle()
+        lanes = self._lanes()[8:]
+        self.assertEqual([l['config_status'] for l in lanes],
+                         ['ConfigSuccess'] * 8)
+        self.assertEqual([l['active_app_sel'] for l in lanes], [2] * 8)
+
+    def test_a_reset_clears_the_hold(self):
+        """D.1.1 step 2: MgmtInit sets the power-on defaults, "DPDeinit=00h"
+        among them - in every bank."""
+        self._connect('mock_1600g_16lane')
+        self.assertOk(self._post(dp_deinit_mask=[0xFF, 0xFF]))
+        self._eventually(['Deactivated'] * 16)
+        self._control('reset')
+        deadline = time.time() + 3
+        while self._module_state() != 'ModuleReady' and time.time() < deadline:
+            time.sleep(0.05)
+        self._eventually(['Activated'] * 16)
+        self.assertEqual(self._datapath()['dp_deinit_mask_banks'], [0, 0])
+        # and nothing remembers it: a later power-up brings every lane back
+        self._low_power()
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Activated'] * 16)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_says_provisioned_not_applied(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('} else if (res.data.held_until_ready) {', js)
+        self.assertIn("toast('Provisioned in ModuleLowPwr", js)
 
 
 class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):

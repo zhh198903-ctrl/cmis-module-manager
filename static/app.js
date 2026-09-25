@@ -3223,6 +3223,13 @@ async function applyDatapath(immediate) {
       .map(g => `L${g.lanes.join(', L')}: ${configStatusReason(g.sample)}`)
       .join(' · ');
     toast(`Module rejected the configuration — ${detail}`, 'error', 12000);
+  } else if (res.data.held_until_ready) {
+    // ModuleLowPwr: provisioned, not commissioned. Saying "applied" here
+    // would have the operator look for Data Paths that come up only once the
+    // module reaches ModuleReady (8.13.1, Table 6-3).
+    toast('Provisioned in ModuleLowPwr — the Data Paths not held by DP '
+          + 'Deinit initialise when the module reaches ModuleReady',
+          'success', 8000);
   } else {
     toast('DataPath configuration applied', 'success');
   }

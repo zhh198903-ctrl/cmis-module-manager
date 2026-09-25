@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.146.0<br>
+      <b>版本</b>　2.147.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.146.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.146.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.147.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.147.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1500,23 +1500,22 @@
     这类拒绝信息现在会在界面上<b>停留 12 秒</b>——原来的 3 秒不够把通道号读完。</span>
   </div>
 
-  <div class="callout callout-warn">
-    <span class="callout-icon">⚠</span>
-    <span><b>模块不在 <code>ModuleReady</code> 时，DataPath 的这些操作<u>本来就不会生效</u>——以前同样回报「成功」。</b>
-    规范两句话叠在一起：<b>DPDeinit 这个字节，模块只在 <code>ModuleReady</code> 状态下才会去读</b>；
-    而且数据通道的状态机<b>在模块进入 <code>ModuleReady</code> 之前，一直停在 <code>DPDeactivated</code></b>。<br>
-    也就是说，在低功耗（<code>ModuleLowPwr</code>）下：<b>DPDeinit 不被读取</b>，
-    <b>任何 Apply 都无法让数据通道离开 <code>DPDeactivated</code></b>。
-    工具以前照写不误、照报成功——
-    <b>等于说「模块在睡着的时候把自己重新配置好了」</b>。<br>
-    现在这三个操作（<b>DPDeinit</b>、<b>Apply</b>、<b>ApplyImmediate</b>）
-    在非 <code>ModuleReady</code> 状态下会被拒绝，并写明<b>模块当前在哪个状态</b>。<br>
-    <b>但拒绝是有选择的</b>：规范把 <code>10h:129–142</code> 这几个逐通道控制
-    （<b>极性翻转、输出关断、Squelch</b>）明确列为
-    <b>「与数据通道状态机和控制集无关」</b>，而且<b>写入即生效</b>——
-    所以它们在低功耗下<b>照常可用</b>，不会被这条拦下。
-    暂存 AppSelect 也一样：那只是写内存，状态机要等到 Apply 才会看它。<br>
-    模块回到高功耗后，一切照旧。</span>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>模块在低功耗（<code>ModuleLowPwr</code>）时，DataPath 照样可以配置——这正是规范推荐的上电流程。</b>
+    规范 8.13.1：<b>DPDeinit 这个字节，模块只在 <code>ModuleReady</code> 状态下才会去读</b>；同一段接着说：
+    <b>主机可以在低功耗状态下先把全部 DPDeinit 位置上，阻止数据通道在上电后自动启动</b>（附录 D.1.3 第 6 步）。
+    低功耗下所有数据通道都是 <code>DPDeactivated</code>，按 Table 6-3，这时的 <b>Apply</b> 是「只拷贝」：
+    校验暂存配置并拷进 Active Control Set，<b>真正的初始化要等模块进入 <code>ModuleReady</code></b>。<br>
+    所以在低功耗下：勾 <b>DP Deinit</b>、按 <b>Apply</b> 都会写入，提示「Provisioned in ModuleLowPwr」。
+    退出低功耗后，<b>没被 DP Deinit 按住的数据通道</b>按 Active Control Set 初始化；
+    <b>被按住的保持 <code>DPDeactivated</code></b>，取消勾选才会起来。<br>
+    <b>ApplyImmediate</b> 仍会被拒绝——它只在 <code>DPInitialized</code> / <code>DPActivated</code> 下起作用。
+    模块处于 <code>ModuleFault</code>（只响应复位）或 <code>ModulePwrUp</code> / <code>ModulePwrDn</code>
+    这两个过渡状态时，这三个操作会被拒绝，并写明模块当前在哪个状态。<br>
+    <code>10h:129–142</code> 的逐通道控制（<b>极性翻转、输出关断、Squelch</b>）规范明确列为
+    <b>「与数据通道状态机和控制集无关」</b>、写入即生效；暂存 AppSelect 也只是写内存——
+    这些在任何模块状态下都不受限制。</span>
   </div>
 
   <div class="callout callout-warn">
@@ -1723,6 +1722,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>低功耗下配置数据通道:写入,等上电再生效</h3>
+  <p>规范 8.13.1:模块只在 ModuleReady 下评估 DPDeinit;「主机可以在低功耗状态下把全部 DPDeinit 位置上,阻止自动初始化」——附录 D.1.3 软件上电流程的第 6 步就是这么做的。Table 6-3:对 DPDeactivated 通道的 ApplyDPInit 是「只拷贝」,先写进 Active Control Set,再经状态机初始化;6.3.3 也说 Active Control Set 在 ModuleLowPwr 和 ModuleReady 下都可以更新。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前在模块不在 ModuleReady 时拒绝 DP Deinit 和 Apply,理由是「不会生效」——正好挡住了规范推荐的上电流程。演示模块退出低功耗时无视 DPDeinit,把所有数据通道都拉起来;16 通道演示模块在低功耗下,第 9–16 通道仍显示 Activated(规范 6.3.2.5.4:低功耗下所有通道都是 DPDeactivated)。</span>
+  </div>
+  <p>现在:低功耗下 DP Deinit 和 Apply 都会写入,提示「Provisioned in ModuleLowPwr」;退出低功耗后,没被按住的数据通道按 Active Control Set 初始化,被按住的保持 DPDeactivated。ApplyImmediate 仍被拒绝(DPDeactivated 下不起作用);模块处于 ModuleFault、ModulePwrUp / ModulePwrDn 时,这三个操作被拒绝并说明原因。演示模块:低功耗下 16 个通道都是 DPDeactivated;低功耗下的 Apply 只写进 Active Control Set,上电时才初始化(DPInitPending 随之清除,阈值随之更新);复位把所有 bank 的 DPDeinit 恢复为 0。</p>
 
   <h3>只写寄存器读不回写进去的值</h3>
   <p>规范 Table 8-3:从 WO(只写)元素读,得到的是不可预测的值;从 WO/SC 元素读,得到 0——WO/SC「主要用于需要保护写入数据隐私的场合」。Page 10h 的 ApplyDPInit 和 ApplyImmediate 还规定:「这个字节必须用单字节 WRITE 写入」。</p>
@@ -4512,7 +4519,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <tbody>
         <tr><td><b>Reset Module</b></td><td class="label">DataPath / 9.1</td><td class="label">软复位整个模块，所有 DataPath 重新初始化</td><td>有</td></tr>
         <tr><td><b>Enter LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">模块进入低功耗，<b>关闭发射</b>，TxPower 掉到 0</td><td class="label">无</td></tr>
-        <tr><td><b>Exit LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">请求退出低功耗，恢复到高功耗状态</td><td class="label">无</td></tr>
+        <tr><td><b>Exit LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">请求退出低功耗，恢复到高功耗状态；被 DP Deinit 按住的数据通道保持 Deactivated</td><td class="label">无</td></tr>
         <tr><td><b>Write</b></td><td class="label">Raw Registers / 11.2</td><td class="label">任意寄存器写入，后果取决于你写了什么</td><td class="label">无</td></tr>
         <tr><td><b>Apply</b>（DataPath 配置表）</td><td class="label">DataPath / 9.3</td><td class="label">重启<b>全部 8 条</b> lane 的数据通道</td><td class="label">无</td></tr>
         <tr><td><b>Apply</b>（Loopback）</td><td class="label">Diagnostics / 10.1</td><td class="label">环回会中断正常收发</td><td class="label">无</td></tr>
@@ -4548,7 +4555,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.146.0<br>
+    CMIS Module Manager 操作手册 v2.147.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1935,6 +1935,7 @@ class MockBackend(I2CInterface):
         # never moved.
         if self._module_state != self._last_module_state:
             self._registers[None][0x08] =                 self._registers[None].get(0x08, 0) | 0x01
+            self._banks_follow_module_state(self._module_state == 0b011)
             self._last_module_state = self._module_state
         # Bit 0 is InterruptDeasserted and is set at the end of the refresh,
         # once this poll's Flags are in place: see _update_dynamic_values.
@@ -2331,6 +2332,13 @@ class MockBackend(I2CInterface):
         mask = self._drop_busy_data_paths(mask)
         if not mask:
             return
+        # Outside ModuleReady every Data Path is DPDeactivated (6.3.2.5.4),
+        # and Table 6-3 acts on ApplyImmediate only in DPInitialized or
+        # DPActivated - "Triggers are ignored in Data Path states not
+        # explicitly mentioned".
+        asleep = self._module_state != 0b011
+        if hot and asleep:
+            return
         cmd = _ConfigCommand(
             time.time(), mask, hot,
             # Table 6-4: where neither intervention-free procedure is
@@ -2340,7 +2348,10 @@ class MockBackend(I2CInterface):
             # arrives through the DPDeinit release rather than through this
             # trigger. Settled here rather than read live, because the cycle
             # changes the states around it.
-            not hot and not self._regular_reconfig(),
+            # And in ModuleLowPwr, ApplyDPInit on those DPDeactivated lanes
+            # is Table 6-3's "copy only": the commissioning waits for
+            # ModuleReady, see _power_up_data_paths.
+            not hot and (asleep or not self._regular_reconfig()),
             self._validate_staged_appsel(mask, subset_ok=hot),
             # Validation and execution both act on the Staged Control Set as
             # it stood when the trigger arrived. Reading 10h again at the
@@ -2739,6 +2750,15 @@ class MockBackend(I2CInterface):
                     self._module_state = 0b001
                     self._dp_lane_states = [0x1] * 8
                     self._lp_request_time = 0
+                    # MgmtInit "sets power on defaults, such as ...
+                    # DPDeinit=00h" (D.1.1 step 2), in every bank. Keeping a
+                    # hold across a reset would keep the Data Paths down that
+                    # a real module brings up.
+                    self._dp_deinit_mask = 0x00
+                    for key, regs in self._registers.items():
+                        if key == 0x10 or (isinstance(key, tuple)
+                                           and key[0] == 0x10):
+                            regs[0x80] = 0x00
                     # A reset restarts the module, so its Bank and Page
                     # selection goes back to the default. Leaving the mock on
                     # whatever page was selected meant a host that forgot to
@@ -2761,7 +2781,7 @@ class MockBackend(I2CInterface):
                     self._lp_request_time = time.time()
                 elif not (ctrl & 0x10) and self._lp_request_time > 0:
                     self._lp_request_time = 0
-                    self._dp_lane_states = [0x4] * 8
+                    self._power_up_data_paths()
         elif self._current_page == 0x10:
             # Writes may span several control bytes, so match on the range
             span = range(register, register + len(data))
@@ -3127,7 +3147,10 @@ class MockBackend(I2CInterface):
         Set and its ConfigStatus reads ConfigSuccess - in that bank."""
         p10b = self._registers.get((0x10, bank))
         p11b = self._registers.get((0x11, bank))
-        if p10b is None or p11b is None or self._module_state != 0b011:
+        # 6.3.3: the Active Control Set is updated "in either the
+        # ModuleLowPwr or ModuleReady states".
+        if p10b is None or p11b is None or self._module_state not in (
+                0b001, 0b011):
             return
         for lane in range(8):
             if not (mask >> lane) & 1:
@@ -3161,6 +3184,55 @@ class MockBackend(I2CInterface):
             # 6.3.3: reached a steady state through a real change.
             p11b[0x86] = p11b.get(0x86, 0) | bit
         self._bank_deinit_taken[bank] = taken
+
+    def _power_up_data_paths(self) -> None:
+        """ModuleLowPwr -> ModuleReady for bank 0's Data Paths.
+
+        8.13.1: the DPDeinit byte is evaluated only in ModuleReady, "The host
+        can prevent this auto-initialization behavior by setting all DPDeinit
+        bits while the module is in the ModuleLowPwr state" (D.1.3 step 6).
+        Bringing every lane up regardless ignored exactly that. The lanes
+        that do come up are commissioned from the Active Control Set - what
+        is in force, which an Apply in ModuleLowPwr may have provisioned - so
+        their DPInitPending clears and their thresholds follow (8.14.7, 8.5).
+        """
+        held = self._dp_deinit_mask
+        self._dp_lane_states = [0x1 if (held >> i) & 1 else 0x4
+                                for i in range(8)]
+        p11 = self._registers[0x11]
+        cmd = _ConfigCommand(time.time(), 0xFF, False, False, [0x1] * 8,
+                             [p11.get(0xCE + i, 0x10) for i in range(8)])
+        self._clear_dp_init_pending(cmd)
+        self._commission_thresholds(cmd)
+
+    def _banks_follow_module_state(self, ready: bool) -> None:
+        """The later banks' Data Paths across a Module State change.
+
+        6.3.2.5.4: "The Data Path state of all lanes is still DPDeactivated in
+        the ModuleLowPwr state" - all lanes, and bank 0's model was the only
+        one that went down; a 16-lane module in low power showed lanes 9-16
+        Activated. Coming back to ModuleReady, a lane rises unless its bank's
+        DPDeinit holds it (8.13.1) or it carries no Application (6.2.3.2.1);
+        a held lane is remembered as taken, so releasing it later brings it
+        up as _set_bank_dp_deinit does for any other.
+        """
+        for bank in range(1, (self._profile.get('lanes') or 8) // 8):
+            p11b = self._registers.get((0x11, bank))
+            if p11b is None:
+                continue
+            held = self._registers.get((0x10, bank), {}).get(0x80, 0)
+            taken = self._bank_deinit_taken.get(bank, 0)
+            for lane in range(8):
+                a, sh = 0x80 + lane // 2, 4 * (lane % 2)
+                used = (p11b.get(0xCE + lane, 0) >> 4) & 0x0F
+                if not ready or not used:
+                    new = 0x1
+                elif (held >> lane) & 1:
+                    new, taken = 0x1, taken | (1 << lane)
+                else:
+                    new, taken = 0x4, taken & ~(1 << lane)
+                p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (new << sh)
+            self._bank_deinit_taken[bank] = taken
 
     def _set_dp_deinit(self, mask: int) -> None:
         """10h:128 (Table 8-78): 1b deinitialises the Data Path of that lane.

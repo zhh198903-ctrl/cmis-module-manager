@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.146.0'
+__version__ = '2.147.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3160,33 +3160,44 @@ def api_datapath_set():
         apply = bool(body.get('apply', False))
         apply_now = bool(body.get('apply_immediate', False))
 
-        # 8.13.1 says of the DPDeinit byte that "the module evaluates this
-        # Byte only in Module State ModuleReady", and 6.3.3 that a DPSM
-        # "remains in the DPDeactivated State until the Module State Machine
-        # is in the ModuleReady state". So outside ModuleReady a deinit is not
-        # read and no Apply can move a Data Path anywhere - both are discarded
-        # in silence, and answering ok to them says the module reconfigured
-        # itself while it was asleep.
+        # The Data Path configuration is the host's to write in ModuleLowPwr
+        # as well as in ModuleReady. 8.13.1: "The module evaluates this Byte
+        # only in Module State ModuleReady" - and in the same paragraph, "The
+        # host can prevent this auto-initialization behavior by setting all
+        # DPDeinit bits while the module is in the ModuleLowPwr state", which
+        # is step 6 of the software start-up in D.1.3. Every Data Path is
+        # DPDeactivated there, and Table 6-3 makes an ApplyDPInit on
+        # DPDeactivated lanes a Provision: validate, copy into the Active
+        # Control Set, commission later through the DPSM - which 6.3.3 places
+        # "in either the ModuleLowPwr or ModuleReady states". Refusing both
+        # here blocked the one start-up sequence that configures a module
+        # before powering it up. ApplyImmediate is refused below on its own
+        # terms: DPDeactivated is not a state it acts in.
         #
-        # Only the parts the DPSM has to act on. Table 8-77 puts the lane
-        # controls on 10h:129-142 - polarity, output disable, squelch -
-        # "independent of the Data Path State machine or control sets", and
-        # they take effect on the write, so they keep working here. Staging an
-        # AppSelect is a write to memory and is likewise none of the DPSM's
-        # business until an Apply arrives.
+        # Elsewhere the DPSM is not listening. ModuleFault "reacts only to
+        # events that cause the ResetS transition signal to become TRUE"
+        # (6.3.2.5.8), and ModulePwrUp / ModulePwrDn are transient states
+        # that last until 01h:167 says they must end.
+        #
+        # The lane controls on 10h:129-142 are "independent of the Data Path
+        # State machine or control sets" (Table 8-77) and staging an
+        # AppSelect is a write to memory, so neither is gated at all.
         wants_dpsm = [name for name, on in
                       (('DPDeinit', 'dp_deinit_mask' in body),
                        ('Apply', apply), ('ApplyImmediate', apply_now)) if on]
+        held_until_ready = False
         if wants_dpsm:
             module_state = cmis.parse_module_state(_read_lower(0x03, 1)[0])
-            if module_state != 'ModuleReady':
+            if module_state not in ('ModuleLowPwr', 'ModuleReady'):
                 return _err(
                     '%s needs the Data Path state machines, and this module '
-                    'is in %s: a deinit is not evaluated and no Data Path can '
-                    'leave DPDeactivated outside ModuleReady, so this would '
-                    'report success and change nothing. Bring the module to '
-                    'high power first'
-                    % (' and '.join(wants_dpsm), module_state), 409)
+                    'is in %s. The host configures Data Paths in ModuleLowPwr '
+                    'or ModuleReady (6.3.3); %s'
+                    % (' and '.join(wants_dpsm), module_state,
+                       'ModuleFault reacts only to a reset (6.3.2.5.8)'
+                       if module_state == 'ModuleFault' else
+                       'wait for the module to settle in one of them'), 409)
+            held_until_ready = module_state == 'ModuleLowPwr'
 
         # The state each Data Path was in when the host decided to Apply, read
         # before this request writes anything. Reading it afterwards would see
@@ -3408,9 +3419,16 @@ def api_datapath_set():
                 # reconfiguration - so there is no number to be short of.
                 time.sleep(0.1)
 
-        return _ok({'message': 'DataPath configuration written',
+        return _ok({'message': (
+                        'Written in ModuleLowPwr. An Apply here provisions the '
+                        'Active Control Set only (Table 6-3), and DPDeinit is '
+                        'evaluated only in ModuleReady (8.13.1): the Data '
+                        'Paths it does not hold initialise when the module '
+                        'reaches ModuleReady' if held_until_ready
+                        else 'DataPath configuration written'),
                     'applied_lanes': applied,
-                    'apply_immediate': bool(apply_now)})
+                    'apply_immediate': bool(apply_now),
+                    'held_until_ready': held_until_ready})
     except _LaneMaskError as e:
         return _err(str(e), 400)
     except Exception as e:

@@ -568,6 +568,14 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 低功耗下配置数据通道
+
+8.13.1:DPDeinit 只在 ModuleReady 下评估,主机可以在 ModuleLowPwr 下先把它全置上,阻止上电后自动初始化(附录 D.1.3 第 6 步)。
+Table 6-3:DPDeactivated 通道上的 ApplyDPInit 只做 Provision(拷进 Active Control Set),初始化等 ModuleReady。
+`POST /api/module/datapath` 在 ModuleLowPwr 下接受 `dp_deinit_mask` 和 `apply`,回复带 `held_until_ready: true`;
+`apply_immediate` 仍 409(DPDeactivated 下不起作用);ModuleFault、ModulePwrUp / ModulePwrDn 下这三项 409。
+用户说「低功耗下 Apply 了,通道没起来」是正常的:退出低功耗后,没被 DPDeinit 按住的通道才初始化。
+
 ## Flag 是 0 不等于没问题:看 `not_allowed`
 
 规范 Table 6-21:DPDeactivated / DPInit / DPDeinit 下模块不报 Tx LOS、两个 CDR LOL、低侧告警/警告和 Rx 输出变化;
