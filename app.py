@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.131.0'
+__version__ = '2.132.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1842,6 +1842,26 @@ def api_module_ext54():
                 _mls_banks(cmis.REG_MLS_STATUS),
                 _state['lanes'])
             out['available']['6Dh'] = True
+
+        if caps.get('host_lane_switching_supported'):
+            # Page 1Dh (8.25) is laid out like 6Dh and read the same way. What
+            # matters beyond the table is whether it is in effect: then every
+            # lane number on the other panels is a *nominal* host lane (7.8),
+            # not the electrical lane a cable is plugged into.
+            def _hls_banks(reg):
+                return b''.join(raw for _b, raw in _read_banks(*reg))
+
+            hls = cmis.parse_media_lane_switching(
+                _read_upper(*cmis.REG_HLS_ADVERT)[0],
+                _hls_banks(cmis.REG_HLS_REDIRECTION),
+                [raw[0] for _b, raw in _read_banks(*cmis.REG_HLS_ENABLE)],
+                _hls_banks(cmis.REG_HLS_RESULT),
+                _hls_banks(cmis.REG_HLS_STATUS),
+                _state['lanes'])
+            hls['switched'] = [l['lane'] for l in hls['lanes']
+                               if l['active_target'] not in (None, l['lane'])]
+            out['host_lane_switching'] = hls
+            out['available']['1Dh'] = True
         return _ok(out)
     except Exception as e:
         return _err(str(e), 500)

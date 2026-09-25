@@ -1534,6 +1534,7 @@ NEW_IN_5_4 = frozenset({
     'page_62h_supported',
     'extra_lane_banks',
     'media_lane_switching_supported',
+    'host_lane_switching_supported',
     'max_lanes',
     'grid_300ghz_supported',
     'grid_300ghz_range',
@@ -3066,8 +3067,10 @@ def max_read_bytes(byte_251: int) -> int:
 
 
 def parse_misc_caps(byte_252: int) -> dict:
-    """01h:252 (Table 8-62). Bit 5 is the 5.4 media lane switching advertisement."""
-    return {'media_lane_switching_supported': bool((byte_252 >> 5) & 1)}
+    """01h:252 (Table 8-62). Bit 5 is the 5.4 media lane switching
+    advertisement, bit 7 the host lane switching one (Page 1Dh)."""
+    return {'media_lane_switching_supported': bool((byte_252 >> 5) & 1),
+            'host_lane_switching_supported': bool((byte_252 >> 7) & 1)}
 
 
 def parse_relative_thresholds(raw: bytes) -> dict:
@@ -3116,6 +3119,14 @@ REG_MLS_ENABLE          = (0x6D, 0x98, 1)    # 6Dh:152 bit0 enable
 REG_MLS_COMMIT          = (0x6D, 0xA0, 1)    # 6Dh:160 bit0 commit (WO/SC)
 REG_MLS_RESULT          = (0x6D, 0xA8, 8)    # 6Dh:168-175 per-lane commit result
 REG_MLS_STATUS          = (0x6D, 0xB8, 8)    # 6Dh:184-191 committed mapping (RO)
+# Page 1Dh, the host lane switch (8.25, Table 8-176), laid out like 6Dh:
+# RedirectionOfLane<i> / RedirectStatusOfLane<i> name the *nominal* host lane
+# that electrical lane <i> is connected to.
+REG_HLS_ADVERT          = (0x1D, 0x80, 1)    # 1Dh:128 commit duration code
+REG_HLS_REDIRECTION     = (0x1D, 0x88, 8)    # 1Dh:136-143 provisioned
+REG_HLS_ENABLE          = (0x1D, 0x98, 1)    # 1Dh:152 bit0 enable
+REG_HLS_RESULT          = (0x1D, 0xA8, 8)    # 1Dh:168-175 per-lane commit result
+REG_HLS_STATUS          = (0x1D, 0xB8, 8)    # 1Dh:184-191 committed mapping (RO)
 
 
 def parse_supported_pages_map(raw: bytes) -> list:

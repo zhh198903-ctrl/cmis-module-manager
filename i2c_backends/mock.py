@@ -708,7 +708,12 @@ _XD24 = {
     'default_polarity_rx': 0b00000100,       # lane 3 wired inverted
     'pages_ext_173':       0b10000000,       # Page 0Ch
     'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h
-    'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
+    # MediaLaneSwitchingSupported and HostLaneSwitchingSupported (Page 1Dh).
+    'misc_caps_252':       0b10100000,
+    # A host lane switch already committed in the first group: electrical
+    # lanes 1 and 2 carry nominal lanes 2 and 1. The other groups are
+    # unpermuted.
+    'host_lane_switch':    [2, 1, 3, 4, 5, 6, 7, 8],
     'module_subtype':      0x01,
     'heatsink_fiber':      0x30,
 }
@@ -1733,6 +1738,20 @@ class MockBackend(I2CInterface):
                     p6d[0xB8 + lane] = lane + 1
                 p6d[0x98] = 0x00                       # redirection disabled
                 regs[0x6D] = p6d
+
+            # 01h:252.7: Page 1Dh, the host lane switch (8.25), laid out like
+            # 6Dh. A profile may start with a committed permutation in bank 0
+            # so the panel can be seen saying lane numbers are nominal.
+            if p.get('misc_caps_252', 0) & 0x80:
+                ident = list(range(1, 9))
+                for bank in range((p.get('lanes', 8) + 7) // 8):
+                    perm = p.get('host_lane_switch', ident) if bank == 0 else ident
+                    p1d = {0x80: 0x30, 0x98: 0x00 if perm == ident else 0x01}
+                    for lane in range(8):
+                        p1d[0x88 + lane] = perm[lane]
+                        p1d[0xA8 + lane] = 0 if perm[lane] == lane + 1 else 1
+                        p1d[0xB8 + lane] = perm[lane]
+                    regs[0x1D if bank == 0 else (0x1D, bank)] = p1d
 
         # Lane-banked pages for modules with more than eight lanes. Bank b
         # holds lanes 8b+1..8b+8 at the same addresses, so each extra bank is

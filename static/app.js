@@ -906,6 +906,7 @@ async function loadInfo() {
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
     ['Default Polarity', polaritySummary(c.default_polarity, c.default_polarity_scope), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57). Section 8.4.13: on a module wider than eight lanes these bits apply in each group of eight, unless Page 60h carries per-lane values instead', true],
     ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', true],
+    ['Host Lane Switching', c.host_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[7]', 'HostLaneSwitchingSupported (Table 8-62): the module can connect electrical host lanes to other nominal lanes (section 7.8)', true],
     ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', true],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
@@ -1393,6 +1394,7 @@ async function loadExt54() {
   show('card-acq', !!d.acquisition_counters);
   show('card-lanethr', !!d.lane_power_thresholds);
   show('card-mls', !!d.media_lane_switching);
+  show('card-hls', !!d.host_lane_switching);
   show('card-pagemap', true);
 
   const mark = v => v ? '<span class="flag-warn">▲ inverted</span>' : '<span class="flag-ok">●</span>';
@@ -1412,6 +1414,26 @@ async function loadExt54() {
     document.getElementById('tbl-lanethr').innerHTML = d.lane_power_thresholds.map(t =>
       `<tr><td>${t.lane}</td><td>${t.hi_alarm_dbm.toFixed(2)}</td><td>${t.hi_warn_dbm.toFixed(2)}</td>`
       + `<td>${t.lo_warn_dbm.toFixed(2)}</td><td>${t.lo_alarm_dbm.toFixed(2)}</td></tr>`).join('');
+  }
+  // 1Dh (8.25): read-only here. What the operator needs from it is whether
+  // the lane numbers everywhere else are still the electrical ones.
+  if (d.host_lane_switching) {
+    const h = d.host_lane_switching;
+    const tgt = (v) => v == null ? '\u2014' : v;
+    document.getElementById('tbl-hls').innerHTML = h.lanes.map(l =>
+      `<tr><td>${l.lane}</td><td>${tgt(l.redirected_to)}</td>`
+      + `<td${l.active_target !== l.lane ? ' class="flag-warn"' : ''}>${tgt(l.active_target)}</td>`
+      + `<td>${mlsResultCell(l)}</td></tr>`).join('');
+    const note = document.getElementById('hls-note');
+    if (note) {
+      note.innerHTML = h.switched.length
+        ? '\u26a0 Host lane switching is in effect on electrical lane'
+          + (h.switched.length > 1 ? 's ' : ' ') + h.switched.join(', ')
+          + ' (1Dh:184\u2013191). Every other panel numbers lanes by '
+          + '<b>nominal</b> host lane (7.8), so its lane N is not necessarily '
+          + 'the electrical lane N a cable is plugged into.'
+        : '';
+    }
   }
   if (d.media_lane_switching) {
     const m = d.media_lane_switching;

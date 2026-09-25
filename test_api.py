@@ -18999,6 +18999,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-134': 'User Pattern (Page 13h)',
         '8-135': 'Page 14h Overview',
         '8-138': 'Latched Diagnostics Flags (Page 14h)',
+        '8-176': 'Host Lane Switching (Page 1Dh)',
         '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
         '8-141': 'Data Path Rx and Tx Latency, per lane (Page 15h)',
         '8-163': 'Network Path Related Flags (Page 17h)',
@@ -30299,6 +30300,126 @@ class TestEveryBankHasItsOwnOutputs(CMISTestCase):
             'data']['lanes']
         self.assertEqual([l['lane'] for l in lanes[8:]
                           if l.get('rx_output_changed')], [])
+
+class TestTheLaneNumbersMayBeNominal(CMISTestCase):
+    """CMIS 5.4 added host lane switching (7.8, Page 1Dh, advertised in
+    01h:252.7): an 8x8 switch per group of eight lanes between the
+    electrical host lanes - where the cables are - and the nominal lanes
+    that the Application and Data Path registers number. RedirectStatusOfLane
+    <i> (1Dh:184-191) says which nominal lane electrical lane <i> carries.
+
+    Section 6.4 lists it among the things a reader must not miss, and the
+    tool read neither the advertisement nor the page. On a module with a
+    switch in effect, every lane number on the DataPath, Monitoring and
+    Flags panels is a nominal lane, and nothing said so - an operator
+    tracing lane 1 went to the cable on lane 1 and found lane 2's traffic.
+
+    Shown read-only, beside the media lane switch; the 24-lane demo module
+    advertises it with lanes 1 and 2 swapped in its first group."""
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _hls(self):
+        return self.assertOk(self.client.get('/api/module/ext54'))['data'].get(
+            'host_lane_switching')
+
+    # ---- the advertisement ----------------------------------------------------------
+    def test_bit_7_is_the_advertisement(self):
+        import cmis_registers as c
+        self.assertTrue(c.parse_misc_caps(0x80)['host_lane_switching_supported'])
+        self.assertFalse(c.parse_misc_caps(0x20)['host_lane_switching_supported'])
+        self.assertTrue(c.parse_misc_caps(0x20)['media_lane_switching_supported'])
+        # E14 in the 5.4 revision history: tagged as new, like 6Dh's bit.
+        self.assertIn('host_lane_switching_supported', c.NEW_IN_5_4)
+
+    def test_the_capabilities_carry_it(self):
+        self._connect()
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['host_lane_switching_supported'], True)
+        self._connect('mock_dr8')
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        self.assertIs(caps['host_lane_switching_supported'], False)
+
+    def test_page_1dh_is_read_only_where_advertised(self):
+        self._connect('mock_dr8')
+        self.assertIsNone(self._hls())
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertTrue(d['available']['1Dh'])
+
+    # ---- what the switch is doing ---------------------------------------------------------
+    def test_the_active_mapping_is_reported_per_electrical_lane(self):
+        self._connect()
+        lanes = self._hls()['lanes']
+        self.assertEqual([(l['lane'], l['active_target']) for l in lanes[:3]],
+                         [(1, 2), (2, 1), (3, 3)])
+        self.assertEqual(lanes[0]['commit_result_name'], 'Success')
+
+    def test_the_switched_lanes_are_named(self):
+        self._connect()
+        self.assertEqual(self._hls()['switched'], [1, 2])
+
+    def test_a_later_group_is_numbered_absolutely(self):
+        """Every group numbers its targets 1-8; lane 9's 1 is lane 9."""
+        self._connect()
+        lane9 = self._hls()['lanes'][8]
+        self.assertEqual(lane9['active_target'], 9)
+        self.assertEqual(lane9['active_target_raw'], 1)
+
+    def test_each_group_has_its_own_enable(self):
+        self._connect()
+        self.assertEqual(self._hls()['enabled_banks'], [True, False, False])
+
+    def test_an_unpermuted_switch_names_no_lane(self):
+        self._connect()
+        for a in range(0xB8, 0xC0):
+            _state['backend']._registers[0x1D][a] = a - 0xB8 + 1
+        self.assertEqual(self._hls()['switched'], [])
+
+    def test_every_bank_is_read(self):
+        self._connect()
+        backend = _state['backend']
+        seen = set()
+        real = backend.read_bytes
+
+        def traced(addr, length):
+            if backend._current_page == 0x1D:
+                seen.add(backend._current_bank)
+            return real(addr, length)
+        backend.read_bytes = traced
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+        self._hls()
+        self.assertEqual(seen, {0, 1, 2})
+
+    # ---- the page -------------------------------------------------------------------------
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_module_info_says_whether_it_is_supported(self):
+        js = self._read('static', 'app.js')
+        self.assertIn("['Host Lane Switching', c.host_lane_switching_supported", js)
+        self.assertIn("'0xFC[7]'", js)
+
+    def test_the_card_sits_beside_the_media_lane_switch(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('id="card-hls"')
+        self.assertLess(i, html.index('id="card-mls"'))
+        self.assertIn('id="hls-note"', html[i:i + 400])
+        self.assertIn('Read-only', html[i:html.index('id="card-mls"')])
+
+    def test_the_note_says_the_numbers_are_nominal(self):
+        js = re.sub(r'(?m)^\s*//.*$', '', self._read('static', 'app.js'))
+        i = js.index('if (d.host_lane_switching) {')
+        body = js[i:js.index('if (d.media_lane_switching) {', i)]
+        self.assertIn('note.innerHTML = h.switched.length', body)
+        self.assertIn('nominal', body)
+        self.assertIn("show('card-hls', !!d.host_lane_switching);", js)
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.

@@ -506,6 +506,14 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 主机通道切换:通道号可能是名义通道
+
+CMIS 5.4 的 7.8 节 / Page 1Dh(`01h:252.7` 声明):每组 8 条通道内,电气主机通道可以连到另一条**名义**通道。
+Application 和 Data Path 寄存器按名义通道编号,所以工具各面板和各接口里的 `lane` 都是名义通道。
+`GET /api/module/ext54` 在支持的模块上带 `host_lane_switching`:`lanes[i].lane` 是电气通道,
+`active_target` 是它当前连到的名义通道(绝对编号),`switched` 列出两者不同的电气通道。
+用户说「按面板查通道 1 的线,查到的是别的业务」时先看这一项。只读,工具不写 1Dh。
+
 ## 通道极性:同样八个位,在宽模块上是三个意思
 
 `01h:171-172`（Table 8-57）只有八个位。规范 **8.4.13** 说，模块**多于八条通道**时

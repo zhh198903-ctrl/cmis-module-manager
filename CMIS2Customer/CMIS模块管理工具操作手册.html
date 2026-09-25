@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.131.0<br>
+      <b>版本</b>　2.132.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.131.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.131.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.132.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.132.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1717,6 +1717,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>主机通道切换(Page 1Dh):面板上的通道号可能不是电气通道号</h3>
+  <p>CMIS 5.4 新增了主机侧通道切换(7.8 节、Page 1Dh,由 <code>01h:252[7]</code> 声明):每组 8 条通道内,可以把<b>电气主机通道</b>(线真正接的那条)连到另一条<b>名义通道</b>上。Application 和 Data Path 寄存器按名义通道编号——所以切换生效时,DataPath、Monitoring、Flags 各面板上的「通道 1」不一定是插在电气通道 1 上的那一路。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前既不读这一位,也不读 Page 1Dh。切换生效的模块上,所有面板照常显示通道号,没有任何提示:按面板去查通道 1 的线,查到的是通道 2 的业务。</span>
+  </div>
+  <p>现在:Module Info 多一行 <b>Host Lane Switching</b>(支持 / 不支持);支持的模块在 DataPath Config 标签页多一张 <b>Host Lane Switching</b> 卡片(在 Media Lane Switching 上方),逐条电气通道列出已下发(<code>1Dh:136–143</code>)和当前生效(<code>1Dh:184–191</code>)的名义通道,以及上次提交结果。有通道被换到别处时,卡片顶部写明是哪几条电气通道,并提醒其它面板的通道号是名义通道。多于 8 条通道的模块逐组读取,目标显示为绝对通道号。</p>
+  <p>这张卡片<b>只读</b>。24 通道演示模块声明支持,第一组里电气通道 1、2 互换,可以直接看到提示。</p>
 
   <h3>演示模块:后面几个 Bank 的输出状态不再照抄 Bank 0</h3>
   <p>在 24 通道演示模块上关掉通道 1,通道 9 和 17 的 Tx 输出状态也跟着显示「关」,而它们自己的光功率照常——这是演示模块的问题,不是工具读错:工具按 Bank 逐个读 <code>11h:132–133</code>(Table 8-95),演示模块却把 Bank 0 算出来的输出状态写进了 Page 11h 的每一个 Bank。</p>
@@ -4246,13 +4255,14 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>CMIS 5.4 Optional Pages（广告与页映射）</td><td class="label">Module Info</td><td><code>0Ch</code></td></tr>
         <tr><td>Per-Lane Output Power Thresholds</td><td class="label">Monitoring</td><td><code>62h</code></td></tr>
         <tr><td>Lane Polarity Status</td><td class="label">DataPath Config</td><td><code>60h</code></td></tr>
+        <tr><td>Host Lane Switching(只读)</td><td class="label">DataPath Config</td><td><code>1Dh</code></td></tr>
         <tr><td>Media Lane Switching</td><td class="label">DataPath Config</td><td><code>6Dh</code></td></tr>
         <tr><td>Acquisition Counters</td><td class="label">Diagnostics</td><td><code>61h</code></td></tr>
       </tbody>
     </table>
   </div>
   <p>这些页是否存在由模块在
-     <code>01h:173–174</code> / <code>01h:252[5]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
+     <code>01h:173–174</code> / <code>01h:252[5]</code> / <code>01h:252[7]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
      未实现的页不保证返回有意义的内容，读了再渲染等于把总线上的残留值变成"每通道读数"。
      没广告的页对应的卡片<b>直接不出现</b>；5.3 模块以及不实现这些页的 5.4 模块，
      Module Info 里的 CMIS 5.4 Optional Pages 卡片会明确写"没有广告任何可选页"，这是正常的。</p>
@@ -4329,6 +4339,15 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     8 通道模块只有一组，行为和以前完全一样。</span>
   </div>
 
+  <h3>12.4a Host Lane Switching（<code>1Dh:128–191</code>，DataPath Config 标签页，只读）</h3>
+  <p>与 12.4 布局相同,但切换的是<b>主机侧</b>:每一行是一条电气主机通道,「已下发」(<code>1Dh:136–143</code>)是主机写入的名义通道,「当前生效」(<code>1Dh:184–191</code>)是交换机实际连接的名义通道。只在模块于 <code>01h:252[7]</code> 声明支持时读取。</p>
+  <ul>
+    <li>「当前生效」与电气通道号不同的行标黄;卡片顶部列出这些电气通道</li>
+    <li>切换生效时,<b>本工具其它面板上的通道号都是名义通道</b>——Application 和 Data Path 寄存器就是这样编号的</li>
+    <li>和媒体侧一样按 8 条一组,每组有自己的使能位;目标显示为绝对通道号</li>
+    <li>本工具不提供写入;如需改动,请用 Raw Registers</li>
+  </ul>
+
   <h3>12.5 CMIS 5.4 Optional Pages（<code>0Ch:128–159</code>，Module Info 标签页）</h3>
   <p>模块用 32 字节位图声明自己实现了哪些页，比逐页试探可靠。下方另显示
      Consolidated PM 特性的支持情况（按哪个 CMIS 版本定义、选项与要求的符合度）。</p>
@@ -4398,7 +4417,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.131.0<br>
+    CMIS Module Manager 操作手册 v2.132.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

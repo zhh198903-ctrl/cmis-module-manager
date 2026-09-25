@@ -472,6 +472,16 @@
           The polarity in effect now. It may legitimately differ from Default Polarity (01h:171–172) in Module Info, which advertises only the power-up polarity of a module whose polarity is programmable.
         </p>
       </div>
+      <div class="card" id="card-hls" style="display:none">
+        <h3><span class="card-title">Host Lane Switching<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">1Dh / 136–191</span></span></h3>
+        <div class="caps-note flag-warn" id="hls-note"></div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Electrical Lane</th><th>Provisioned</th><th>Active</th><th>Last Commit Result</th></tr></thead>
+          <tbody id="tbl-hls"></tbody></table></div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          Read-only. Each row is an electrical host lane — the physical connection — and the nominal lane (7.8) it is connected to: Provisioned (1Dh:136–143) is what the host has written, Active (1Dh:184–191) what the switch is doing. Application and Data Path registers, and so every other panel here, number lanes by nominal lane. Switching works within each group of 8 lanes.
+        </p>
+      </div>
       <div class="card" id="card-mls" style="display:none">
         <h3><span class="card-title">Media Lane Switching<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">6Dh / 136–191</span></span></h3>
         <div class="table-scroll"><table>
