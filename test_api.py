@@ -17964,7 +17964,10 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
     Left on the bit-counter window, lanes 9-16 reported SNRs of 181 dB and
     0.00 dB - and 0.00 is the kind of number that reads as a measurement."""
 
-    SELECTORS = {'/api/module/snr': 0x06, '/api/module/ber': 0x01}
+    # The last window each endpoint selects: the BER and counters read the
+    # last completed gate (11h, 12h-15h) after the running figures, where
+    # 13h:129.5 offers it - as this module does.
+    SELECTORS = {'/api/module/snr': 0x06, '/api/module/ber': 0x11}
 
     def _connect(self, backend='mock_zr16'):
         self.assertOk(self.client.post(
@@ -18002,7 +18005,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         self._connect()
         self._poison(0xEE)
         self.assertOk(self.client.get('/api/module/counters'))
-        self.assertEqual(self._selectors(), [0x05, 0x05])
+        self.assertEqual(self._selectors(), [0x15, 0x15])
 
     def test_an_eight_lane_module_still_selects_once(self):
         """One bank means one selector write; the helper must not invent a
@@ -19238,6 +19241,9 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-127': 'Clocking and Measurement Controls (Page 13h)',
         '8-128': 'PRBS Checker Behavior Un-Gated Mode',
         '8-129': 'PRBS Checker Behavior Single Gate Timer',
+        '8-130': 'PRBS Checker Behavior Per Lane Gate Timer',
+        '8-136': 'Diagnostics Selection Register (Page 14h)',
+        '8-137': 'Diagnostics Selector Options',
         '8-131': 'Loopback Controls (Page 13h)',
         '8-133': 'Diagnostics Masks (Page 13h)',
         '8-134': 'User Pattern (Page 13h)',
@@ -29652,9 +29658,10 @@ class TestAMonitorIsReadAtItsOwnSize(CMISTestCase):
                         n != size or (addr - lo) % size):
                     bad.append((hex(page), bank, hex(addr), n))
             if page == 0x14 and addr >= 0xC0:
-                # Table 8-139: 02h-05h are U64 counters, 01h the F16 BERs,
-                # 06h the U16 SNRs.
-                size = 8 if sel is not None and 2 <= sel <= 5 else 2
+                # Table 8-139: 02h-05h and their gated twins 12h-15h are U64
+                # counters, 01h/11h the F16 BERs, 06h the U16 SNRs.
+                size = 8 if sel is not None and (
+                    2 <= sel <= 5 or 0x12 <= sel <= 0x15) else 2
                 if n != size or (addr - 0xC0) % size:
                     bad.append((hex(page), bank, hex(addr), n, sel))
         return bad
@@ -30450,8 +30457,9 @@ class TestDiagnosticsSayWhenTheyHaveNoSample(CMISTestCase):
                 ('async function loadSnr', "(na || [])[i] ? `<td>${naCell("),
                 ('async function loadBer', 'berCell(l.host_ber, l.host_ber_na)'),
                 ('async function loadCounters', "l[`${side}_errors_na`]"),
-                ('async function loadCounters', 'l.host_errors_na'),
-                ('async function loadCounters', 'l.media_errors_na')):
+                ('async function loadCounters',
+                 "l[`${side}_errors_na`] ? cell(l, false, "
+                 "naCell('no valid error count'))")):
             i = js.index(fn)
             body = js[i:js.index('\nasync function', i + 10)]
             self.assertIn(needle, body, fn)
@@ -33078,6 +33086,244 @@ class TestOneMutedTxLaneTakesItsDataPathDown(CMISTestCase):
         self.assertIn("const rxWhy = ['Activated', 'Initialized', 'TxTurnOn', "
                       "'TxTurnOff'].includes(st)", cell)
         self.assertIn(": st === 'Initialized'", cell)
+
+
+class TestTheLastCompletedGateIsShown(CMISTestCase):
+    """Table 8-137 splits the Diagnostics Selector in two: 01h-06h are
+    "Real-Time Results", 11h-15h the "Results over most recently completed
+    Gating Period (stable for Gating Period)", offered where 13h:129.5
+    GatingResultsSupported is set. Table 8-129, auto-restart row: "The
+    current error information will reset ... The host must read the error
+    information from the previous gated time using the error information
+    results Selectors 11h-15h".
+
+    The tool read only 01h-05h, so a gated measurement's result never reached
+    the page. The demo modules ignored the gate: counters ran on for ever and
+    11h-15h showed the running figures, still moving. Now the replies carry `last_gate`, the page shows those rows, and
+    the demos end a gate as Tables 8-127, 8-129 and 8-130 say."""
+
+    def _connect(self, backend='mock_sr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _write(self, page, addr, data, bank=0):
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': page, 'address': addr, 'data': data,
+                             'bank': bank}),
+            content_type='application/json'))
+
+    def _read(self, page, addr, n, bank=0):
+        return self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': addr, 'length': n,
+                             'bank': bank}),
+            content_type='application/json'))['data']['data']
+
+    def _end_gate(self, lane_base=0):
+        _state['backend']._gates[lane_base]['start'] -= 1000
+
+    def _bits(self, d, lane=0, side='host'):
+        return d['lanes'][lane][side + '_total_bits']
+
+    def _gate_bits(self, d, lane=0, side='host'):
+        return d['last_gate']['lanes'][lane][side + '_total_bits']
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_both_replies_carry_the_last_gate(self):
+        self._connect()
+        ber = self._get('ber')
+        self.assertEqual([l['lane'] for l in ber['last_gate']['lanes']],
+                         list(range(1, 9)))
+        self.assertIn('media_ber', ber['last_gate']['lanes'][0])
+        cnt = self._get('counters')
+        self.assertEqual(len(cnt['last_gate']['lanes']), 8)
+        self.assertIn('media_error_count', cnt['last_gate']['lanes'][0])
+
+    def test_the_gated_counters_are_read_as_u64(self):
+        """Table 8-139: 12h-15h are U64 counters like 02h-05h, and a READ
+        that splits one can tear it while the module updates it."""
+        from unittest import mock
+        self._connect()
+        sizes = []
+
+        def fake(page, addr, length, size, bank=0):
+            sizes.append(size)
+            return bytes(length)
+        with mock.patch.object(app_module, '_read_upper_scalars', fake):
+            for sel in (0x02, 0x12, 0x15, 0x01, 0x11, 0x06):
+                list(app_module._read_diag_banks(sel))
+        self.assertEqual(sizes, [8, 8, 8, 2, 2, 2])
+
+    def test_a_module_without_gated_results_has_none(self):
+        self._connect()
+        poke(0x13, 0x81, 0x5C)                # 129.5 clear
+        self.assertIsNone(self._get('ber')['last_gate'])
+        self.assertIsNone(self._get('counters')['last_gate'])
+
+    def test_the_gated_result_is_what_the_gate_ended_with(self):
+        """SR8: a 60 s gate without auto-restart - at its end the counters
+        stop, and the gated window holds the same figures."""
+        self._connect()
+        self._get('counters')
+        self._end_gate()
+        d = self._get('counters')
+        self.assertGreater(self._gate_bits(d), 0)
+        self.assertEqual(self._gate_bits(d), self._bits(d))
+        again = self._get('counters')
+        self.assertEqual(self._bits(again), self._bits(d), 'still counting')
+        self.assertEqual(self._gate_bits(again), self._gate_bits(d))
+        self.assertEqual(self._gate_bits(d, side='media'),
+                         self._bits(d, side='media'))
+
+    def test_with_auto_restart_the_running_count_starts_again(self):
+        self._connect()
+        self._write(0x13, 177, [0x18])          # 60 s gate, AutoRestartGating
+        self._get('counters')
+        self._get('counters')
+        before = self._bits(self._get('counters'))
+        self._end_gate()
+        d = self._get('counters')
+        self.assertGreaterEqual(self._gate_bits(d), before)
+        self.assertLess(self._bits(d), self._gate_bits(d))
+        later = self._get('counters')
+        self.assertEqual(self._gate_bits(later), self._gate_bits(d),
+                         'the gated window is stable for the gating period')
+        self.assertGreater(self._bits(later), self._bits(d),
+                           'the new gate is counting')
+
+    def test_the_gated_ber_is_held(self):
+        self._connect()
+        self._write(0x13, 177, [0x18])
+        self._end_gate()
+        first = self._get('ber')['last_gate']['lanes'][0]['host_ber']
+        self.assertGreater(first, 0)
+        time.sleep(0.3)
+        self.assertEqual(self._get('ber')['last_gate']['lanes'][0]['host_ber'],
+                         first)
+
+    def test_a_frozen_gate_holds_the_running_ber_too(self):
+        """No auto-restart: "the error counters stop counting"."""
+        self._connect()
+        self._end_gate()
+        d = self._get('ber')
+        self.assertEqual(d['lanes'][0]['host_ber'],
+                         d['last_gate']['lanes'][0]['host_ber'])
+
+    def test_reset_error_information_freezes_and_copies(self):
+        """13h:177.5 0->1: frozen, and 11h-15h "updated with the frozen
+        current error statistics"; 1->0: 01h-05h reset, 11h-15h
+        "unaffected"."""
+        self._connect('mock_dr8')
+        self._get('counters')
+        self._get('counters')
+        self._write(0x13, 177, [0x20])
+        d = self._get('counters')
+        self.assertGreater(self._gate_bits(d), 0)
+        self.assertEqual(self._gate_bits(d), self._bits(d))
+        self.assertEqual(self._bits(self._get('counters')), self._bits(d))
+        self._write(0x13, 177, [0x00])
+        after = self._get('counters')
+        self.assertEqual(self._gate_bits(after), self._gate_bits(d))
+        self.assertLess(self._bits(after), self._bits(d))
+
+    def test_a_held_reset_does_not_end_a_gate(self):
+        self._connect()
+        self._write(0x13, 177, [0x08 | 0x20])
+        frozen = self._gate_bits(self._get('counters'))
+        self._end_gate()
+        self.assertEqual(self._gate_bits(self._get('counters')), frozen)
+
+    def test_an_ungated_count_runs_on(self):
+        self._connect('mock_dr8')
+        self._get('counters')
+        self._end_gate()
+        a = self._bits(self._get('counters'))
+        self.assertGreater(self._bits(self._get('counters')), a)
+        self.assertEqual(self._gate_bits(self._get('counters')), 0)
+
+    def test_a_new_gate_time_starts_a_new_gate(self):
+        self._connect()
+        self._get('counters')
+        self._end_gate()
+        ended = self._bits(self._get('counters'))
+        self._write(0x13, 177, [0x06])          # 30 s
+        d = self._get('counters')
+        self.assertLess(self._bits(d), ended)
+        self.assertGreater(self._bits(self._get('counters')), self._bits(d))
+
+    def test_a_module_without_gating_never_ends_one(self):
+        self._connect()
+        poke(0x13, 0x81, 0x3C)                # 129.7-6 = 00b
+        self._get('counters')
+        self._end_gate()
+        a = self._bits(self._get('counters'))
+        self.assertGreater(self._bits(self._get('counters')), a)
+
+    def test_a_restart_the_module_does_not_offer_is_not_made(self):
+        """13h:129.2 clear: the 177.4 bit is not implemented."""
+        self._connect()
+        self._write(0x13, 177, [0x18])
+        poke(0x13, 0x81, 0x78)                # 129.2 clear
+        self._get('counters')
+        self._end_gate()
+        d = self._get('counters')
+        self.assertEqual(self._bits(self._get('counters')), self._bits(d))
+
+    def test_each_bank_has_its_own_gate(self):
+        self._connect('mock_1600g_16lane')
+        self._write(0x13, 177, [0x08], bank=1)
+        self._get('counters')
+        self._end_gate(8)
+        d = self._get('counters')
+        self.assertEqual(self._gate_bits(d, lane=0), 0)
+        self.assertGreater(self._gate_bits(d, lane=8), 0)
+
+    def test_each_bank_has_its_own_reset(self):
+        self._connect('mock_1600g_16lane')
+        self._get('counters')
+        self._write(0x13, 177, [0x20], bank=1)
+        d = self._get('counters')
+        self.assertEqual(self._gate_bits(d, lane=0), 0)
+        self.assertGreater(self._gate_bits(d, lane=8), 0)
+        self.assertEqual(self._gate_bits(d, lane=8), self._bits(d, lane=8))
+
+    def test_an_unsupported_gated_selector_reverts_to_zero(self):
+        """Table 8-136: DiagnosticsSelector "Reverts to 0 if value not
+        supported", and 00h is "All zeroes"."""
+        self._connect()
+        poke(0x13, 0x81, 0x5C)
+        self._write(0x14, 128, [0x11])
+        self.assertEqual(self._read(0x14, 128, 1), [0])
+        self.assertEqual(self._read(0x14, 192, 8), [0] * 8)
+
+    def test_a_supported_one_stays(self):
+        self._connect()
+        self._write(0x14, 128, [0x12])
+        self.assertEqual(self._read(0x14, 128, 1), [0x12])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_shows_the_last_gate(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        ber = js[js.index('async function loadBer'):]
+        ber = ber[:ber.index('\nasync function')]
+        self.assertIn("+ (res.data.last_gate\n      ? berRows("
+                      "res.data.last_gate.lanes, ' \\u00b7 last gate', ' sel 11h')", ber)
+        cnt = js[js.index('async function loadCounters'):]
+        cnt = cnt[:cnt.index('\n// ---')]
+        self.assertIn("counterRows(gated, ' \\u00b7 last gate')", cnt)
+        self.assertIn('const anyPsl = lanes.concat(gated)', cnt)
+        win = js[js.index('function _renderMeasurementWindow'):]
+        win = win[:win.index('\n}')]
+        self.assertIn('if (data.last_gate) {', win)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.148.0<br>
+      <b>版本</b>　2.149.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.148.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.148.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.149.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.149.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>BER / 计数器:上一个完整门控周期的结果</h3>
+  <p>规范 Table 8-137 把诊断选择器分成两组:01h–06h 是「实时结果」,11h–15h 是「最近一个已完成门控周期的结果(在门控周期内保持不变)」,模块在 <code>13h:129.5</code> GatingResultsSupported 声明是否提供。Table 8-129 自动重启门控那一行写得很明白:门控到时,当前误码信息清零、门控重新开始,「主机必须用选择器 11h–15h 读取上一个门控时段的误码信息」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只读 01h–05h,门控测量真正要的那个结果——上一个完整门控周期的 BER 和误码/总比特数——从来没显示过;开了自动重启时,表里看到的只是新一轮刚开始累积的数。演示模块也不管门控:计数器一直累加,11h–15h 显示的也是还在变的实时数。</span>
+  </div>
+  <p>现在:模块声明支持时,BER 表和误码/比特计数表下面多出几行 <b>· last gate</b>,是上一个完整门控周期的结果(选择器 11h / 12h–15h),在下一个周期结束前保持不变;还没有完成过门控时是 0,测量窗口说明里会写明。演示模块:门控到时把结果复制到 11h–15h;开了自动重启(<code>13h:177.4</code>,且 <code>13h:129.2</code> 声明支持)就清零重新计数,否则停止计数;ResetErrorInformation(<code>13h:177.5</code>)置 1 时冻结并复制,清 0 时重新开始、11h–15h 不变;改门控时间开始新一轮;每个 bank 各有自己的门控;不支持的选择器按规范回到 00h,数据区全 0。</p>
 
   <h3>关掉一路 Tx,整条数据通道退到 Initialized</h3>
   <p>规范 Eq. 6-12:<code>DPDeactivateS = DPReDeinitS OR DPTxDisableT OR DPTxForceSquelchT</code>,后两项是对这条数据通道<b>所有媒体通道</b>取「或」。表注:「在 DPActivated 或 DPTxTurnOn 下,对一条或多条媒体通道设置 OutputDisableTx 或 OutputSquelchForceTx,会让整条数据通道经 DPTxTurnOff 转到 DPInitialized。」附录 D.1.3 的软件上电流程就是先把 Tx 全关,让数据通道初始化后停在 DPInitialized,再打开 Tx。Table 6-18:DPInitialized 下每一路 Tx 输出看它自己的 OutputDisableTx / OutputSquelchForceTx。</p>
@@ -4566,7 +4574,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.148.0<br>
+    CMIS Module Manager 操作手册 v2.149.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

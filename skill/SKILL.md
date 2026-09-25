@@ -568,6 +568,13 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 门控测量看 last_gate
+
+Table 8-137:选择器 01h–06h 是实时结果,11h–15h 是最近一个已完成门控周期的结果(`13h:129.5` 声明支持)。
+开了自动重启门控(`13h:177.4`)时实时数每个周期清零,门控结果只在 11h–15h(Table 8-129 / 8-130)。
+`GET /api/module/ber` 和 `GET /api/module/counters` 在模块支持时带 `last_gate.lanes`(结构与 `lanes` 相同),不支持时为 `null`。
+用户问「门控 60 秒的 BER 在哪看」:看 `last_gate`,不是 `lanes`;还没完成过门控时是 0。
+
 ## 关掉一路 Tx:整条数据通道到 Initialized
 
 Eq. 6-12:DPDeactivateS 含 DPTxDisableT 和 DPTxForceSquelchT,对数据通道的所有媒体通道取或。

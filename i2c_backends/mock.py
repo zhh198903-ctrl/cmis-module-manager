@@ -984,6 +984,8 @@ class MockBackend(I2CInterface):
         _lanes = max(8, self.PROFILE.get('lanes', 8))
         self._error_counts = [0] * _lanes
         self._bit_counts = [0] * _lanes
+        # {first lane of a bank: its measurement gate} - see _advance_gate.
+        self._gates = {}
         self._last_counter_time = 0.0
         self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
@@ -2646,19 +2648,31 @@ class MockBackend(I2CInterface):
         counters_ticked = False
         for lane_base, p14 in self._banked_page_dicts(0x14):
             sel = p14.get(0x80, 0)
+            p13 = self._page13_of(lane_base)
+            # Table 8-136: the selector "Reverts to 0 if value not
+            # supported", and 00h selects "All zeroes". 11h-15h exist only
+            # where 13h:129.5 GatingResultsSupported says so.
+            if 0x11 <= sel <= 0x15 and not (p13.get(0x81, 0) & 0x20):
+                sel = p14[0x80] = 0x00
+            if sel == 0x00:
+                for a in range(0xC0, 0x100):
+                    p14[a] = 0
+
+            ber_now = self._ber_now(lane_base)
+            gate = self._advance_gate(lane_base, p13, ber_now)
+            # 11h is the last completed gate, "stable for Gating Period"; 01h
+            # is the running one, which stops where a gate ended without
+            # restarting (Table 8-129: "When the gate timer expires, the error
+            # counters stop counting").
+            shown = (gate['ber'] if sel == 0x11 or gate['frozen']
+                     else ber_now)
 
             for li in range(8):
                 lane = lane_base + li
-                # lane * pi/4 comes back to where it started every eight
-                # lanes, which is exactly the period that makes bank 1 a copy
-                # of bank 0 - and a reader taking bank 0's window for every
-                # bank indistinguishable from a correct one. The bank term is
-                # zero for bank 0, so the eight lane profiles are unchanged.
                 phase = lane * math.pi / 4 + lane_base * 0.37
 
                 if sel == 0x01 or sel == 0x11:
-                    h_ber = base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase))
-                    m_ber = base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))
+                    h_ber, m_ber = shown[li] if shown[li] else (0.0, 0.0)
                     w = cmis.encode_f16_ber(h_ber)
                     a = 0xC0 + li * 2
                     p14[a] = (w >> 8) & 0xFF
@@ -2693,14 +2707,21 @@ class MockBackend(I2CInterface):
                     lane = lane_base + lane_start + li
                     if lane >= len(self._bit_counts):
                         continue
-                    new_bits = int(bits_per_sec * self._counter_dt)
-                    new_errors = int(new_bits * base_ber
-                                     * (1.0 + 0.2 * math.sin(t + lane)))
-                    self._bit_counts[lane] += new_bits
-                    self._error_counts[lane] += max(new_errors, 0)
+                    # A gate that ended without a restart has stopped
+                    # counting. The count runs on time, so which window is
+                    # read to advance it does not matter.
+                    if not gate['frozen']:
+                        new_bits = int(bits_per_sec * self._counter_dt)
+                        new_errors = int(new_bits * base_ber
+                                         * (1.0 + 0.2 * math.sin(t + lane)))
+                        self._bit_counts[lane] += new_bits
+                        self._error_counts[lane] += max(new_errors, 0)
                     off = 0xC0 + li * 16
-                    ec = self._error_counts[lane]
-                    bc = self._bit_counts[lane] & ~1    # PSL=0 in LSB
+                    # The gated window is the copy taken when a gate ended.
+                    ec, bc = (gate['counts'].get(lane, (0, 0)) if sel >= 0x12
+                              else (self._error_counts[lane],
+                                    self._bit_counts[lane]))
+                    bc &= ~1                            # PSL=0 in LSB
                     for j in range(8):
                         p14[off + j] = (ec >> (j * 8)) & 0xFF
                     for j in range(8):
@@ -2802,6 +2823,10 @@ class MockBackend(I2CInterface):
                 elif not (ctrl & 0x10) and self._lp_request_time > 0:
                     self._lp_request_time = 0
                     self._power_up_data_paths()
+        elif self._current_page == 0x13 and register <= 0xB1 < register + len(data):
+            self._gate_control(self._current_bank * 8,
+                               self._page13_of(self._current_bank * 8).get(0xB1, 0),
+                               data[0xB1 - register])
         elif self._current_page == 0x10:
             # Writes may span several control bytes, so match on the range
             span = range(register, register + len(data))
@@ -3317,6 +3342,93 @@ class MockBackend(I2CInterface):
                     a, sh = 0x80 + lane // 2, 4 * (lane % 2)
                     p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (new << sh)
                 p11b[0x86] = p11b.get(0x86, 0) | gm
+
+    # 13h:177.3-1 MeasurementTime (Table 8-127), seconds; 111b is the
+    # vendor's own, ten here.
+    _GATE_SECONDS = {1: 5, 2: 10, 3: 30, 4: 60, 5: 120, 6: 300, 7: 10}
+
+    def _page13_of(self, lane_base: int) -> dict:
+        if lane_base == 0:
+            return self._registers.get(0x13, {})
+        return self._registers.get((0x13, lane_base // 8), {})
+
+    def _gate_of(self, lane_base: int) -> dict:
+        return self._gates.setdefault(lane_base, {
+            'start': time.time(), 'frozen': False,
+            'ber': [None] * 8, 'counts': {}})
+
+    def _snapshot_gate(self, lane_base: int, gate: dict, ber_now) -> None:
+        """Copy the running error information into the gated results, as a
+        gate end or a ResetErrorInformation freeze does (Table 8-127)."""
+        gate['ber'] = list(ber_now)
+        gate['counts'] = {
+            lane: (self._error_counts[lane], self._bit_counts[lane])
+            for lane in range(lane_base, min(lane_base + 8,
+                                             len(self._bit_counts)))}
+
+    def _restart_counting(self, lane_base: int, gate: dict) -> None:
+        for lane in range(lane_base, min(lane_base + 8,
+                                         len(self._bit_counts))):
+            self._error_counts[lane] = self._bit_counts[lane] = 0
+        gate['start'], gate['frozen'] = time.time(), False
+
+    def _advance_gate(self, lane_base: int, p13: dict, ber_now) -> dict:
+        """A gated measurement (13h:177.3-1 non-zero, 13h:129.7-6 GatingSupport)
+        ends when its time is up. Tables 8-129/8-130: the results of that
+        gate go to Selectors 11h-15h; with AutoRestartGating (13h:177.4,
+        advertised 13h:129.2) "The current error information will reset, and
+        the gate timer will be reset to 0 and restart", otherwise "the error
+        counters stop counting". The mock ignored the gate altogether: the
+        counters ran on for ever and 11h-15h showed the running figures.
+        """
+        gate = self._gate_of(lane_base)
+        b177, caps = p13.get(0xB1, 0), p13.get(0x81, 0)
+        seconds = self._GATE_SECONDS.get((b177 >> 1) & 0x07)
+        # A held ResetErrorInformation has frozen it already (_gate_control).
+        if not seconds or not (caps >> 6) & 0x03 or gate['frozen']:
+            return gate
+        if time.time() - gate['start'] < seconds:
+            return gate
+        self._snapshot_gate(lane_base, gate, ber_now)
+        if b177 & 0x10 and caps & 0x04:
+            self._restart_counting(lane_base, gate)
+        else:
+            gate['frozen'] = True
+        return gate
+
+    def _gate_control(self, lane_base: int, old: int, new: int) -> None:
+        """A write to 13h:177. ResetErrorInformation (bit 5): "0b->1b: Freeze
+        ... gated results identified by Selectors 11h-15h are updated with the
+        frozen current error statistics", "1b->0b: Reset ... results
+        identified by Selectors 11h-15h are unaffected". A new gate time or
+        restart setting starts a new gate."""
+        gate = self._gate_of(lane_base)
+        if not old & 0x20 and new & 0x20:
+            shown = gate['ber'] if gate['frozen'] else self._ber_now(lane_base)
+            if not gate['frozen']:
+                self._snapshot_gate(lane_base, gate, shown)
+            gate['frozen'] = True
+        elif old & 0x20 and not new & 0x20:
+            self._restart_counting(lane_base, gate)
+        elif (old ^ new) & 0x1E:
+            self._restart_counting(lane_base, gate)
+
+    def _ber_now(self, lane_base: int):
+        """The running BER per lane of a bank, (host, media).
+
+        lane * pi/4 comes back to where it started every eight lanes, which
+        is exactly the period that makes bank 1 a copy of bank 0 - and a
+        reader taking bank 0's window for every bank indistinguishable from
+        a correct one. The bank term is zero for bank 0."""
+        t = time.time() - self._start_time
+        base_ber = self._profile['base_ber']
+        out = []
+        for li in range(8):
+            phase = (lane_base + li) * math.pi / 4 + lane_base * 0.37
+            out.append((
+                base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase)),
+                base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))))
+        return out
 
     def _power_up_data_paths(self) -> None:
         """ModuleLowPwr -> ModuleReady for bank 0's Data Paths.

@@ -4775,6 +4775,14 @@ function _renderMeasurementWindow(elId, data) {
       + (c.auto_restart_gating ? ', restarting automatically' : '')
       + `, updated every ${c.update_period_s} s ` + reg('13h:177, Bank ' + b));
   }
+  // Table 8-137: Selectors 11h-15h hold the most recently completed gate,
+  // "stable for Gating Period", beside the running figures above them.
+  if (data.last_gate) {
+    parts.push('the <b>last gate</b> rows are the most recently completed '
+      + 'gating period, fixed until the next one ends '
+      + reg('Selectors 11h-15h, 13h:129.5') + ' \u2014 zeros until a gate '
+      + 'has completed');
+  }
   el.innerHTML = 'Measurement window: ' + parts.join(' \u00b7 ');
 }
 
@@ -4793,13 +4801,17 @@ async function loadBer() {
   // Table 7-8: 0.5 is the BER's NA value, reported as such where the module
   // advertises NA values - not a link failing every other bit.
   const berCell = (v, na) => `<td>${na ? naCell('no valid sample') : formatBer(v)}</td>`;
-  const hostCells = res.data.lanes.map(l => berCell(l.host_ber, l.host_ber_na)).join('');
-  const mediaCells = res.data.lanes.map((l, i) =>
-    mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
-      : berCell(l.media_ber, l.media_ber_na)).join('');
-  tbody.innerHTML =
-    `<tr><td style="color:var(--text-muted)">Host<span class="reg-badge">14h/0xC0</span></td>${hostCells}</tr>` +
-    `<tr><td style="color:var(--text-muted)">Media<span class="reg-badge">14h/0xD0</span></td>${mediaCells}</tr>`;
+  const berRows = (lanes, label, sel) => {
+    const hostCells = lanes.map(l => berCell(l.host_ber, l.host_ber_na)).join('');
+    const mediaCells = lanes.map((l, i) =>
+      mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
+        : berCell(l.media_ber, l.media_ber_na)).join('');
+    return `<tr><td style="color:var(--text-muted)">Host${label}<span class="reg-badge">14h/0xC0${sel}</span></td>${hostCells}</tr>` +
+      `<tr><td style="color:var(--text-muted)">Media${label}<span class="reg-badge">14h/0xD0${sel}</span></td>${mediaCells}</tr>`;
+  };
+  tbody.innerHTML = berRows(res.data.lanes, '', '')
+    + (res.data.last_gate
+      ? berRows(res.data.last_gate.lanes, ' \u00b7 last gate', ' sel 11h') : '');
 }
 
 // ---------------------------------------------------------------------------
@@ -4831,41 +4843,41 @@ async function loadCounters() {
     `<td${psl ? ' class="text-muted" title="Pattern sync lost on this lane — counts are not a valid measurement"' : ''}>${html}</td>`;
 
   const present = res.data.media_lanes_present;
-  // MAX(U64) is the error count's NA value (Table 7-8); the BER built on it
-  // is no measurement either.
-  const row = (side, field, fmt) => lanes.map((l, i) =>
-    side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
-      : field === 'error_count' && l[`${side}_errors_na`]
-        ? cell(l, false, naCell('no valid sample'))
-      : cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
+  // The six rows for one set of lanes: the running figures, and - where
+  // 13h:129.5 offers them - the last completed gate (Selectors 12h-15h).
+  const counterRows = (lanes, label) => {
+    // MAX(U64) is the error count's NA value (Table 7-8); the BER built on
+    // it is no measurement either.
+    const row = (side, field, fmt) => lanes.map((l, i) =>
+      side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+        : field === 'error_count' && l[`${side}_errors_na`]
+          ? cell(l, false, naCell('no valid sample'))
+        : cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
+    const berRow = (side) => lanes.map((l, i) =>
+      side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+        : l[`${side}_errors_na`] ? cell(l, false, naCell('no valid error count'))
+        : cell(l, l[`${side}_psl`], fmtBer(l[`${side}_ber`], l[`${side}_psl`]))).join('');
+    const th = (name) => `<td style="color:var(--text-muted)">${name}${label}</td>`;
+    return `
+    <tr>${th('Host Errors')}${row('host', 'error_count', fmtCount)}</tr>
+    <tr>${th('Host Total Bits')}${row('host', 'total_bits', fmtCount)}</tr>
+    <tr>${th('Host BER (calc)')}${berRow('host')}</tr>
+    <tr>${th('Media Errors')}${row('media', 'error_count', fmtCount)}</tr>
+    <tr>${th('Media Total Bits')}${row('media', 'total_bits', fmtCount)}</tr>
+    <tr>${th('Media BER (calc)')}${berRow('media')}</tr>`;
+  };
+  const gated = res.data.last_gate ? res.data.last_gate.lanes : [];
 
-  const hostErrCells  = row('host', 'error_count', fmtCount);
-  const hostBitCells  = row('host', 'total_bits', fmtCount);
-  const hostBerCells  = lanes.map(l => l.host_errors_na
-    ? cell(l, false, naCell('no valid error count'))
-    : cell(l, l.host_psl, fmtBer(l.host_ber, l.host_psl))).join('');
-  const mediaErrCells = row('media', 'error_count', fmtCount);
-  const mediaBitCells = row('media', 'total_bits', fmtCount);
-  const mediaBerCells = lanes.map((l, i) => mediaAbsent(present, i)
-    ? noMediaLaneCell(l.lane)
-    : l.media_errors_na ? cell(l, false, naCell('no valid error count'))
-    : cell(l, l.media_psl, fmtBer(l.media_ber, l.media_psl))).join('');
-
-  const anyPsl = lanes.some(l => l.host_psl || l.media_psl);
+  const anyPsl = lanes.concat(gated).some(l => l.host_psl || l.media_psl);
   const note = anyPsl
     ? `<tr><td colspan="9" class="flag-active" style="font-size:var(--fs-xs)">`
       + `⚠ Pattern sync lost on one or more lanes (14h counter bit 0). Their error `
       + `and bit counts are not a valid BER measurement.</td></tr>`
     : '';
 
-  tbody.innerHTML = `
-    <tr><td style="color:var(--text-muted)">Host Errors</td>${hostErrCells}</tr>
-    <tr><td style="color:var(--text-muted)">Host Total Bits</td>${hostBitCells}</tr>
-    <tr><td style="color:var(--text-muted)">Host BER (calc)</td>${hostBerCells}</tr>
-    <tr><td style="color:var(--text-muted)">Media Errors</td>${mediaErrCells}</tr>
-    <tr><td style="color:var(--text-muted)">Media Total Bits</td>${mediaBitCells}</tr>
-    <tr><td style="color:var(--text-muted)">Media BER (calc)</td>${mediaBerCells}</tr>
-    ${note}`;
+  tbody.innerHTML = counterRows(lanes, '')
+    + (res.data.last_gate ? counterRows(gated, ' \u00b7 last gate') : '')
+    + note;
 }
 
 // ---------------------------------------------------------------------------
