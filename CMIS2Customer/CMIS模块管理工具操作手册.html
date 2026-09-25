@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.151.0<br>
+      <b>版本</b>　2.152.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.151.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.151.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.152.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.152.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1726,6 +1726,14 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>「5.4」徽标只标 5.4 新增的内容</h3>
+  <p>规范前言里有两份变更清单:第 8–10 页是 <b>Rev 5.3</b> 的,第 11–12 页才是 <b>Rev 5.4</b> 的。主机侧通道切换(<code>01h:252[7]</code>、Page 1Dh)在 5.3 的清单里(E14),Table 6-21 的 Page 12h 几行(E07)和 Page 02h 阈值随 Application 变化的提示也都是 5.3 加的。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具把这三项都当成了 5.4:Module Info 的 Host Lane Switching 一行和 DataPath 页的 Host Lane Switching 卡片都带着 5.4 徽标,手册里也把主机侧通道切换写成了 5.4 新增。而且徽标本身并没有按服务器那份「5.4 新增字段」清单来标——每一行各自写死;那份清单里还有两个任何接口都没有返回过的字段名。</span>
+  </div>
+  <p>现在:Module Info 每一行写明它显示的字段,是否带 5.4 徽标由清单决定;清单只收 5.4 变更清单里列出的内容,每一项都能在某个接口的返回里找到。Host Lane Switching 的行和卡片不再带 5.4 徽标,手册相关几处改为 5.3,第 12 章的 5.4 可选页表里去掉了 1Dh(12.4a 注明它是 5.3 引入的)。</p>
+
   <h3>固件故障标志:读到了就不会再丢</h3>
   <p>规范 Table 8-9:<code>Lower 0x08</code> 除了 bit 0 的 ModuleStateChangedFlag,还有三个固件标志——bit 1 <b>ModuleFirmwareErrorFlag</b>(主固件自检发现故障)、bit 2 <b>DataPathFirmwareErrorFlag</b>(DSP 等辅助器件的固件故障)、bit 3 <b>AbnormalFwIndicationFlag</b>(CMIS 5.4 新增:正在运行的固件与标称版本不一致)。都是闩锁、读清。</p>
   <div class="callout callout-warn">
@@ -1783,7 +1791,7 @@
   <p>现在演示模块只接受主机能写的位置(控制、掩码、密码、页映射,Page 10h,12h / 13h / 14h / 1Dh / 6Dh / 60h 的可写部分等),写到广告、状态、Flag、监控值和 Page 00h–04h、0Ch、11h、1Ch、61h、62h 上的值会被忽略。写入操作本身仍然回报成功——规范说的是「允许但无效果」;写完用 Read 读回就能看到值没变。真实模块不受影响。</p>
 
   <h3>激光调谐表的「锁定」一栏:数据通道停下时不作判断</h3>
-  <p>CMIS 5.4 给 Table 6-21 加了 Page 12h 的几行:WavelengthUnlocked 在 DPDeactivated、DPDeinit 下不报,TuningComplete 在 DPDeactivated、DPInit、DPDeinit 下不报。</p>
+  <p>CMIS 5.3 给 Table 6-21 加了 Page 12h 的几行(E07):WavelengthUnlocked 在 DPDeactivated、DPDeinit 下不报,TuningComplete 在 DPDeactivated、DPInit、DPDeinit 下不报。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>激光调谐表的锁定栏以前先看解锁状态:数据通道停下后(这时模块不报解锁,激光器也未必开着)照样显示绿色的 Locked;激光器还在调谐、解锁位没来得及置起时,也显示 Locked。</span>
@@ -1873,7 +1881,7 @@
   <p>现在,如果请求时还有数据通道没停,等待时长是三段声明之和:DPTxTurnOff(<code>01h:168</code>,只在有通道开着 Tx 时计入)+ DPDeinit(<code>01h:144</code>)+ ModulePwrDn(<code>01h:167</code>)。任何一段模块没声明,就不替它编一个数字。真等满了还没到,提示里会写明「模块会先让所有数据通道停下,全部到 DPDeactivated 后才离开 ModuleReady」。数据通道都已停下时,仍只按 ModulePwrDn 等。</p>
 
   <h3>通道停下来时,Lane Flags 不再显示「一切正常」</h3>
-  <p>规范 Table 6-21(逐通道 Flag 符合性规则)规定了模块在哪些 DataPath 状态下<b>可以</b>置位每个通道 Flag。CMIS 5.4 又给这张表加了 Page 12h 的几行。在 DPDeactivated、DPInit、DPDeinit 下,模块<b>不报</b> Tx LOS、两个 CDR LOL、所有低侧告警/警告和 Rx 输出变化;DPInitialized 下,主机关掉或强制静音了 Tx 输出的通道,也不报 Tx 光功率低侧和全部 Tx 偏置 Flag(表注 1)。</p>
+  <p>规范 Table 6-21(逐通道 Flag 符合性规则)规定了模块在哪些 DataPath 状态下<b>可以</b>置位每个通道 Flag。CMIS 5.3 又给这张表加了 Page 12h 的几行。在 DPDeactivated、DPInit、DPDeinit 下,模块<b>不报</b> Tx LOS、两个 CDR LOL、所有低侧告警/警告和 Rx 输出变化;DPInitialized 下,主机关掉或强制静音了 Tx 输出的通道,也不报 Tx 光功率低侧和全部 Tx 偏置 Flag(表注 1)。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>工具以前不看状态:通道停下来后,Lane Flags 表在这些列上照样画绿点,意思是「查过了,没问题」——其实模块在这个状态下根本不会报。<br>
@@ -1882,7 +1890,7 @@
   <p>现在这些格子显示 <b>n/a</b>,悬停说明依据和当前状态;告警汇总列在部分 Flag 不适用时,绿点旁标 <b>partial</b>,悬停列出哪些不在其内。已经置位的 Flag 照常显示——Flag 是闩锁的,状态变化前触发的那一次仍然有效。接口里每条通道多了 <code>datapath_state</code> 和 <code>not_allowed</code>。演示模块也按这张表只在允许的状态下置位。</p>
 
   <h3>换了 Application 之后,阈值跟着换</h3>
-  <p>规范 8.5 节:Page 02h 的告警 / 警告阈值「可能取决于已投入使用的 Application,因此每次投入新的 Application 时都可能改变(包括校验和)」;模块在 Data Path 以新 Application 到达 <b>DPInitialized</b> 时更新它们。CMIS 5.4 把这一点作为提示写进了 Page 02h。</p>
+  <p>规范 8.5 节:Page 02h 的告警 / 警告阈值「可能取决于已投入使用的 Application,因此每次投入新的 Application 时都可能改变(包括校验和)」;模块在 Data Path 以新 Application 到达 <b>DPInitialized</b> 时更新它们。CMIS 5.3 把这一点作为提示写进了 Page 02h。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>工具以前只在打开 Monitoring 标签页时读一次阈值。在 DataPath Config 页切换 Application 后,监控表继续按<b>旧 Application 的阈值</b>给 Rx 光功率着色(没有 Page 62h 的模块,Tx 光功率也一样),Module Thresholds 卡片也显示旧值——除非离开再回到这个标签页,而且恰好是在 Data Path 到达 DPInitialized 之后。</span>
@@ -1891,7 +1899,7 @@
   <p>ZR 相干演示模块(<code>mock_coherent_zr</code>)的 AppSel 2 带有自己的一组光功率阈值(演示值),在 DataPath Config 页切到 AppSel 2 就能看到卡片随之更新。</p>
 
   <h3>主机通道切换(Page 1Dh):面板上的通道号可能不是电气通道号</h3>
-  <p>CMIS 5.4 新增了主机侧通道切换(7.8 节、Page 1Dh,由 <code>01h:252[7]</code> 声明):每组 8 条通道内,可以把<b>电气主机通道</b>(线真正接的那条)连到另一条<b>名义通道</b>上。Application 和 Data Path 寄存器按名义通道编号——所以切换生效时,DataPath、Monitoring、Flags 各面板上的「通道 1」不一定是插在电气通道 1 上的那一路。</p>
+  <p>CMIS 5.3 新增了主机侧通道切换(7.8 节、Page 1Dh,由 <code>01h:252[7]</code> 声明):每组 8 条通道内,可以把<b>电气主机通道</b>(线真正接的那条)连到另一条<b>名义通道</b>上。Application 和 Data Path 寄存器按名义通道编号——所以切换生效时,DataPath、Monitoring、Flags 各面板上的「通道 1」不一定是插在电气通道 1 上的那一路。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>工具以前既不读这一位,也不读 Page 1Dh。切换生效的模块上,所有面板照常显示通道号,没有任何提示:按面板去查通道 1 的线,查到的是通道 2 的业务。</span>
@@ -4431,14 +4439,13 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>CMIS 5.4 Optional Pages（广告与页映射）</td><td class="label">Module Info</td><td><code>0Ch</code></td></tr>
         <tr><td>Per-Lane Output Power Thresholds</td><td class="label">Monitoring</td><td><code>62h</code></td></tr>
         <tr><td>Lane Polarity Status</td><td class="label">DataPath Config</td><td><code>60h</code></td></tr>
-        <tr><td>Host Lane Switching(只读)</td><td class="label">DataPath Config</td><td><code>1Dh</code></td></tr>
         <tr><td>Media Lane Switching</td><td class="label">DataPath Config</td><td><code>6Dh</code></td></tr>
         <tr><td>Acquisition Counters</td><td class="label">Diagnostics</td><td><code>61h</code></td></tr>
       </tbody>
     </table>
   </div>
   <p>这些页是否存在由模块在
-     <code>01h:173–174</code> / <code>01h:252[5]</code> / <code>01h:252[7]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
+     <code>01h:173–174</code> / <code>01h:252[5]</code> 广告决定——<b>没有广告的页本工具不会去读</b>：
      未实现的页不保证返回有意义的内容，读了再渲染等于把总线上的残留值变成"每通道读数"。
      没广告的页对应的卡片<b>直接不出现</b>；5.3 模块以及不实现这些页的 5.4 模块，
      Module Info 里的 CMIS 5.4 Optional Pages 卡片会明确写"没有广告任何可选页"，这是正常的。</p>
@@ -4516,6 +4523,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <h3>12.4a Host Lane Switching（<code>1Dh:128–191</code>，DataPath Config 标签页，只读）</h3>
+  <p class="label">这一页是 <b>CMIS 5.3</b> 引入的(由 <code>01h:252[7]</code> 声明),不是 5.4——放在这里是因为它和 12.4 的 Media Lane Switching 布局相同,卡片标题不带 5.4 徽标。</p>
   <p>与 12.4 布局相同,但切换的是<b>主机侧</b>:每一行是一条电气主机通道,「已下发」(<code>1Dh:136–143</code>)是主机写入的名义通道,「当前生效」(<code>1Dh:184–191</code>)是交换机实际连接的名义通道。只在模块于 <code>01h:252[7]</code> 声明支持时读取。</p>
   <ul>
     <li>「当前生效」与电气通道号不同的行标黄;卡片顶部列出这些电气通道</li>
@@ -4593,7 +4601,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.151.0<br>
+    CMIS Module Manager 操作手册 v2.152.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

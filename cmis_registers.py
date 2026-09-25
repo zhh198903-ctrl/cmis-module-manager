@@ -854,7 +854,7 @@ FLAGS_NA_TX_OFF_INITIALIZED = frozenset((
     'tx_bias_low_alarm', 'tx_bias_high_warn', 'tx_bias_low_warn'))
 
 
-# Table 6-21's Page 12h rows, which CMIS 5.4 added (E07). The four Flags
+# Table 6-21's Page 12h rows, which CMIS 5.3 added (E07). The four Flags
 # that answer a request - power or fine tuning out of range, not accepted,
 # invalid channel - are allowed in every state; these two are not.
 TUNING_FLAG_ALLOWED_STATES = {
@@ -1627,15 +1627,22 @@ def update_module_control(current: int, **fields) -> int:
 # ---------------------------------------------------------------------------
 # CMIS 5.4 additions
 # ---------------------------------------------------------------------------
-# Every field this tool surfaces that did not exist in CMIS 5.3. The UI tags
-# these and the manual lists them from here, so the claim "new in 5.4" is made
-# in exactly one place and cannot drift from what the decoders actually read.
+# Every field this tool surfaces that did not exist in CMIS 5.3, by the key it
+# is surfaced under. The Module Info rows take their 5.4 badge from here (via
+# /api/module/capabilities), so the claim "new in 5.4" is made in one place.
+#
+# Checked against the Rev 5.4 lists on pages 11-12 of the specification and
+# nothing else. Pages 8-10 are the Rev 5.3 lists: host lane switching (5.3
+# E14, 01h:252.7, Page 1Dh), the Page 12h rows of Table 6-21 (5.3 E07), the
+# Application hint on Page 02h and the ModuleLowPwr clarification (5.3 M23)
+# are 5.3's, and host lane switching was listed here - with a 5.4 badge on
+# its row and card - until round 102. Two keys named registers no reply
+# carried: the polarity is surfaced as default_polarity, and the
+# AbnormalFwIndicationMask under firmware_flag_masks.
 NEW_IN_5_4 = frozenset({
     'heatsink_type',
     'abnormal_fw_flag',
-    'abnormal_fw_mask',
-    'default_input_polarity_tx',
-    'default_output_polarity_rx',
+    'default_polarity',
     'page_0ch_supported',
     'page_0dh_supported',
     'page_60h_supported',
@@ -1643,7 +1650,6 @@ NEW_IN_5_4 = frozenset({
     'page_62h_supported',
     'extra_lane_banks',
     'media_lane_switching_supported',
-    'host_lane_switching_supported',
     'max_lanes',
     'grid_300ghz_supported',
     'grid_300ghz_range',

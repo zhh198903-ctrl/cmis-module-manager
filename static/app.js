@@ -904,12 +904,12 @@ async function loadInfo() {
        'TxDisableIsFast (Table 8-50) - how quickly the module responds to Tx '
        + 'Output Disable'],
     ] : []),
-    ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', true],
-    ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32],
-    ['Default Polarity', polaritySummary(c.default_polarity, c.default_polarity_scope), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57). Section 8.4.13: on a module wider than eight lanes these bits apply in each group of eight, unless Page 60h carries per-lane values instead', true],
-    ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', true],
-    ['Host Lane Switching', c.host_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[7]', 'HostLaneSwitchingSupported (Table 8-62): the module can connect electrical host lanes to other nominal lanes (section 7.8)', true],
-    ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', true],
+    ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', 'heatsink_type'],
+    ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32 && 'max_lanes'],
+    ['Default Polarity', polaritySummary(c.default_polarity, c.default_polarity_scope), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57). Section 8.4.13: on a module wider than eight lanes these bits apply in each group of eight, unless Page 60h carries per-lane values instead', 'default_polarity'],
+    ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', 'media_lane_switching_supported'],
+    ['Host Lane Switching', c.host_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[7]', 'HostLaneSwitchingSupported (Table 8-62): the module can connect electrical host lanes to other nominal lanes (section 7.8) - added in CMIS 5.3', 'host_lane_switching_supported'],
+    ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', 'page_0ch_supported'],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
     ['FW Revision',     firmwareCell(d.fw_revision, d.fw_active),                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
@@ -981,6 +981,11 @@ async function loadInfo() {
                + 'so only the module\'s verdict is shown']);
   }
 
+  // A row names the field it shows; the server's list (new_in_5_4) decides
+  // whether that field is 5.4's. Rows used to badge themselves with a literal
+  // true, the list was never read, and host lane switching - CMIS 5.3 -
+  // carried a 5.4 badge.
+  const new54 = new Set(c.new_in_5_4 || []);
   tbody.innerHTML = rows.map(([k, v, pg, addr, def, since]) => {
     const plain = String(v).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     const tip = esc([
@@ -990,7 +995,7 @@ async function loadInfo() {
       def,
     ].join('\n'));
     return `<tr title="${tip}">
-      <td style="color:var(--text-muted);width:140px">${k}${since ? NEW54 : ''}</td>
+      <td style="color:var(--text-muted);width:140px">${k}${since && new54.has(since) ? NEW54 : ''}</td>
       <td>${v}</td>
       <td class="td-page">${pg}</td>
       <td class="td-addr">${addr}</td>

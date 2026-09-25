@@ -30584,7 +30584,7 @@ class TestEveryBankHasItsOwnOutputs(CMISTestCase):
                           if l.get('rx_output_changed')], [])
 
 class TestTheLaneNumbersMayBeNominal(CMISTestCase):
-    """CMIS 5.4 added host lane switching (7.8, Page 1Dh, advertised in
+    """CMIS 5.3 added host lane switching (7.8, Page 1Dh, advertised in
     01h:252.7): an 8x8 switch per group of eight lanes between the
     electrical host lanes - where the cables are - and the nominal lanes
     that the Application and Data Path registers number. RedirectStatusOfLane
@@ -30616,7 +30616,8 @@ class TestTheLaneNumbersMayBeNominal(CMISTestCase):
         self.assertFalse(c.parse_misc_caps(0x20)['host_lane_switching_supported'])
         self.assertTrue(c.parse_misc_caps(0x20)['media_lane_switching_supported'])
         # E14 in the 5.4 revision history: tagged as new, like 6Dh's bit.
-        self.assertIn('host_lane_switching_supported', c.NEW_IN_5_4)
+        # Rev 5.3 E14 (01h:252.7, Page 1Dh) - not a 5.4 field.
+        self.assertNotIn('host_lane_switching_supported', c.NEW_IN_5_4)
 
     def test_the_capabilities_carry_it(self):
         self._connect()
@@ -30707,7 +30708,7 @@ class TestThresholdsFollowTheApplication(CMISTestCase):
     """Section 8.5: Page 02h's thresholds "can depend on the commissioned set
     of Applications and therefore may change (including the checksum)
     whenever a new Application is commissioned" - updated "when the relevant
-    Data Path reaches DPInitialized". CMIS 5.4 added this as a hint; the
+    Data Path reaches DPInitialized". CMIS 5.3 added this as a hint; its
     changes list calls it out for Page 02h.
 
     The page read them once, when the Monitoring tab opened. After an Apply
@@ -30949,7 +30950,7 @@ class TestThresholdsFollowTheApplication(CMISTestCase):
 
 
 class TestAFlagTheModuleMayNotRaiseIsNotAPass(CMISTestCase):
-    """Table 6-21 (Lane-Specific Flagging Conformance Rules) - CMIS 5.4 added
+    """Table 6-21 (Lane-Specific Flagging Conformance Rules) - CMIS 5.3 added
     the Page 12h rows to it - says in which DataPath states a module may set
     each lane Flag. In DPDeactivated, DPInit and DPDeinit it does not set Tx
     LOS, either CDR LOL, any low-side threshold Flag or the Rx output
@@ -32481,7 +32482,7 @@ class TestAFineTuningStepTheLaserCanTake(CMISTestCase):
 
 
 class TestALaserThatIsNotReportingIsNotLocked(CMISTestCase):
-    """Table 6-21 gained Page 12h rows in CMIS 5.4 (E07): WavelengthUnlocked
+    """Table 6-21 gained Page 12h rows in CMIS 5.3 (E07): WavelengthUnlocked
     is N/A in DPDeactivated and DPDeinit, TuningComplete in DPDeactivated,
     DPInit and DPDeinit. The laser table's lock column read the unlock
     status first and painted a green "Locked" on a lane whose Data Path was
@@ -33562,6 +33563,111 @@ class TestAFirmwareFaultIsNotForgotten(CMISTestCase):
         self.assertIn("const fwFault = ['module_firmware_error', "
                       "'datapath_firmware_error']", hdr)
         self.assertIn("(s.firmware_flags || {})[k] || (s.seen || []).includes(k)", hdr)
+
+
+class TestThe54BadgeMarksOnlyWhat54Added(CMISTestCase):
+    """The specification carries two change lists: pages 8-10 are Rev 5.3's,
+    pages 11-12 Rev 5.4's. Host lane switching (01h:252.7, Page 1Dh) is 5.3's
+    E14 - "01h:252.7 added advertisement for Host Lane Switching" sits in the
+    5.3 register map changes - as are the Page 12h rows of Table 6-21 (5.3
+    E07) and the Application hint on Page 02h. The tool called all three
+    5.4: a 5.4 badge on the Host Lane Switching row and card, and "CMIS 5.4
+    新增" in the manual.
+
+    The badge also never read the list it claimed to: app.js said the fields
+    came from /api/module/capabilities -> new_in_5_4, while each row set a
+    literal true. And the list named two registers no reply carried. Now a
+    row names the field it shows and the list decides, the list holds only
+    what the 5.4 lists name, and every entry is a key some reply carries."""
+
+    BADGED = {'heatsink_type', 'max_lanes', 'default_polarity',
+              'media_lane_switching_supported', 'page_0ch_supported'}
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _file(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- the list --------------------------------------------------------------------------
+    def test_host_lane_switching_is_5_3(self):
+        import cmis_registers as c
+        self.assertNotIn('host_lane_switching_supported', c.NEW_IN_5_4)
+
+    def test_every_listed_field_is_in_some_reply(self):
+        """A 5.4 claim about a key nothing surfaces is a claim about nothing."""
+        import cmis_registers as c
+        eps = sorted(r.rule for r in app_module.app.url_map.iter_rules()
+                     if 'GET' in r.methods and r.rule.startswith('/api/module'))
+        found = set()
+
+        def walk(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    found.add(k)
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+        for backend in ('mock_coherent_zr', 'mock_1600g_16lane', 'mock_24lane'):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            for ep in eps:
+                rv = self.client.get(ep)
+                if rv.status_code == 200:
+                    walk(json.loads(rv.data))
+        self.assertEqual(sorted(c.NEW_IN_5_4 - found), [])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_badge_is_decided_by_the_list(self):
+        js = self._js()
+        info = js[js.index('async function loadInfo'):]
+        info = info[:info.index('\nasync function')]
+        self.assertIn('const new54 = new Set(c.new_in_5_4 || []);', info)
+        self.assertIn('${since && new54.has(since) ? NEW54 : \'\'}', info)
+        self.assertNotRegex(info, r"(?m),\s*true\],\s*$",
+                            'a row badges itself')
+
+    def test_the_rows_name_their_fields(self):
+        import cmis_registers as c
+        js = self._js()
+        info = js[js.index('async function loadInfo'):]
+        info = info[:info.index('\nasync function')]
+        # The sixth element: a key (a snake_case field name with an
+        # underscore), or a condition && key.
+        named = set(re.findall(r"'([a-z0-9]+_[a-z0-9_]+)'\],\s*$", info, re.M))
+        named |= set(re.findall(r"&& '([a-z0-9_]+)'\],", info))
+        self.assertEqual(named - {'host_lane_switching_supported'},
+                         self.BADGED)
+        self.assertTrue(self.BADGED <= c.NEW_IN_5_4)
+
+    def test_the_host_lane_switching_card_has_no_badge(self):
+        html = self._file('templates', 'index.html')
+        cards = re.findall(r'<span class="card-title">([^<]+)(<span class="badge-new54")?',
+                           html)
+        badged = {name.strip() for name, b in cards if b}
+        self.assertNotIn('Host Lane Switching', badged)
+        self.assertEqual(badged, {'CMIS 5.4 Optional Pages',
+                                  'Per-Lane Output Power Thresholds',
+                                  'Lane Polarity Status', 'Media Lane Switching',
+                                  'Acquisition Counters'})
+
+    def test_the_manual_dates_them_to_5_3(self):
+        manual = self._file('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        for wrong in ('CMIS 5.4 新增了主机侧', 'CMIS 5.4 给 Table 6-21',
+                      'CMIS 5.4 又给这张表', 'CMIS 5.4 把这一点'):
+            self.assertNotIn(wrong, manual)
+        sec = manual[manual.index('12. CMIS 5.4 扩展功能'):]
+        table = sec[:sec.index('</table>')]
+        self.assertNotIn('<code>1Dh</code>', table)
+        self.assertIn('这一页是 <b>CMIS 5.3</b> 引入的', sec)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

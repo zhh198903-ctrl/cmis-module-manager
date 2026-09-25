@@ -613,7 +613,7 @@ DPInitialized 下主机关掉或静音了 Tx 的通道,Tx 光功率低侧和全�
 
 ## 主机通道切换:通道号可能是名义通道
 
-CMIS 5.4 的 7.8 节 / Page 1Dh(`01h:252.7` 声明):每组 8 条通道内,电气主机通道可以连到另一条**名义**通道。
+CMIS 5.3 引入的 7.8 节 / Page 1Dh(`01h:252.7` 声明):每组 8 条通道内,电气主机通道可以连到另一条**名义**通道。
 Application 和 Data Path 寄存器按名义通道编号,所以工具各面板和各接口里的 `lane` 都是名义通道。
 `GET /api/module/ext54` 在支持的模块上带 `host_lane_switching`:`lanes[i].lane` 是电气通道,
 `active_target` 是它当前连到的名义通道(绝对编号),`switched` 列出两者不同的电气通道。
