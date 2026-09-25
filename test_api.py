@@ -49,7 +49,9 @@ def poke(page, addr, value):
     documents for real hardware, reproduced inside the test suite.
     """
     app_module._set_page(page)
-    _state['backend'].write_bytes(addr, bytes([value]))
+    # The test's hand on the module, not a host WRITE: one to a read-only
+    # element has no effect (Table 8-3), and the demo modules keep to that.
+    _state['backend'].poke_bytes(addr, bytes([value]))
     app_module._invalidate_page()
 
 
@@ -6431,13 +6433,15 @@ class TestRegisterWrite(CMISTestCase):
     def test_register_write_lower_page(self):
         """Write to lower page address (< 0x80) should not set page."""
         self.connect()
+        # 0x1F is a Mask byte (Table 8-4, RW). 0x02 used to be written here,
+        # and it is an advertisement: a WRITE to it has no effect (Table 8-3).
         rv = self.client.post('/api/register/write',
-                              data=json.dumps({'page': 0, 'address': 0x02, 'data': [0x01]}),
+                              data=json.dumps({'page': 0, 'address': 0x1F, 'data': [0x01]}),
                               content_type='application/json')
         self.assertOk(rv)
         # Read it back
         rv2 = self.client.post('/api/register/read',
-                               data=json.dumps({'page': 0, 'address': 0x02, 'length': 1}),
+                               data=json.dumps({'page': 0, 'address': 0x1F, 'length': 1}),
                                content_type='application/json')
         body = self.assertOk(rv2)
         self.assertEqual(body['data']['data'], [0x01])
@@ -7457,7 +7461,7 @@ class TestCommittingWithoutTearingTheLinkDown(CMISTestCase):
     def _poke_lower_02(self, value):
         # Lower memory is visible whatever page is selected, so this needs no
         # page select and cannot desynchronise the API's page cache.
-        _state['backend'].write_bytes(0x02, bytes([value]))
+        _state['backend'].poke_bytes(0x02, bytes([value]))
 
     def _running(self):
         self._post({'app_select': [1] * 8, 'apply': True})
@@ -10508,10 +10512,7 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         self.assertIn('reference_clock_lost', d)
         self.assertFalse(d['reference_clock_lost'])
         # 14h:132.7, module-wide rather than per lane.
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0x14, 'address': 132, 'data': [0x80]}),
-            content_type='application/json'))
+        poke(0x14, 132, 0x80)
         self.assertTrue(self._prbs()['reference_clock_lost'],
                         'the module said its reference clock was gone and '
                         'the tool did not notice')
@@ -10521,10 +10522,7 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         d = self._prbs()
         for key in ('host_gate_done_mask', 'media_gate_done_mask'):
             self.assertIn(key, d)
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0x14, 'address': 134, 'data': [0x0F]}),
-            content_type='application/json'))
+        poke(0x14, 134, 0x0F)
         self.assertEqual(self._prbs()['host_gate_done_mask'], 0x0F)
 
     # ---- and the table that shows it --------------------------------------
@@ -12782,7 +12780,7 @@ class TestLaneFlagsPastTheFirstBank(CMISTestCase):
         """Put a different byte in each bank of one Page 14h flag register."""
         for bank, val in enumerate(per_bank):
             app_module._set_page(0x14, bank)
-            app_module._state['backend'].write_bytes(addr, bytes([val]))
+            app_module._state['backend'].poke_bytes(addr, bytes([val]))
 
     def _prbs(self):
         return self.assertOk(self.client.get('/api/module/prbs'))['data']
@@ -12895,7 +12893,7 @@ class TestSignalIntegrityPastTheFirstBank(CMISTestCase):
         """Put different bytes in each bank of one control set register."""
         for bank, val in enumerate(per_bank):
             app_module._set_page(page, bank)
-            app_module._state['backend'].write_bytes(
+            app_module._state['backend'].poke_bytes(
                 addr, bytes(val if isinstance(val, (list, tuple)) else [val]))
 
     def _si(self, key=None):
@@ -14044,7 +14042,7 @@ class TestACommitThatIsStillRunning(CMISTestCase):
         app_module._set_page(0x6D, 0)
         # 6Dh:128.7-4 = 6 is "500 ms - 1 s" in Table 8-49. Deliberately not a
         # code whose ceiling equals the cap, or the cap would satisfy this.
-        app_module._state['backend'].write_bytes(0x80, bytes([0x60]))
+        app_module._state['backend'].poke_bytes(0x80, bytes([0x60]))
         d = self._mls(enable=True, commit=True)
         self.assertEqual(d['commit_max_seconds'], 1.0,
                          'the wait ignores what the module advertises')
@@ -14083,9 +14081,9 @@ class TestACommitThatIsStillRunning(CMISTestCase):
         self._connect()
         app_module._set_page(0x6D, 0)
         # 6Dh:128.7-4 = 0 is "under 1 ms", so the budget expires at once.
-        app_module._state['backend'].write_bytes(0x80, bytes([0x00]))
+        app_module._state['backend'].poke_bytes(0x80, bytes([0x00]))
         # Every lane reporting 2, "Command execution in progress", still.
-        app_module._state['backend'].write_bytes(0xA8, bytes([2] * 8))
+        app_module._state['backend'].poke_bytes(0xA8, bytes([2] * 8))
         self.assertFalse(app_module._await_mls_commit(1)['commit_complete'],
                          'a commit still executing at the deadline was '
                          'reported as finished')
@@ -16282,10 +16280,7 @@ class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
 
     def _raise_module_flag(self):
         """Lower 9 holds the temperature and Vcc threshold Flags."""
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0, 'address': 0x09, 'data': [0xF0]}),
-            content_type='application/json'))
+        poke(0, 0x09, 0xF0)
         return self.assertOk(self.client.get('/api/module/status'))['data']
 
     def _status(self):
@@ -16308,11 +16303,7 @@ class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
         lane 1 of the last one did - on a module that may not even have the
         same number of lanes."""
         self._connect('mock_dr8')
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0x11, 'address': 0x8C, 'bank': 0,
-                             'data': [0xFF]}),
-            content_type='application/json'))
+        poke(0x11, 0x8C, 0xFF)
         before = self._flags()['lanes'][0]['seen']
         self.assertTrue(before, 'the fixture raised no lane flag')
         self._connect('mock_1600g_16lane')
@@ -16323,10 +16314,7 @@ class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
         """Page 12h keeps its own latched Flags, recorded under their own
         keys, and they were left behind by the same gap."""
         self._connect('mock_coherent_zr')
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0x12, 'address': 0xE7, 'data': [0x08]}),
-            content_type='application/json'))
+        poke(0x12, 0xE7, 0x08)
         d = self.assertOk(self.client.get('/api/module/laser'))['data']
         self.assertTrue(d['lanes'][0]['tuning_flags_seen'])
         self._connect('mock_coherent_zr')
@@ -16355,11 +16343,7 @@ class TestTheFlagHistoryBelongsToOneModule(CMISTestCase):
         second poll the register is clear and only the history knows it ever
         fired."""
         self._connect('mock_dr8')
-        self.assertOk(self.client.post(
-            '/api/register/write',
-            data=json.dumps({'page': 0x11, 'address': 0x8C, 'bank': 0,
-                             'data': [0x01]}),
-            content_type='application/json'))
+        poke(0x11, 0x8C, 0x01)
         first = self._flags()['lanes'][0]
         self.assertTrue(first['tx_power_low_alarm'],
                         'the fixture did not raise the flag')
@@ -32311,6 +32295,124 @@ class TestALaserThatIsNotReportingIsNotLocked(CMISTestCase):
         self.assertLess(t, na)
         self.assertLess(na, lk)
         self.assertIn("(l.tuning_flags_not_allowed || []).includes('wavelength_unlocked')", js)
+
+
+class TestAWriteToAReadOnlyRegisterHasNoEffect(CMISTestCase):
+    """Table 8-3: "A WRITE of a value to a read-only element is allowed but
+    has no effect." The demo modules stored whatever they were sent: a Raw
+    Registers write to 00h:129 renamed the vendor, one to Lower 0 changed
+    the identifier, and Module Info then reported the new identity - the
+    opposite of what a module does. They now keep the read-only locations
+    (Table 8-4's advertisement, status, Flags and monitors; Pages 00h-04h,
+    0Ch, 11h, 1Ch, 61h, 62h; the status halves of 12h, 13h, 14h, 1Dh, 6Dh
+    and 60h) and still take every write a module would."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _write(self, page, addr, data, bank=0):
+        return self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': page, 'address': addr, 'data': data,
+                             'bank': bank}),
+            content_type='application/json'))
+
+    def _read(self, page, addr, n, bank=0):
+        return self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': addr, 'length': n,
+                             'bank': bank}),
+            content_type='application/json'))['data']['data']
+
+    def _unchanged(self, page, addr, n=1, bank=0):
+        before = self._read(page, addr, n, bank)
+        self._write(page, addr, [(b ^ 0x5A) or 1 for b in before], bank)
+        self.assertEqual(self._read(page, addr, n, bank), before, (page, addr))
+
+    def _changed(self, page, addr, value, bank=0):
+        self._write(page, addr, [value], bank)
+        self.assertEqual(self._read(page, addr, 1, bank), [value], (page, addr))
+
+    # ---- what a module keeps -------------------------------------------------------------
+    def test_the_vendor_name_stays(self):
+        self._connect()
+        before = self.assertOk(self.client.get('/api/module/info'))['data']['vendor_name']
+        self._unchanged(0x00, 0x81, 4)
+        self.assertEqual(self.assertOk(self.client.get('/api/module/info'))
+                         ['data']['vendor_name'], before)
+
+    def test_the_identifier_and_the_advertisements_stay(self):
+        self._connect()
+        for addr in (0x00, 0x01, 0x02, 0x55):
+            self._unchanged(0x00, addr)
+
+    def test_monitors_and_flags_stay(self):
+        self._connect()
+        for addr in (0x0E, 0x10):                     # temperature, Vcc
+            self._unchanged(0x00, addr)
+
+    def test_the_static_pages_stay(self):
+        self._connect('mock_coherent_zr')
+        for page, addr in ((0x01, 0x8F), (0x02, 0x80), (0x04, 0x80), (0x11, 0xCE)):
+            self._unchanged(page, addr)
+
+    def test_the_status_halves_of_the_control_pages_stay(self):
+        self._connect('mock_coherent_zr')
+        for page, addr in ((0x12, 0xA8), (0x12, 0xDE), (0x13, 0x80),
+                           (0x14, 0xC0), (0x6D, 0x80), (0x6D, 0xB8)):
+            self._unchanged(page, addr)
+
+    def test_reserved_bytes_on_the_tuning_page_stay(self):
+        """12h:218-221 are reserved; nothing recomputes them, so what is
+        there after a write is what the write left."""
+        self._connect('mock_coherent_zr')
+        self._unchanged(0x12, 0xDA, 4)
+
+    def test_a_write_the_tuning_model_judges_keeps_them_too(self):
+        """One WRITE from 12h:214: target power (which the module judges),
+        216-217 (writable), and 218-221 (reserved)."""
+        self._connect('mock_coherent_zr')
+        before = self._read(0x12, 0xDA, 4)
+        self._write(0x12, 0xD6, [0x00, 0x64, 0x11, 0x22, 0x5A, 0x5A, 0x5A, 0x5A])
+        self.assertEqual(self._read(0x12, 0xD8, 2), [0x11, 0x22])
+        self.assertEqual(self._read(0x12, 0xDA, 4), before)
+
+    # ---- what a module takes ----------------------------------------------------------------
+    def test_controls_masks_and_page_mapping_take_writes(self):
+        self._connect()
+        self._changed(0x00, 0x1F, 0x01)               # a module-level Mask
+        self._changed(0x10, 0x82, 0x0F)               # OutputDisableTx
+        self._changed(0x10, 0x91, 0x20)               # staged DPConfig
+
+    def test_the_writable_halves_take_them_too(self):
+        self._connect('mock_coherent_zr')
+        self._changed(0x13, 0xB1, 0x04)               # measurement controls
+        self._changed(0x14, 0x80, 0x01)               # DiagnosticsSelector
+        self._changed(0x6D, 0x88, 0x05)               # RedirectionOfMediaLane1
+        self._changed(0x12, 0xEF, 0x00)               # a tuning Mask
+
+    def test_a_page_the_map_does_not_name_takes_writes(self):
+        """Nothing a module might accept is refused."""
+        self._connect()
+        self._changed(0x10, 0xFE, 0x12)
+
+    def test_the_reply_still_says_ok(self):
+        """Allowed, only without effect: the host is not told otherwise."""
+        self._connect()
+        body = self._write(0x00, 0x81, [0x41])
+        self.assertEqual(body['data']['bytes_written'], 1)
+
+    # ---- the backdoor --------------------------------------------------------------------
+    def test_a_test_can_still_set_one_and_only_for_that_call(self):
+        self._connect()
+        b = _state['backend']
+        poke(0x00, 0x81, 0x51)
+        self.assertEqual(self._read(0x00, 0x81, 1), [0x51])
+        self._unchanged(0x00, 0x81)
+        self.assertFalse(getattr(b, '_ro_bypass', False))
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

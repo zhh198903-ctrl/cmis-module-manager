@@ -506,6 +506,11 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 写只读寄存器:成功但无效果
+
+Table 8-3:对只读元素的 WRITE 允许但没有效果。`POST /api/register/write` 写到只读位置照样返回 ok(`bytes_written` 是发出去的字节数),
+要确认是否生效,写完用 `POST /api/register/read` 读回。演示模块也按这条规则:只读位置写了不变。
+
 ## 微调偏移:按 04h:190-191 的步进
 
 `fine_offset_ghz` 必须是 FineTuningResolution(`GET /api/module/laser` 的 `fine_resolution_ghz`)的整数倍,否则 400,消息给出两边最近的值。

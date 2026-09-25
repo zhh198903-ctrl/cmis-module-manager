@@ -2817,7 +2817,8 @@ class MockBackend(I2CInterface):
                 targets = self._write_targets()
                 for p12 in targets:
                     for a, b in zip(span, data):
-                        p12[a] = b
+                        if self._host_writable(0x12, a):
+                            p12[a] = b
                 # The selected bank's number is the lane offset - bank 1 holds
                 # lanes 9-16 - so it is taken from the selection rather than
                 # by searching the bank list for the dict that was written.
@@ -3541,6 +3542,43 @@ class MockBackend(I2CInterface):
             raise IOError('NACK: the module is still in MgmtInit after a '
                           'reset (tMgmtInit, Table 10-2)')
 
+    # Table 8-3: "A WRITE of a value to a read-only element is allowed but has
+    # no effect." Where a host WRITE lands, by page (None = Lower Memory, from
+    # Table 8-4's Control and mapping areas); a page not listed takes writes -
+    # controls, CDB, VDM and whatever this mock does not model - so nothing a
+    # module might accept is refused. Everything else stored whatever it was
+    # sent: a Raw Registers write renamed the vendor and changed the
+    # identifier, and Module Info then reported the new identity.
+    _HOST_WRITABLE = {
+        None: (set(range(26, 37)) | set(range(64, 85))     # controls, masks, custom
+               | set(range(118, 128))),                     # passwords, page mapping
+        0x00: set(), 0x01: set(), 0x02: set(), 0x04: set(), 0x0C: set(),
+        0x11: set(), 0x1C: set(), 0x61: set(), 0x62: set(),
+        # 168-199 CurrentLaserFrequency and 222-238 status/Flags are RO.
+        0x12: set(range(128, 168)) | set(range(200, 218)) | set(range(239, 247)),
+        0x13: set(range(144, 256)),                          # 128-143 advertise
+        0x14: {128},                                         # DiagnosticsSelector
+        0x1D: set(range(136, 144)) | {152, 160},
+        0x6D: set(range(136, 144)) | {152, 160},
+        0x60: {192, 193},                                    # counter resets
+    }
+
+    def _host_writable(self, page, addr: int) -> bool:
+        if getattr(self, '_ro_bypass', False):
+            return True
+        allowed = self._HOST_WRITABLE.get(None if addr < 0x80 else page)
+        return allowed is None or addr in allowed
+
+    def poke_bytes(self, register: int, data: bytes) -> None:
+        """Set registers the way a test sets up a module, read-only ones
+        included - not a host WRITE, which leaves those alone (Table 8-3).
+        Goes through write_bytes so its side effects still happen."""
+        self._ro_bypass = True
+        try:
+            self.write_bytes(register, data)
+        finally:
+            self._ro_bypass = False
+
     def write_bytes(self, register: int, data: bytes) -> None:
         if not self._connected:
             raise IOError("Not connected")
@@ -3556,7 +3594,8 @@ class MockBackend(I2CInterface):
         if register < 0x80:
             page_dict = self._registers.setdefault(None, {})
             for i, b in enumerate(data):
-                page_dict[register + i] = b
+                if self._host_writable(None, register + i):
+                    page_dict[register + i] = b
             was = (self._current_page, self._current_bank)
             if register <= 0x7E <= register + len(data) - 1:
                 self._current_bank = data[0x7E - register]
@@ -3576,7 +3615,8 @@ class MockBackend(I2CInterface):
         else:
             for page_dict in self._write_targets():
                 for i, b in enumerate(data):
-                    page_dict[register + i] = b
+                    if self._host_writable(self._current_page, register + i):
+                        page_dict[register + i] = b
         self._holdoff_until = time.perf_counter() + self.HOLDOFF_S
 
 
