@@ -979,6 +979,9 @@ class MockBackend(I2CInterface):
         self._last_counter_time = 0.0
         self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
+        # Lanes of a later bank that a DPDeinit there took down, so that
+        # releasing it brings back only those (see _set_bank_dp_deinit).
+        self._bank_deinit_taken = {}
         # The power thresholds as built, which are the default Application's.
         _p02 = self._registers.get(0x02) or {}
         self._base_power_thr = {a: _p02.get(a, 0) for a in
@@ -2749,7 +2752,14 @@ class MockBackend(I2CInterface):
             # Writes may span several control bytes, so match on the range
             span = range(register, register + len(data))
             if 0x80 in span:                                        # DPDeinit
-                self._set_dp_deinit(data[0x80 - register])
+                # The dynamic model is bank 0's. A write to a later bank's
+                # byte went into it too, so a host writing both banks in
+                # order had bank 1's value overwrite bank 0's deinit.
+                if self._current_bank == 0:
+                    self._set_dp_deinit(data[0x80 - register])
+                else:
+                    self._set_bank_dp_deinit(self._current_bank,
+                                             data[0x80 - register])
             if 0x82 in span and self._current_bank == 0:             # OutputDisableTx
                 # The dynamic model covers the eight lanes of bank 0; the
                 # other banks keep the values built for them. Taking this mask
@@ -3075,6 +3085,31 @@ class MockBackend(I2CInterface):
             if p12[0xE7 + lane]:
                 summary |= 1 << lane
         p12[0xE6] = summary
+
+    def _set_bank_dp_deinit(self, bank: int, mask: int) -> None:
+        """10h:128 in a later bank. Its Data Paths have only the states the
+        profile built, so a deinit takes the lanes it names to DPDeactivated
+        and releasing them brings those lanes back to DPActivated - without
+        bank 0's walk, but in that bank's own registers. Lanes that were down
+        already, unused ones among them, are left where they are."""
+        p11b = self._registers.get((0x11, bank))
+        if p11b is None or self._module_state != 0b011:
+            return
+        taken = self._bank_deinit_taken.get(bank, 0)
+        for lane in range(8):
+            bit = 1 << lane
+            a, sh = 0x80 + lane // 2, 4 * (lane % 2)
+            cur = (p11b.get(a, 0) >> sh) & 0x0F
+            if mask & bit and cur != 0x1:
+                new, taken = 0x1, taken | bit
+            elif not (mask & bit) and taken & bit:
+                new, taken = 0x4, taken & ~bit
+            else:
+                continue
+            p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (new << sh)
+            # 6.3.3: reached a steady state through a real change.
+            p11b[0x86] = p11b.get(0x86, 0) | bit
+        self._bank_deinit_taken[bank] = taken
 
     def _set_dp_deinit(self, mask: int) -> None:
         """10h:128 (Table 8-78): 1b deinitialises the Data Path of that lane.

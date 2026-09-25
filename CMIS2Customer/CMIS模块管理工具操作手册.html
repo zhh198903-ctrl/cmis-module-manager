@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.137.0<br>
+      <b>版本</b>　2.138.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.137.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.137.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.138.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.138.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,18 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>多于 8 通道的模块:通道掩码覆盖所有通道</h3>
+  <p>DataPath、Squelch、Loopback、PRBS 的写入接口里,通道掩码既可以是按 Bank 的字节列表,也可以是<b>一个数</b>。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前一个数只取低 8 位,后面各 Bank 一律写 0,却回报所有通道都已写入。在 16 通道模块上:
+    <br>· 对全部 16 条通道做 DPDeinit(<code>0xFFFF</code>),结果是 1–8 停下、9–16 被<b>释放</b>;
+    <br>· 掩码里的通道 9 什么都不做;
+    <br>· 只写通道 1–8 的一个字节,会把 9–16 原有的设置清零。
+    <br>演示模块也有一处配合出错:写到 Bank 1 的 DPDeinit 字节被当成 Bank 0 的,后写的那个覆盖了前一个,所以演示里看不出这个问题。</span>
+  </div>
+  <p>现在一个数就是<b>覆盖所有通道</b>的掩码(第 i 位对应通道 i+1),按 Bank 拆开写入;超出模块通道范围的位直接拒绝(400),什么都不写。列表形式照旧,每个 Bank 一个字节。页面本身一直按 Bank 发送,不受影响;DataPath 表里通道 9 以后的寄存器悬停提示,现在引用的是它自己那个 Bank 的字节。演示模块的后面几个 Bank 也会响应 DPDeinit 了。</p>
 
   <h3>媒体通道切换:正在运行的 Data Path 要整条移动</h3>
   <p>规范 7.9.4:「主机<b>必须</b>保证,任何已初始化或已激活的 Data Path,在媒体通道切换配置变化时要么整条受影响,要么完全不受影响。」模块只是「应当」校验(结果码 5「与活动 Data Path 不一致」)——不校验的模块会照单提交,把一条 Data Path 拆成两半。</p>
@@ -4466,7 +4478,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.137.0<br>
+    CMIS Module Manager 操作手册 v2.138.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

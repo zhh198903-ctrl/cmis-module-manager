@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 通道掩码:一个数覆盖所有通道
+
+`datapath` / `squelch` / `loopback` / `prbs` 的掩码字段,传一个数时是覆盖全部通道的掩码:第 i 位是通道 i+1,
+16 通道模块上 `0xFFFF` 就是全部 16 条;传列表时是每个 Bank 一个字节。超出模块通道范围的位会 400,什么都不写。
+(v2.138.0 之前,一个数只取低 8 位,其余 Bank 被写成 0——对宽模块用旧版本时,请传列表。)
+`GET /api/module/datapath` 的 `*_mask` 仍是 Bank 0 的字节,每个 Bank 的值在 `*_mask_banks`。
+
 ## 媒体通道切换:运行中的 Data Path 整条移动
 
 7.9.4:已初始化或已激活的 Data Path,切换配置变化时要么整条受影响、要么不受影响。

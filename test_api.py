@@ -6160,17 +6160,20 @@ class TestDatapathSet(CMISTestCase):
                               content_type='application/json')
         self.assertOk(rv)
 
-    def test_datapath_set_mask_clamp(self):
-        """tx_disable_mask > 0xFF should be clamped to 8 bits."""
+    def test_datapath_set_mask_past_the_last_lane_is_refused(self):
+        """Bit 8 is lane 9, which an eight lane module does not have. It
+        used to be clamped away in silence and the rest applied; a mask that
+        names a lane that is not there is refused, and nothing is written."""
         self.connect()
+        before = self.assertOk(self.client.get('/api/module/datapath'))[
+            'data']['tx_disable_mask']
         rv = self.client.post('/api/module/datapath',
                               data=json.dumps({'tx_disable_mask': 0x1FF}),
                               content_type='application/json')
-        self.assertOk(rv)
-        rv2 = self.client.get('/api/module/datapath')
-        body = self.assertOk(rv2)
-        # 0x1FF & 0xFF = 0xFF
-        self.assertEqual(body['data']['tx_disable_mask'], 0xFF)
+        self.assertErr(rv, 400)
+        self.assertIn('past lane 8', json.loads(rv.data)['message'])
+        body = self.assertOk(self.client.get('/api/module/datapath'))
+        self.assertEqual(body['data']['tx_disable_mask'], before)
 
     def test_page10h_addresses_match_spec(self):
         """Pin the Page 10h control map to OIF CMIS 5.3 Tables 8-77/8-79/8-80/8-82.
@@ -31477,6 +31480,141 @@ class TestARunningDataPathMovesWhole(CMISTestCase):
         i = html.index('id="card-mls"')
         card = html[i:html.index('id="tbl-mls"', i) + 3000]
         self.assertIn('(7.9.4)', card)
+
+
+class TestAMaskCoversEveryLane(CMISTestCase):
+    """A lane mask sent as one number was cut to its low byte, and every bank
+    past the first was written 0. On a sixteen lane module a DPDeinit of all
+    sixteen (0xFFFF) held lanes 1-8 and *released* 9-16; lane 9 in a squelch
+    or Tx disable mask did nothing; and a single byte meant for lanes 1-8
+    cleared whatever lanes 9-16 had - all answered ok, with every lane listed
+    as applied. The DataPath, squelch, loopback and PRBS endpoints share it.
+
+    A number is now a mask over every lane (bit i is lane i+1), split per
+    bank; a bit past the last bank is refused. The demo modules hid the
+    DPDeinit half of it: a write to bank 1's 10h:128 went into bank 0's
+    model, so the second byte overwrote the first."""
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _states(self):
+        self.client.get('/api/module/monitoring')
+        time.sleep(0.3)
+        return [l['datapath_state'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def _dp(self, body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    # ---- the split ----------------------------------------------------------------------
+    def test_a_number_is_a_mask_over_every_lane(self):
+        import app as a
+        self.assertEqual(a._masks_per_bank(0xFFFF, 2), [0xFF, 0xFF])
+        self.assertEqual(a._masks_per_bank(0x0100, 2), [0x00, 0x01])
+        self.assertEqual(a._masks_per_bank(0x01, 2), [0x01, 0x00])
+        self.assertEqual(a._masks_per_bank(0xFF, 1), [0xFF])
+        self.assertEqual(a._masks_per_bank(0x800000, 3), [0, 0, 0x80])
+
+    def test_bits_past_the_last_bank_are_refused(self):
+        import app as a
+        for value, banks in ((0x100, 1), (0x10000, 2), (-1, 1)):
+            with self.assertRaises(a._LaneMaskError):
+                a._masks_per_bank(value, banks)
+
+    def test_a_list_is_one_byte_per_bank(self):
+        import app as a
+        self.assertEqual(a._masks_per_bank([1, 2], 2), [1, 2])
+        self.assertEqual(a._masks_per_bank([1], 2), [1, 0])
+        self.assertEqual(a._masks_per_bank([1, 2, 0], 2), [1, 2])
+        for value in ([0x100, 0], [1, 2, 3], [-1]):
+            with self.assertRaises(a._LaneMaskError):
+                a._masks_per_bank(value, 2)
+
+    # ---- what reaches the module ---------------------------------------------------------
+    def test_a_deinit_of_every_lane_reaches_every_bank(self):
+        self._connect()
+        self.assertOk(self._dp({'dp_deinit_mask': 0xFFFF, 'apply': True}))
+        self.assertEqual(set(self._states()), {'Deactivated'})
+        d = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(d['dp_deinit_mask_banks'], [0xFF, 0xFF])
+
+    def test_releasing_them_brings_every_bank_back(self):
+        self._connect()
+        self.assertOk(self._dp({'dp_deinit_mask': 0xFFFF, 'apply': True}))
+        self._states()
+        self.assertOk(self._dp({'dp_deinit_mask': 0, 'apply': True}))
+        time.sleep(0.5)
+        self.assertEqual(set(self._states()), {'Activated'})
+
+    def test_lane_nine_alone(self):
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/squelch', data=json.dumps({'tx_squelch_force': 0x0100}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(d['tx_squelch_force_banks'], [0x00, 0x01])
+
+    def test_every_mask_endpoint_refuses_a_lane_that_is_not_there(self):
+        self._connect('mock_dr8')
+        for path, body in (
+                ('/api/module/datapath', {'tx_disable_mask': 0x100}),
+                ('/api/module/squelch', {'tx_squelch_force': 0x100}),
+                ('/api/module/loopback', {'media_side_output': 0x100}),
+                ('/api/module/prbs', {'host_gen': {'enable_mask': 0x100}})):
+            rv = self.client.post(path, data=json.dumps(body),
+                                  content_type='application/json')
+            self.assertErr(rv, 400)
+            self.assertIn('past lane 8', json.loads(rv.data)['message'], path)
+
+    # ---- the demo module keeps its banks apart ---------------------------------------------
+    def test_a_later_bank_does_not_overwrite_the_first(self):
+        self._connect()
+        self.assertOk(self._dp({'dp_deinit_mask': [0xFF, 0x00], 'apply': True}))
+        states = self._states()
+        self.assertEqual(set(states[:8]), {'Deactivated'})
+        self.assertEqual(set(states[8:]), {'Activated'})
+
+    def test_a_lane_that_was_down_stays_down(self):
+        """Only the lanes a deinit took down come back when it is released."""
+        self._connect()
+        p11b = _state['backend']._registers[(0x11, 1)]
+        p11b[0x80] = (p11b.get(0x80, 0) & 0xF0) | 0x1         # lane 9 down
+        self.assertOk(self._dp({'dp_deinit_mask': [0x00, 0xFF], 'apply': True}))
+        settled(self.client)
+        self.assertOk(self._dp({'dp_deinit_mask': [0x00, 0x00], 'apply': True}))
+        states = self._states()
+        self.assertEqual(states[8], 'Deactivated')
+        self.assertEqual(set(states[9:]), {'Activated'})
+
+    def test_a_later_bank_marks_the_change(self):
+        self._connect()
+        self.client.get('/api/module/flags')
+        self.assertOk(self._dp({'dp_deinit_mask': [0x00, 0x01], 'apply': True}))
+        lanes = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        self.assertTrue(lanes[8]['dp_state_changed'])
+
+    # ---- the page -------------------------------------------------------------------------
+    def test_the_reply_carries_every_bank(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        for k in ('tx_disable_mask_banks', 'dp_deinit_mask_banks',
+                  'tx_polarity_flip_mask_banks', 'rx_polarity_flip_mask_banks'):
+            self.assertEqual(len(d[k]), 2, k)
+
+    def test_a_tooltip_quotes_its_own_bank(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        for key in ('tx_disable_mask', 'tx_polarity_flip_mask',
+                    'rx_polarity_flip_mask', 'dp_deinit_mask'):
+            self.assertIn('inBank(d.%s_banks, d.%s), bit: i %% 8' % (key, key), js)
+        self.assertNotIn('value: d.dp_deinit_mask, bit: i,', js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

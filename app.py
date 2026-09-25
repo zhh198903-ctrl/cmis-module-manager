@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.137.0'
+__version__ = '2.138.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -817,18 +817,40 @@ def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
         yield bank, _read_upper_scalars(page, addr, length or full, size, bank)
 
 
-def _masks_per_bank(value, banks: int) -> list:
-    """One mask byte per bank, from either a byte or a list of them.
+class _LaneMaskError(ValueError):
+    """A lane mask naming lanes the module does not have."""
 
-    A mask covers eight lanes, so a wider module needs one per bank. Callers
-    written for eight lanes still send a single number and must keep working -
-    and the page only sends a list once the module is actually wider, so both
-    forms genuinely arrive.
+
+def _masks_per_bank(value, banks: int) -> list:
+    """One mask byte per bank, from either a number or a list of bytes.
+
+    A mask covers eight lanes, so a wider module needs one per bank. A single
+    number is a mask over every lane - bit i is lane i+1 - so a caller written
+    for eight lanes, sending a byte, keeps working, and one sending 0xFFFF to
+    a sixteen lane module means all sixteen. It used to be cut to its low
+    byte, and every bank past the first was written 0: lane 9 in the mask did
+    nothing, and a DPDeinit of all sixteen released lanes 9-16 instead, while
+    the reply listed all of them as applied.
+
+    A list is one byte per bank, and a short one leaves the rest clear, as a
+    number does. A bit past the last bank is refused rather than dropped.
     """
     if isinstance(value, (list, tuple)):
-        vals = [int(v) & 0xFF for v in value]
+        vals = [int(v) for v in value]
+        if any(v < 0 or v > 0xFF for v in vals):
+            raise _LaneMaskError('A mask list is one byte per bank of eight '
+                                 'lanes; %r is not' % (value,))
+        if any(vals[banks:]):
+            raise _LaneMaskError('The mask names lanes past lane %d, and this '
+                                 'module has %d banks of eight'
+                                 % (banks * 8, banks))
     else:
-        vals = [int(value) & 0xFF]
+        v = int(value)
+        if v < 0 or v >> (8 * banks):
+            raise _LaneMaskError('Mask 0x%X names lanes past lane %d; this '
+                                 'module has %d banks of eight'
+                                 % (v, banks * 8, banks))
+        vals = [(v >> (8 * b)) & 0xFF for b in range(banks)]
     return (vals + [0] * banks)[:banks]
 
 
@@ -2634,6 +2656,14 @@ def api_datapath_get():
             'dp_deinit_mask':  dp_deinit_mask,
             'tx_polarity_flip_mask': tx_pol_mask,
             'rx_polarity_flip_mask': rx_pol_mask,
+            # One byte per bank, as the squelch, loopback and PRBS replies
+            # have: the summary fields above are bank 0's alone, and a
+            # tooltip quoting bank 0's byte for lane 9 named a bit 8 that
+            # no register has.
+            'tx_disable_mask_banks': tx_disable_masks,
+            'dp_deinit_mask_banks': dp_deinit_masks,
+            'tx_polarity_flip_mask_banks': tx_pol_masks,
+            'rx_polarity_flip_mask_banks': rx_pol_masks,
             'app_select': app_select,
             'active_app_select': active_app_select,
             # The module's own grouping, by the lowest lane of each Data Path.
@@ -3351,6 +3381,8 @@ def api_datapath_set():
         return _ok({'message': 'DataPath configuration written',
                     'applied_lanes': applied,
                     'apply_immediate': bool(apply_now)})
+    except _LaneMaskError as e:
+        return _err(str(e), 400)
     except Exception as e:
         return _err(str(e), 500)
 
@@ -3742,6 +3774,8 @@ def api_squelch_set():
             _bus_write(cmis.REG_RX_OUTPUT_DIS[1],
                                           bytes([rx_od[b], rx_sq[b]]))
         return _ok({'message': 'Squelch/output controls written'})
+    except _LaneMaskError as e:
+        return _err(str(e), 400)
     except Exception as e:
         return _err(str(e), 500)
 
@@ -3882,6 +3916,8 @@ def api_loopback_set():
                                   n.replace('_', ' ') for n in widened))
             out['widened_to_all_lanes'] = widened
         return _ok(out)
+    except _LaneMaskError as e:
+        return _err(str(e), 400)
     except Exception as e:
         return _err(str(e), 500)
 
@@ -4468,6 +4504,8 @@ def api_prbs_set():
             _set_page(0x13, bank)
             _bus_write(base_addr, block)
         return _ok({'message': 'PRBS configuration written'})
+    except _LaneMaskError as e:
+        return _err(str(e), 400)
     except Exception as e:
         return _err(str(e), 500)
 

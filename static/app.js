@@ -2545,25 +2545,29 @@ async function loadDatapath() {
           + 'then release it, to commission this.')}">`
         + `awaiting DPInit</div>`
       : '';
+    // A mask byte covers eight lanes; past the first bank the byte is that
+    // bank's and the bit is the lane's place within it.
+    const inBank = (banks, one) => (banks || [one])[Math.floor(i / 8)];
+    const bankNote = (d.lanes || []).length > 8 ? ` (Bank ${Math.floor(i / 8)})` : '';
     const tipTx = regTip({
-      field: `OutputDisableTx${lane.lane}`, page: 0x10, addr: 0x82,
-      value: d.tx_disable_mask, bit: i,
+      field: `OutputDisableTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x82,
+      value: inBank(d.tx_disable_mask_banks, d.tx_disable_mask), bit: i % 8,
       note: lane.tx_enable ? 'Checked = Tx output enabled (disable bit clear)'
                            : 'Unchecked = Tx output disabled (disable bit set)',
     });
     const tipTxPol = regTip({
-      field: `InputPolarityFlipTx${lane.lane}`, page: 0x10, addr: 0x81,
-      value: d.tx_polarity_flip_mask, bit: i,
+      field: `InputPolarityFlipTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x81,
+      value: inBank(d.tx_polarity_flip_mask_banks, d.tx_polarity_flip_mask), bit: i % 8,
       note: lane.tx_polarity_flip ? 'Host-side input polarity flipped' : 'No input polarity flip',
     });
     const tipRxPol = regTip({
-      field: `OutputPolarityFlipRx${lane.lane}`, page: 0x10, addr: 0x89,
-      value: d.rx_polarity_flip_mask, bit: i,
+      field: `OutputPolarityFlipRx${lane.lane}${bankNote}`, page: 0x10, addr: 0x89,
+      value: inBank(d.rx_polarity_flip_mask_banks, d.rx_polarity_flip_mask), bit: i % 8,
       note: lane.rx_polarity_flip ? 'Host-side output polarity flipped' : 'No output polarity flip',
     });
     const tipDeinit = regTip({
-      field: `DPDeinitLane${lane.lane}`, page: 0x10, addr: 0x80,
-      value: d.dp_deinit_mask, bit: i,
+      field: `DPDeinitLane${lane.lane}${bankNote}`, page: 0x10, addr: 0x80,
+      value: inBank(d.dp_deinit_mask_banks, d.dp_deinit_mask), bit: i % 8,
       note: lane.dp_deinit ? 'Data Path held de-initialised' : 'Data Path released for operation',
     });
 
