@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.153.0<br>
+      <b>版本</b>　2.154.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.153.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.153.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.154.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.154.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>栅格下拉只列模块声明的栅格</h3>
+  <p>规范 Table 8-68:<code>04h:128</code> 的第 n 位声明栅格码 n(3.125–75 GHz),<code>04h:129[6]</code> 声明 150 GHz,<code>04h:129[5]</code> 声明 300 GHz;<code>04h:130–169</code> 的信道范围对每个栅格都是必需字段,本身不代表支持与否。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>激光调谐表以前按「范围字节是否非零」来决定列出哪些栅格:模块没声明的栅格,只要那几个字节里有值就会被列出来;而声明了、但只有一个信道 n = 0(193.1 THz)的栅格,范围读出来是 [0, 0],反而被漏掉。写入时也不检查栅格是否声明。演示模块判断「栅格没声明」用的也是同一个错误办法。</span>
+  </div>
+  <p>现在:栅格下拉和范围提示只按声明位列出,[0, 0] 的单信道栅格照常列出;改到未声明的栅格会被拒绝并说明原因(通道本来就停在某个未声明栅格上时,可以原样写回)。演示模块也按声明位判断,未声明的栅格即使信道为 0 也会报 TuningNotAccepted。</p>
 
   <h3>微调是「声明才有」的控件</h3>
   <p>规范 Table 8-109:FineTuningEnableTx(<code>12h:128[0]</code>)和 FineTuningOffsetTx(<code>12h:152–167</code>)的类型是 <b>RW Adv.</b>,由 <code>04h:129</code> 声明;CMIS 5.4 的缺陷修正里也专门写了一条「Page 12h 的微调控件是声明才有,不是必需」。8.1.3.7:Adv. 字段「在明确相关的功能声明里标明时才支持」。</p>
@@ -4609,7 +4617,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.153.0<br>
+    CMIS Module Manager 操作手册 v2.154.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -568,6 +568,11 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 栅格看 04h:128-129 的声明位
+
+Table 8-68:`04h:128` 第 n 位 = 栅格码 n,`04h:129.6` = 150 GHz,`04h:129.5` = 300 GHz;`04h:130-169` 的范围字节对每个栅格都必需,不代表支持。
+`GET /api/module/laser` 的 `grid_channel_ranges` 只含声明的栅格([0,0] 是单信道 n=0,不是没有);`POST` 改到未声明栅格返回 400(原样写回当前栅格不拒绝)。
+
 ## 微调要看 04h:129.7
 
 FineTuningEnableTx / FineTuningOffsetTx 是 `RW Adv.`(Table 8-109,由 `04h:129.7` 声明;5.4 缺陷修正明确「声明才有」)。

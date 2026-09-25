@@ -703,6 +703,42 @@ def parse_grid_channel_ranges(data: bytes) -> dict:
             out[code] = [low, high]
     return out
 
+def advertised_grid_codes(grid_sup: bytes) -> list:
+    """The GridSpacingTx codes (12h:128.7-4) this module advertises.
+
+    Table 8-68: 04h:128 bit n is GridSupported for code n (3.125 GHz up to
+    75 GHz), 04h:129.6 the 150 GHz grid (code 8), 04h:129.5 the 300 GHz grid
+    (code 9). The channel ranges at 04h:130-169 are RO Rqd for every grid,
+    so they are no evidence of support either way.
+    """
+    b128 = grid_sup[0] if len(grid_sup) > 0 else 0
+    b129 = grid_sup[1] if len(grid_sup) > 1 else 0
+    codes = [c for c in range(8) if (b128 >> c) & 1]
+    if (b129 >> 6) & 1:
+        codes.append(8)
+    if (b129 >> 5) & 1:
+        codes.append(9)
+    return codes
+
+
+def advertised_grid_ranges(grid_sup: bytes, data: bytes) -> dict:
+    """{grid code: [low n, high n]} for the advertised grids only.
+
+    Deciding by the range bytes instead - a grid listed when its pair was
+    non-zero - offered a grid the module does not advertise wherever those
+    bytes held anything, and dropped an advertised one whose plan is the
+    single channel n = 0 (193.1 THz), which reads [0, 0].
+    """
+    import struct as _struct
+    out = {}
+    for code in advertised_grid_codes(grid_sup):
+        off = code * 4
+        if off + 4 <= len(data):
+            out[code] = [_struct.unpack('>h', data[off:off + 2])[0],
+                         _struct.unpack('>h', data[off + 2:off + 4])[0]]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Page 13h — Diagnostic Controls (Tables 8-110..8-134)
 # Each PRBS block is 8 bytes per side:

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.153.0'
+__version__ = '2.154.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4824,22 +4824,16 @@ def api_laser_get():
         pwr_min = _read_upper(*cmis.REG_PROG_PWR_MIN)
         pwr_max = _read_upper(*cmis.REG_PROG_PWR_MAX)
 
-        grids_supported = []
-        grid_names = ['3.125 GHz','6.25 GHz','12.5 GHz','25 GHz',
-                      '50 GHz','100 GHz','33 GHz','75 GHz']
-        for i, name in enumerate(grid_names):
-            if (grid_sup[0] >> i) & 1:
-                grids_supported.append(name)
-        if (grid_sup[1] >> 6) & 1:
-            grids_supported.append('150 GHz')
+        # Table 8-68: the GridSupported bits say which grids exist; the
+        # ranges beside them say which channels, and only for those grids.
+        grid_codes = cmis.advertised_grid_codes(grid_sup)
+        grids_supported = [cmis.GRID_CODES[c] for c in grid_codes]
         # CMIS 5.4 added the 300 GHz grid; a 5.3 module leaves this bit clear.
-        grid_300_supported = bool((grid_sup[1] >> 5) & 1)
-        if grid_300_supported:
-            grids_supported.append('300 GHz')
+        grid_300_supported = 9 in grid_codes
         fine_tuning_supported = bool((grid_sup[1] >> 7) & 1)
 
-        grid_channel_ranges = cmis.parse_grid_channel_ranges(
-            _read_grid_ranges(grid_300_supported))
+        grid_channel_ranges = cmis.advertised_grid_ranges(
+            grid_sup, _read_grid_ranges(grid_300_supported))
         grid_300_range = grid_channel_ranges.get(9)
         # 04h:196.6 advertises the 5.4 power-relative supervision thresholds.
         rel_supported = bool((_read_upper(*cmis.REG_REL_THR_CAP)[0] >> 6) & 1)
@@ -5058,7 +5052,8 @@ def api_laser_set():
         # 04h:192-195 on a module that advertises no fine tuning, where they
         # describe nothing.
         fine_supported = bool((grid_sup_raw[1] >> 7) & 1)
-        ch_ranges = cmis.parse_grid_channel_ranges(_read_grid_ranges(grid_300))
+        ch_ranges = cmis.advertised_grid_ranges(grid_sup_raw,
+                                                _read_grid_ranges(grid_300))
         _set_page(0x12)
 
         # Every write is worked out and checked before any of it is sent. A
@@ -5162,6 +5157,15 @@ def api_laser_set():
                     % (lane + 1), 400)
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
+                # Only a change is judged: a lane may already sit on a grid
+                # the module no longer advertises, and the page writes it back.
+                if gc not in ch_ranges and gc != grid_now[lane] >> 4:
+                    return _err(
+                        'Lane %d: this module does not advertise the %s grid '
+                        '(04h:128-129, Table 8-68), so it has no channel plan '
+                        'to tune on there'
+                        % (lane + 1, cmis.GRID_CODES.get(gc, 'code %d' % gc)),
+                        400)
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0
                 # 12h:128-135 is not only the grid. Bit 1 is
                 # RelativeOutputPowerThresholdsEnableTx, which decides whether

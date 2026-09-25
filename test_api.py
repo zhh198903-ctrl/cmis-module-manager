@@ -55,6 +55,23 @@ def poke(page, addr, value):
     app_module._invalidate_page()
 
 
+def host_believes_grid0():
+    """Make the host think grid 0 has a channel plan (Table 8-68).
+
+    The laser POST refuses a grid the module does not advertise, so a test
+    that needs the module's own refusal - the Page 12h Flags, the backstop
+    when host and module disagree - has to mislead the host to get there."""
+    from unittest import mock
+    real = app_module.cmis.advertised_grid_ranges
+
+    def believes(grid_sup, data):
+        out = real(grid_sup, data)
+        out[0] = [-100, 100]
+        return out
+    return mock.patch.object(app_module.cmis, 'advertised_grid_ranges',
+                             believes)
+
+
 def deactivated(client, lanes=None):
     """Stop the Data Paths so a reconfiguration is legal.
 
@@ -3017,6 +3034,21 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
             data=json.dumps({'lanes': [fields]}),
             content_type='application/json')
 
+    def _tune_past_the_host(self, **fields):
+        """The host now refuses an unadvertised grid itself (Table 8-68), so
+        to reach the module's own answer the host is made to believe grid 0
+        has a plan - the disagreement the Flags are the backstop for."""
+        from unittest import mock
+        real = app_module.cmis.advertised_grid_ranges
+
+        def believes(grid_sup, data):
+            out = real(grid_sup, data)
+            out[0] = [-100, 100]
+            return out
+        with mock.patch.object(app_module.cmis, 'advertised_grid_ranges',
+                               believes):
+            return self._tune(**fields)
+
     def test_the_advertised_channel_range_is_read_at_all(self):
         """04h:130-165 says which channel numbers are legal on each grid. The
         register was defined and never read, so nothing could say."""
@@ -3076,9 +3108,9 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
         """The host checks what the module advertises; the Flags are the
         module's own answer, and the backstop when the two disagree."""
         self._connect_tunable()
-        # Grid 0 has no advertised channel plan, so there is no host-side range
-        # to check against - the module has to be the one to say no.
-        self.assertOk(self._tune(grid_code=0, channel=7))
+        # Grid 0 is not advertised; with the host misled, the module has to
+        # be the one to say no.
+        self.assertOk(self._tune_past_the_host(grid_code=0, channel=7))
         time.sleep(0.3)
         lane = self.assertOk(
             self.client.get('/api/module/laser'))['data']['lanes'][0]
@@ -3088,7 +3120,7 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
     def test_the_laser_does_not_move_on_a_refused_request(self):
         d = self._connect_tunable()
         before = d['lanes'][0]['frequency_thz']
-        self.assertOk(self._tune(grid_code=0, channel=7))
+        self.assertOk(self._tune_past_the_host(grid_code=0, channel=7))
         time.sleep(0.3)
         after = self.assertOk(
             self.client.get('/api/module/laser'))['data']['lanes'][0]
@@ -3097,7 +3129,7 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
 
     def test_a_tuning_flag_survives_the_read_that_reported_it(self):
         self._connect_tunable()
-        self.assertOk(self._tune(grid_code=0, channel=7))
+        self.assertOk(self._tune_past_the_host(grid_code=0, channel=7))
         time.sleep(0.3)
         for _ in range(3):
             lane = self.assertOk(
@@ -3107,7 +3139,8 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
 
     def test_the_write_says_what_the_module_made_of_it(self):
         self._connect_tunable()
-        body = self.assertOk(self._tune(grid_code=0, channel=7))['data']
+        body = self.assertOk(self._tune_past_the_host(grid_code=0,
+                                                      channel=7))['data']
         self.assertIn('refused', body,
                       'the write reports success without asking the module')
         self.assertIn('tuning_not_accepted', body['refused'].get('1', []))
@@ -8039,10 +8072,13 @@ class TestTheGridCmis54Added(CMISTestCase):
 
     def test_an_unadvertised_grid_is_not_validated_into_existence(self):
         """With the grid unadvertised there is no range, and the handler must
-        not invent one - it has nothing to check against."""
+        not invent one - it refuses the grid itself (Table 8-68,
+        GridSupported300GHz)."""
         self._connect()
         poke(0x04, 0x81, 0x80)
-        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 96}]})
+        body = self._post({'lanes': [{'lane': 1, 'grid_code': 9,
+                                      'channel': 96}]}, code=400)
+        self.assertIn('does not advertise the 300 GHz grid', body['message'])
 
     def test_the_manual_does_not_promise_what_no_module_can_show(self):
         """The manual's CMIS 5.4 table marked both E17 (the 300 GHz grid) and
@@ -25456,15 +25492,16 @@ class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
         deactivated(self.client)
         d = self._laser()
         lane = d['lanes'][0]
-        # Grid 0 has no advertised channel plan, so the host has nothing to
-        # check against and the module is the one that has to refuse.
-        self.assertOk(self.client.post(
-            '/api/module/laser',
-            data=json.dumps({'lanes': [{
-                'lane': lane['lane'], 'grid_code': 0, 'channel': 7,
-                'target_power_dbm': lane['target_power_dbm'],
-            }]}),
-            content_type='application/json'))
+        # Grid 0 is not advertised; with the host misled, the module is the
+        # one that has to refuse.
+        with host_believes_grid0():
+            self.assertOk(self.client.post(
+                '/api/module/laser',
+                data=json.dumps({'lanes': [{
+                    'lane': lane['lane'], 'grid_code': 0, 'channel': 7,
+                    'target_power_dbm': lane['target_power_dbm'],
+                }]}),
+                content_type='application/json'))
         time.sleep(0.4)
         after = self._laser()['lanes'][0]
         self.assertIn('tuning_not_accepted', after['tuning_flags_seen'],
@@ -25992,13 +26029,14 @@ class TestTheWaitsThatWereGuesses(CMISTestCase):
             content_type='application/json'))['data']
 
     def test_a_refused_request_is_still_reported(self):
-        """Grid 0 has no advertised channel plan, so the module is the one
-        that has to say no."""
+        """Grid 0 is not advertised; with the host misled, the module is the
+        one that has to say no."""
         self._connect()
         # 7.5.2: another grid or channel only in DPDeactivated, and this
         # retunes - so the Data Paths are taken down first.
         deactivated(self.client)
-        d = self._laser_apply(grid_code=0, channel=7)
+        with host_believes_grid0():
+            d = self._laser_apply(grid_code=0, channel=7)
         self.assertIn('1', [str(k) for k in d['refused']],
                       'the module refused and the reply did not say so')
 
@@ -33774,6 +33812,115 @@ class TestFineTuningIsAnAdvertisedControl(CMISTestCase):
         self.assertIn("step=\"${ftStep}\" style=\"width:80px\" "
                       "class=\"raw-data-input\"${noFine ? ' disabled' : ''}>", js)
         self.assertIn('...(ftInput.disabled ? {} : {', js)
+
+
+class TestAGridIsOfferedWhereItIsAdvertised(CMISTestCase):
+    """Table 8-68: 04h:128 bit n is GridSupported for GridSpacingTx code n
+    (3.125 to 75 GHz), 04h:129.6 the 150 GHz grid and 04h:129.5 the 300 GHz
+    one; the channel ranges at 04h:130-169 are RO Rqd for every grid.
+
+    The laser panel listed a grid wherever its range pair was non-zero -
+    offering one the module does not advertise if those bytes held anything,
+    and dropping an advertised one whose plan is the single channel n = 0
+    (193.1 THz), which reads [0, 0]. The POST took any grid code. Now the
+    support bits decide, and the POST refuses a change to an unadvertised
+    grid (a lane already on one may keep it)."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _reg(self, addr):
+        return _state['backend']._registers[0x04][addr]
+
+    def _post(self, **lane):
+        lane.setdefault('lane', 1)
+        return self.client.post('/api/module/laser',
+                                data=json.dumps({'lanes': [lane]}),
+                                content_type='application/json')
+
+    def test_the_support_bits_decide(self):
+        self._connect()
+        self.assertIn('4', self._laser()['grid_channel_ranges'])
+        poke(0x04, 0x80, self._reg(0x80) & ~0x10)       # 50 GHz off
+        d = self._laser()
+        self.assertNotIn('4', d['grid_channel_ranges'])
+        self.assertNotIn('50 GHz', d['grids_supported'])
+
+    def test_an_unadvertised_range_is_not_offered(self):
+        self._connect()
+        for addr, v in ((0x86, 0xFF), (0x87, 0xF0), (0x88, 0x00), (0x89, 0x10)):
+            poke(0x04, addr, v)                        # 6.25 GHz range, bit clear
+        self.assertNotIn('1', self._laser()['grid_channel_ranges'])
+
+    def test_a_one_channel_plan_is_kept(self):
+        """[0, 0] is the channel n = 0, not an absent plan."""
+        self._connect()
+        poke(0x04, 0x80, self._reg(0x80) | 0x01)       # 3.125 GHz on
+        for addr in range(0x82, 0x86):
+            poke(0x04, addr, 0)
+        self.assertEqual(self._laser()['grid_channel_ranges']['0'], [0, 0])
+
+    def test_the_150_and_300_grids_have_their_own_bits(self):
+        self._connect()
+        self.assertIn('9', self._laser()['grid_channel_ranges'])
+        self.assertNotIn('8', self._laser()['grid_channel_ranges'])
+        poke(0x04, 0x81, (self._reg(0x81) | 0x40) & ~0x20)
+        for addr, v in ((0xA2, 0xFF), (0xA3, 0xF4), (0xA4, 0x00), (0xA5, 0x0C)):
+            poke(0x04, addr, v)
+        ranges = self._laser()['grid_channel_ranges']
+        self.assertEqual(ranges['8'], [-12, 12])
+        self.assertNotIn('9', ranges)
+
+    def test_the_post_refuses_an_unadvertised_grid(self):
+        self._connect()
+        deactivated(self.client)
+        rv = self._post(grid_code=0, channel=0)
+        self.assertErr(rv, 400)
+        self.assertIn('does not advertise the 3.125 GHz grid',
+                      json.loads(rv.data)['message'])
+
+    def _seen(self):
+        return self._laser()['lanes'][0]['tuning_flags_seen']
+
+    def test_the_demo_takes_a_one_channel_plan(self):
+        self._connect()
+        poke(0x04, 0x80, self._reg(0x80) | 0x01)
+        for addr in range(0x82, 0x86):
+            poke(0x04, addr, 0)
+        deactivated(self.client)
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertOk(self._post(grid_code=0, channel=0))
+        time.sleep(0.2)
+        self.assertNotIn('tuning_not_accepted', self._seen())
+
+    def test_the_demo_refuses_an_unadvertised_grid_at_channel_0(self):
+        """Written behind the tool's back, as a host that does not check
+        would. The [0, 0] rule let channel 0 through."""
+        self._connect()
+        deactivated(self.client)
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        b = _state['backend']
+        app_module._set_page(0x12)
+        b.write_bytes(0x88, bytes([0, 0]))
+        b.write_bytes(0x80, bytes([0x00]))
+        app_module._invalidate_page()
+        time.sleep(0.2)
+        self.assertIn('tuning_not_accepted', self._seen())
+
+    def test_a_lane_already_on_one_may_keep_it(self):
+        self._connect()
+        cur = self._laser()['lanes'][0]['grid_code']
+        byte = 0x80 if cur < 8 else 0x81
+        bit = (1 << cur) if cur < 8 else {8: 0x40, 9: 0x20}[cur]
+        poke(0x04, byte, self._reg(byte) & ~bit)
+        self.assertOk(self._post(grid_code=cur, target_power_dbm=0))
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

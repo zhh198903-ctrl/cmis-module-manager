@@ -3149,6 +3149,10 @@ class MockBackend(I2CInterface):
         fine_lo, fine_hi = s16(p04, 0xC0), s16(p04, 0xC2)
 
         touched = touched or {'channel': True, 'fine': True, 'power': True}
+        # Table 8-68: the GridSupported bits, not the range bytes (RO Rqd for
+        # every grid), say which grids this laser has.
+        advertised = cmis.advertised_grid_codes(
+            bytes([p04.get(0x80, 0), p04.get(0x81, 0)]))
         summary = 0
         for lane in range(8):
             grid_byte = p12.get(0x80 + lane, 0x50)
@@ -3159,10 +3163,11 @@ class MockBackend(I2CInterface):
                 base = self._GRID_RANGE_BASE + grid_code * 4
                 ch_lo, ch_hi = s16(p04, base), s16(p04, base + 2)
                 channel = s16(p12, 0x88 + lane * 2)
-                if ch_lo == 0 and ch_hi == 0:
+                if grid_code not in advertised:
                     # A grid the module never advertised cannot be tuned to.
-                    if channel:
-                        flags |= 1 << 3      # TuningNotAcceptedFlagTx
+                    # Deciding by a [0, 0] range took an advertised
+                    # one-channel plan for no plan at all.
+                    flags |= 1 << 3          # TuningNotAcceptedFlagTx
                 elif not (ch_lo <= channel <= ch_hi):
                     flags |= 1 << 2          # InvalidChannelNumberFlagTx
                 elif channel % {7: 3, 8: 6, 9: 24}.get(grid_code, 1):
