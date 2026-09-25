@@ -31617,6 +31617,125 @@ class TestAMaskCoversEveryLane(CMISTestCase):
         self.assertNotIn('value: d.dp_deinit_mask, bit: i,', js)
 
 
+class TestADemoBankAnswersForItsOwnLanes(CMISTestCase):
+    """The demo modules model bank 0 in full and later banks in part, and
+    three writes to a later bank went into bank 0's model instead of its own
+    (round 88 found the first, DPDeinit):
+
+    - ApplyDPInit / ApplyImmediate in bank 1 started a command on lanes 1-8:
+      applying a new Application to lanes 9-16 put lanes 1-8 through DPInit,
+      left them in ConfigInProgress (so the next Apply was refused for lanes
+      nobody had touched) and raised their DPStateChanged, while lanes 9-16
+      never took the new Application.
+    - Enabling a pattern generator or checker in bank 1 restarted the lock
+      timer that bank 0's LOL flags run on, so lanes 1-8 reported a loss of
+      lock and lanes 9-16, the ones enabled, never did.
+
+    The tool wrote each bank correctly; the page showed the wrong lanes."""
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _apply_bank1(self, sel):
+        rv = self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8 + [sel] * 8, 'apply': True}),
+            content_type='application/json')
+        body = self.assertOk(rv)
+        self.assertEqual(body['data']['applied_lanes'], list(range(9, 17)))
+
+    def test_an_apply_in_bank_1_is_bank_1s(self):
+        self._connect()
+        self.client.get('/api/module/flags')
+        self._apply_bank1(2)
+        lanes = self._lanes()
+        self.assertEqual([l['active_app_sel'] for l in lanes], [1] * 8 + [2] * 8)
+        self.assertEqual({l['config_status'] for l in lanes[8:]}, {'ConfigSuccess'})
+
+    def test_only_the_lanes_in_the_trigger(self):
+        """And the ConfigStatus it reports is the one this Apply earned."""
+        self._connect()
+        backend = _state['backend']
+        p10b, p11b = backend._registers[(0x10, 1)], backend._registers[(0x11, 1)]
+        p10b[0x91], p10b[0x92] = 0x20, 0x20            # lanes 9 and 10 staged 2
+        for a in range(0xCA, 0xCE):
+            p11b[a] = 0x00                             # ConfigUndefined
+        backend._current_page, backend._current_bank = 0x10, 1
+        backend._intercept_write(0x8F, bytes([0x01]))  # lane 9 only
+        self.assertEqual(p11b[0xCE] >> 4, 2)
+        self.assertNotEqual(p11b[0xCF] >> 4, 2)
+        self.assertEqual(p11b[0xCA] & 0x0F, 0x1)        # lane 9 ConfigSuccess
+        self.assertEqual(p11b[0xCA] >> 4, 0x0)          # lane 10 untouched
+
+    def test_bank_0_is_left_alone(self):
+        self._connect()
+        self.client.get('/api/module/flags')
+        self._apply_bank1(2)
+        lanes = self._lanes()
+        self.assertNotIn('ConfigInProgress', {l['config_status'] for l in lanes[:8]})
+        self.assertEqual({l['datapath_state'] for l in lanes[:8]}, {'Activated'})
+        flags = self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+        self.assertFalse(any(l['dp_state_changed'] for l in flags[:8]))
+
+    def test_the_next_apply_is_not_refused_for_lanes_nobody_touched(self):
+        self._connect()
+        self._apply_bank1(2)
+        self._apply_bank1(1)
+        self.assertEqual([l['active_app_sel'] for l in self._lanes()], [1] * 16)
+
+    def test_apply_immediate_in_bank_1_is_bank_1s_too(self):
+        self._connect()
+        backend = _state['backend']
+        backend._registers[None][0x02] = 0x00      # legacy: hot supported
+        p10b = backend._registers[(0x10, 1)]
+        p10b[0x91] = 0x20                              # lane 9 staged AppSel 2
+        before = backend._registers[0x11].get(0xCA, 0)
+        backend._current_page, backend._current_bank = 0x10, 1
+        backend._intercept_write(0x90, bytes([0x01]))
+        self.assertEqual(backend._registers[(0x11, 1)][0xCE] >> 4, 2)
+        # No command on bank 0, and its ConfigStatus untouched.
+        self.assertEqual(backend._commands, [])
+        self.assertEqual(backend._registers[0x11].get(0xCA, 0), before)
+
+    def test_a_pattern_engine_in_bank_1_locks_bank_1(self):
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({'host_gen': {'enable_mask': [0, 0xFF]}}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_gen_lol_mask_banks'], [0x00, 0xFF])
+        time.sleep(0.4)
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_gen_lol_mask_banks'], [0x00, 0x00])
+
+    def test_bank_0_still_locks_as_it_did(self):
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({'media_chk': {'enable_mask': [0xFF, 0]}}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['media_chk_lol_mask_banks'], [0xFF, 0x00])
+
+    def test_an_eight_lane_module_is_unchanged(self):
+        self._connect('mock_dr8')
+        self.client.get('/api/module/flags')
+        rv = self.client.post('/api/module/datapath',
+                              data=json.dumps({'apply': True}),
+                              content_type='application/json')
+        self.assertOk(rv)
+        # The whole-module re-commission still walks bank 0 through DPInit.
+        self.assertIn('Init', {l['datapath_state'] for l in self._lanes()})
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -970,7 +970,9 @@ class MockBackend(I2CInterface):
         self._deinit_mask = 0x00
         self._absolute_tx_thr = None      # 62h quad when no lane is relative
         self._tx_disable_mask = 0x00
-        self._prbs_enable_times = {'hg': 0, 'mg': 0, 'hc': 0, 'mc': 0}
+        # (bank, role) -> when that bank's pattern engine was enabled: each
+        # bank's Page 14h reports its own lanes' lock.
+        self._prbs_enable_times = {}
         # Per absolute lane, not per bank position: a 16 lane module has 16
         # independent counters, and eight of them were being shared.
         _lanes = max(8, self.PROFILE.get('lanes', 8))
@@ -1976,11 +1978,15 @@ class MockBackend(I2CInterface):
         # generators as well as the checkers: a generator that has not locked
         # is not sending the pattern its control registers name, which is a
         # different fault from a checker that cannot find one.
-        for key, lol_addr in [('hc', 0x8A), ('mc', 0x8B),
-                              ('hg', 0x88), ('mg', 0x89)]:
-            t_en = self._prbs_enable_times.get(key, 0)
-            if t_en > 0:
-                self._registers[0x14][lol_addr] = 0xFF if (now - t_en) < 0.3 else 0x00
+        # Per bank: enabling a generator for lanes 9-16 used to unlock the
+        # LOL flags of lanes 1-8, the only ones this looked at.
+        lol_of = {'hc': 0x8A, 'mc': 0x8B, 'hg': 0x88, 'mg': 0x89}
+        for (bank, key), t_en in self._prbs_enable_times.items():
+            p14 = (self._registers.get(0x14) if bank == 0
+                   else self._registers.get((0x14, bank)))
+            if p14 is None or not t_en:
+                continue
+            p14[lol_of[key]] = 0xFF if (now - t_en) < 0.3 else 0x00
 
     # ------------------------------------------------------------------
     def _refresh_lane_thresholds(self) -> None:
@@ -2766,14 +2772,24 @@ class MockBackend(I2CInterface):
                 # from whichever bank was written last let a write aimed at
                 # lane 17 zero the readings of lane 1.
                 self._tx_disable_mask = data[0x82 - register]
+            # The command model is bank 0's. A trigger written in a later
+            # bank started it on bank 0's lanes, so applying lanes 9-16 put
+            # lanes 1-8 through DPInit and left them in ConfigInProgress.
             if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
-                self._start_apply(data[0x8F - register], hot=False)
+                if self._current_bank == 0:
+                    self._start_apply(data[0x8F - register], hot=False)
+                else:
+                    self._bank_apply(self._current_bank, data[0x8F - register])
             if 0x90 in span and data[0x90 - register]:              # ApplyImmediate
                 # "When ApplyImmediate is not supported, WRITE access to it is
                 # ignored" - silently, which is why the host has to read Lower
                 # 02h before offering the trigger at all.
                 if self._hot_reconfig():
-                    self._start_apply(data[0x90 - register], hot=True)
+                    if self._current_bank == 0:
+                        self._start_apply(data[0x90 - register], hot=True)
+                    else:
+                        self._bank_apply(self._current_bank,
+                                         data[0x90 - register])
         elif self._current_page == 0x12:
             span = range(register, register + len(data))
             touched = {'channel': any(a in span for a in range(0x80, 0x98)),
@@ -2806,7 +2822,8 @@ class MockBackend(I2CInterface):
         elif self._current_page == 0x13:
             prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
             if register in prbs_map and data[0] != 0:
-                self._prbs_enable_times[prbs_map[register]] = time.time()
+                self._prbs_enable_times[(self._current_bank,
+                                         prbs_map[register])] = time.time()
             # Table 8-131: "If the Per-lane ... Loopback Supported field=1,
             # loopback control is per lane. Otherwise, if any loopback enable
             # bit is set to 1, all ... lanes are in ... loopback." So a module
@@ -3085,6 +3102,24 @@ class MockBackend(I2CInterface):
             if p12[0xE7 + lane]:
                 summary |= 1 << lane
         p12[0xE6] = summary
+
+    def _bank_apply(self, bank: int, mask: int) -> None:
+        """An Apply in a later bank. Validation, the DPSM walk and the
+        timings are bank 0's model; a later bank's Data Paths have only the
+        states the profile built, so an Apply there provisions at once: each
+        selected lane's staged DPConfig goes into that bank's Active Control
+        Set and its ConfigStatus reads ConfigSuccess - in that bank."""
+        p10b = self._registers.get((0x10, bank))
+        p11b = self._registers.get((0x11, bank))
+        if p10b is None or p11b is None or self._module_state != 0b011:
+            return
+        for lane in range(8):
+            if not (mask >> lane) & 1:
+                continue
+            p11b[0xCE + lane] = p10b.get(0x91 + lane, p11b.get(0xCE + lane, 0))
+            a, sh = 0xCA + lane // 2, 4 * (lane % 2)
+            p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (0x1 << sh)
+        self._recompute_dpidx(p11b)
 
     def _set_bank_dp_deinit(self, bank: int, mask: int) -> None:
         """10h:128 in a later bank. Its Data Paths have only the states the
