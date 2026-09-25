@@ -30,6 +30,7 @@ const AppState = {
 const ALARM_FALLBACK = { TX_LOW: -10, TX_HIGH: 3, RX_LOW: -10, RX_HIGH: 3 };
 let _moduleThresholds = null;
 let _relThresholds = null;   // 12h:216-217 offsets, when advertised
+let _commissionedKey = null;  // what _moduleThresholds was read under
 let _advertisedApps = [];
 
 // ---------------------------------------------------------------------------
@@ -445,6 +446,7 @@ function _endSession(message, tone) {
   AppState.caps = {};
   // The next module advertises its own limits and its own Applications.
   _moduleThresholds = null;
+  _commissionedKey = null;
   _relThresholds = null;
   _advertisedApps = [];
   stopMonitoring();
@@ -1673,6 +1675,7 @@ function _paintChips(chips) {
 
 function startMonitoring() {
   stopMonitoring();
+  _commissionedKey = null;
   loadThresholds();
   loadMonitoring();
   if (AppState.monitoringManual) return;
@@ -2142,6 +2145,7 @@ async function _loadMonitoringOnce() {
   if (!tbody) return;
 
   const lanes = monRes.data.lanes;
+  await _rereadThresholdsIfRecommissioned(lanes);
   const allActivated = lanes.length > 0 && lanes.every(l => l.datapath_state === 'Activated');
   const dotEl = document.getElementById('monitor-all-activated-dot');
   if (dotEl) dotEl.style.display = allActivated ? 'inline-block' : 'none';
@@ -3877,6 +3881,27 @@ function renderFlags(lanes, supported, masks) {
 // ---------------------------------------------------------------------------
 // Thresholds (Monitoring tab)
 // ---------------------------------------------------------------------------
+// Section 8.5: Page 02h's thresholds "can depend on the commissioned set of
+// Applications", and the module updates them when the Data Path reaches
+// DPInitialized. They were read once when the tab opened, so after an Apply
+// the table and this card went on judging lanes by the previous
+// Application's limits. Each reading says which Application a lane runs and
+// whether its Data Path is past DPInit; when that moves, read them again.
+const _DP_PAST_INIT = new Set(['Initialized', 'TxTurnOn', 'Activated', 'TxTurnOff']);
+
+function _commissioningKey(lanes) {
+  return (lanes || []).map(l =>
+    `${l.active_app_sel}/${_DP_PAST_INIT.has(l.datapath_state) ? 1 : 0}`).join(',');
+}
+
+async function _rereadThresholdsIfRecommissioned(lanes) {
+  const key = _commissioningKey(lanes);
+  const moved = _commissionedKey !== null && key !== _commissionedKey;
+  _commissionedKey = key;
+  if (moved) await loadThresholds();
+  return moved;
+}
+
 async function loadThresholds() {
   if (!AppState.connected) return;
   const res = await apiGet('/api/module/thresholds');

@@ -245,6 +245,13 @@ _ZR_800G = {
     # Lanes 1-4 were left switched to relative supervision by whoever
     # configured this module; 5-8 still use the module-wide thresholds.
     'rel_thr_enabled_lanes': (1, 1, 1, 1, 0, 0, 0, 0),
+    # Section 8.5: Page 02h's thresholds "can depend on the commissioned set
+    # of Applications". AppSel 2 has optical power thresholds of its own
+    # (demo values: the point is only that they differ), put in force when a
+    # Data Path commissioned with it reaches DPInitialized.
+    'app_power_thresholds_dbm': {
+        2: {'tx': (3.0, -5.0, 2.0, -4.0), 'rx': (-1.0, -14.0, -2.0, -13.0)},
+    },
 }
 
 _DR8_800G = {
@@ -967,6 +974,10 @@ class MockBackend(I2CInterface):
         self._last_counter_time = 0.0
         self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
+        # The power thresholds as built, which are the default Application's.
+        _p02 = self._registers.get(0x02) or {}
+        self._base_power_thr = {a: _p02.get(a, 0) for a in
+                                (*range(0xB0, 0xB8), *range(0xC0, 0xC8))}
         # 6.2.3.3: "the module populates both Staged Control Set 0 and the
         # Active Control Set registers with the module-defined default
         # Application and signal integrity settings before exiting the
@@ -2160,6 +2171,10 @@ class MockBackend(I2CInterface):
             # and the flag would claim a commissioning was still pending
             # on a Data Path that had already been through DPInit.
             self._clear_dp_init_pending(cmd)
+            # 8.5: thresholds are updated "when the relevant Data Path
+            # reaches DPInitialized" - 150 ms in, whether or not a read
+            # happened to land while it sat there.
+            self._commission_thresholds(cmd)
         if cmd.hot:
             # 8.13.3.1: ApplyImmediate is Provision-and-Commission - the
             # staged set goes straight into hardware and the Data Path
@@ -2167,6 +2182,7 @@ class MockBackend(I2CInterface):
             # DPStateChangedFlag either.
             if dt >= 0.5:
                 self._commit_apply(cmd)
+                self._commission_thresholds(cmd)
                 return True
         elif cmd.provision_only:
             # Provision only (Table 6-4): the result is reported and
@@ -2214,6 +2230,28 @@ class MockBackend(I2CInterface):
             self._commit_apply(cmd)
             return True
         return False
+
+    def _commission_thresholds(self, cmd) -> None:
+        """Section 8.5: Page 02h's thresholds "can depend on the commissioned
+        set of Applications and therefore may change (including the
+        checksum) whenever a new Application is commissioned". Opt-in per
+        profile; an Application with none of its own gets the built ones."""
+        per_app = self._profile.get('app_power_thresholds_dbm')
+        p02 = self._registers.get(0x02)
+        if not per_app or p02 is None:
+            return
+        lanes = [i for i in range(8) if self._apply_selects(cmd, i)]
+        if not lanes:
+            return
+        values = dict(self._base_power_thr)
+        own = per_app.get((cmd.staged[lanes[0]] >> 4) & 0x0F) or {}
+        for base, key in ((0xB0, 'tx'), (0xC0, 'rx')):
+            for k, dbm in enumerate(own.get(key, ())):
+                raw = _dbm_to_raw(dbm)
+                values[base + 2 * k] = (raw >> 8) & 0xFF
+                values[base + 2 * k + 1] = raw & 0xFF
+        p02.update(values)
+        p02[255] = sum(p02.get(a, 0) for a in range(128, 255)) & 0xFF
 
     def _clear_dp_init_pending(self, cmd) -> None:
         """8.14.7: "the module clears all DPInitPendingLane<i> bits of a Data

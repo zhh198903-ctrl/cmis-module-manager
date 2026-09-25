@@ -30421,6 +30421,251 @@ class TestTheLaneNumbersMayBeNominal(CMISTestCase):
         self.assertIn('nominal', body)
         self.assertIn("show('card-hls', !!d.host_lane_switching);", js)
 
+class TestThresholdsFollowTheApplication(CMISTestCase):
+    """Section 8.5: Page 02h's thresholds "can depend on the commissioned set
+    of Applications and therefore may change (including the checksum)
+    whenever a new Application is commissioned" - updated "when the relevant
+    Data Path reaches DPInitialized". CMIS 5.4 added this as a hint; the
+    changes list calls it out for Page 02h.
+
+    The page read them once, when the Monitoring tab opened. After an Apply
+    on the DataPath tab the monitoring table went on colouring Rx power (and
+    Tx power, where there is no Page 62h) by the previous Application's
+    limits, and the Thresholds card showed them, until the tab was left and
+    re-entered at the right moment.
+
+    Each monitoring reading now carries the lane's active AppSel, and the
+    page reads the thresholds again when a lane's Application or its
+    passage through DPInit changes. The ZR demo module has thresholds of its
+    own for AppSel 2."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _thr(self):
+        return self.assertOk(self.client.get('/api/module/thresholds'))['data']
+
+    def _lanes(self):
+        return self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+
+    def _wait_for(self, sels, timeout=5.0):
+        """Until the Active Control Set says `sels` and those lanes are up:
+        releasing DPDeinit commissions without a ConfigInProgress to wait on."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            lanes = self._lanes()
+            if ([l['active_app_sel'] for l in lanes] == sels
+                    and all(l['datapath_state'] == 'Activated'
+                            for l, a in zip(lanes, sels) if a)):
+                return
+            time.sleep(0.05)
+        self.fail('never reached %r' % (sels,))
+
+    def _to_app2(self):
+        deactivated(self.client)
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2, 2, 2, 2, 0, 0, 0, 0],
+                             'dp_deinit_mask': 0, 'apply': True}),
+            content_type='application/json'))
+        self._wait_for([2, 2, 2, 2, 0, 0, 0, 0])
+
+    # ---- the demo module keeps the rule ----------------------------------------------
+    def test_a_new_application_brings_its_own_thresholds(self):
+        self._connect()
+        before = self._thr()
+        self.assertEqual(before['tx_power_high_alarm_dbm'], 5.0)
+        self.assertEqual(before['rx_power_low_alarm_dbm'], -20.0)
+        self._to_app2()
+        after = self._thr()
+        self.assertEqual(after['tx_power_high_alarm_dbm'], 3.0)
+        self.assertEqual(after['tx_power_low_warn_dbm'], -4.0)
+        self.assertEqual(after['rx_power_low_alarm_dbm'], -14.0)
+        self.assertEqual(after['rx_power_high_warn_dbm'], -2.0)
+        # Only the optical power thresholds belong to the Application here.
+        self.assertEqual(after['temp_high_alarm'], before['temp_high_alarm'])
+        self.assertEqual(after['tx_bias_high_alarm_ma'],
+                         before['tx_bias_high_alarm_ma'])
+
+    def test_they_change_on_reaching_dpinitialized(self):
+        """Not at the Apply, and not only once the path is back up."""
+        self._connect()
+        deactivated(self.client)
+        backend = _state['backend']
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2, 2, 2, 2, 0, 0, 0, 0],
+                             'dp_deinit_mask': 0, 'apply': True}),
+            content_type='application/json'))
+        cmd = backend._commands[-1]
+        hi = lambda: (backend._registers[0x02][0xB0] << 8) | backend._registers[0x02][0xB1]
+        built = hi()
+        backend._advance_command(cmd, cmd.time + 0.10)
+        self.assertEqual(hi(), built)                  # still in DPInit
+        backend._advance_command(cmd, cmd.time + 0.20)
+        self.assertEqual(backend._dp_lane_states[0], 0x7)   # DPInitialized
+        self.assertNotEqual(hi(), built)
+
+    def test_going_back_restores_the_first_set(self):
+        self._connect()
+        before = self._thr()
+        self._to_app2()
+        reconfigure(self.client, [1] * 8)
+        self._wait_for([1] * 8)
+        after = self._thr()
+        for k in ('tx_power_high_alarm_dbm', 'tx_power_low_alarm_dbm',
+                  'rx_power_high_alarm_dbm', 'rx_power_low_warn_dbm'):
+            self.assertEqual(after[k], before[k], k)
+
+    def test_the_checksum_moves_with_them(self):
+        import app as app_module
+        self._connect()
+        self._to_app2()
+        page02 = [c for c in app_module._verify_page_checksums(_state['caps'])
+                  if c['page'] == '02h']
+        self.assertEqual(len(page02), 1)
+        self.assertTrue(page02[0]['ok'], page02)
+
+    def test_apply_immediate_puts_them_in_force_too(self):
+        """8.13.3.1: ApplyImmediate commissions without leaving the state, so
+        there is no DPInitialized to wait for - the commit is the moment."""
+        from i2c_backends.mock import _ConfigCommand
+        self._connect()
+        backend = _state['backend']
+        cmd = _ConfigCommand(time.time(), 0x0F, True, False, [0x1] * 8,
+                             [0x20] * 4 + [0x10] * 4)
+        backend._advance_command(cmd, cmd.time + 0.4)
+        self.assertEqual(self._thr()['rx_power_low_alarm_dbm'], -20.0)
+        backend._advance_command(cmd, cmd.time + 0.6)
+        self.assertEqual(self._thr()['rx_power_low_alarm_dbm'], -14.0)
+
+    def test_modules_without_the_option_are_untouched(self):
+        self._connect('mock_dr8')
+        before = self._thr()
+        reconfigure(self.client, [2] * 8)
+        self._wait_for([2] * 8)
+        self.assertEqual(self._thr()['tx_power_high_alarm_dbm'],
+                         before['tx_power_high_alarm_dbm'])
+
+    # ---- what the readings carry ------------------------------------------------------
+    def test_each_reading_says_which_application_is_in_force(self):
+        self._connect()
+        self.assertEqual({l['active_app_sel'] for l in self._lanes()}, {1})
+        self._to_app2()
+        self.assertEqual([l['active_app_sel'] for l in self._lanes()],
+                         [2, 2, 2, 2, 0, 0, 0, 0])
+
+    def test_every_bank_is_read(self):
+        self._connect('mock_24lane')
+        _state['backend']._registers[(0x11, 1)][0xCE] = 0x30   # lane 9
+        _state['backend']._registers[(0x11, 2)][0xCF] = 0x50   # lane 18
+        lanes = self._lanes()
+        self.assertEqual(len(lanes), 24)
+        self.assertEqual(lanes[8]['active_app_sel'], 3)
+        self.assertEqual(lanes[17]['active_app_sel'], 5)
+
+    # ---- the page -------------------------------------------------------------------
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def _sequence(self, seq):
+        """Run the page's own check over a series of readings; how many times
+        it asked for the thresholds again, and on which readings."""
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'eval(pick(/const _DP_PAST_INIT = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function _commissioningKey\\([\\s\\S]*?\\r?\\n}\\r?\\n/)'
+            '+pick(/async function _rereadThresholdsIfRecommissioned\\([\\s\\S]*?\\r?\\n}\\r?\\n/)'
+            '+"var _commissionedKey=null;var reloads=0;'
+            'async function loadThresholds(){'
+            'await new Promise(r=>setTimeout(r,0));reloads++;}");'
+            '(async()=>{const out=[],done=[];for(const l of ' + json.dumps(seq) + ')'
+            '{out.push(await _rereadThresholdsIfRecommissioned(l));'
+            'done.push(reloads);}'
+            'process.stdout.write(JSON.stringify({moved:out,reloads,done}));})();')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    @staticmethod
+    def _r(*lanes):
+        return [{'active_app_sel': a, 'datapath_state': s} for a, s in lanes]
+
+    def test_the_first_reading_only_sets_the_mark(self):
+        got = self._sequence([self._r((1, 'Activated')),
+                              self._r((1, 'Activated'))])
+        self.assertEqual(got['moved'], [False, False])
+        self.assertEqual(got['reloads'], 0)
+
+    def test_the_reading_waits_for_the_new_thresholds(self):
+        """Painting before they arrive would colour one more reading by
+        the old Application's limits."""
+        got = self._sequence([self._r((1, 'Activated')),
+                              self._r((2, 'Activated'))])
+        self.assertEqual(got['done'], [0, 1])
+
+    def test_a_new_application_is_read_again(self):
+        got = self._sequence([self._r((1, 'Activated')),
+                              self._r((2, 'Activated'))])
+        self.assertEqual(got['moved'], [False, True])
+
+    def test_reaching_dpinitialized_is_read_again(self):
+        """The Active Control Set can change before the thresholds do: a read
+        during DPInit with the new AppSel is not the last word."""
+        got = self._sequence([self._r((1, 'Activated')),
+                              self._r((2, 'Init')),
+                              self._r((2, 'Initialized')),
+                              self._r((2, 'TxTurnOn')),
+                              self._r((2, 'Activated'))])
+        self.assertEqual(got['moved'], [False, True, True, False, False])
+        self.assertEqual(got['reloads'], 2)
+
+    def test_any_lane_counts(self):
+        got = self._sequence([self._r((1, 'Activated'), (1, 'Activated')),
+                              self._r((1, 'Activated'), (1, 'Deactivated'))])
+        self.assertEqual(got['moved'], [False, True])
+
+    def test_the_monitoring_loop_asks_before_it_paints(self):
+        js = self._read('static', 'app.js')
+        i = js.index('async function _loadMonitoringOnce()')
+        body = js[i:js.index('\n}\n', i)]
+        call = body.index('await _rereadThresholdsIfRecommissioned(lanes);')
+        self.assertLess(call, body.index('_powerLimits') if '_powerLimits' in body
+                        else body.index("tbody.innerHTML"))
+
+    def test_the_mark_is_cleared_with_the_thresholds(self):
+        js = self._read('static', 'app.js')
+        i = js.index('function startMonitoring()')
+        self.assertIn('_commissionedKey = null;', js[i:js.index('\n}\n', i)])
+        i = js.index('function _endSession(')
+        self.assertIn('_commissionedKey = null;', js[i:js.index('\n}\n', i)])
+
+    def test_the_card_says_so(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('id="thresholds-note"')
+        self.assertLess(html.index('id="tbl-thresholds"'), i)
+        self.assertIn('(8.5)', html[i:i + 400])
+        self.assertIn('DPInitialized', html[i:i + 400])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

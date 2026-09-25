@@ -506,6 +506,12 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 阈值跟着 Application 走
+
+规范 8.5:Page 02h 的阈值可能随已投入使用的 Application 改变,模块在 Data Path 以新 Application 到达 DPInitialized 时更新。
+`GET /api/module/monitoring` 的每条通道带 `active_app_sel`(Active Control Set,`11h:206-213`);页面在它或 Data Path 是否已过 DPInit 变化时重读 `/api/module/thresholds`。
+脚本里自己判断告警时也一样:切换 Application 后,等 Data Path 过了 DPInit 再读阈值,别沿用切换前读到的。
+
 ## 主机通道切换:通道号可能是名义通道
 
 CMIS 5.4 的 7.8 节 / Page 1Dh(`01h:252.7` 声明):每组 8 条通道内,电气主机通道可以连到另一条**名义**通道。

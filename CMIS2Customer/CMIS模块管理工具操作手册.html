@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.132.0<br>
+      <b>版本</b>　2.133.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.132.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.132.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.133.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.133.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1318,9 +1318,11 @@
     与 Lane Flags 表自相矛盾。
     <br><b>仍会用到那对固定值的场合</b>：刚连上模块、Page 02h 阈值尚未读回，或该次读取失败时，
     着色会回退到 −10 / +3 dBm。此时颜色仅供参考，请以 Lane Flags 表和 Module Thresholds
-    卡片为准。</span>
+    卡片为准。
+    <br><b>阈值会随 Application 变化</b>(8.5 节):模块在 Data Path 以新 Application 到达 DPInitialized 时更新 Page 02h。
+    监控刷新时发现某条通道的 Application 或初始化状态变了,工具会重新读取阈值,再着色。</span>
   </div>
-  <p>顶部摘要栏同步显示温度和电压：超过 60°C → 橙色；超过 70°C → 红色。</p>
+  <p>顶部摘要栏同步显示温度和电压。温度按模块在 <code>01h:146–147</code> 声明的工作温度范围判断:超出上限为红色,距上限 5°C 以内为橙色(这 5°C 余量是本工具定的,不是模块的);模块没声明范围时不着色。电压低于模块在 <code>01h:150</code> 声明的最低值时为红色。模块不在 ModuleReady 状态时,温度照实显示、不做判断。</p>
 
   <h3>Lane Flags 为什么会"自己消失"——闩锁与读清</h3>
   <p>这是 CMIS 排障时最容易踩的一条，与工具无关，是规范的设计：</p>
@@ -1717,6 +1719,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>换了 Application 之后,阈值跟着换</h3>
+  <p>规范 8.5 节:Page 02h 的告警 / 警告阈值「可能取决于已投入使用的 Application,因此每次投入新的 Application 时都可能改变(包括校验和)」;模块在 Data Path 以新 Application 到达 <b>DPInitialized</b> 时更新它们。CMIS 5.4 把这一点作为提示写进了 Page 02h。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只在打开 Monitoring 标签页时读一次阈值。在 DataPath Config 页切换 Application 后,监控表继续按<b>旧 Application 的阈值</b>给 Rx 光功率着色(没有 Page 62h 的模块,Tx 光功率也一样),Module Thresholds 卡片也显示旧值——除非离开再回到这个标签页,而且恰好是在 Data Path 到达 DPInitialized 之后。</span>
+  </div>
+  <p>现在每次监控刷新都带上每条通道正在使用的 Application(<code>11h:206–213</code>)。某条通道的 Application 变了,或它的 Data Path 刚过了 DPInit,工具就重新读取阈值,先读完再着色。Module Thresholds 卡片下方加了一行说明。</p>
+  <p>ZR 相干演示模块(<code>mock_coherent_zr</code>)的 AppSel 2 带有自己的一组光功率阈值(演示值),在 DataPath Config 页切到 AppSel 2 就能看到卡片随之更新。</p>
 
   <h3>主机通道切换(Page 1Dh):面板上的通道号可能不是电气通道号</h3>
   <p>CMIS 5.4 新增了主机侧通道切换(7.8 节、Page 1Dh,由 <code>01h:252[7]</code> 声明):每组 8 条通道内,可以把<b>电气主机通道</b>(线真正接的那条)连到另一条<b>名义通道</b>上。Application 和 Data Path 寄存器按名义通道编号——所以切换生效时,DataPath、Monitoring、Flags 各面板上的「通道 1」不一定是插在电气通道 1 上的那一路。</p>
@@ -4417,7 +4428,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.132.0<br>
+    CMIS Module Manager 操作手册 v2.133.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

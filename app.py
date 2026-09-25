@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.132.0'
+__version__ = '2.133.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2186,6 +2186,15 @@ def api_module_monitoring():
         # shown as a measurement.
         na_on = bool((_state.get('caps') or {}).get('na_values'))
 
+        # Section 8.5: Page 02h's thresholds "can depend on the commissioned
+        # set of Applications" and change when a Data Path commissioned with a
+        # new one reaches DPInitialized. The Application in force travels with
+        # the readings so the page can tell when the limits it judges them by
+        # have been replaced.
+        active_sel = []
+        for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
+            active_sel += cmis.unpack_appselect(raw)
+
         lanes = []
         for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
@@ -2228,6 +2237,7 @@ def api_module_monitoring():
                 'rx_power_na': rx_na if media else None,
                 'datapath_state': dp_states[i],
                 'datapath_state_kind': cmis.dp_state_kind(dp_states[i]),
+                'active_app_sel': active_sel[i] if i < len(active_sel) else 0,
                 # 6.3.3: the Flags of this lane's monitors are assured only in
                 # DPInitialized and DPActivated. A lane taken down still
                 # reports a power, and colouring that by threshold announced a
