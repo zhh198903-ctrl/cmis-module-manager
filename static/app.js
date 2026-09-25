@@ -4982,8 +4982,12 @@ async function loadLaser() {
     const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}${bankTag}`, 0x12, 0x88 + k * 2, 2,
       `S16 channel number, current ${l.channel}${chFreq}`
       + (mult > 1 ? `. On this grid n must be a multiple of ${mult}.` : '')));
+    // 04h:190-191: the laser tunes in these steps, whatever the register's
+    // own 0.001 GHz unit would allow.
+    const ftStep = d.fine_resolution_ghz || 0.001;
     const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}${bankTag}`, 0x12, 0x98 + k * 2, 2,
-      `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`));
+      `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`
+      + (ftStep > 0.001 ? `. This laser tunes in ${ftStep} GHz steps (04h:190-191).` : '')));
     const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}${bankTag}`, 0x12, 0xA8 + k * 4, 4,
       `U32 in units of 0.001 GHz, current ${l.frequency_na ? 'NA (Table 7-8)'
         : l.frequency_thz.toFixed(6) + ' THz'} (read-only)`));
@@ -5000,7 +5004,7 @@ async function loadLaser() {
       <td>${l.lane}</td>
       <td title="${tipGrid}${lockTip}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}${lockTip}"${lockAttr}>${gridOpts(l.grid_code, l.grid)}</select></td>
       <td title="${tipCh}${lockTip}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}${lockTip}"${lockAttr} value="${l.channel}" step="${mult}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}${mult > 1 ? `, ×${mult}` : ''}</div>` : ''}</td>
-      <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
+      <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="${ftStep}" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_na
         ? naCell('no valid sample') : l.frequency_thz.toFixed(6)}</td>
       <td title="${tipPwr}"><input type="number" id="laser-pwr-${l.lane}" title="${tipPwr}" value="${l.target_power_dbm}" step="0.01" style="width:70px" class="raw-data-input"></td>

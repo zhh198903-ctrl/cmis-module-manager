@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.142.0'
+__version__ = '2.143.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4927,6 +4927,9 @@ def api_laser_set():
         pwr_hi = struct.unpack('>h', _read_upper(*cmis.REG_PROG_PWR_MAX))[0] * 0.01
         fine_lo = struct.unpack('>h', _read_upper(*cmis.REG_FINE_LOW_OFFSET))[0] * 0.001
         fine_hi = struct.unpack('>h', _read_upper(*cmis.REG_FINE_HIGH_OFFSET))[0] * 0.001
+        # 04h:190-191 FineTuningResolution, in the register's own 0.001 GHz
+        # units: the step the laser can actually take.
+        fine_res = struct.unpack('>H', _read_upper(*cmis.REG_FINE_RESOLUTION))[0]
         # The same gating as the GET side: without it the 300 GHz grid has no
         # advertised range here, and a channel written to it is the one channel
         # this handler never checks.
@@ -5062,6 +5065,17 @@ def api_laser_set():
                         'advertised range (%g to %g GHz, 04h:192-195)'
                         % (lane + 1, off, fine_lo, fine_hi), 400)
                 ft = int(round(off / 0.001))
+                # An offset between two steps is one the laser cannot take,
+                # and nothing in Table 8-109 flags it - the module rounds it
+                # somewhere and the panel says "applied".
+                if fine_res > 1 and ft % fine_res:
+                    below = (ft // fine_res) * fine_res
+                    return _err(
+                        'Lane %d: fine-tuning offset %g GHz is not a step of '
+                        'this laser: it tunes in %g GHz steps (04h:190-191), '
+                        'so the nearest are %g and %g GHz'
+                        % (lane + 1, off, fine_res * 0.001, below * 0.001,
+                           (below + fine_res) * 0.001), 400)
                 plan.append((bank, cmis.REG_FINE_OFFSET_TX[1] + slot * 2,
                              struct.pack(">h", ft)))
                 fields += 1

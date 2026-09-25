@@ -506,6 +506,11 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 微调偏移:按 04h:190-191 的步进
+
+`fine_offset_ghz` 必须是 FineTuningResolution(`GET /api/module/laser` 的 `fine_resolution_ghz`)的整数倍,否则 400,消息给出两边最近的值。
+分辨率为 0(未声明)时不检查。
+
 ## 信道号:75/150/300 GHz 栅格不是 n × 间隔
 
 Table 8-68:75 GHz 是 `193.1 + n×0.025`(n 为 3 的倍数),150 GHz 是 `193.1 + (n+3)×0.025`(6 的倍数),

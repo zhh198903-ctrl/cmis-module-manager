@@ -32187,6 +32187,75 @@ class TestEveryGridNumbersItsChannelsItsOwnWay(CMISTestCase):
         self.assertIn('grid puts at ${l.channel_frequency_thz} THz (Table 8-68)', js)
 
 
+class TestAFineTuningStepTheLaserCanTake(CMISTestCase):
+    """Table 8-68: FineTuningResolution (04h:190-191) is the step the laser
+    tunes in, in increments of 0.001 GHz. The offset register takes any
+    0.001 GHz value, and Table 8-109 has no Flag for one between two steps -
+    the module rounds it somewhere.
+
+    The tool checked the range (04h:192-195) only, and the offset box stepped
+    by 0.001 GHz whatever the laser advertised. On a laser tuning in 100 MHz
+    steps, 0.05 GHz was written and reported applied. It is now refused with
+    the two offsets either side, and the box steps by the resolution."""
+
+    def _connect(self, res=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        if res is not None:
+            p04 = _state['backend']._registers[0x04]
+            p04[0xBE], p04[0xBF] = (res >> 8) & 0xFF, res & 0xFF
+
+    def _tune(self, off):
+        return self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [{'lane': 1, 'fine_offset_ghz': off}]}),
+            content_type='application/json')
+
+    def _offset(self):
+        return self.assertOk(self.client.get(
+            '/api/module/laser'))['data']['lanes'][0]['fine_offset_ghz']
+
+    def test_an_offset_between_two_steps_is_refused(self):
+        self._connect(res=100)                       # 0.1 GHz steps
+        before = self._offset()
+        rv = self._tune(0.05)
+        self.assertErr(rv, 400)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('04h:190-191', msg)
+        self.assertIn('nearest are 0 and 0.1 GHz', msg)
+        self.assertEqual(self._offset(), before)
+
+    def test_below_zero_the_neighbours_are_below_zero(self):
+        self._connect(res=100)
+        rv = self._tune(-0.05)
+        self.assertErr(rv, 400)
+        self.assertIn('nearest are -0.1 and 0 GHz', json.loads(rv.data)['message'])
+
+    def test_a_whole_number_of_steps_goes_through(self):
+        self._connect(res=100)
+        for off in (0.3, -1.2, 0.0):
+            self.assertOk(self._tune(off))
+            self.assertAlmostEqual(self._offset(), off, places=6)
+
+    def test_a_one_megahertz_laser_takes_any_offset(self):
+        self._connect()                                # the demo's 1 MHz
+        self.assertOk(self._tune(0.001))
+
+    def test_an_unadvertised_resolution_is_not_invented(self):
+        self._connect(res=0)
+        self.assertOk(self._tune(0.007))
+
+    def test_the_box_steps_by_the_resolution(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('const ftStep = d.fine_resolution_ghz || 0.001;', js)
+        self.assertIn('value="${l.fine_offset_ghz}" step="${ftStep}"', js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

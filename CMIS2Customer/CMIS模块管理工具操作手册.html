@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.142.0<br>
+      <b>版本</b>　2.143.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.142.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.142.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.143.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.143.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>微调偏移要落在激光器的步进上</h3>
+  <p>规范 Table 8-68:<code>04h:190–191</code> FineTuningResolution 是激光器微调的步进(单位 0.001 GHz)。偏移寄存器本身能写任何 0.001 GHz 的值,而规范里没有一个 Flag 会指出「这个偏移落在两个步进之间」——模块只会自己取整到某处。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只查范围(<code>04h:192–195</code>),微调输入框固定按 0.001 GHz 步进。在按 100 MHz 步进的激光器上,写 0.05 GHz 也会回报「已应用」,激光器实际停在哪里没人知道。</span>
+  </div>
+  <p>现在不是整数个步进的偏移直接拒绝(400),提示两边最近的可用值;微调输入框按模块声明的步进走,悬停说明步进。演示模块声明 1 MHz,所以演示里任何 0.001 GHz 的值都可用。</p>
 
   <h3>75 / 150 / 300 GHz 栅格的信道号</h3>
   <p>规范 Table 8-68 给每种栅格定了信道编号:大多数是 <code>193.1 + n × 间隔</code>,但有三种不是——</p>
@@ -4516,7 +4524,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.142.0<br>
+    CMIS Module Manager 操作手册 v2.143.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
