@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.134.0<br>
+      <b>版本</b>　2.135.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.134.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.134.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.135.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.135.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1538,6 +1538,7 @@
     所以只等到「状态不再变化」为止。<br>
     软复位的等待时长是 MgmtInit 的最长 <b>2 秒</b>（Table 10-2 tMgmtInit）<b>加上</b> ModulePwrUp 的声明时长；MgmtInit 期间模块可能完全不应答，工具会在这段时间内自动重试读取。<br>
     模块没声明这个时间时，退回到原来的等待时长。<br>
+    <b>进入低功耗时还有数据通道在跑</b>,模块会先让它们停下(Eq. 6-6),全部到 DPDeactivated 才离开 <code>ModuleReady</code>(Eq. 6-4),所以等待时长还要加上 DPTxTurnOff(<code>01h:168</code>)和 DPDeinit(<code>01h:144</code>)的声明时长。<br>
     <b>演示模块是瞬间切换的</b>，所以这个问题在演示里看不出来——
     它只在按自己声明的时间走的真实模块上出现。</span>
   </div>
@@ -1722,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>进入低功耗:先等数据通道停下来</h3>
+  <p>规范 Eq. 6-6:<code>DPDeinitS = (NOT ModuleReadyT) OR LowPwrS OR DPDeinitT</code>——低功耗请求本身就会让所有数据通道停下来。Eq. 6-4 / 6-5 又规定:只有<b>所有</b>数据通道都到了 DPDeactivated,模块才离开 ModuleReady。所以从正在运行的模块进入低功耗,要依次走完 DPTxTurnOff、DPDeinit,再走 ModulePwrDn。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只按 ModulePwrDn 的声明时长(<code>01h:167</code>)等,超时就报「模块在声明的时间后仍处于 ModuleReady」。数据通道停得比下电慢的模块,明明在按规范先停通道,却会被报成没理会请求。演示模块是瞬间切换的,看不出这个问题。</span>
+  </div>
+  <p>现在,如果请求时还有数据通道没停,等待时长是三段声明之和:DPTxTurnOff(<code>01h:168</code>,只在有通道开着 Tx 时计入)+ DPDeinit(<code>01h:144</code>)+ ModulePwrDn(<code>01h:167</code>)。任何一段模块没声明,就不替它编一个数字。真等满了还没到,提示里会写明「模块会先让所有数据通道停下,全部到 DPDeactivated 后才离开 ModuleReady」。数据通道都已停下时,仍只按 ModulePwrDn 等。</p>
 
   <h3>通道停下来时,Lane Flags 不再显示「一切正常」</h3>
   <p>规范 Table 6-21(逐通道 Flag 符合性规则)规定了模块在哪些 DataPath 状态下<b>可以</b>置位每个通道 Flag。CMIS 5.4 又给这张表加了 Page 12h 的几行。在 DPDeactivated、DPInit、DPDeinit 下,模块<b>不报</b> Tx LOS、两个 CDR LOL、所有低侧告警/警告和 Rx 输出变化;DPInitialized 下,主机关掉或强制静音了 Tx 输出的通道,也不报 Tx 光功率低侧和全部 Tx 偏置 Flag(表注 1)。</p>
@@ -4440,7 +4449,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.134.0<br>
+    CMIS Module Manager 操作手册 v2.135.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

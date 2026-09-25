@@ -13809,7 +13809,10 @@ class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):
     # ---- the budget comes from the module ----------------------------------
 
     def test_powering_down_carries_the_advertised_budget(self):
+        """With the Data Paths already down; with them up the budget also
+        counts their legs - see TestTheDataPathsGoDownFirst."""
         self._connect()
+        deactivated(self.client)
         t = self._control(action='low_power')['transition']
         self.assertEqual(t['target_state'], 'ModuleLowPwr')
         self.assertEqual(t['max_seconds'],
@@ -13827,6 +13830,7 @@ class TestWaitingAsLongAsTheModuleAsksFor(CMISTestCase):
     def test_the_budget_is_read_and_not_a_constant(self):
         """A hardcoded five seconds would pass every other test here."""
         self._connect()
+        deactivated(self.client)
         app_module._state['caps']['durations']['module_pwr_dn'] = {
             'code': 9, 'max_seconds': 60.0, 'label': '10 s - 1 min'}
         t = self._control(action='low_power')['transition']
@@ -19010,6 +19014,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
+        '6-13': 'LowPwrExS transition signal truth table',
         '6-21': 'Lane-Specific Flagging Conformance Rules',
         '7-8': 'CMIS Performance Monitors and NA Values',
         '10-2': 'Effect Latency Timings',
@@ -29828,6 +29833,7 @@ class TestAResetIsWaitedOutFromMgmtInit(CMISTestCase):
         """MgmtInit is a reset's; going to or from low power does not pass
         through it."""
         self._connect()
+        deactivated(self.client)
         for body, which in (({'action': 'low_power'}, 'module_pwr_dn'),
                             ({'action': 'high_power'}, 'module_pwr_up')):
             t = self._control(body)['transition']
@@ -30965,6 +30971,179 @@ class TestAFlagTheModuleMayNotRaiseIsNotAPass(CMISTestCase):
         cells = self._render(self._lane(rx_power_high_alarm=True))
         self.assertIn('Alarm', cells[-1])
         self.assertNotIn('partial', cells[-1])
+
+
+class TestTheDataPathsGoDownFirst(CMISTestCase):
+    """Eq. 6-6: DPDeinitS = (NOT ModuleReadyT) OR LowPwrS OR DPDeinitT - a
+    low power request takes every Data Path down by itself. Eq. 6-4/6-5: the
+    module leaves ModuleReady (LowPwrExS) only once all of them are
+    DPDeactivated. So from a running module the way to ModuleLowPwr is
+    DPTxTurnOff, then DPDeinit, then ModulePwrDn.
+
+    The page waited on ModulePwrDn (01h:167) alone and then said the module
+    was "still in ModuleReady after the ... it advertises". A module whose
+    Data Paths take longer to deinitialize than it takes to power down was
+    reported as having ignored the request while doing what Table 6-13
+    requires. The budget now adds the legs the Data Paths actually have to
+    walk, each from its own advertisement, and the page says why."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _low_power(self, body=None):
+        return self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps(body or {'action': 'low_power'}),
+            content_type='application/json'))['data']['transition']
+
+    def _dur(self, k):
+        return _state['caps']['durations'][k]['max_seconds']
+
+    def test_with_paths_up_the_budget_counts_their_legs(self):
+        self._connect()
+        t = self._low_power()
+        self.assertEqual(t['target_state'], 'ModuleLowPwr')
+        self.assertAlmostEqual(t['max_seconds'],
+                               self._dur('dp_tx_turn_off') + self._dur('dp_deinit')
+                               + self._dur('module_pwr_dn'))
+        self.assertTrue(t['data_paths_first'])
+        for reg in ('01h:168 DPTxTurnOff', '01h:144 DPDeinit',
+                    '01h:167 ModulePwrDn'):
+            self.assertIn(reg, t['advertisement'])
+        self.assertIn('DPDeinit', t['label'])
+
+    def test_the_field_form_counts_them_too(self):
+        self._connect()
+        self.assertTrue(self._low_power({'low_pwr': True})['data_paths_first'])
+
+    def test_with_paths_down_it_is_power_down_alone(self):
+        self._connect()
+        deactivated(self.client)
+        t = self._low_power()
+        self.assertEqual(t['max_seconds'], self._dur('module_pwr_dn'))
+        self.assertNotIn('data_paths_first', t)
+
+    def test_an_initialized_path_has_no_tx_to_turn_off(self):
+        self._connect()
+        _state['backend']._dp_lane_states = [0x7] * 8     # DPInitialized
+        t = self._low_power()
+        self.assertNotIn('DPTxTurnOff', t['advertisement'])
+        self.assertIn('DPDeinit', t['advertisement'])
+        self.assertAlmostEqual(t['max_seconds'],
+                               self._dur('dp_deinit') + self._dur('module_pwr_dn'))
+
+    def test_one_path_up_is_enough(self):
+        self._connect()
+        _state['backend']._dp_lane_states = [0x1] * 7 + [0x4]
+        t = self._low_power()
+        self.assertTrue(t['data_paths_first'])
+        # That one path walks both legs, however many others are down.
+        self.assertIn('DPTxTurnOff', t['advertisement'])
+        self.assertIn('DPDeinit', t['advertisement'])
+
+    def test_each_leg_is_read_not_a_constant(self):
+        self._connect()
+        _state['caps']['durations']['dp_deinit'] = {
+            'code': 9, 'max_seconds': 60.0, 'label': '10 s - 1 min'}
+        t = self._low_power()
+        self.assertAlmostEqual(t['max_seconds'], self._dur('dp_tx_turn_off')
+                               + 60.0 + self._dur('module_pwr_dn'))
+        self.assertIn('DPDeinit 10 s - 1 min', t['label'])
+
+    def test_an_unadvertised_leg_is_not_invented(self):
+        self._connect()
+        _state['caps']['durations']['dp_deinit'] = {}
+        t = self._low_power()
+        self.assertIsNone(t['max_seconds'])
+        self.assertIn('DPDeinit unadvertised', t['label'])
+
+    def test_every_bank_counts(self):
+        self._connect('mock_24lane')
+        backend = _state['backend']
+        backend._dp_lane_states = [0x1] * 8               # bank 0 all down
+        p11b = backend._registers[(0x11, 2)]
+        for a in range(0x80, 0x84):
+            p11b[a] = 0x11
+        p11b[0x83] = 0x41                                 # lane 24 Activated
+        p11b1 = backend._registers[(0x11, 1)]
+        for a in range(0x80, 0x84):
+            p11b1[a] = 0x11
+        self.assertTrue(self._low_power()['data_paths_first'])
+
+    def test_powering_up_is_unchanged(self):
+        self._connect()
+        t = self._low_power({'action': 'high_power'})
+        self.assertEqual(t['max_seconds'], self._dur('module_pwr_up'))
+        self.assertNotIn('data_paths_first', t)
+
+    def test_only_a_low_power_request_reads_the_states(self):
+        self._connect()
+        backend = _state['backend']
+        real = backend.read_bytes
+        seen = []
+
+        def traced(addr, length):
+            if backend._current_page == 0x11 and addr == 0x80:
+                seen.append(addr)
+            return real(addr, length)
+        backend.read_bytes = traced
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+        self._low_power({'action': 'high_power'})
+        self._low_power({'allow_lp_hw': True})
+        self.assertEqual(seen, [])
+        self._low_power()
+        self.assertTrue(seen)
+
+    def test_the_module_still_gets_there(self):
+        """The demo module takes its paths down and then powers down."""
+        self._connect()
+        self._low_power()
+        st = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertEqual(st['module_state'], 'ModuleLowPwr')
+        lanes = self.assertOk(self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertEqual({l['datapath_state'] for l in lanes}, {'Deactivated'})
+
+    # ---- the page -------------------------------------------------------------------
+    def _await(self, transition):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const m=s.match(/async function awaitModuleTransition\\([\\s\\S]*?\\r?\\n}\\r?\\n/);'
+            'if(!m)throw new Error("missing");'
+            'const toasts=[];'
+            'global.toast=(msg)=>toasts.push(msg);'
+            'global.apiGet=async()=>({status:"ok",data:{module_state:"ModuleReady"}});'
+            'eval(m[0]);'
+            '(async()=>{await awaitModuleTransition(' + json.dumps(transition) + ');'
+            'process.stdout.write(JSON.stringify(toasts));})();')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_page_says_why_it_took_longer(self):
+        toasts = self._await({'target_state': 'ModuleLowPwr', 'max_seconds': 0.2,
+                              'label': 'L', 'advertisement': 'A',
+                              'data_paths_first': True})
+        self.assertEqual(len(toasts), 1)
+        self.assertIn('Eq. 6-6', toasts[0])
+        self.assertIn('DPDeactivated', toasts[0])
+
+    def test_and_not_when_it_did_not(self):
+        toasts = self._await({'target_state': 'ModuleLowPwr', 'max_seconds': 0.2,
+                              'label': 'L', 'advertisement': 'A'})
+        self.assertEqual(len(toasts), 1)
+        self.assertNotIn('Eq. 6-6', toasts[0])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

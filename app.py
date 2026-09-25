@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.134.0'
+__version__ = '2.135.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2711,6 +2711,18 @@ def api_module_control_set():
         # user toggled low power.
         current = _read_lower(0x1A, 1)[0]
 
+        # Where the Data Paths stand before a low power request decides how
+        # long the module may take to get there - see _control_transition.
+        dp_before = None
+        if action == 'low_power' or body.get('low_pwr') is True:
+            try:
+                dp_before = []
+                for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+                    dp_before += cmis.parse_dp_states(raw)
+                dp_before = dp_before[:_state['lanes']]
+            except Exception:
+                dp_before = None
+
         if action == 'reset':
             val = cmis.update_module_control(current, software_reset=True)
         elif action == 'low_power':
@@ -2748,12 +2760,13 @@ def api_module_control_set():
         # with the answer instead of being guessed at.
         return _ok({'message': f'Module control written (0x{val:02X})',
                     'value': val,
-                    'transition': _control_transition(action, body)})
+                    'transition': _control_transition(action, body,
+                                                      dp_before)})
     except Exception as e:
         return _err(str(e), 500)
 
 
-def _control_transition(action, body) -> dict:
+def _control_transition(action, body, dp_before=None) -> dict:
     """What the module said it may need for the state change just requested.
 
     Only the two power transitions have an advertised budget. A reset ends by
@@ -2761,6 +2774,12 @@ def _control_transition(action, body) -> dict:
     through MgmtInit first and no target state is claimed for it: whether the
     module lands in ModuleLowPwr or ModuleReady depends on the low power
     request bits it comes back with.
+
+    Powering down is not ModulePwrDn alone while any Data Path is up. LowPwrS
+    is a term of DPDeinitS (Eq. 6-6), so the module first takes every Data
+    Path down - through DPTxTurnOff where the Tx is on, then DPDeinit - and
+    leaves ModuleReady only once all of them are DPDeactivated (Eq. 6-4,
+    6-5). `dp_before` is the DataPath states when the request was made.
     """
     dur = (_state.get('caps') or {}).get('durations') or {}
     if action == 'low_power' or body.get('low_pwr') is True:
@@ -2786,6 +2805,24 @@ def _control_transition(action, body) -> dict:
         out['label'] = '%g s MgmtInit (Table 10-2) + %s' % (
             init, d.get('label') or 'an unadvertised ModulePwrUp')
         out['advertisement'] = 'Table 10-2 tMgmtInit + 01h:167 %s' % which
+    elif target == 'ModuleLowPwr' and dp_before:
+        legs = []
+        if any(s in ('TxTurnOn', 'Activated', 'TxTurnOff') for s in dp_before):
+            legs.append(('dp_tx_turn_off', 'DPTxTurnOff', '01h:168'))
+        if any(s != 'Deactivated' for s in dp_before):
+            legs.append(('dp_deinit', 'DPDeinit', '01h:144'))
+        if legs:
+            parts = [(dur.get(k) or {}, name, reg) for k, name, reg in legs]
+            parts.append((d, 'ModulePwrDn', '01h:167'))
+            secs = [p.get('max_seconds') for p, _n, _r in parts]
+            out['max_seconds'] = (None if any(s is None for s in secs)
+                                  else round(sum(secs), 6))
+            out['label'] = ' + '.join(
+                '%s %s' % (name, p.get('label') or 'unadvertised')
+                for p, name, _r in parts)
+            out['advertisement'] = ' + '.join(
+                '%s %s' % (reg, name) for _p, name, reg in parts)
+            out['data_paths_first'] = True
     return out
 
 

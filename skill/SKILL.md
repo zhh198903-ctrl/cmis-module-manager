@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 低功耗请求:模块先停数据通道
+
+Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据通道自己停下;Eq. 6-4:全部到 DPDeactivated 后模块才离开 ModuleReady。
+`POST /api/module/control` 返回的 `transition` 在请求时还有通道没停的情况下带 `data_paths_first: true`,
+`max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
+用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
+
 ## Flag 是 0 不等于没问题:看 `not_allowed`
 
 规范 Table 6-21:DPDeactivated / DPInit / DPDeinit 下模块不报 Tx LOS、两个 CDR LOL、低侧告警/警告和 Rx 输出变化;

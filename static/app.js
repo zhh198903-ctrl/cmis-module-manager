@@ -3260,9 +3260,16 @@ async function awaitModuleTransition(transition, onTick) {
     if (target ? last === target : !res.data.module_state_changed) return last;
   }
   if (target && last && last !== target) {
+    // Eq. 6-6 / 6-4: going to low power takes the Data Paths down first, and
+    // the budget above already counts their legs - say so, or a module still
+    // in ModuleReady reads as one that ignored the request.
+    const first = transition.data_paths_first
+      ? ' - it takes every Data Path down first (Eq. 6-6) and leaves '
+        + 'ModuleReady only once all are DPDeactivated (Eq. 6-4)'
+      : '';
     toast(`The module is still in ${last} after the `
         + `${transition.label || 'advertised'} it advertises for this `
-        + `transition (${transition.advertisement})`, 'error', 12000);
+        + `transition (${transition.advertisement})${first}`, 'error', 12000);
   }
   return last;
 }
