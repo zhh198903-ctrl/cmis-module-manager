@@ -11059,15 +11059,15 @@ class TestWhetherALostReferenceClockMatters(CMISTestCase):
                       'the notes are never filled in')
         self.assertIn('const cs = d.clock_sources || {};', js,
                       'the panel no longer reads the clock sources')
-        self.assertIn("el.innerHTML = src\n      ? 'Clock source: <b>'", js,
+        self.assertIn("el.innerHTML = !src ? ''", js,
                       'the note no longer depends on there being a source')
         self.assertIn("role.endsWith('_gen') ? '13h:176' : '13h:178'", js,
                       'the note does not name the register it came from')
 
     def test_the_warning_names_the_engines_that_are_clocked_from_it(self):
         js = self._js()
-        self.assertIn('const onRef = Object.keys(ROLE_LABEL)'
-                      '.filter(k => cs[k] && cs[k].uses_reference);', js,
+        # In any bank: 13h:176 and 178 are per bank.
+        self.assertIn('k => csBanks.some(b => b[k] && b[k].uses_reference));', js,
                       'the warning no longer asks which engines use it')
         self.assertIn('13h:176/178', js,
                       'the warning does not say what decided it')
@@ -11154,7 +11154,8 @@ class TestTheWindowTheseNumbersCover(CMISTestCase):
         self._connect()
         for endpoint in ('/api/module/ber', '/api/module/counters'):
             m = self._window(endpoint)
-            self.assertEqual(sorted(m), ['capabilities', 'controls',
+            self.assertEqual(sorted(m), ['banks_that_differ', 'capabilities',
+                                         'controls', 'controls_banks',
                                          'start_stop_scope'],
                              '%s reports no window' % endpoint)
             self.assertEqual(sorted(m['controls']),
@@ -31734,6 +31735,133 @@ class TestADemoBankAnswersForItsOwnLanes(CMISTestCase):
         self.assertOk(rv)
         # The whole-module re-commission still walks bank 0 through DPInit.
         self.assertIn('Init', {l['datapath_state'] for l in self._lanes()})
+
+
+class TestEachBankHasItsOwnPatternSettings(CMISTestCase):
+    """Table 8-127 (Clocking and Measurement Controls) is on Page 13h, which is
+    banked: every group of eight lanes has its own pattern clock sources
+    (176, 178) and its own gate, restart and update period (177). Only the
+    effect of a start or stop can be made global (177.7).
+
+    The tool read bank 0's four bytes and described every lane by them. On a
+    module whose banks are set differently - by another host, or by a vendor
+    default - lanes 9-16 were shown bank 0's measurement window, and a
+    generator on the reference clock in bank 1 was left out when the
+    reference clock was lost, while bank 0's internally clocked one was
+    what the panel reported."""
+
+    def _connect(self, backend='mock_1600g_16lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _bank1(self):
+        return _state['backend']._registers[(0x13, 1)]
+
+    def _window(self, path='/api/module/ber'):
+        return self.assertOk(self.client.get(path))['data']['measurement']
+
+    # ---- the measurement window ----------------------------------------------------------
+    def test_a_bank_set_differently_is_named(self):
+        self._connect()
+        self._bank1()[0xB1] = 0x04                    # 10 s gate
+        m = self._window()
+        self.assertEqual(m['banks_that_differ'], [1])
+        self.assertEqual(m['controls_banks'][1]['gate_seconds'], 10.0)
+        self.assertFalse(m['controls']['gated'])      # bank 0 still ungated
+
+    def test_the_counters_say_the_same(self):
+        self._connect()
+        self._bank1()[0xB1] = 0x04
+        self.assertEqual(self._window('/api/module/counters')['banks_that_differ'], [1])
+
+    def test_banks_set_alike_name_nothing(self):
+        self._connect()
+        m = self._window()
+        self.assertEqual(m['banks_that_differ'], [])
+        self.assertEqual(len(m['controls_banks']), 2)
+
+    def test_a_reset_in_progress_is_not_a_different_window(self):
+        """ResetErrorInformation and StartStopIsGlobal are not the window."""
+        self._connect()
+        self._bank1()[0xB1] = (self._bank1().get(0xB1, 0) | 0xA0)
+        self.assertEqual(self._window()['banks_that_differ'], [])
+
+    def test_an_auto_restart_or_update_period_counts(self):
+        self._connect()
+        base = _state['backend']._registers[0x13].get(0xB1, 0)
+        for bit in (0x10, 0x01):
+            self._bank1()[0xB1] = base ^ bit
+            self.assertEqual(self._window()['banks_that_differ'], [1], hex(bit))
+
+    def test_an_eight_lane_module_has_one(self):
+        self._connect('mock_dr8')
+        m = self._window()
+        self.assertEqual(len(m['controls_banks']), 1)
+        self.assertEqual(m['banks_that_differ'], [])
+
+    # ---- the clock sources ----------------------------------------------------------------
+    def test_each_bank_says_where_its_engines_are_clocked(self):
+        self._connect()
+        self._bank1()[0xB0] = 0x10                    # host gen: ref clock, media lane 1
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertFalse(d['clock_sources']['host_gen']['uses_reference'])
+        self.assertTrue(d['clock_sources_banks'][1]['host_gen']['uses_reference'])
+        self.assertEqual(len(d['clock_sources_banks']), 2)
+
+    def test_the_checkers_byte_too(self):
+        self._connect()
+        self._bank1()[0xB2] = 0x08                    # 178.3-2: host checker on the reference
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertTrue(d['clock_sources_banks'][1]['host_chk']['uses_reference'])
+        self.assertFalse(d['clock_sources_banks'][0]['host_chk']['uses_reference'])
+
+    # ---- the page -------------------------------------------------------------------------
+    def _render(self, data):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const m=s.match(/function _renderMeasurementWindow\\([\\s\\S]*?\\r?\\n}\\r?\\n/);'
+            'if(!m)throw new Error("missing");'
+            'const el={innerHTML:""};global.document={getElementById:()=>el};'
+            'eval(m[0]);_renderMeasurementWindow("x",' + json.dumps(data) + ');'
+            'process.stdout.write(JSON.stringify(el.innerHTML));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_window_line_names_the_other_bank(self):
+        self._connect()
+        self._bank1()[0xB1] = 0x04
+        data = self.assertOk(self.client.get('/api/module/ber'))['data']
+        html = self._render(data)
+        self.assertIn('<b>Bank 1</b> (lanes 9-16) is set differently: 10 s gate', html)
+        self.assertIn('Ungated', html)
+
+    def test_and_says_nothing_when_they_agree(self):
+        self._connect()
+        html = self._render(self.assertOk(self.client.get('/api/module/ber'))['data'])
+        self.assertNotIn('set differently', html)
+
+    def test_the_prbs_card_uses_every_bank(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('k => csBanks.some(b => b[k] && b[k].uses_reference));', js)
+        self.assertIn('new Set(names).size > 1', js)
+        self.assertNotIn(
+            "Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference)", js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

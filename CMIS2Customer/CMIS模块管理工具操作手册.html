@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.139.0<br>
+      <b>版本</b>　2.140.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.139.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.139.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.140.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.140.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>码型时钟源和测量窗口:每个 Bank 各有一份</h3>
+  <p>规范 Table 8-127(时钟与测量控制)在 Page 13h 上,而 13h 是分 Bank 的:每组 8 条通道都有自己的码型时钟源(<code>13h:176</code> / <code>178</code>)和自己的门控时间、自动重启、更新周期(<code>13h:177</code>)。只有启停动作可以设成对所有 Bank 生效(177.7)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只读 Bank 0 的这几个字节,用来描述所有通道。模块的各 Bank 设置不一样时(比如被别的主机设过):通道 9–16 显示的是 Bank 0 的测量窗口;Bank 1 的码型发生器用的是参考时钟,参考时钟丢失时它却不在受影响之列。</span>
+  </div>
+  <p>现在每个 Bank 都读。Diagnostics 的测量窗口说明里,设置与 Bank 0 不同的 Bank 会单独列出(门控时间、自动重启、更新周期);PRBS 卡片上各 Bank 时钟源不同时逐个列出;参考时钟丢失的提示,只要某个 Bank 里的引擎用了参考时钟就算在内。各 Bank 一致时显示和以前一样。</p>
 
   <h3>演示模块:后面几个 Bank 各管各的通道</h3>
   <p>16 / 24 通道演示模块完整模拟的是 Bank 0,后面的 Bank 只做了部分模拟。上一版修了其中一处(DPDeinit),这次又找到两处写到后面 Bank 的操作,却落到了 Bank 0 的模型上:</p>
@@ -4486,7 +4494,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.139.0<br>
+    CMIS Module Manager 操作手册 v2.140.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

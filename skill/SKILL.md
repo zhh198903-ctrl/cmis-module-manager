@@ -506,6 +506,12 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 测量窗口和码型时钟源:按 Bank 看
+
+Page 13h 分 Bank,`13h:176-179`(Table 8-127)每个 Bank 一份。`/api/module/ber` 和 `/api/module/counters` 的 `measurement` 里,
+`controls` 是 Bank 0 的,`controls_banks` 是每个 Bank 的,`banks_that_differ` 列出门控时间/自动重启/更新周期和 Bank 0 不同的 Bank。
+`/api/module/prbs` 另有 `clock_sources_banks`。判断通道 9 以后的 BER 是在什么窗口下测的,看它所在 Bank 的那一份。
+
 ## 通道掩码:一个数覆盖所有通道
 
 `datapath` / `squelch` / `loopback` / `prbs` 的掩码字段,传一个数时是覆盖全部通道的掩码:第 i 位是通道 i+1,

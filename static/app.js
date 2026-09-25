@@ -4554,15 +4554,22 @@ async function loadPrbs() {
                       media_gen: 'media side generator',
                       host_chk: 'host side checker',
                       media_chk: 'media side checker'};
+  // Each bank of Page 13h has its own; one line per bank where they differ.
+  const csBanks = (d.clock_sources_banks && d.clock_sources_banks.length)
+    ? d.clock_sources_banks : [cs];
   for (const role of ['host_gen', 'media_gen', 'host_chk', 'media_chk']) {
     const el = document.getElementById('prbs-clk-' + role.replace('_', '-'));
     if (!el) continue;
     const src = cs[role];
     const addr = role.endsWith('_gen') ? '13h:176' : '13h:178';
-    el.innerHTML = src
-      ? 'Clock source: <b>' + esc(src.name) + '</b> '
-        + '<span class="reg-meta">' + addr + '</span>'
-      : '';
+    const names = csBanks.map(b => (b[role] || {}).name);
+    el.innerHTML = !src ? ''
+      : new Set(names).size > 1
+      ? 'Clock source: ' + names.map((n, b) => 'Bank ' + b + ' (lanes '
+          + (8 * b + 1) + '-' + (8 * b + 8) + ') <b>' + esc(n || '\u2014')
+          + '</b>').join(' \u00b7 ') + ' <span class="reg-meta">' + addr + '</span>'
+      : 'Clock source: <b>' + esc(src.name) + '</b> '
+        + '<span class="reg-meta">' + addr + '</span>';
   }
   // The checker enables are start/stop controls (Table 8-127), so with
   // 13h:177.7 in effect a box ticked in one Bank starts the same lane of every
@@ -4583,7 +4590,9 @@ async function loadPrbs() {
   _renderUserPattern(d);
   const refNote = document.getElementById('prbs-ref-clock');
   if (refNote) {
-    const onRef = Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference);
+    // An engine counts if it takes the reference clock in any bank.
+    const onRef = Object.keys(ROLE_LABEL).filter(
+      k => csBanks.some(b => b[k] && b[k].uses_reference));
     // The Flag is clear-on-read, so the poll that reports it is the poll that
     // erases it. Showing it only while live meant the warning appeared once
     // and was gone next refresh - which reads as "the reference came back",
@@ -4703,6 +4712,17 @@ function _renderMeasurementWindow(elId, data) {
   } else if (ctl.update_period_s) {
     parts.push(`updated every ${ctl.update_period_s} s during a measurement `
       + reg('13h:177.0'));
+  }
+  // 13h is banked: a bank set differently from bank 0 has a window of its
+  // own, and the lanes in it are not measured over the one above.
+  for (const b of (m.banks_that_differ || [])) {
+    const c = (m.controls_banks || [])[b] || {};
+    const what = !c.gated ? 'ungated' : c.custom_gate ? 'a vendor-defined gate'
+      : c.gate_seconds + ' s gate';
+    parts.push(`<b>Bank ${b}</b> (lanes ${8 * b + 1}-${8 * b + 8}) is set `
+      + `differently: ${what}`
+      + (c.auto_restart_gating ? ', restarting automatically' : '')
+      + `, updated every ${c.update_period_s} s ` + reg('13h:177, Bank ' + b));
   }
   el.innerHTML = 'Measurement window: ' + parts.join(' \u00b7 ');
 }

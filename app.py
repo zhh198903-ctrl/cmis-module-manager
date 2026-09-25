@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.139.0'
+__version__ = '2.140.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4052,11 +4052,22 @@ def _measurement_window() -> dict:
     running - none of which a table of BERs conveys on its own.
     """
     caps = _diag_caps()['measurement']
-    raw = _read_upper(*cmis.REG_CLOCK_MEAS)
-    controls = cmis.parse_measurement_controls(raw[1])
+    # Table 8-127 is a Page 13h table and 13h is banked, so each group of
+    # eight lanes has its own gate, restart and update period. Bank 0's
+    # stood in for every lane; a bank set differently is named.
+    per_bank = [cmis.parse_measurement_controls(raw[1])
+                for _b, raw in _read_banks(*cmis.REG_CLOCK_MEAS)]
+    controls = per_bank[0]
+
+    def window(c):
+        return (c['measurement_time_code'], c['auto_restart_gating'],
+                c['update_period_s'])
     return {
         'capabilities': caps,
         'controls': controls,
+        'controls_banks': per_bank,
+        'banks_that_differ': [b for b, c in enumerate(per_bank)
+                              if b and window(c) != window(controls)],
         'start_stop_scope': _start_stop_scope(caps, controls),
     }
 
@@ -4181,8 +4192,14 @@ def api_prbs_get():
             # Whether that matters here is a question about 13h:176 and 178:
             # a generator on the internal clock and a checker on a recovered
             # clock do not stop working because the reference clock went away.
-            clk = _read_upper(*cmis.REG_CLOCK_MEAS)
+            # Per bank (Table 8-127 is on banked Page 13h): lanes 9-16 may
+            # be clocked differently from lanes 1-8, and a reference clock
+            # loss matters to an engine in any bank that uses it.
+            clk_banks = [raw for _b, raw in _read_banks(*cmis.REG_CLOCK_MEAS)]
+            clk = clk_banks[0]
             clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
+            clock_sources_banks = [cmis.parse_clock_sources(c[0], c[2])
+                                   for c in clk_banks]
             # The checker enables below are start/stop controls in the sense
             # of Table 8-127, so 177.7 decides whether ticking one in this
             # Bank starts the same lane in every other.
@@ -4197,6 +4214,7 @@ def api_prbs_get():
             diag_mask_banks = []
             ref_clock_lost = False
             clock_sources = {}
+            clock_sources_banks = []
             start_stop_scope = None
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
@@ -4311,6 +4329,7 @@ def api_prbs_get():
             'reference_clock_lost': ref_clock_lost,
             'reference_clock_lost_seen': ref_clock_seen,
             'clock_sources': clock_sources,
+            'clock_sources_banks': clock_sources_banks,
             'start_stop_scope': start_stop_scope,
         })
     except Exception as e:
