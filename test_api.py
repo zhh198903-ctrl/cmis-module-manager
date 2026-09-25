@@ -32256,6 +32256,63 @@ class TestAFineTuningStepTheLaserCanTake(CMISTestCase):
         self.assertIn('value="${l.fine_offset_ghz}" step="${ftStep}"', js)
 
 
+class TestALaserThatIsNotReportingIsNotLocked(CMISTestCase):
+    """Table 6-21 gained Page 12h rows in CMIS 5.4 (E07): WavelengthUnlocked
+    is N/A in DPDeactivated and DPDeinit, TuningComplete in DPDeactivated,
+    DPInit and DPDeinit. The laser table's lock column read the unlock
+    status first and painted a green "Locked" on a lane whose Data Path was
+    down - a module that does not report an unlock there, with a laser that
+    need not be on - and it said "Locked" over a laser still tuning when the
+    unlock bit had not risen. Tuning now comes first, and a lane in a state
+    where the module does not report the lock says n/a."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lane(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']['lanes'][0]
+
+    def test_the_rows_of_the_table(self):
+        import cmis_registers as c
+        f = c.tuning_flags_not_allowed
+        self.assertEqual(f('Deactivated'), ['tuning_complete', 'wavelength_unlocked'])
+        self.assertEqual(f('Deinit'), ['tuning_complete', 'wavelength_unlocked'])
+        self.assertEqual(f('Init'), ['tuning_complete'])
+        for state in ('Initialized', 'TxTurnOn', 'TxTurnOff', 'Activated'):
+            self.assertEqual(f(state), [], state)
+        self.assertEqual(f(None), [])
+        self.assertEqual(f('Reserved (0x8)'), [])
+
+    def test_a_running_lane_reports_its_lock(self):
+        self._connect()
+        self.assertEqual(self._lane()['tuning_flags_not_allowed'], [])
+
+    def test_a_lane_taken_down_does_not(self):
+        self._connect()
+        deactivated(self.client)
+        self.assertIn('wavelength_unlocked', self._lane()['tuning_flags_not_allowed'])
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_the_column_puts_tuning_first_then_n_a(self):
+        js = self._js()
+        i = js.index('const lockIcon = l.tuning_in_progress')
+        body = js[i:i + 700]
+        t, na, lk = (body.index("'Tuning...'") if "'Tuning...'" in body
+                     else body.index('Tuning...'),
+                     body.index('>n/a</span>'), body.index('>Locked</span>'))
+        self.assertLess(t, na)
+        self.assertLess(na, lk)
+        self.assertIn("(l.tuning_flags_not_allowed || []).includes('wavelength_unlocked')", js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

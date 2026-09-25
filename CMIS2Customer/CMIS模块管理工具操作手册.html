@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.143.0<br>
+      <b>版本</b>　2.144.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.143.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.143.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.144.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.144.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>激光调谐表的「锁定」一栏:数据通道停下时不作判断</h3>
+  <p>CMIS 5.4 给 Table 6-21 加了 Page 12h 的几行:WavelengthUnlocked 在 DPDeactivated、DPDeinit 下不报,TuningComplete 在 DPDeactivated、DPInit、DPDeinit 下不报。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>激光调谐表的锁定栏以前先看解锁状态:数据通道停下后(这时模块不报解锁,激光器也未必开着)照样显示绿色的 Locked;激光器还在调谐、解锁位没来得及置起时,也显示 Locked。</span>
+  </div>
+  <p>现在先看是否在调谐(显示 Tuning...),数据通道处于 DPDeactivated / DPDeinit 时显示 <b>n/a</b> 并悬停说明,其余情况才显示 Locked / Unlocked。接口每条通道新增 <code>tuning_flags_not_allowed</code>。</p>
 
   <h3>微调偏移要落在激光器的步进上</h3>
   <p>规范 Table 8-68:<code>04h:190–191</code> FineTuningResolution 是激光器微调的步进(单位 0.001 GHz)。偏移寄存器本身能写任何 0.001 GHz 的值,而规范里没有一个 Flag 会指出「这个偏移落在两个步进之间」——模块只会自己取整到某处。</p>
@@ -4524,7 +4532,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.143.0<br>
+    CMIS Module Manager 操作手册 v2.144.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

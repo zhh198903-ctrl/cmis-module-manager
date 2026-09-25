@@ -818,6 +818,27 @@ FLAGS_NA_TX_OFF_INITIALIZED = frozenset((
     'tx_bias_low_alarm', 'tx_bias_high_warn', 'tx_bias_low_warn'))
 
 
+# Table 6-21's Page 12h rows, which CMIS 5.4 added (E07). The four Flags
+# that answer a request - power or fine tuning out of range, not accepted,
+# invalid channel - are allowed in every state; these two are not.
+TUNING_FLAG_ALLOWED_STATES = {
+    'wavelength_unlocked': _DP_INITIALIZED_ON | {'Init'},
+    'tuning_complete':     _DP_INITIALIZED_ON,
+}
+
+
+def tuning_flags_not_allowed(dp_state) -> list:
+    """The Page 12h tuning Flags Table 6-21 does not allow in `dp_state`.
+
+    None (a media lane no Data Path carries) or a reserved state rules
+    nothing out.
+    """
+    if dp_state not in _DP_EVERY_STATE:
+        return []
+    return sorted(n for n, ok in TUNING_FLAG_ALLOWED_STATES.items()
+                  if dp_state not in ok)
+
+
 def flags_not_allowed(dp_state: str, tx_off_by_host: bool = False) -> list:
     """The Page 11h lane Flags Table 6-21 does not allow in `dp_state`.
 

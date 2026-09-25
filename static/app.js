@@ -4949,10 +4949,19 @@ async function loadLaser() {
   };
 
   tbody.innerHTML = d.lanes.map(l => {
-    const lockIcon = l.wavelength_locked
-      ? '<span class="flag-ok">Locked</span>'
-      : l.tuning_in_progress
+    // Tuning first: a laser still on its way is not locked, whatever the
+    // unlock bit says yet. Then Table 6-21 (12h rows): in DPDeactivated and
+    // DPDeinit the module does not report an unlock at all, and the laser
+    // need not be on - so neither Locked nor Unlocked is a reading there.
+    const lockNa = (l.tuning_flags_not_allowed || []).includes('wavelength_unlocked');
+    const lockIcon = l.tuning_in_progress
       ? '<span class="flag-warn">Tuning...</span>'
+      : lockNa
+      ? `<span class="flag-none" title="${esc('Table 6-21: the module does '
+          + 'not report the wavelength lock while the Data Path is in DP'
+          + l.datapath_state + ', and the laser need not be on')}">n/a</span>`
+      : l.wavelength_locked
+      ? '<span class="flag-ok">Locked</span>'
       : '<span class="flag-active">Unlocked</span>';
     const i = l.lane - 1;
     // Page 12h: 1 byte/lane grid, then S16 per lane for channel, fine offset

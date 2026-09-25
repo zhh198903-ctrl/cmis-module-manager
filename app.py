@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.143.0'
+__version__ = '2.144.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4829,6 +4829,11 @@ def api_laser_get():
                 'relative_thresholds_enabled': rel_thr_en,
                 # 7.5.2: the channel can be changed only in DPDeactivated.
                 'datapath_state': dp_of.get(i + 1),
+                # Table 6-21 (12h rows): in DPDeactivated and DPDeinit the
+                # module does not report the wavelength unlocked, so neither
+                # value of the lock status is a reading of the laser.
+                'tuning_flags_not_allowed': cmis.tuning_flags_not_allowed(
+                    dp_of.get(i + 1)),
                 # Table 8-68: what the programmed channel is, before fine
                 # tuning - the module's measured frequency is beside it.
                 'channel_multiple': cmis.grid_channel_multiple(gc),
