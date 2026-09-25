@@ -3754,6 +3754,12 @@ function renderFlags(lanes, supported, masks) {
     // reported here and the alarm behind it is off. Without this the panel
     // could not tell an alarm that is quiet from one that was turned off.
     const mask = (masks && masks[li]) || {};
+    // Table 6-21: in some DataPath states the module does not set a Flag at
+    // all, so a clear bit there is not a check that passed.
+    const notAllowed = new Set(lane.not_allowed || []);
+    const naTip = (what) => `Table 6-21: a module does not set ${what} while `
+      + `the Data Path is in DP${lane.datapath_state}, so a clear bit here says `
+      + 'nothing about the lane';
     // A CMIS Flag is cleared by the read that reports it, so "not set right
     // now" and "never happened" look identical in the register. They are not
     // the same thing to whoever is chasing an intermittent link, so a lane
@@ -3797,6 +3803,10 @@ function renderFlags(lanes, supported, masks) {
              + 'fired since the history was last cleared">&#9679;<sup>!</sup></span>'
              + why;
       }
+      if (name && notAllowed.has(name)) {
+        return `<span class="flag-none" title="${esc(naTip('this Flag'))}">`
+             + 'n/a</span>' + why;
+      }
       // Nothing wrong and nothing seen, but the alarm is off - worth saying
       // on a quiet lane, because that is when nobody would think to look.
       return '<span class="flag-ok">&#9679;</span>' + why;
@@ -3839,6 +3849,15 @@ function renderFlags(lanes, supported, masks) {
     const fired = n => live.some(k => n.startsWith(k));
     const wasAlarm = [...seen].some(n => n.endsWith('_alarm') && fired(n));
     const wasWarn  = [...seen].some(n => n.endsWith('_warn') && fired(n));
+    const LEVELS = ['_high_alarm', '_low_alarm', '_high_warn', '_low_warn'];
+    const naHere = live.flatMap(k => LEVELS.map(s => k + s))
+                       .filter(n => notAllowed.has(n));
+    const quietDot = !naHere.length
+      ? '<span class="flag-ok">&#9679;</span>'
+      : '<span class="flag-ok">&#9679;</span> <span class="flag-none" title="'
+        + esc(naTip(naHere.map(n => n.replace(/_/g, ' ')).join(', '))
+              + ' - this dot covers only the others')
+        + '">partial</span>';
     const summary = !live.length
       ? '<span class="flag-none" title="This module implements none of the '
         + 'monitors these alarms belong to (01h:160.0-2), so there is nothing '
@@ -3850,7 +3869,7 @@ function renderFlags(lanes, supported, masks) {
       : (wasAlarm || wasWarn)
       ? '<span class="flag-was" title="Cleared now, but fired earlier">'
         + '&#9679;<sup>!</sup></span>'
-      : '<span class="flag-ok">&#9679;</span>';
+      : quietDot;
     // These twelve share one cell, so a Mask on any of them has nowhere else
     // to appear. Named rather than counted: "one of these alarms is off" is
     // not actionable without knowing which.

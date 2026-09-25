@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.133.0<br>
+      <b>版本</b>　2.134.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.133.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.133.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.134.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.134.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1341,6 +1341,9 @@
      <span class="flag-was">●<sup>!</sup></span> 标记，与"从未触发"（<span class="flag-ok">●</span>）
      区分开。点<b>Clear flag history</b> 清空这份记录、从当下重新开始计。
      换模块或重新连接也会自动清空。</p>
+  <h3>Flag 显示 n/a:模块在这个状态下不报它</h3>
+  <p>规范 Table 6-21 规定每个通道 Flag 在哪些 DataPath 状态下可以置位。通道处于 DPDeactivated、DPInit、DPDeinit 时,Tx LOS、Tx / Rx CDR LOL、各项低侧告警 / 警告和 Rx Output 不会被置位;DPInitialized 下 Tx 输出被主机关掉或强制静音时,Tx 光功率低侧和全部 Tx 偏置 Flag 也不会。这些格子显示灰色 <b>n/a</b>——这一位是 0 不代表通道没问题,只是模块此时不报。Tx Fault、Rx LOS 以及高侧告警在任何状态下都会报,照常显示。告警汇总列里如果有部分 Flag 不适用,绿点旁会标 <b>partial</b>。</p>
+
   <h3>DP Changed —— 数据通道弹过的唯一证据</h3>
   <p>Lane Flags 表第一列是 <b>DP Changed</b>（<code>11h:134</code>）。按 CMIS 6.3.3，
      模块在数据通道<b>经过真实过渡后进入稳定态</b>时置位这一位——换句话说，
@@ -1719,6 +1722,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>通道停下来时,Lane Flags 不再显示「一切正常」</h3>
+  <p>规范 Table 6-21(逐通道 Flag 符合性规则)规定了模块在哪些 DataPath 状态下<b>可以</b>置位每个通道 Flag。CMIS 5.4 又给这张表加了 Page 12h 的几行。在 DPDeactivated、DPInit、DPDeinit 下,模块<b>不报</b> Tx LOS、两个 CDR LOL、所有低侧告警/警告和 Rx 输出变化;DPInitialized 下,主机关掉或强制静音了 Tx 输出的通道,也不报 Tx 光功率低侧和全部 Tx 偏置 Flag(表注 1)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前不看状态:通道停下来后,Lane Flags 表在这些列上照样画绿点,意思是「查过了,没问题」——其实模块在这个状态下根本不会报。<br>
+    演示模块则从另一边违反了这条规则:停下来的通道光功率和偏置读数都是 0,低于所有低侧门限,于是每次读都置位四个低侧告警,表格显示 ALARM。真实模块不会这样。</span>
+  </div>
+  <p>现在这些格子显示 <b>n/a</b>,悬停说明依据和当前状态;告警汇总列在部分 Flag 不适用时,绿点旁标 <b>partial</b>,悬停列出哪些不在其内。已经置位的 Flag 照常显示——Flag 是闩锁的,状态变化前触发的那一次仍然有效。接口里每条通道多了 <code>datapath_state</code> 和 <code>not_allowed</code>。演示模块也按这张表只在允许的状态下置位。</p>
 
   <h3>换了 Application 之后,阈值跟着换</h3>
   <p>规范 8.5 节:Page 02h 的告警 / 警告阈值「可能取决于已投入使用的 Application,因此每次投入新的 Application 时都可能改变(包括校验和)」;模块在 Data Path 以新 Application 到达 <b>DPInitialized</b> 时更新它们。CMIS 5.4 把这一点作为提示写进了 Page 02h。</p>
@@ -4428,7 +4440,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.133.0<br>
+    CMIS Module Manager 操作手册 v2.134.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

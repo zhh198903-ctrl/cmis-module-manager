@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.133.0'
+__version__ = '2.134.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3334,6 +3334,24 @@ def api_module_flags():
         }
         masked_by_flag = {k: masked(a) for k, a in mask_of.items()}
 
+        # Table 6-21: which of these the module may set depends on the lane's
+        # DataPath state. Without it a lane taken down drew a green "checked,
+        # nothing wrong" under Tx LOS and both CDR LOLs, which a module there
+        # does not report at all.
+        dp_states = []
+        for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+            dp_states += cmis.parse_dp_states(raw)
+        # Note 1 of the table turns on the host's own Tx controls, and only
+        # in DPInitialized - so they are read only when a lane is there.
+        tx_off = [False] * _state['lanes']
+        if 'Initialized' in dp_states[:_state['lanes']]:
+            dis, sq = [], []
+            for _bank, raw in _read_banks(*cmis.REG_TX_OUTPUT_DIS):
+                dis += cmis.parse_lane_flags(raw[0])
+            for _bank, raw in _read_banks(*cmis.REG_TX_FORCE_SQUELCH):
+                sq += cmis.parse_lane_flags(raw[0])
+            tx_off = [a or b for a, b in zip(dis, sq)]
+
         lanes = []
         masks = []
         history = _state['flag_history']
@@ -3393,6 +3411,10 @@ def api_module_flags():
                 if name != 'lane' and value:
                     seen.add(name)
             lanes[-1]['seen'] = sorted(seen)
+            # After the history, which collects every truthy field as a Flag.
+            lanes[-1]['datapath_state'] = dp_states[i]
+            lanes[-1]['not_allowed'] = cmis.flags_not_allowed(
+                dp_states[i], tx_off[i] if i < len(tx_off) else False)
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
         return _ok({'lanes': lanes,

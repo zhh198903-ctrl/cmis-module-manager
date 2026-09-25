@@ -2530,6 +2530,10 @@ class MockBackend(I2CInterface):
         p11 = self._registers[0x11]
         p11[0x84] = out_rx
         p11[0x85] = out_tx
+        # Not in DPDeactivated, DPInit or DPDeinit (Table 6-21).
+        changed &= sum(1 << lane for lane in range(8)
+                       if 0x99 not in self._flags_na(self._dp_lane_states[lane],
+                                                     False))
         if changed:
             p11[0x99] = p11.get(0x99, 0) | changed
         # Every other bank from its own controls and Data Path states. Bank
@@ -2549,8 +2553,11 @@ class MockBackend(I2CInterface):
                 lane: (p11b.get(0x9A + 2 * lane, 0), p11b.get(0x9B + 2 * lane, 0))
                 for lane in range(8)})
             tx_b = rx_b = 0
+            may_change = 0
             for lane in range(8):
                 state = (p11b.get(0x80 + lane // 2, 0) >> (4 * (lane % 2))) & 0x0F
+                if 0x99 not in self._flags_na(state, False):
+                    may_change |= 1 << lane
                 disabled = (p10b.get(0x82, 0) >> lane) & 1
                 a = 0x9A + 2 * lane
                 p11b[a], p11b[a + 1] = ((0, 0) if disabled or state != 0x4
@@ -2565,8 +2572,8 @@ class MockBackend(I2CInterface):
             self._rx_output_valid_banks[bank] = rx_b
             p11b[0x84] = rx_b
             p11b[0x85] = tx_b
-            if rx_b ^ was:
-                p11b[0x99] = p11b.get(0x99, 0) | (rx_b ^ was)
+            if (rx_b ^ was) & may_change:
+                p11b[0x99] = p11b.get(0x99, 0) | ((rx_b ^ was) & may_change)
 
         self._refresh_lane_thresholds()
         self._set_module_flags(temp_c)
@@ -2928,6 +2935,26 @@ class MockBackend(I2CInterface):
             for byte_addr, raised in aux_bits.items():
                 lower[byte_addr] = lower.get(byte_addr, 0) | raised
 
+    # Table 6-21 (Lane-Specific Flagging Conformance Rules), by register:
+    # the Page 11h Flags a module does not set while a lane's Data Path is
+    # in DPDeactivated, DPInit or DPDeinit (codes 1-3) - all the low-side
+    # threshold Flags, Tx LOS, both CDR LOLs and the Rx output change.
+    # AdaptiveInputEqFailFlagTx is the one of them allowed in DPInit.
+    _FLAGS_NA_BEFORE_INITIALIZED = frozenset(
+        (0x88, 0x89, 0x8A, 0x8C, 0x8E, 0x90, 0x92, 0x94, 0x96, 0x98, 0x99))
+    # Its Note 1: in DPInitialized, the Tx power and bias Flags it marks
+    # "allowed1" on a lane whose Tx output the host has disabled or squelched.
+    _FLAGS_NA_TX_OFF = frozenset((0x8C, 0x8E, 0x8F, 0x90, 0x91, 0x92))
+
+    @classmethod
+    def _flags_na(cls, state: int, tx_off: bool) -> frozenset:
+        if state in (0x1, 0x2, 0x3):
+            return (cls._FLAGS_NA_BEFORE_INITIALIZED - {0x8A} if state == 0x2
+                    else cls._FLAGS_NA_BEFORE_INITIALIZED)
+        if state == 0x7 and tx_off:
+            return cls._FLAGS_NA_TX_OFF
+        return frozenset()
+
     def _set_lane_flags(self, lane, tx_uw, bias_ma, rx_uw):
         """Raise the flags a module would raise for the values it is reporting.
 
@@ -2959,20 +2986,27 @@ class MockBackend(I2CInterface):
             'rx_power': _mon_supported(self._profile, 'rx_optical_power'),
         }
         bit = 1 << lane
+        # A lane taken down reads zero power and zero bias, under every low
+        # threshold - and raised all four low alarms on every read, which
+        # Table 6-21 says a module in that state does not do.
+        tx_off = bool(((self._tx_disable_mask
+                        | self._registers.get(0x10, {}).get(0x84, 0)) >> lane) & 1)
+        na = self._flags_na(self._dp_lane_states[lane], tx_off)
         for hi_flag, lo_flag, hi_thr, lo_thr, key in self._FLAG_MAP:
             if not implemented[key]:
                 continue
             value = measured[key]
             for addr, over in ((hi_flag, value > thr(hi_thr)),
                                (lo_flag, value < thr(lo_thr))):
-                if over:
+                if over and addr not in na:
                     p11[addr] = p11.get(addr, 0) | bit
 
         # Losing the signal is what a receiver reports when there is nothing
         # to lock to, so tie it to the same limit rather than inventing one.
         if implemented['rx_power'] and measured['rx_power'] < thr(0xC2):
             p11[0x93] = p11.get(0x93, 0) | bit
-            p11[0x94] = p11.get(0x94, 0) | bit
+            if 0x94 not in na:
+                p11[0x94] = p11.get(0x94, 0) | bit
 
     # Advertised on Page 04h:130-165, an S16 low/high pair per grid code.
     _GRID_RANGE_BASE = 0x82

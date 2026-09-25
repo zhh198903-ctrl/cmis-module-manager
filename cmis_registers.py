@@ -779,6 +779,58 @@ DP_STATE_KIND = {
 }
 
 
+# Table 6-21 (Lane-Specific Flagging Conformance Rules): the DataPath states
+# in which a module may set each lane Flag on Page 11h. In the others the
+# Flag is "N/A" - the module does not raise it there - so a clear bit read in
+# such a state says nothing about the lane. A set bit still means something:
+# Flags latch, and one raised before the state changed stays until read.
+_DP_EVERY_STATE = frozenset(('Deactivated', 'Init', 'Deinit', 'Initialized',
+                             'TxTurnOn', 'TxTurnOff', 'Activated'))
+_DP_INITIALIZED_ON = frozenset(('Initialized', 'TxTurnOn', 'TxTurnOff',
+                                'Activated'))
+FLAG_ALLOWED_STATES = {
+    'dp_state_changed':    frozenset(('Deactivated', 'Initialized', 'Activated')),
+    'tx_fault':            _DP_EVERY_STATE,
+    'tx_los':              _DP_INITIALIZED_ON,
+    'tx_cdr_lol':          _DP_INITIALIZED_ON,
+    'tx_adaptive_eq_fail': _DP_INITIALIZED_ON | {'Init'},
+    'tx_power_high_alarm': _DP_EVERY_STATE,
+    'tx_power_low_alarm':  _DP_INITIALIZED_ON,
+    'tx_power_high_warn':  _DP_EVERY_STATE,
+    'tx_power_low_warn':   _DP_INITIALIZED_ON,
+    'tx_bias_high_alarm':  _DP_EVERY_STATE,
+    'tx_bias_low_alarm':   _DP_INITIALIZED_ON,
+    'tx_bias_high_warn':   _DP_EVERY_STATE,
+    'tx_bias_low_warn':    _DP_INITIALIZED_ON,
+    'rx_los':              _DP_EVERY_STATE,
+    'rx_cdr_lol':          _DP_INITIALIZED_ON,
+    'rx_power_high_alarm': _DP_EVERY_STATE,
+    'rx_power_low_alarm':  _DP_INITIALIZED_ON,
+    'rx_power_high_warn':  _DP_EVERY_STATE,
+    'rx_power_low_warn':   _DP_INITIALIZED_ON,
+    'rx_output_changed':   _DP_INITIALIZED_ON,
+}
+# The same table's Note 1, the entries it marks "allowed1": in DPInitialized
+# these are N/A "for media lanes where the Tx output is squelched or disabled
+# by the host".
+FLAGS_NA_TX_OFF_INITIALIZED = frozenset((
+    'tx_power_low_alarm', 'tx_power_low_warn', 'tx_bias_high_alarm',
+    'tx_bias_low_alarm', 'tx_bias_high_warn', 'tx_bias_low_warn'))
+
+
+def flags_not_allowed(dp_state: str, tx_off_by_host: bool = False) -> list:
+    """The Page 11h lane Flags Table 6-21 does not allow in `dp_state`.
+
+    A reserved state encoding has no rule, so nothing is ruled out there.
+    """
+    if dp_state not in _DP_EVERY_STATE:
+        return []
+    out = {n for n, ok in FLAG_ALLOWED_STATES.items() if dp_state not in ok}
+    if dp_state == 'Initialized' and tx_off_by_host:
+        out |= FLAGS_NA_TX_OFF_INITIALIZED
+    return sorted(out)
+
+
 # Section 6.2.4: an Apply trigger aimed at a Data Path in one of the four
 # transient states is discarded - "the module silently ignores requests
 # received while still being in a transient state" - and ApplyImmediate is

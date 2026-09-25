@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## Flag 是 0 不等于没问题:看 `not_allowed`
+
+规范 Table 6-21:DPDeactivated / DPInit / DPDeinit 下模块不报 Tx LOS、两个 CDR LOL、低侧告警/警告和 Rx 输出变化;
+DPInitialized 下主机关掉或静音了 Tx 的通道,Tx 光功率低侧和全部偏置 Flag 也不报。
+`GET /api/module/flags` 每条通道带 `datapath_state` 和 `not_allowed`(这个状态下模块不会置位的 Flag 名)。
+判断「这条通道有没有 LOS」时,名字在 `not_allowed` 里的 0 不算证据。已置位的照样算——Flag 闩锁,状态变化前触发的仍有效。
+
 ## 阈值跟着 Application 走
 
 规范 8.5:Page 02h 的阈值可能随已投入使用的 Application 改变,模块在 Data Path 以新 Application 到达 DPInitialized 时更新。

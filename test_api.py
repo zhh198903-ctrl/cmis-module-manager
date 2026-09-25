@@ -19010,6 +19010,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
+        '6-21': 'Lane-Specific Flagging Conformance Rules',
         '7-8': 'CMIS Performance Monitors and NA Values',
         '10-2': 'Effect Latency Timings',
         '10-4': 'Maximum ACCESS Hold-Off Durations',
@@ -23741,7 +23742,8 @@ class TestTheAlarmsSomebodyTurnedOff(CMISTestCase):
         """Twenty Flags and twenty Masks. A key in one and not the other is a
         Flag whose alarm state the panel cannot report."""
         d = self._flags()
-        flags = set(d['lanes'][0]) - {'lane', 'seen'}
+        flags = set(d['lanes'][0]) - {'lane', 'seen', 'datapath_state',
+                                      'not_allowed'}
         masks = set(d['masks'][0]) - {'lane'}
         self.assertEqual(flags, masks)
         self.assertEqual(len(flags), 20)
@@ -26567,7 +26569,8 @@ class TestWhichSideEachLaneFlagIsAbout(CMISTestCase):
         Flag comes to be reported on a lane that is not there."""
         import cmis_registers as c
         self._connect('mock_dr8')
-        keys = set(self._lanes()[0]) - {'lane', 'seen'}
+        keys = set(self._lanes()[0]) - {'lane', 'seen', 'datapath_state',
+                                        'not_allowed'}
         self.assertEqual(keys, set(c.LANE_FLAG_SIDE),
                          'the Flags reply and LANE_FLAG_SIDE disagree about '
                          'which Flags exist')
@@ -30664,6 +30667,304 @@ class TestThresholdsFollowTheApplication(CMISTestCase):
         self.assertLess(html.index('id="tbl-thresholds"'), i)
         self.assertIn('(8.5)', html[i:i + 400])
         self.assertIn('DPInitialized', html[i:i + 400])
+
+
+class TestAFlagTheModuleMayNotRaiseIsNotAPass(CMISTestCase):
+    """Table 6-21 (Lane-Specific Flagging Conformance Rules) - CMIS 5.4 added
+    the Page 12h rows to it - says in which DataPath states a module may set
+    each lane Flag. In DPDeactivated, DPInit and DPDeinit it does not set Tx
+    LOS, either CDR LOL, any low-side threshold Flag or the Rx output
+    change; its Note 1 adds the Tx power and bias Flags in DPInitialized on a
+    lane whose Tx output the host has disabled or squelched.
+
+    The Lane Flags table drew a green "checked, nothing wrong" under all of
+    them on a lane that had been taken down. And the demo modules broke the
+    rule from the other side: a lane taken down reads zero power and bias,
+    so they raised all four low alarms on it on every read.
+
+    Now the flags reply names each lane's DataPath state and the Flags not
+    allowed in it, the table shows those as n/a (a Flag that is set still
+    shows - Flags latch), and the demo modules keep the rule."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+
+    LOW_SIDE = ['rx_cdr_lol', 'rx_output_changed', 'rx_power_low_alarm',
+                'rx_power_low_warn', 'tx_adaptive_eq_fail', 'tx_bias_low_alarm',
+                'tx_bias_low_warn', 'tx_cdr_lol', 'tx_los', 'tx_power_low_alarm',
+                'tx_power_low_warn']
+
+    # ---- the rule ---------------------------------------------------------------------
+    def test_the_steady_states_allow_everything(self):
+        import cmis_registers as c
+        self.assertEqual(c.flags_not_allowed('Activated'), [])
+        self.assertEqual(c.flags_not_allowed('Initialized'), [])
+
+    def test_a_path_that_is_down(self):
+        import cmis_registers as c
+        self.assertEqual(c.flags_not_allowed('Deactivated'), self.LOW_SIDE)
+
+    def test_the_transients(self):
+        import cmis_registers as c
+        # AdaptiveInputEqFailFlagTx is the one allowed in DPInit, and
+        # DPStateChangedFlag is set only on reaching a steady state.
+        self.assertEqual(
+            c.flags_not_allowed('Init'),
+            sorted(set(self.LOW_SIDE) - {'tx_adaptive_eq_fail'}
+                   | {'dp_state_changed'}))
+        self.assertEqual(c.flags_not_allowed('Deinit'),
+                         sorted(self.LOW_SIDE + ['dp_state_changed']))
+        self.assertEqual(c.flags_not_allowed('TxTurnOn'), ['dp_state_changed'])
+        self.assertEqual(c.flags_not_allowed('TxTurnOff'), ['dp_state_changed'])
+
+    def test_note_1(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.flags_not_allowed('Initialized', tx_off_by_host=True),
+            ['tx_bias_high_alarm', 'tx_bias_high_warn', 'tx_bias_low_alarm',
+             'tx_bias_low_warn', 'tx_power_low_alarm', 'tx_power_low_warn'])
+        # Only in DPInitialized: Activated with the Tx off is a lane whose
+        # power really is low.
+        self.assertEqual(c.flags_not_allowed('Activated', tx_off_by_host=True), [])
+
+    def test_a_reserved_state_rules_nothing_out(self):
+        import cmis_registers as c
+        self.assertEqual(c.flags_not_allowed('Reserved (0x8)'), [])
+
+    def test_every_flag_the_panel_shows_has_a_rule(self):
+        import cmis_registers as c
+        self._connect()
+        lane = self._flags()[0]
+        shown = set(lane) - {'lane', 'seen', 'datapath_state', 'not_allowed'}
+        self.assertEqual(shown, set(c.FLAG_ALLOWED_STATES))
+
+    # ---- the reply --------------------------------------------------------------------
+    def test_each_lane_says_its_state_and_what_it_cannot_raise(self):
+        self._connect()
+        lanes = self._flags()
+        self.assertEqual(lanes[0]['datapath_state'], 'Activated')
+        self.assertEqual(lanes[0]['not_allowed'], [])
+        deactivated(self.client)
+        lanes = self._flags()
+        self.assertEqual(lanes[0]['datapath_state'], 'Deactivated')
+        self.assertEqual(lanes[0]['not_allowed'], self.LOW_SIDE)
+
+    def test_the_state_is_not_taken_for_a_flag(self):
+        """The history collects every truthy field of a lane as a Flag."""
+        self._connect()
+        deactivated(self.client)
+        self._flags()
+        seen = self._flags()[0]['seen']
+        self.assertNotIn('datapath_state', seen)
+        self.assertNotIn('not_allowed', seen)
+
+    def test_note_1_reads_the_host_tx_controls(self):
+        self._connect()
+        backend = _state['backend']
+        backend._dp_lane_states[0] = 0x7            # DPInitialized
+        backend._dp_lane_states[1] = 0x7
+        backend._registers[0x10][0x84] = 0x01       # lane 1 force-squelched
+        lanes = self._flags()
+        self.assertEqual(lanes[0]['datapath_state'], 'Initialized')
+        self.assertIn('tx_bias_high_alarm', lanes[0]['not_allowed'])
+        self.assertEqual(lanes[1]['not_allowed'], [])
+        backend._registers[0x10][0x84] = 0x00
+        backend._tx_disable_mask = 0x02             # lane 2 disabled instead
+        backend._registers[0x10][0x82] = 0x02
+        lanes = self._flags()
+        self.assertEqual(lanes[0]['not_allowed'], [])
+        self.assertIn('tx_power_low_alarm', lanes[1]['not_allowed'])
+
+    def test_the_host_controls_are_read_only_when_needed(self):
+        self._connect()
+        backend = _state['backend']
+        real = backend.read_bytes
+        seen = []
+
+        def traced(addr, length):
+            if backend._current_page == 0x10 and addr in (0x82, 0x84):
+                seen.append(addr)
+            return real(addr, length)
+        backend.read_bytes = traced
+        self.addCleanup(setattr, backend, 'read_bytes', real)
+        self._flags()
+        self.assertEqual(seen, [])
+
+    def test_every_bank_has_its_own_states(self):
+        self._connect('mock_24lane')
+        p11b = _state['backend']._registers[(0x11, 1)]
+        p11b[0x80] = (p11b.get(0x80, 0) & 0xF0) | 0x1     # lane 9 Deactivated
+        lanes = self._flags()
+        self.assertEqual(len(lanes), 24)
+        self.assertEqual(lanes[8]['datapath_state'], 'Deactivated')
+        self.assertEqual(lanes[8]['not_allowed'], self.LOW_SIDE)
+        self.assertEqual(lanes[0]['not_allowed'], [])
+
+    # ---- the demo modules keep it -------------------------------------------------------
+    def test_a_lane_taken_down_raises_no_low_alarm(self):
+        for backend in ('mock_dr8', 'mock_coherent_zr', 'mock_sr8'):
+            self._connect(backend)
+            deactivated(self.client)
+            self._flags()                       # whatever latched on the way
+            time.sleep(0.2)
+            for lane in self._flags():
+                raised = [n for n in lane['not_allowed'] if lane.get(n)]
+                self.assertEqual(raised, [], (backend, lane['lane']))
+
+    def test_a_disabled_lane_that_is_up_still_alarms(self):
+        """Activated with the Tx disabled: the power really is low, and the
+        Flag is allowed."""
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'tx_disable_mask': 0x01}),
+            content_type='application/json'))
+        self._flags()
+        lane = self._flags()[0]
+        self.assertEqual(lane['datapath_state'], 'Activated')
+        self.assertTrue(lane['tx_power_low_alarm'])
+
+    def test_no_signal_while_down_is_a_loss_of_signal_only(self):
+        """Rx LOS is allowed in every state; the CDR loss of lock and the
+        low power alarm that come with it are not, while the path is down."""
+        self._connect()
+        backend = _state['backend']
+        deactivated(self.client)
+        self._flags()
+        backend._registers[0x02][0xC2] = 0xFF   # Rx low alarm above any reading
+        backend._registers[0x02][0xC3] = 0xFF
+        lane = self._flags()[0]
+        self.assertTrue(lane['rx_los'])
+        self.assertFalse(lane['rx_cdr_lol'])
+        self.assertFalse(lane['rx_power_low_alarm'])
+
+    def test_the_rx_output_change_is_not_raised_while_down(self):
+        self._connect()
+        backend = _state['backend']
+        deactivated(self.client)
+        self._flags()
+        backend._rx_output_valid = 0xFF         # as if every output just dropped
+        self.assertFalse(any(l['rx_output_changed'] for l in self._flags()))
+
+    def test_nor_in_another_bank(self):
+        self._connect('mock_24lane')
+        backend = _state['backend']
+        self._flags()
+        p11b = backend._registers[(0x11, 1)]
+        for a in range(0x80, 0x84):
+            p11b[a] = 0x11                      # bank 1 all Deactivated
+        backend._rx_output_valid_banks[1] = 0xFF
+        lanes = self._flags()
+        self.assertFalse(any(l['rx_output_changed'] for l in lanes[8:16]))
+        # ... while one that is allowed still latches.
+        for a in range(0x80, 0x84):
+            p11b[a] = 0x44
+        backend._rx_output_valid_banks[1] = 0x00
+        lanes = self._flags()
+        self.assertTrue(all(l['rx_output_changed'] for l in lanes[8:16]))
+
+    def test_the_mock_and_the_tool_read_the_table_alike(self):
+        """Two encodings of Table 6-21, one by name and one by register;
+        written apart so a slip in one is not copied into the other."""
+        import cmis_registers as c
+        from i2c_backends.mock import MockBackend
+        addr_of = {
+            'dp_state_changed': 0x86, 'tx_fault': 0x87, 'tx_los': 0x88,
+            'tx_cdr_lol': 0x89, 'tx_adaptive_eq_fail': 0x8A,
+            'tx_power_high_alarm': 0x8B, 'tx_power_low_alarm': 0x8C,
+            'tx_power_high_warn': 0x8D, 'tx_power_low_warn': 0x8E,
+            'tx_bias_high_alarm': 0x8F, 'tx_bias_low_alarm': 0x90,
+            'tx_bias_high_warn': 0x91, 'tx_bias_low_warn': 0x92,
+            'rx_los': 0x93, 'rx_cdr_lol': 0x94, 'rx_power_high_alarm': 0x95,
+            'rx_power_low_alarm': 0x96, 'rx_power_high_warn': 0x97,
+            'rx_power_low_warn': 0x98, 'rx_output_changed': 0x99}
+        for code, name in ((0x1, 'Deactivated'), (0x2, 'Init'), (0x3, 'Deinit'),
+                           (0x4, 'Activated'), (0x7, 'Initialized')):
+            for off in (False, True):
+                tool = {addr_of[n] for n in c.flags_not_allowed(name, off)}
+                # DPStateChangedFlag is set only on reaching a steady state,
+                # which the mock does by construction rather than by rule.
+                tool.discard(0x86)
+                self.assertEqual(set(MockBackend._flags_na(code, off)), tool,
+                                 (name, off))
+
+    # ---- the page -------------------------------------------------------------------
+    def _render(self, lane):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'const el={innerHTML:""};'
+            'global.document={getElementById:()=>el};'
+            'eval(pick(/const esc = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function renderFlags\\([\\s\\S]*?\\r?\\n}\\r?\\n/));'
+            'renderFlags([' + json.dumps(lane) + '],null,null);'
+            'process.stdout.write(JSON.stringify([...el.innerHTML.matchAll('
+            '/<td>([\\s\\S]*?)<\\/td>/g)].map(m=>m[1])));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def _lane(self, **kw):
+        lane = {'lane': 1, 'seen': [], 'datapath_state': 'Deactivated',
+                'not_allowed': self.LOW_SIDE}
+        for n in ('dp_state_changed', 'tx_fault', 'tx_los', 'tx_cdr_lol',
+                  'tx_adaptive_eq_fail', 'rx_los', 'rx_cdr_lol',
+                  'rx_output_changed', 'tx_power_high_alarm',
+                  'tx_power_low_alarm', 'tx_power_high_warn', 'tx_power_low_warn',
+                  'tx_bias_high_alarm', 'tx_bias_low_alarm', 'tx_bias_high_warn',
+                  'tx_bias_low_warn', 'rx_power_high_alarm', 'rx_power_low_alarm',
+                  'rx_power_high_warn', 'rx_power_low_warn'):
+            lane[n] = False
+        lane.update(kw)
+        return lane
+
+    def test_the_table_says_n_a_where_the_module_is_silent(self):
+        cells = self._render(self._lane())
+        # Lane, DP Changed, Tx Fault, Tx LOS, Tx CDR LOL, Tx AEQ, Rx LOS,
+        # Rx CDR LOL, Rx Output, Alarms/Warns
+        self.assertIn('Table 6-21', cells[3])
+        self.assertIn('>n/a<', cells[3])
+        self.assertIn('DPDeactivated', cells[3])
+        self.assertIn('>n/a<', cells[4])
+        self.assertIn('>n/a<', cells[7])
+        # Allowed there: Tx fault and Rx LOS keep their green dot.
+        self.assertIn('flag-ok', cells[2])
+        self.assertNotIn('n/a', cells[2])
+        self.assertIn('flag-ok', cells[6])
+
+    def test_a_set_flag_is_still_shown(self):
+        cells = self._render(self._lane(tx_los=True))
+        self.assertIn('ALARM', cells[3])
+        cells = self._render(self._lane(seen=['tx_los']))
+        self.assertIn('flag-was', cells[3])
+
+    def test_the_summary_says_what_it_covers(self):
+        cells = self._render(self._lane())
+        self.assertIn('partial', cells[-1])
+        self.assertIn('tx power low alarm', cells[-1])
+        cells = self._render(self._lane(datapath_state='Activated',
+                                        not_allowed=[]))
+        self.assertNotIn('partial', cells[-1])
+        cells = self._render(self._lane(rx_power_high_alarm=True))
+        self.assertIn('Alarm', cells[-1])
+        self.assertNotIn('partial', cells[-1])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
