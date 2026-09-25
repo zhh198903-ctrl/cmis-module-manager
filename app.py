@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.141.0'
+__version__ = '2.142.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4829,6 +4829,10 @@ def api_laser_get():
                 'relative_thresholds_enabled': rel_thr_en,
                 # 7.5.2: the channel can be changed only in DPDeactivated.
                 'datapath_state': dp_of.get(i + 1),
+                # Table 8-68: what the programmed channel is, before fine
+                # tuning - the module's measured frequency is beside it.
+                'channel_multiple': cmis.grid_channel_multiple(gc),
+                'channel_frequency_thz': cmis.grid_channel_frequency_thz(gc, ch),
             })
 
         return _ok({
@@ -5003,6 +5007,23 @@ def api_laser_set():
             # "parameters written" having written nothing that the shape check
             # above exists to stop.
             fields = 0
+            # Table 8-68: on the 75, 150 and 300 GHz grids n counts in 25 or
+            # 12.5 GHz units, so only every 3rd, 6th or 24th number is a
+            # channel at all. Judged on the grid and channel the lane will
+            # have - a new grid under the old channel is the same question.
+            if 'grid_code' in ldata or 'channel' in ldata:
+                gc_eff = (int(ldata['grid_code']) & 0x0F if 'grid_code' in ldata
+                          else grid_now[lane] >> 4)
+                ch_eff = int(ldata['channel']) if 'channel' in ldata else ch_now
+                mult = cmis.grid_channel_multiple(gc_eff)
+                if ch_eff % mult:
+                    return _err(
+                        'Lane %d: channel %d is not a channel of the %s grid: '
+                        'Table 8-68 numbers it in units of %s, so n must be a '
+                        'multiple of %d'
+                        % (lane + 1, ch_eff, cmis.GRID_CODES.get(gc_eff, gc_eff),
+                           {7: '25 GHz', 8: '25 GHz', 9: '12.5 GHz'}.get(
+                               gc_eff, 'the grid'), mult), 400)
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0

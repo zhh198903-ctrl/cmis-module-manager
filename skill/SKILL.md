@@ -506,6 +506,12 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 信道号:75/150/300 GHz 栅格不是 n × 间隔
+
+Table 8-68:75 GHz 是 `193.1 + n×0.025`(n 为 3 的倍数),150 GHz 是 `193.1 + (n+3)×0.025`(6 的倍数),
+300 GHz 是 `193.1 + (n−9)×0.0125`(24 的倍数),其余是 `193.1 + n×间隔`。`POST /api/module/laser` 对不是该栅格信道的 n 返回 400。
+`GET /api/module/laser` 每条通道带 `channel_multiple` 和 `channel_frequency_thz`(按表算出的信道频率,不含微调),可与 `frequency_thz`(模块实测)对照。
+
 ## 激光调谐:换信道先停 Data Path
 
 7.5.2:换栅格或信道时 Data Path 必须是 DPDeactivated;微调和目标功率只要不在过渡状态就能改。

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.141.0<br>
+      <b>版本</b>　2.142.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.141.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.141.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.142.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.142.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,19 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>75 / 150 / 300 GHz 栅格的信道号</h3>
+  <p>规范 Table 8-68 给每种栅格定了信道编号:大多数是 <code>193.1 + n × 间隔</code>,但有三种不是——</p>
+  <ul>
+    <li>75 GHz:<code>193.1 + n × 0.025</code>,n 必须是 3 的倍数</li>
+    <li>150 GHz:<code>193.1 + (n+3) × 0.025</code>,n 必须是 6 的倍数</li>
+    <li>300 GHz:<code>193.1 + (n−9) × 0.0125</code>,n 必须是 24 的倍数</li>
+  </ul>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只查范围,不查倍数:75 GHz 栅格上写信道 1 也照样下发,而它根本不是一个信道。演示模块则把这三种栅格的频率算错了(按 n × 75 GHz、n × 150 GHz 算,300 GHz 栅格干脆按 100 GHz 算),信道范围也按错误的单位给出,300 GHz 栅格的范围里只有一个可用信道。</span>
+  </div>
+  <p>现在:不是该栅格信道的编号直接拒绝(400),什么都不写;只改栅格、不改信道时,用原来的信道号一起判断。激光调谐表的信道输入框按栅格步进(×3 / ×6 / ×24),范围提示里注明倍数,悬停显示这个信道按 Table 8-68 对应的频率,可以和模块实测频率对照。演示模块的频率、信道范围和「无效信道」标志也都按这张表来。</p>
 
   <h3>换信道要先停下数据通道</h3>
   <p>规范 7.5.2:「选择另一个光信道(栅格间隔或信道号)时,模块必须处于 DPDeactivated 状态。在其它 Data Path 状态下改信道,可能导致未定义的行为,因为模块可能在改动之前或之后调谐激光器。」微调偏移和目标输出功率则可以在 Data Path 不处于过渡状态时修改。</p>
@@ -4503,7 +4516,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.141.0<br>
+    CMIS Module Manager 操作手册 v2.142.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

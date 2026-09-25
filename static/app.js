@@ -4973,8 +4973,15 @@ async function loadLaser() {
       note: `Bits 7-4 = ${l.grid_code} (${l.grid}); bit 0 FineTuningEnableTx = `
           + `${l.fine_tuning_enabled ? 1 : 0} (bits 3-1 reserved)`,
     }));
+    // Table 8-68: the channel's own frequency, and what n has to be a
+    // multiple of on the 75, 150 and 300 GHz grids.
+    const mult = l.channel_multiple || 1;
+    const chFreq = l.channel_frequency_thz != null
+      ? `, which the ${l.grid} grid puts at ${l.channel_frequency_thz} THz (Table 8-68)`
+      : (mult > 1 ? `, which is not a channel of the ${l.grid} grid` : '');
     const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}${bankTag}`, 0x12, 0x88 + k * 2, 2,
-      `S16 channel number, current ${l.channel}`));
+      `S16 channel number, current ${l.channel}${chFreq}`
+      + (mult > 1 ? `. On this grid n must be a multiple of ${mult}.` : '')));
     const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}${bankTag}`, 0x12, 0x98 + k * 2, 2,
       `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`));
     const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}${bankTag}`, 0x12, 0xA8 + k * 4, 4,
@@ -4992,7 +4999,7 @@ async function loadLaser() {
     return `<tr>
       <td>${l.lane}</td>
       <td title="${tipGrid}${lockTip}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}${lockTip}"${lockAttr}>${gridOpts(l.grid_code, l.grid)}</select></td>
-      <td title="${tipCh}${lockTip}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}${lockTip}"${lockAttr} value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
+      <td title="${tipCh}${lockTip}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}${lockTip}"${lockAttr} value="${l.channel}" step="${mult}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}${mult > 1 ? `, ×${mult}` : ''}</div>` : ''}</td>
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_na
         ? naCell('no valid sample') : l.frequency_thz.toFixed(6)}</td>

@@ -2723,6 +2723,41 @@ def parse_pattern_caps(data: bytes) -> dict:
     return out
 
 
+# Table 8-68: how each grid numbers its channels, as (THz per unit of n,
+# offset added to n, n must be a multiple of). Every grid counts from 193.1
+# THz, and most in units of their own spacing - but not three of them: "the
+# offset is defined in units of a third, a sixth, or a 24th of the grid
+# resolution" for 75, 150 and 300 GHz (8.7), and the last two are not even
+# anchored at n = 0.
+GRID_CHANNEL_RULES = {
+    0: (0.003125, 0, 1),     # 193.1 + n x 0.003125
+    1: (0.00625, 0, 1),      # 193.1 + n x 0.00625
+    2: (0.0125, 0, 1),       # 193.1 + n x 0.0125
+    3: (0.025, 0, 1),        # 193.1 + n x 0.025
+    4: (0.05, 0, 1),         # 193.1 + n x 0.05
+    5: (0.1, 0, 1),          # 193.1 + n x 0.1
+    6: (0.1 / 3, 0, 1),      # 193.1 + n x 0.1/3
+    7: (0.025, 0, 3),        # 193.1 + n x 0.025, n a multiple of 3
+    8: (0.025, 3, 6),        # 193.1 + (n+3) x 0.025, n a multiple of 6
+    9: (0.0125, -9, 24),     # 193.1 + (n-9) x 0.0125, n a multiple of 24
+}
+
+
+def grid_channel_multiple(code: int) -> int:
+    """What channel numbers on this grid have to be a multiple of."""
+    return GRID_CHANNEL_RULES.get(code, (None, 0, 1))[2]
+
+
+def grid_channel_frequency_thz(code: int, n: int):
+    """The frequency Table 8-68 gives channel n of this grid, or None for a
+    grid code it does not define or an n the grid does not number."""
+    rule = GRID_CHANNEL_RULES.get(code)
+    if rule is None or n % rule[2]:
+        return None
+    step, offset, _mult = rule
+    return round(193.1 + (n + offset) * step, 6)
+
+
 GRID_CODES = {0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz',
               4: '50 GHz', 5: '100 GHz', 6: '33 GHz', 7: '75 GHz',
               8: '150 GHz', 9: '300 GHz', 15: 'Not available'}

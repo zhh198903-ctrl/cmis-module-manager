@@ -7972,11 +7972,11 @@ class TestTheGridCmis54Added(CMISTestCase):
     def test_the_grid_carries_a_channel_range_like_every_other(self):
         self._connect()
         d = self._laser()
-        self.assertEqual(d['grid_channel_ranges'].get('9'), [-13, 13])
+        self.assertEqual(d['grid_channel_ranges'].get('9'), [-288, 312])
         # Reported on its own as well: callers that predate the grid being
         # part of the range table read it from here, and it is the field the
         # negative case asserts is None.
-        self.assertEqual(d['grid_300ghz_range'], [-13, 13])
+        self.assertEqual(d['grid_300ghz_range'], [-288, 312])
 
     def test_the_advertised_grids_and_the_selectable_ones_agree(self):
         """The panel listed a grid the selector could not offer, because the
@@ -7991,23 +7991,24 @@ class TestTheGridCmis54Added(CMISTestCase):
     def test_a_channel_outside_the_range_is_refused(self):
         self._connect()
         body = self._post({'lanes': [{'lane': 1, 'grid_code': 9,
-                                      'channel': 99}]}, 400)
+                                      'channel': 336}]}, 400)
         self.assertIn('300 GHz', body['message'])
-        self.assertIn('-13 to 13', body['message'])
+        self.assertIn('-288 to 312', body['message'])
         self.assertIn('04h:166-169', body['message'])
 
     def test_a_channel_inside_the_range_is_accepted(self):
         """A validator that refuses everything would pass the test above."""
         self._connect()
-        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 5}]})
+        # Table 8-68: 300 GHz channels are multiples of 24.
+        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 24}]})
         lane = self._laser()['lanes'][0]
         self.assertEqual(lane['grid_code'], 9)
-        self.assertEqual(lane['channel'], 5)
+        self.assertEqual(lane['channel'], 24)
 
     def test_the_lane_gets_the_range_hint(self):
         self._connect()
         self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 0}]})
-        self.assertEqual(self._laser()['lanes'][0]['channel_range'], [-13, 13])
+        self.assertEqual(self._laser()['lanes'][0]['channel_range'], [-288, 312])
 
     def test_the_extra_bytes_are_not_read_without_the_advertisement(self):
         """04h:166-169 is a 5.4 addition and is not required to mean anything
@@ -8025,7 +8026,7 @@ class TestTheGridCmis54Added(CMISTestCase):
         not invent one - it has nothing to check against."""
         self._connect()
         poke(0x04, 0x81, 0x80)
-        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 99}]})
+        self._post({'lanes': [{'lane': 1, 'grid_code': 9, 'channel': 96}]})
 
     def test_the_manual_does_not_promise_what_no_module_can_show(self):
         """The manual's CMIS 5.4 table marked both E17 (the 300 GHz grid) and
@@ -32070,6 +32071,120 @@ class TestAnotherChannelOnlyWithTheDataPathDown(CMISTestCase):
         i = html.index('id="laser-dp-note"')
         self.assertIn('(7.5.2)', html[i:i + 500])
         self.assertIn('DPDeactivated', html[i:i + 500])
+
+
+class TestEveryGridNumbersItsChannelsItsOwnWay(CMISTestCase):
+    """Table 8-68 gives each grid its channel numbering: Frequency (THz) =
+    193.1 + n x spacing for most, but the 75 GHz grid counts in 25 GHz units
+    (n a multiple of 3), the 150 GHz grid in 25 GHz units from n + 3 (n a
+    multiple of 6), and the 300 GHz grid in 12.5 GHz units from n - 9 (n a
+    multiple of 24) - "the offset is defined in units of a third, a sixth, or
+    a 24th of the grid resolution" (8.7).
+
+    The tool accepted any n in range, so on the 75 GHz grid it wrote channel
+    1, which is not a channel. The demo module then reported the wrong laser
+    frequency for every channel on those three grids - n x 75 GHz, n x 150
+    GHz, and 100 GHz steps for the 300 GHz grid it had no entry for - and it
+    advertised their ranges in the wrong units, so its 300 GHz range held a
+    single channel. Now the tool refuses a number the grid does not use,
+    reports each lane's channel frequency by the table, and the demo tunes,
+    flags and advertises by it."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        deactivated(self.client)                 # 7.5.2: to change channel
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _tune(self, **f):
+        f.setdefault('lane', 1)
+        return self.client.post('/api/module/laser',
+                                data=json.dumps({'lanes': [f]}),
+                                content_type='application/json')
+
+    # ---- the table --------------------------------------------------------------------
+    def test_the_frequencies_are_the_tables(self):
+        import cmis_registers as c
+        f = c.grid_channel_frequency_thz
+        for code, n, thz in ((0, 1, 193.103125), (1, 1, 193.10625),
+                             (2, 1, 193.1125), (3, 1, 193.125), (4, -2, 193.0),
+                             (5, 1, 193.2), (6, 3, 193.2), (7, 3, 193.175),
+                             (8, 0, 193.175), (8, 6, 193.325),
+                             (9, 0, 192.9875), (9, 24, 193.2875)):
+            self.assertAlmostEqual(f(code, n), thz, places=6, msg=(code, n))
+
+    def test_numbers_a_grid_does_not_use_have_no_frequency(self):
+        import cmis_registers as c
+        for code, n in ((7, 1), (8, 3), (9, 12), (15, 0)):
+            self.assertIsNone(c.grid_channel_frequency_thz(code, n), (code, n))
+        self.assertEqual([c.grid_channel_multiple(g) for g in (5, 7, 8, 9)],
+                         [1, 3, 6, 24])
+
+    # ---- the tool -----------------------------------------------------------------------
+    def test_a_75_ghz_number_that_is_not_a_channel_is_refused(self):
+        self._connect()
+        before = self._laser()['lanes'][0]
+        rv = self._tune(grid_code=7, channel=1)
+        self.assertErr(rv, 400)
+        self.assertIn('multiple of 3', json.loads(rv.data)['message'])
+        after = self._laser()['lanes'][0]
+        self.assertEqual((after['grid_code'], after['channel']),
+                         (before['grid_code'], before['channel']))
+
+    def test_a_new_grid_under_the_old_channel_is_the_same_question(self):
+        self._connect()
+        self.assertOk(self._tune(grid_code=5, channel=1))
+        rv = self._tune(grid_code=9)
+        self.assertErr(rv, 400)
+        self.assertIn('multiple of 24', json.loads(rv.data)['message'])
+
+    def test_a_channel_of_the_grid_goes_through_and_says_where_it_is(self):
+        self._connect()
+        self.assertOk(self._tune(grid_code=7, channel=3))
+        l = self._laser()['lanes'][0]
+        self.assertEqual(l['channel_multiple'], 3)
+        self.assertAlmostEqual(l['channel_frequency_thz'], 193.175, places=6)
+
+    # ---- the demo module ------------------------------------------------------------------
+    def test_the_demo_tunes_where_the_table_says(self):
+        self._connect()
+        for grid, n, thz in ((7, 3, 193.175), (9, 24, 193.2875), (5, 2, 193.3)):
+            self.assertOk(self._tune(grid_code=grid, channel=n))
+            self.assertAlmostEqual(self._laser()['lanes'][0]['frequency_thz'],
+                                   thz, places=4, msg=(grid, n))
+
+    def test_the_demo_flags_a_number_that_is_not_a_channel(self):
+        """Past the tool's own check, straight into the registers."""
+        self._connect()
+        b = _state['backend']
+        b.write_bytes(0x7F, bytes([0x12]))
+        b.write_bytes(0x80, bytes([0x70]))               # 75 GHz grid
+        b.write_bytes(0x88, bytes([0x00, 0x01]))          # channel 1
+        self.assertTrue(b._registers[0x12][0xE7] & (1 << 2))   # InvalidChannelNumber
+        b.write_bytes(0x88, bytes([0x00, 0x03]))          # channel 3
+        self.assertTrue(b._tuning_accepted[0])
+
+    def test_the_demo_advertises_its_ranges_in_the_tables_units(self):
+        self._connect()
+        r = self._laser()['grid_channel_ranges']
+        self.assertEqual(r['7'], [-159, 159])             # +-3.975 THz
+        self.assertEqual(r['9'], [-288, 312])             # 189.3875-196.8875 THz
+        self.assertEqual(r['7'][0] % 3, 0)
+        self.assertEqual(r['9'][0] % 24, 0)
+
+    # ---- the page -------------------------------------------------------------------------
+    def test_the_channel_box_steps_by_the_grid(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('value="${l.channel}" step="${mult}"', js)
+        self.assertIn("${mult > 1 ? `, ×${mult}` : ''}", js)
+        self.assertIn('grid puts at ${l.channel_frequency_thz} THz (Table 8-68)', js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

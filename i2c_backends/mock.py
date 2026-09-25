@@ -1390,16 +1390,18 @@ class MockBackend(I2CInterface):
             # 100 GHz grid channel range ±40
             p04[0x96] = 0xFF; p04[0x97] = 0xD8    # -40
             p04[0x98] = 0x00; p04[0x99] = 0x28    # +40
-            # 75 GHz grid channel range ±53: the module advertises this grid,
-            # so it has to say which channels are legal on it as well.
-            p04[0x9E] = 0xFF; p04[0x9F] = 0xCB    # -53
-            p04[0xA0] = 0x00; p04[0xA1] = 0x35    # +53
+            # The 75 and 300 GHz grids do not count in their own spacing:
+            # Table 8-68 numbers 75 GHz channels in 25 GHz units (n a
+            # multiple of 3) and 300 GHz ones in 12.5 GHz units from n = 9
+            # (n a multiple of 24). The ranges were set as if they did - so
+            # ±53 covered a third of the band, and ±13 held one channel.
+            # Both now span the ±4000 GHz the 50 and 100 GHz grids do.
+            p04[0x9E] = 0xFF; p04[0x9F] = 0x61    # -159: 193.1 - 3.975 THz
+            p04[0xA0] = 0x00; p04[0xA1] = 0x9F    # +159: 193.1 + 3.975 THz
             # 04h:166-169 continues the channel range table with grid code 9.
-            # The C-band span the other grids describe is about ±4000 GHz
-            # (50 GHz × ±80, 100 GHz × ±40), so a 300 GHz grid spans ±13.
             if p.get('grid_sup_129', 0x80) & 0x20:
-                p04[0xA6] = 0xFF; p04[0xA7] = 0xF3    # -13
-                p04[0xA8] = 0x00; p04[0xA9] = 0x0D    # +13
+                p04[0xA6] = 0xFE; p04[0xA7] = 0xE0    # -288: 189.3875 THz
+                p04[0xA8] = 0x01; p04[0xA9] = 0x38    # +312: 196.8875 THz
             # Fine tuning: 1 MHz resolution, ±12.5 GHz
             p04[0xBE] = 0x00; p04[0xBF] = 0x01
             v = struct.pack(">h", -12500)
@@ -2683,9 +2685,15 @@ class MockBackend(I2CInterface):
                 for lane in range(8):
                     grid_byte = p12.get(0x80 + lane, 0x50)
                     grid_code = (grid_byte >> 4) & 0x0F
-                    grid_steps = {0: 0.003125, 1: 0.00625, 2: 0.0125, 3: 0.025,
-                                  4: 0.05, 5: 0.1, 6: 1.0/30, 7: 0.075, 8: 0.15}
-                    step_thz = grid_steps.get(grid_code, 0.1)
+                    # Table 8-68, by grid code: (THz per n, offset to n).
+                    # 75, 150 and 300 GHz count in 25, 25 and 12.5 GHz units
+                    # - not their spacing - and the last two are offset; the
+                    # 300 GHz grid was missing and fell back to 100 GHz.
+                    grid_rule = {0: (0.003125, 0), 1: (0.00625, 0),
+                                 2: (0.0125, 0), 3: (0.025, 0), 4: (0.05, 0),
+                                 5: (0.1, 0), 6: (0.1 / 3, 0), 7: (0.025, 0),
+                                 8: (0.025, 3), 9: (0.0125, -9)}
+                    step_thz, n_offset = grid_rule.get(grid_code, (0.1, 0))
                     ch_hi = p12.get(0x88 + lane * 2, 0)
                     ch_lo = p12.get(0x89 + lane * 2, 0)
                     ch_n = struct.unpack(">h", bytes([ch_hi, ch_lo]))[0]
@@ -2695,7 +2703,7 @@ class MockBackend(I2CInterface):
                     fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
                     if not self._tuning_accepted[lane_base + lane]:
                         continue        # refused: the laser has not moved
-                    freq_thz = 193.1 + ch_n * step_thz + fine_ghz / 1000.0
+                    freq_thz = 193.1 + (ch_n + n_offset) * step_thz + fine_ghz / 1000.0
                     freq_mhz = int(round(freq_thz * 1e6))
                     a = 0xA8 + lane * 4
                     p12[a] = (freq_mhz >> 24) & 0xFF
@@ -3082,6 +3090,9 @@ class MockBackend(I2CInterface):
                     if channel:
                         flags |= 1 << 3      # TuningNotAcceptedFlagTx
                 elif not (ch_lo <= channel <= ch_hi):
+                    flags |= 1 << 2          # InvalidChannelNumberFlagTx
+                elif channel % {7: 3, 8: 6, 9: 24}.get(grid_code, 1):
+                    # Not a channel of this grid at all (Table 8-68).
                     flags |= 1 << 2          # InvalidChannelNumberFlagTx
 
             if touched['fine'] and (grid_byte & 0x01):
