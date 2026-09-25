@@ -568,6 +568,13 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 关掉一路 Tx:整条数据通道到 Initialized
+
+Eq. 6-12:DPDeactivateS 含 DPTxDisableT 和 DPTxForceSquelchT,对数据通道的所有媒体通道取或。
+运行中的数据通道任一路 OutputDisableTx / OutputSquelchForceTx 置位,整条经 DPTxTurnOff 到 DPInitialized;清掉后经 DPTxTurnOn 回 DPActivated。
+`POST /api/module/datapath` 和 `POST /api/module/squelch` 的回复带 `tx_takes_down`(被这次写入带下来的 `host_lanes` / `media_lanes`)。
+用户说「关了一路 Tx,整条通道都变成 Initialized」是规范行为,不是故障;Initialized 下其余通道的 Tx 仍在发(Table 6-18)。
+
 ## 低功耗下配置数据通道
 
 8.13.1:DPDeinit 只在 ModuleReady 下评估,主机可以在 ModuleLowPwr 下先把它全置上,阻止上电后自动初始化(附录 D.1.3 第 6 步)。

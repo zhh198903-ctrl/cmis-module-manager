@@ -2330,10 +2330,11 @@ function configStatusNote(lane) {
 }
 
 // 11h:132-133 are the module's own answer to "is this output actually on".
-// Tx disable, force squelch, Rx output disable and auto-squelch all mute an
-// output without touching the DataPath State, so a lane can read Activated
-// while sending nothing - and the operator who just ticked one of those boxes
-// has no other way to see that it took effect.
+// Rx output disable and auto-squelch mute an output without touching the
+// DataPath State, so a lane can read Activated while sending nothing. Tx
+// disable and force squelch do move it - Eq. 6-12 takes the whole path to
+// DPInitialized - and there the other lanes may still be on, so the state
+// alone does not say which outputs are.
 // The name alone does not say whether a lane is in trouble; the kind does.
 function dpStateNote(lane) {
   // "not stuck" was a claim this panel had no way to make. 01h:144 and
@@ -2380,11 +2381,25 @@ function outputCell(lane) {
     ? `<span class="flag-ok" title="${esc(label + ' output signal valid on '
         + side + ' lane ' + lane.lane)}">&#9679;</span> ${label}`
     : `<span class="flag-warn" title="${esc(why)}">&#9675;</span> ${label}`;
-  const running = lane.datapath_state === 'Activated';
-  const muted = running
-    ? ' output is muted although the data path is Activated - check Tx disable,'
-      + ' force squelch or Rx output disable'
-    : ` output is not valid because the data path is ${lane.datapath_state}`;
+  // Table 6-18: a Tx output can be on in DPActivated and, lane by lane, in
+  // DPInitialized - where a disabled or force-squelched Tx is what holds a
+  // running path (Eq. 6-12). The Rx side forwards in every state from
+  // DPInitialized on, the Tx transients included (6.3.3.1).
+  const st = lane.datapath_state;
+  const txWhy = st === 'Activated'
+    ? 'Tx output is muted although the data path is Activated - check '
+      + 'auto-squelch: Tx disable or force squelch would have taken the '
+      + 'path to Initialized (Eq. 6-12)'
+    : st === 'Initialized'
+      ? 'Tx output is off: in Initialized each lane follows its own Tx '
+        + 'disable and force squelch, and one of those on any lane is what '
+        + 'holds a running data path here (Eq. 6-12) - check Tx disable and '
+        + 'force squelch'
+      : `Tx output is not valid because the data path is ${st}`;
+  const rxWhy = ['Activated', 'Initialized', 'TxTurnOn', 'TxTurnOff'].includes(st)
+    ? `Rx output is muted although the data path is ${st} - check Rx output `
+      + 'disable or auto-squelch'
+    : `Rx output is not valid because the data path is ${st}`;
   // Blank rather than a dot, for the same reason the optical power beside it
   // is blank: an absent media lane reads as 0, and an open circle here sent
   // the operator hunting a squelch on a lane that is not there.
@@ -2393,8 +2408,8 @@ function outputCell(lane) {
         + 'media lane (Table 8-95), and this module does not have media lane '
         + lane.lane + ' (00h:210) - so there is no Tx output here to be '
         + 'valid or muted.')}">Tx n/a</span>`
-    : dot(lane.output_valid_tx, 'Tx', 'Tx' + muted, 'media');
-  return tx + '<br>' + dot(lane.output_valid_rx, 'Rx', 'Rx' + muted, 'host');
+    : dot(lane.output_valid_tx, 'Tx', txWhy, 'media');
+  return tx + '<br>' + dot(lane.output_valid_rx, 'Rx', rxWhy, 'host');
 }
 
 function setRefreshInterval(ms) {
@@ -2552,8 +2567,10 @@ async function loadDatapath() {
     const tipTx = regTip({
       field: `OutputDisableTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x82,
       value: inBank(d.tx_disable_mask_banks, d.tx_disable_mask), bit: i % 8,
-      note: lane.tx_enable ? 'Checked = Tx output enabled (disable bit clear)'
-                           : 'Unchecked = Tx output disabled (disable bit set)',
+      note: (lane.tx_enable ? 'Checked = Tx output enabled (disable bit clear)'
+                            : 'Unchecked = Tx output disabled (disable bit set)')
+        + '. Disabling any Tx output of a running Data Path takes the whole '
+        + 'path to DPInitialized (Eq. 6-12)',
     });
     const tipTxPol = regTip({
       field: `InputPolarityFlipTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x81,
@@ -3171,6 +3188,7 @@ async function applyDatapath(immediate) {
     ...(immediate ? { apply_immediate: true } : { apply: true }),
   });
 
+  txTakesDownNote(res);
   if (res.status !== 'ok') {
     // A refusal that names which lane is in which state is the whole answer,
     // and three seconds is not long enough to read it. The refusals worth
@@ -4148,12 +4166,30 @@ async function loadSquelch() {
 }
 
 async function applySquelch() {
-  return applyAndReload('Output controls', '/api/module/squelch', {
+  const res = await applyAndReload('Output controls', '/api/module/squelch', {
     tx_squelch_disable: _readBitmaskRow('sq'),
     tx_squelch_force:   _readBitmaskRow('sf'),
     rx_output_disable:  _readBitmaskRow('od'),
     rx_squelch_disable: _readBitmaskRow('rd'),
   }, loadSquelch);
+  txTakesDownNote(res);
+  return res;
+}
+
+// Eq. 6-12: one disabled or force-squelched media lane takes its whole Data
+// Path out of DPActivated, to DPInitialized. Unticking one box moves every
+// lane of the path, and without this the Monitoring tab is where the
+// operator finds out.
+function txTakesDownNote(res) {
+  const down = (res && res.status === 'ok' && res.data.tx_takes_down) || [];
+  if (!down.length) return;
+  const paths = down.map(g => {
+    const l = g.host_lanes;
+    return 'L' + l[0] + (l.length > 1 ? '–' + l[l.length - 1] : '');
+  }).join(', ');
+  toast(`Data Path ${paths} leaves DPActivated for DPInitialized: a Tx `
+        + 'output of it is now disabled or force-squelched, and CMIS takes '
+        + 'the whole path down for one lane (Eq. 6-12)', 'warning', 10000);
 }
 
 // ---------------------------------------------------------------------------

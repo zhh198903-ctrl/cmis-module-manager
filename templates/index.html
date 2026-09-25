@@ -373,7 +373,9 @@
 </div>
 
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
-          TX Enable is the inverse of the TX Disable bitmask. AppSelect selects the application code (0–15 per lane).
+          TX Enable is the inverse of the TX Disable bitmask. Unticking it on any media lane of a running Data Path
+          takes the whole path from DPActivated to DPInitialized, and ticking it again brings the path back through
+          DPTxTurnOn (Eq. 6-12). AppSelect selects the application code (0–15 per lane).
           Click <strong>Apply</strong> to write and activate the configuration — that is
           ApplyDPInit (<code>10h:143</code>), which re-initialises the Data Path.
           <strong>Apply Immediate</strong> (<code>10h:144</code>) commits the same

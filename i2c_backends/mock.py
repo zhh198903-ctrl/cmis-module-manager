@@ -932,6 +932,9 @@ class MockBackend(I2CInterface):
     PROFILE = _COHERENT_800G  # default (overridden by subclasses)
     # Seconds a WRITE holds off the next ACCESS (Table 10-4); see _held_off.
     HOLDOFF_S = 0.0
+    # Seconds DPTxTurnOn / DPTxTurnOff take here: long enough for a host to
+    # see them, well inside the 01h:168 maximum every profile advertises.
+    TX_TURN_S = 0.25
     # Seconds a SoftwareReset leaves the module unmanageable (MgmtInit,
     # Table 10-2 allows up to two). Off by default, like HOLDOFF_S.
     MGMT_INIT_S = 0.0
@@ -970,6 +973,9 @@ class MockBackend(I2CInterface):
         self._deinit_mask = 0x00
         self._absolute_tx_thr = None      # 62h quad when no lane is relative
         self._tx_disable_mask = 0x00
+        # {first lane of a Data Path: (started, state it is heading for)}
+        # while DPTxTurnOff or DPTxTurnOn runs - see _follow_tx_outputs.
+        self._tx_turns = {}
         # (bank, role) -> when that bank's pattern engine was enabled: each
         # bank's Page 14h reports its own lanes' lock.
         self._prbs_enable_times = {}
@@ -1961,6 +1967,7 @@ class MockBackend(I2CInterface):
             for cmd in list(self._commands):
                 if self._advance_command(cmd, now):
                     self._commands.remove(cmd)
+        self._follow_tx_outputs(now)
 
         # Write DP states back to Page 11h:0x80-0x83.
         # 6.2.3.2: AppSel 0000b means the lane "is unused and not part of a
@@ -2212,10 +2219,14 @@ class MockBackend(I2CInterface):
                 self._commit_apply(cmd)
                 return True
         elif dt < 0.15:
+            # A disabled Tx does not keep a Data Path out of DPInit: Eq. 6-12
+            # puts OutputDisableTx in DPDeactivateS, which is the exit from
+            # DPInitialized, not the one from DPDeactivated. Skipping those
+            # lanes and parking them in DPDeactivated at the end made D.1.3's
+            # start-up (Tx disabled first, enabled once initialised) a Data
+            # Path that never came up.
             for i in range(8):
-                if not self._apply_selects(cmd, i):
-                    continue
-                if not ((self._tx_disable_mask >> i) & 1):
+                if self._apply_selects(cmd, i):
                     self._dp_lane_states[i] = 0x2      # DPInit
         elif dt < 0.3:
             # Figure 6-5: DPInit completes into DPInitialized, a steady
@@ -2223,24 +2234,22 @@ class MockBackend(I2CInterface):
             # sat between DPInit and DPTxTurnOn in the state machine and
             # nowhere at all in this mock, so nothing ever showed it.
             for i in range(8):
-                if not self._apply_selects(cmd, i):
-                    continue
-                if not ((self._tx_disable_mask >> i) & 1):
+                if self._apply_selects(cmd, i):
                     self._dp_lane_states[i] = 0x7      # DPInitialized
         elif dt < 0.5:
+            # DPDeactivateS is per Data Path: one media lane disabled or
+            # force-squelched keeps the whole path in DPInitialized.
+            off = self._tx_off_lanes([(b >> 4) & 0x0F for b in cmd.staged])
             for i in range(8):
-                if not self._apply_selects(cmd, i):
-                    continue
-                if not ((self._tx_disable_mask >> i) & 1):
-                    self._dp_lane_states[i] = 0x5      # DPTxTurnOn
+                if self._apply_selects(cmd, i):
+                    self._dp_lane_states[i] = (0x7 if (off >> i) & 1
+                                               else 0x5)  # DPTxTurnOn
         else:
+            off = self._tx_off_lanes([(b >> 4) & 0x0F for b in cmd.staged])
             for i in range(8):
                 if not self._apply_selects(cmd, i):
                     continue
-                if not ((self._tx_disable_mask >> i) & 1):
-                    self._dp_lane_states[i] = 0x4
-                else:
-                    self._dp_lane_states[i] = 0x1
+                self._dp_lane_states[i] = 0x7 if (off >> i) & 1 else 0x4
                 # 6.3.3: the Flag is set on entry to a lasting steady state
                 # reached through a significant transient - which is what
                 # has just happened, since the path went through DPInit and
@@ -2496,7 +2505,15 @@ class MockBackend(I2CInterface):
         for lane in range(8):
             phase = lane * math.pi / 4
             tx_disabled = bool((self._tx_disable_mask >> lane) & 1)
-            dp_active = self._dp_lane_states[lane] == 0x4
+            # Table 6-18: in DPInitialized the Tx output "Depends on per-lane
+            # OutputDisableTx and OutputSquelchForceTx" - a path held there
+            # by one disabled lane still transmits on the others (Eq. 6-12's
+            # note) - and DPTxTurnOff is complete once "some Tx outputs"
+            # reflect being "squelched or disabled on host command", so the
+            # rest stay on through it. The Rx side forwards in every state
+            # from DPInitialized on, transients included.
+            dp_active = self._dp_lane_states[lane] in (0x4, 0x6, 0x7)
+            rx_live = self._dp_lane_states[lane] in (0x4, 0x5, 0x6, 0x7)
             # Table 8-95: valid means the module is really sending a signal.
             # An Activated lane whose output is disabled or force-squelched is
             # not, and no other register in the map says so.
@@ -2509,7 +2526,7 @@ class MockBackend(I2CInterface):
                     and not ((force_squelch_tx >> lane) & 1)
                     and not ((self._media_lane_absent() >> lane) & 1)):
                 out_tx |= 1 << lane
-            if dp_active and not ((output_disable_rx >> lane) & 1):
+            if rx_live and not ((output_disable_rx >> lane) & 1):
                 out_rx |= 1 << lane
 
             # Tx Power: 0 if disabled or not Activated, else nominal ± 3%
@@ -2591,13 +2608,12 @@ class MockBackend(I2CInterface):
                     may_change |= 1 << lane
                 disabled = (p10b.get(0x82, 0) >> lane) & 1
                 a = 0x9A + 2 * lane
-                p11b[a], p11b[a + 1] = ((0, 0) if disabled or state != 0x4
+                live = state in (0x4, 0x6, 0x7)
+                p11b[a], p11b[a + 1] = ((0, 0) if disabled or not live
                                         else built[lane])
-                if state != 0x4:
-                    continue
-                if not (muted_tx >> lane) & 1:
+                if live and not (muted_tx >> lane) & 1:
                     tx_b |= 1 << lane
-                if not (muted_rx >> lane) & 1:
+                if state in (0x4, 0x5, 0x6, 0x7) and not (muted_rx >> lane) & 1:
                     rx_b |= 1 << lane
             was = self._rx_output_valid_banks.setdefault(bank, rx_b)
             self._rx_output_valid_banks[bank] = rx_b
@@ -2755,10 +2771,14 @@ class MockBackend(I2CInterface):
                     # hold across a reset would keep the Data Paths down that
                     # a real module brings up.
                     self._dp_deinit_mask = 0x00
+                    # And "OutputDisableTx = 0 and OutputSquelchForceTx = 0"
+                    # in the same list - either one left set would hold the
+                    # Data Paths at DPInitialized after the reset (Eq. 6-12).
+                    self._tx_disable_mask = 0x00
                     for key, regs in self._registers.items():
                         if key == 0x10 or (isinstance(key, tuple)
                                            and key[0] == 0x10):
-                            regs[0x80] = 0x00
+                            regs[0x80] = regs[0x82] = regs[0x84] = 0x00
                     # A reset restarts the module, so its Bank and Page
                     # selection goes back to the default. Leaving the mock on
                     # whatever page was selected meant a host that forgot to
@@ -3185,6 +3205,119 @@ class MockBackend(I2CInterface):
             p11b[0x86] = p11b.get(0x86, 0) | bit
         self._bank_deinit_taken[bank] = taken
 
+    def _dp_groups(self, sels):
+        """The host lanes of each Data Path eight AppSel codes describe, as
+        _recompute_dpidx walks them. Unused lanes belong to none."""
+        apps = self._profile['app_descriptors']
+        groups, lane = [], 0
+        while lane < 8:
+            sel = sels[lane]
+            if not sel:
+                lane += 1
+                continue
+            width = 1
+            if 1 <= sel <= len(apps):
+                width = ((apps[sel - 1][2] >> 4) & 0x0F) or 1
+            width = min(width, 8 - lane)
+            groups.append(list(range(lane, lane + width)))
+            lane += width
+        return groups
+
+    def _off_by_group(self, sels, muted: int) -> int:
+        """Eq. 6-12-6-14: DPTxDisableT and DPTxForceSquelchT OR over the
+        Data Path's media lanes, so one muted lane mutes the path. A mask of
+        every host lane whose path it is. Media lanes are taken as the host
+        lane numbers, as the output status here does, less the ones the
+        module lacks (00h:210)."""
+        muted &= ~self._media_lane_absent()
+        out = 0
+        for g in self._dp_groups(sels):
+            gm = sum(1 << lane for lane in g)
+            if muted & gm:
+                out |= gm
+        return out
+
+    def _tx_off_lanes(self, sels) -> int:
+        return self._off_by_group(
+            sels, self._tx_disable_mask
+            | self._registers.get(0x10, {}).get(0x84, 0))
+
+    def _bank_tx_off_lanes(self, bank: int) -> int:
+        p10b = self._registers.get((0x10, bank), {})
+        p11b = self._registers.get((0x11, bank), {})
+        return self._off_by_group(
+            [(p11b.get(0xCE + i, 0) >> 4) & 0x0F for i in range(8)],
+            p10b.get(0x82, 0) | p10b.get(0x84, 0))
+
+    def _follow_tx_outputs(self, now) -> None:
+        """Eq. 6-12: DPDeactivateS = DPReDeinitS OR DPTxDisableT OR
+        DPTxForceSquelchT, and its note: "setting OutputDisableTx or
+        OutputSquelchForceTx on one or more media lanes of a Data Path causes
+        the entire Data Path to transition to DPInitialized, via
+        DPTxTurnOff". Clearing them again takes it back through DPTxTurnOn.
+        The mock only ever muted the one output; the path stayed Activated.
+
+        Only settled paths: a command or a deinit walk that owns a lane is
+        deciding its state. Later banks move without the transient, as their
+        deinit does.
+        """
+        if self._module_state != 0b011:
+            self._tx_turns = {}
+            return
+        busy = self._deinit_mask if self._deinit_time > 0 else 0
+        for cmd in self._commands:
+            busy |= cmd.mask
+        p11 = self._registers[0x11]
+        sels = [(p11.get(0xCE + i, 0x10) >> 4) & 0x0F for i in range(8)]
+        off = self._tx_off_lanes(sels)
+        for g in self._dp_groups(sels):
+            gm = sum(1 << lane for lane in g)
+            if busy & gm:
+                self._tx_turns.pop(g[0], None)
+                continue
+            cur = self._dp_lane_states[g[0]]
+            turn = self._tx_turns.get(g[0])
+            if turn and now - turn[0] >= self.TX_TURN_S:
+                del self._tx_turns[g[0]]
+                cur = turn[1]
+                for lane in g:
+                    self._dp_lane_states[lane] = cur
+                # Table 6-19: entering DPInitialized or DPActivated may set
+                # it, and this one was reached through a transient.
+                p11[0x86] = p11.get(0x86, 0) | gm
+            # Table 6-18: DPTxTurnOn exits to DPTxTurnOff as soon as
+            # DPDeactivateS is TRUE; DPTxTurnOff runs to DPInitialized
+            # whatever happens meanwhile, and DPTxTurnOn follows from there.
+            if off & gm and cur in (0x4, 0x5):
+                start = (0x6, 0x7)                  # DPTxTurnOff
+            elif not off & gm and cur == 0x7:
+                start = (0x5, 0x4)                  # DPTxTurnOn
+            else:
+                continue
+            for lane in g:
+                self._dp_lane_states[lane] = start[0]
+            self._tx_turns[g[0]] = (now, start[1])
+
+        for bank in range(1, (self._profile.get('lanes') or 8) // 8):
+            p11b = self._registers.get((0x11, bank))
+            if p11b is None:
+                continue
+            off = self._bank_tx_off_lanes(bank)
+            sels = [(p11b.get(0xCE + i, 0) >> 4) & 0x0F for i in range(8)]
+            for g in self._dp_groups(sels):
+                gm = sum(1 << lane for lane in g)
+                cur = (p11b.get(0x80 + g[0] // 2, 0) >> (4 * (g[0] % 2))) & 0x0F
+                if off & gm and cur in (0x4, 0x5):
+                    new = 0x7
+                elif not off & gm and cur == 0x7:
+                    new = 0x4
+                else:
+                    continue
+                for lane in g:
+                    a, sh = 0x80 + lane // 2, 4 * (lane % 2)
+                    p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (new << sh)
+                p11b[0x86] = p11b.get(0x86, 0) | gm
+
     def _power_up_data_paths(self) -> None:
         """ModuleLowPwr -> ModuleReady for bank 0's Data Paths.
 
@@ -3197,9 +3330,12 @@ class MockBackend(I2CInterface):
         their DPInitPending clears and their thresholds follow (8.14.7, 8.5).
         """
         held = self._dp_deinit_mask
-        self._dp_lane_states = [0x1 if (held >> i) & 1 else 0x4
-                                for i in range(8)]
         p11 = self._registers[0x11]
+        off = self._tx_off_lanes([(p11.get(0xCE + i, 0x10) >> 4) & 0x0F
+                                  for i in range(8)])
+        self._dp_lane_states = [0x1 if (held >> i) & 1
+                                else 0x7 if (off >> i) & 1 else 0x4
+                                for i in range(8)]
         cmd = _ConfigCommand(time.time(), 0xFF, False, False, [0x1] * 8,
                              [p11.get(0xCE + i, 0x10) for i in range(8)])
         self._clear_dp_init_pending(cmd)
@@ -3230,6 +3366,8 @@ class MockBackend(I2CInterface):
                 elif (held >> lane) & 1:
                     new, taken = 0x1, taken | (1 << lane)
                 else:
+                    # A muted Tx takes it on to DPInitialized in the same
+                    # pass, before anything reads it (_follow_tx_outputs).
                     new, taken = 0x4, taken & ~(1 << lane)
                 p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (new << sh)
             self._bank_deinit_taken[bank] = taken
@@ -3707,6 +3845,11 @@ class MockBackend(I2CInterface):
                         page_dict[register + i] = (
                             0 if self._write_only(self._current_page,
                                                   register + i) else b)
+            span = range(register, register + len(data))
+            if self._current_page == 0x10 and (0x82 in span or 0x84 in span):
+                # The Tx transient starts at the write that asked for it,
+                # not at whichever read happens to come next.
+                self._follow_tx_outputs(time.time())
         self._holdoff_until = time.perf_counter() + self.HOLDOFF_S
 
 

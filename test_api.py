@@ -1520,10 +1520,11 @@ class TestTheDataPathPassesThroughItsStates(CMISTestCase):
                       'to come up is indistinguishable from a config that was '
                       'rejected: %s' % sorted(seen))
 
-    def test_a_disabled_lane_ends_deactivated_not_activated(self):
-        """Tx disabled means that lane has nothing to bring up. Reporting it
-        Activated alongside the others hides which lanes are actually carrying
-        traffic."""
+    def test_a_disabled_lane_holds_its_path_at_initialized(self):
+        """Eq. 6-12: a disabled Tx on any media lane keeps the whole Data
+        Path at DPInitialized - not Activated, which would hide it, and not
+        Deactivated, which is a path that was never initialised. Which lanes
+        carry traffic is the output status's to say (Table 6-18)."""
         self.connect()
         self.assertOk(self.client.post(
             '/api/module/datapath',
@@ -1532,14 +1533,14 @@ class TestTheDataPathPassesThroughItsStates(CMISTestCase):
             content_type='application/json'))
         deadline = time.time() + 3.0
         while time.time() < deadline:
-            states = self._states()
-            if states[0] != 'Activated' and states[1] == 'Activated':
+            if set(self._states()) == {'Initialized'}:
                 break
             time.sleep(0.05)
-        states = self._states()
-        self.assertEqual(states[0], 'Deactivated', 'lane 1 was disabled')
-        self.assertEqual(states[2], 'Deactivated', 'lane 3 was disabled')
-        self.assertEqual(states[1], 'Activated', 'lane 2 was not disabled')
+        self.assertEqual(self._states(), ['Initialized'] * 8)
+        tx = [l['output_valid_tx'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+        self.assertEqual(tx, [False, True, False] + [True] * 5,
+                         'lanes 1 and 3 were disabled, the others were not')
 
     def test_a_reset_takes_the_module_down_and_brings_it_back(self):
         """The module state machine has intermediate steps too, and the tool
@@ -7223,12 +7224,23 @@ class TestWhetherAnOutputIsActuallyOn(CMISTestCase):
                          'disabling the Rx output muted the Tx output too')
 
     def test_a_muted_lane_still_reads_activated(self):
-        """The point of the register: the DataPath State cannot say this."""
+        """The point of the register: the DataPath State cannot say this. An
+        Rx output disable leaves the path Activated; a Tx one takes it to
+        Initialized (Eq. 6-12), where the lanes still on keep sending - so
+        the state cannot say which of them are either."""
         self._connect()
-        self._datapath({'tx_disable_mask': 0xFF})
+        self._squelch({'rx_output_disable': 0xFF})
         lanes = self._lanes()
         self.assertEqual({l['datapath_state'] for l in lanes}, {'Activated'})
-        self.assertEqual([l['output_valid_tx'] for l in lanes], [False] * 8)
+        self.assertEqual([l['output_valid_rx'] for l in lanes], [False] * 8)
+        self._squelch({'rx_output_disable': 0x00})
+        self._datapath({'tx_disable_mask': 0x01})
+        time.sleep(_state['backend'].TX_TURN_S + 0.1)
+        lanes = self._lanes()
+        self.assertEqual([l['datapath_state'] for l in lanes],
+                         ['Initialized'] * 4 + ['Activated'] * 4)
+        self.assertEqual([l['output_valid_tx'] for l in lanes],
+                         [False] + [True] * 7)
 
     def test_a_deinitialised_path_reports_no_output(self):
         self._connect()
@@ -19243,6 +19255,8 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
         '6-13': 'LowPwrExS transition signal truth table',
+        '6-18': 'Data Path state behaviors and Exit Conditions',
+        '6-19': 'Data Path State Changed Flag behaviors',
         '6-21': 'Lane-Specific Flagging Conformance Rules',
         '7-8': 'CMIS Performance Monitors and NA Values',
         '10-2': 'Effect Latency Timings',
@@ -26732,7 +26746,7 @@ class TestWhichSideOfTheModuleEachColumnIsAbout(CMISTestCase):
         body = js[js.index('function outputCell(lane)'):]
         body = body[:body.index(chr(10) + '}')]
         self.assertIn('check Tx disable', body)
-        self.assertIn("dot(lane.output_valid_tx, 'Tx', 'Tx' + muted, 'media')",
+        self.assertIn("dot(lane.output_valid_tx, 'Tx', txWhy, 'media')",
                       body, 'the present-lane path lost its explanation')
 
 
@@ -31074,18 +31088,29 @@ class TestAFlagTheModuleMayNotRaiseIsNotAPass(CMISTestCase):
                 raised = [n for n in lane['not_allowed'] if lane.get(n)]
                 self.assertEqual(raised, [], (backend, lane['lane']))
 
-    def test_a_disabled_lane_that_is_up_still_alarms(self):
-        """Activated with the Tx disabled: the power really is low, and the
-        Flag is allowed."""
+    def test_a_lane_that_is_up_still_alarms(self):
+        """Lane 1's Tx disabled takes the path to DPInitialized (Eq. 6-12),
+        where lane 1's Tx low Flags are not allowed (Table 6-21 note 1). Lane
+        2 is still transmitting there, and a low power on it is a Flag the
+        module raises."""
         self._connect()
+        backend = _state['backend']
         self.assertOk(self.client.post(
             '/api/module/datapath',
             data=json.dumps({'tx_disable_mask': 0x01}),
             content_type='application/json'))
+        deadline = time.time() + 3
+        while (self._flags()[0]['datapath_state'] != 'Initialized'
+               and time.time() < deadline):
+            time.sleep(0.03)
+        backend._registers[0x02][0xB2] = 0xFF   # Tx low alarm above any reading
+        backend._registers[0x02][0xB3] = 0xFF
         self._flags()
-        lane = self._flags()[0]
-        self.assertEqual(lane['datapath_state'], 'Activated')
-        self.assertTrue(lane['tx_power_low_alarm'])
+        lanes = self._flags()
+        self.assertEqual(lanes[1]['datapath_state'], 'Initialized')
+        self.assertFalse(lanes[0]['tx_power_low_alarm'])
+        self.assertIn('tx_power_low_alarm', lanes[0]['not_allowed'])
+        self.assertTrue(lanes[1]['tx_power_low_alarm'])
 
     def test_no_signal_while_down_is_a_loss_of_signal_only(self):
         """Rx LOS is allowed in every state; the CDR loss of lock and the
@@ -31278,7 +31303,17 @@ class TestTheDataPathsGoDownFirst(CMISTestCase):
 
     def test_an_initialized_path_has_no_tx_to_turn_off(self):
         self._connect()
-        _state['backend']._dp_lane_states = [0x7] * 8     # DPInitialized
+        # Held at DPInitialized the way a module holds one (Eq. 6-12): a
+        # state written in directly would be taken back up by its Tx.
+        self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps({'tx_disable_mask': 0xFF}),
+            content_type='application/json'))
+        deadline = time.time() + 3
+        while (_state['backend']._dp_lane_states != [0x7] * 8
+               and time.time() < deadline):
+            self.client.get('/api/module/monitoring')
+            time.sleep(0.03)
+        self.assertEqual(_state['backend']._dp_lane_states, [0x7] * 8)
         t = self._low_power()
         self.assertNotIn('DPTxTurnOff', t['advertisement'])
         self.assertIn('DPDeinit', t['advertisement'])
@@ -32706,6 +32741,343 @@ class TestAWriteOnlyByteDoesNotReadBack(CMISTestCase):
             js = f.read()
         self.assertIn('const writeOnly = res.data.write_only || [];', js)
         self.assertIn("'write-only (' + b.access + '), not what was written: '", js)
+
+
+class TestOneMutedTxLaneTakesItsDataPathDown(CMISTestCase):
+    """Eq. 6-12: DPDeactivateS = DPReDeinitS OR DPTxDisableT OR
+    DPTxForceSquelchT, the last two ORed over the Data Path's media lanes.
+    Its note: "setting OutputDisableTx or OutputSquelchForceTx on one or more
+    media lanes of a Data Path causes the entire Data Path to transition to
+    DPInitialized, via DPTxTurnOff" - and D.1.3 initialises a Data Path with
+    every Tx disabled, so that it stops at DPInitialized.
+
+    The demo modules left a path Activated when its Tx was disabled, and
+    parked a path initialised with its Tx disabled in DPDeactivated, where it
+    stayed once the Tx was enabled: D.1.3's start-up never came up. Table
+    6-18 has a DPInitialized path's outputs follow the per-lane controls, so
+    the lanes left on keep transmitting. The tool now says which running
+    paths a Tx write takes down, and why every lane of one changed state."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _control(self, action):
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'action': action}),
+            content_type='application/json'))
+
+    def _post(self, url='/api/module/datapath', **body):
+        return self.assertOk(self.client.post(
+            url, data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    def _lanes(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes']
+
+    def _states(self):
+        return [l['datapath_state'] for l in self._lanes()]
+
+    def _eventually(self, want):
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if self._states() == want:
+                return
+            time.sleep(0.03)
+        self.assertEqual(self._states(), want)
+
+    # ---- the demo module ----------------------------------------------------------------------
+    def test_one_disabled_lane_takes_the_whole_path_down(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self.assertEqual(self._states(), ['TxTurnOff'] * 8)
+        self._eventually(['Initialized'] * 8)
+
+    def test_enabling_it_again_brings_the_path_back(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        self._post(tx_disable_mask=0x00)
+        self.assertEqual(self._states(), ['TxTurnOn'] * 8)
+        self._eventually(['Activated'] * 8)
+
+    def test_the_transient_is_timed_from_the_write(self):
+        """Not from whichever read comes next."""
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        time.sleep(_state['backend'].TX_TURN_S + 0.1)
+        self.assertEqual(self._states(), ['Initialized'] * 8)
+
+    def test_a_path_turning_on_turns_straight_back_off(self):
+        """Table 6-18: DPTxTurnOn exits to DPTxTurnOff on DPDeactivateS."""
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        self._post(tx_disable_mask=0x00)
+        self.assertEqual(self._states(), ['TxTurnOn'] * 8)
+        d = self._post(tx_disable_mask=0x02)
+        self.assertEqual(self._states(), ['TxTurnOff'] * 8)
+        self.assertEqual([g['host_lanes'] for g in d['tx_takes_down']],
+                         [list(range(1, 9))])
+        self._eventually(['Initialized'] * 8)
+
+    def _walk(self, **body):
+        self._post(app_select=[1] * 8, apply=True, **body)
+        seen, deadline = [], time.time() + 3
+        while time.time() < deadline:
+            st = self._states()[0]
+            if not seen or seen[-1] != st:
+                seen.append(st)
+            if st in ('Activated', 'Initialized') and len(seen) > 2:
+                break
+            time.sleep(0.02)
+        return seen
+
+    def test_an_apply_walks_through_initialized(self):
+        self._connect()
+        seen = self._walk()
+        for st in ('Init', 'Initialized', 'TxTurnOn', 'Activated'):
+            self.assertIn(st, seen)
+        self.assertLess(seen.index('Initialized'), seen.index('TxTurnOn'))
+
+    def test_a_path_with_its_tx_off_never_turns_on(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        seen = self._walk(tx_disable_mask=0x01)
+        self.assertIn('Init', seen)
+        self.assertEqual(seen[-1], 'Initialized')
+        # Nothing was turned on, so nothing is turned off either.
+        for st in ('TxTurnOn', 'Activated', 'TxTurnOff'):
+            self.assertNotIn(st, seen)
+
+    def test_a_pending_turn_does_not_outlive_low_power(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._control('low_power')
+        self._post(tx_disable_mask=0x00)
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Activated'] * 8)
+
+    def test_the_other_data_path_is_untouched(self):
+        self._connect('mock_fr4x2')
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 4 + ['Activated'] * 4)
+
+    def test_a_forced_squelch_does_the_same(self):
+        self._connect()
+        self._post('/api/module/squelch', tx_squelch_force=[0x10])
+        self._eventually(['Initialized'] * 8)
+        self._post('/api/module/squelch', tx_squelch_force=[0x00])
+        self._eventually(['Activated'] * 8)
+
+    def test_a_path_initialised_with_its_tx_off_stops_at_initialized(self):
+        """D.1.3: DPDeinit and OutputDisableTx both FFh in ModuleLowPwr,
+        release DPDeinit in ModuleReady, then enable the Tx."""
+        self._connect()
+        self._control('low_power')
+        self._post(dp_deinit_mask=0xFF, tx_disable_mask=0xFF)
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Deactivated'] * 8)
+        self._post(dp_deinit_mask=0x00, tx_disable_mask=0xFF)
+        self._eventually(['Initialized'] * 8)
+        self._post(tx_disable_mask=0x00)
+        self._eventually(['Activated'] * 8)
+
+    def test_a_power_up_with_a_tx_off_stops_at_initialized(self):
+        self._connect()
+        self._control('low_power')
+        self._post(tx_disable_mask=0x01)
+        self._control('high_power')
+        self.assertEqual(self._states(), ['Initialized'] * 8)
+
+    def test_the_lanes_left_on_keep_transmitting(self):
+        """Table 6-18: DPInitialized's Tx output "Depends on per-lane
+        OutputDisableTx and OutputSquelchForceTx"; the Rx side forwards."""
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        lanes = self._lanes()
+        self.assertEqual([l['output_valid_tx'] for l in lanes],
+                         [False] + [True] * 7)
+        self.assertEqual(lanes[0]['tx_power_uw'], 0)
+        self.assertTrue(all(l['tx_power_uw'] > 0 for l in lanes[1:]))
+        self.assertTrue(all(l['tx_bias_ma'] > 0 for l in lanes[1:]))
+        self.assertEqual([l['output_valid_rx'] for l in lanes], [True] * 8)
+
+    def test_the_rx_side_forwards_through_the_transients(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self.assertEqual(self._states(), ['TxTurnOff'] * 8)
+        self.assertEqual([l['output_valid_rx'] for l in self._lanes()],
+                         [True] * 8)
+
+    def test_the_path_changed_flag_is_set(self):
+        """Table 6-19: DPInitialized and DPActivated may be flagged, and both
+        are reached here through a transient."""
+        self._connect()
+        flags = lambda: self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes']
+        flags()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        self.assertEqual([l['dp_state_changed'] for l in flags()], [True] * 8)
+        self._post(tx_disable_mask=0x00)
+        self._eventually(['Activated'] * 8)
+        self.assertEqual([l['dp_state_changed'] for l in flags()], [True] * 8)
+
+    def test_a_missing_media_lane_mutes_nothing(self):
+        """The ZR carries eight host lanes into one media lane (00h:210): a
+        disable bit for a media lane it lacks is no Tx at all."""
+        self._connect('mock_coherent')
+        b = _state['backend']
+        app_module._set_page(0x10)
+        b.write_bytes(0x82, bytes([0x02]))
+        app_module._invalidate_page()
+        time.sleep(0.15)
+        self.assertEqual(self._states(), ['Activated'] * 8)
+        # Media lane 2's bit left as it is: the tool refuses to change it.
+        self._post(tx_disable_mask=0x03)
+        self._eventually(['Initialized'] * 8)
+
+    def test_a_reset_restores_the_tx_outputs(self):
+        """D.1.1 step 2: "OutputDisableTx = 0 and OutputSquelchForceTx = 0"
+        among the power-on defaults."""
+        self._connect()
+        self._post(tx_disable_mask=0xFF)
+        self._post('/api/module/squelch', tx_squelch_force=[0x0F])
+        self._eventually(['Initialized'] * 8)
+        self._control('reset')
+        self._eventually(['Activated'] * 8)
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['tx_disable_mask'], 0)
+        sq = self.assertOk(self.client.get('/api/module/squelch'))['data']
+        self.assertEqual(sq['tx_squelch_force'], 0)
+
+    def test_a_later_bank_follows_too(self):
+        self._connect('mock_1600g_16lane')
+        flags = lambda: self.assertOk(
+            self.client.get('/api/module/flags'))['data']['lanes']
+        flags()
+        self._post(tx_disable_mask=[0x00, 0x01])
+        self._eventually(['Activated'] * 8 + ['Initialized'] * 8)
+        self.assertEqual([l['dp_state_changed'] for l in flags()],
+                         [False] * 8 + [True] * 8)
+        self._post(tx_disable_mask=[0x00, 0x00])
+        self._eventually(['Activated'] * 16)
+
+    def test_a_later_bank_keeps_its_other_outputs(self):
+        self._connect('mock_1600g_16lane')
+        self._post(tx_disable_mask=[0x00, 0x01])
+        self._eventually(['Activated'] * 8 + ['Initialized'] * 8)
+        lanes = self._lanes()[8:]
+        self.assertEqual([l['output_valid_tx'] for l in lanes],
+                         [False] + [True] * 7)
+        self.assertEqual([l['output_valid_rx'] for l in lanes], [True] * 8)
+
+    def test_a_later_bank_forced_squelch_follows_too(self):
+        self._connect('mock_1600g_16lane')
+        self._post('/api/module/squelch', tx_squelch_force=[0x00, 0x80])
+        self._eventually(['Activated'] * 8 + ['Initialized'] * 8)
+
+    def test_a_later_bank_released_with_its_tx_off_stops_at_initialized(self):
+        self._connect('mock_1600g_16lane')
+        self._post(dp_deinit_mask=[0x00, 0xFF])
+        self._eventually(['Activated'] * 8 + ['Deactivated'] * 8)
+        self._post(dp_deinit_mask=[0x00, 0x00], tx_disable_mask=[0x00, 0x01])
+        self._eventually(['Activated'] * 8 + ['Initialized'] * 8)
+
+    def test_a_later_bank_powers_up_initialized_with_its_tx_off(self):
+        self._connect('mock_1600g_16lane')
+        self._control('low_power')
+        self._post(tx_disable_mask=[0x00, 0x01])
+        self._control('high_power')
+        self.assertEqual(self._states(),
+                         ['Activated'] * 8 + ['Initialized'] * 8)
+
+    def test_a_held_later_bank_does_not_rise_on_its_tx(self):
+        """DPReDeinitS holds a deinitialised path wherever its Tx stands."""
+        self._connect('mock_1600g_16lane')
+        self._post(dp_deinit_mask=[0x00, 0xFF], tx_disable_mask=[0x00, 0x01])
+        self._eventually(['Activated'] * 8 + ['Deactivated'] * 8)
+        self._post(tx_disable_mask=[0x00, 0x00])
+        time.sleep(0.15)
+        self.assertEqual(self._states()[8:], ['Deactivated'] * 8)
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_the_reply_names_the_path_it_takes_down(self):
+        self._connect()
+        d = self._post(tx_disable_mask=0x01)
+        self.assertEqual(d['tx_takes_down'],
+                         [{'host_lanes': list(range(1, 9)),
+                           'media_lanes': list(range(1, 9))}])
+
+    def test_only_the_path_that_is_muted_is_named(self):
+        self._connect('mock_fr4x2')
+        d = self._post(tx_disable_mask=0x10)
+        self.assertEqual([g['host_lanes'] for g in d['tx_takes_down']],
+                         [[5, 6, 7, 8]])
+
+    def test_a_path_already_down_is_not_named(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        self.assertEqual(self._post(tx_disable_mask=0x03)['tx_takes_down'], [])
+
+    def test_a_path_the_same_write_deinitialises_is_not_named(self):
+        self._connect()
+        self.assertEqual(self._post(tx_disable_mask=0x01,
+                                    dp_deinit_mask=0xFF)['tx_takes_down'], [])
+
+    def test_enabling_a_tx_names_nothing(self):
+        self._connect()
+        self._post(tx_disable_mask=0x01)
+        self._eventually(['Initialized'] * 8)
+        self.assertEqual(self._post(tx_disable_mask=0x00)['tx_takes_down'], [])
+
+    def test_a_forced_squelch_is_named_too(self):
+        self._connect()
+        d = self._post('/api/module/squelch', tx_squelch_force=[0x01])
+        self.assertEqual([g['host_lanes'] for g in d['tx_takes_down']],
+                         [list(range(1, 9))])
+
+    def test_a_squelch_write_that_forces_nothing_new_names_nothing(self):
+        self._connect()
+        d = self._post('/api/module/squelch', tx_squelch_disable=[0x01])
+        self.assertEqual(d['tx_takes_down'], [])
+
+    def test_a_coherent_path_is_named_by_its_media_lane(self):
+        self._connect('mock_coherent')
+        d = self._post(tx_disable_mask=0x01)
+        self.assertEqual(d['tx_takes_down'],
+                         [{'host_lanes': list(range(1, 9)), 'media_lanes': [1]}])
+
+    def test_a_later_bank_path_is_named(self):
+        self._connect('mock_1600g_16lane')
+        d = self._post(tx_disable_mask=[0x00, 0x04])
+        self.assertEqual([g['host_lanes'] for g in d['tx_takes_down']],
+                         [list(range(9, 17))])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_says_why_every_lane_moved(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('function txTakesDownNote(res) {', js)
+        self.assertIn("const down = (res && res.status === 'ok' && "
+                      "res.data.tx_takes_down) || [];", js)
+        self.assertEqual(js.count('  txTakesDownNote(res);'), 2)
+        self.assertIn("+ '. Disabling any Tx output of a running Data Path "
+                      "takes the whole '", js)
+        cell = js[js.index('function outputCell(lane)'):]
+        cell = cell[:cell.index(chr(10) + '}')]
+        self.assertIn("const rxWhy = ['Activated', 'Initialized', 'TxTurnOn', "
+                      "'TxTurnOff'].includes(st)", cell)
+        self.assertIn(": st === 'Initialized'", cell)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

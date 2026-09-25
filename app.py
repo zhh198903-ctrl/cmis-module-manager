@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.147.0'
+__version__ = '2.148.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2016,6 +2016,38 @@ def _active_data_paths():
     return groups, _nominal_media_lanes(groups, active_sel[:lanes], apps), states
 
 
+def _tx_takes_down(tx_disable, tx_force, deinit=None) -> list:
+    """The running Data Paths a write of these Tx masks takes out of
+    DPActivated.
+
+    Eq. 6-12: DPDeactivateS = DPReDeinitS OR DPTxDisableT OR
+    DPTxForceSquelchT, the last two ORed over the Data Path's media lanes -
+    "setting OutputDisableTx or OutputSquelchForceTx on one or more media
+    lanes of a Data Path causes the entire Data Path to transition to
+    DPInitialized, via DPTxTurnOff". The operator unticks one box and every
+    lane of the path changes state; the reply names the paths so the page
+    can say why. A path this same write deinitialises is going further down
+    anyway and is left out.
+    """
+    groups, media, states = _active_data_paths()
+
+    def muted(masks, lanes):
+        return any((masks[(n - 1) // 8] >> ((n - 1) % 8)) & 1
+                   for n in lanes if (n - 1) // 8 < len(masks))
+
+    out = []
+    for g in groups:
+        state = states[g[0] - 1] if g[0] - 1 < len(states) else None
+        if state not in ('Activated', 'TxTurnOn'):
+            continue
+        if deinit is not None and muted(deinit, g):
+            continue
+        ml = media.get(g[0]) or g
+        if muted(tx_disable, ml) or muted(tx_force, ml):
+            out.append({'host_lanes': g, 'media_lanes': ml})
+    return out
+
+
 def _media_lane_dp_states() -> dict:
     """{media lane: DataPath state of the Data Path carrying it}.
 
@@ -3377,6 +3409,14 @@ def api_datapath_set():
                         'nothing. Lane %s is not in either; use Apply to '
                         'bring the Data Path up' % _named(unready), 409)
 
+        # Only when this write mutes a media lane that was not muted - the
+        # common Apply leaves the Tx masks alone and needs no extra reads.
+        takes_down = []
+        if any(n & ~o for n, o in zip(tx_disable, tx_disable_now)):
+            forced = [raw[1] for _b, raw in
+                      _read_banks(0x10, cmis.REG_TX_SQUELCH_DIS[1], 2)]
+            takes_down = _tx_takes_down(tx_disable, forced, dp_deinit)
+
         for bank in range(banks):
             _set_page(0x10, bank)
             # The Staged Control Set goes down before DPDeinit, not after.
@@ -3428,7 +3468,8 @@ def api_datapath_set():
                         else 'DataPath configuration written'),
                     'applied_lanes': applied,
                     'apply_immediate': bool(apply_now),
-                    'held_until_ready': held_until_ready})
+                    'held_until_ready': held_until_ready,
+                    'tx_takes_down': takes_down})
     except _LaneMaskError as e:
         return _err(str(e), 400)
     except Exception as e:
@@ -3815,13 +3856,23 @@ def api_squelch_set():
         if bad:
             return bad
 
+        # OutputSquelchForceTx is the other half of Eq. 6-12's
+        # DPDeactivateS: forcing a squelch takes the path down as disabling
+        # the output does.
+        takes_down = []
+        if any(n & ~o for n, o in zip(tx_sf, cur_sf)):
+            disabled = [raw[0] for _b, raw in
+                        _read_banks(*cmis.REG_TX_OUTPUT_DIS)]
+            takes_down = _tx_takes_down(disabled, tx_sf)
+
         for b in range(banks):
             _set_page(0x10, b)
             _bus_write(cmis.REG_TX_SQUELCH_DIS[1],
                                           bytes([tx_sq[b], tx_sf[b]]))
             _bus_write(cmis.REG_RX_OUTPUT_DIS[1],
                                           bytes([rx_od[b], rx_sq[b]]))
-        return _ok({'message': 'Squelch/output controls written'})
+        return _ok({'message': 'Squelch/output controls written',
+                    'tx_takes_down': takes_down})
     except _LaneMaskError as e:
         return _err(str(e), 400)
     except Exception as e:
