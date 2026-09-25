@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.145.0<br>
+      <b>版本</b>　2.146.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.145.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.145.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.146.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.146.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>只写寄存器读不回写进去的值</h3>
+  <p>规范 Table 8-3:从 WO(只写)元素读,得到的是不可预测的值;从 WO/SC 元素读,得到 0——WO/SC「主要用于需要保护写入数据隐私的场合」。Page 10h 的 ApplyDPInit 和 ApplyImmediate 还规定:「这个字节必须用单字节 WRITE 写入」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>演示模块以前把密码区(<code>00h:118–125</code>,WO/SC)读回成刚写进去的密码,ApplyDPInit 一直读回上次写的 0xFF;Raw Registers 的十六进制显示把它们当成普通数值;Raw Registers 还能把触发字节夹在一次多字节写入里发出去。</span>
+  </div>
+  <p>现在:演示模块的只写字节读出来是 0,夹在多字节写入里的触发字节不生效;工具拒绝把 <code>10h:143</code> / <code>10h:144</code> 夹在多字节写入里(提示单独写);Raw Registers 读到只写字节时,在十六进制显示上方标出「write-only……not what was written」。</p>
 
   <h3>演示模块:只读寄存器写了也不变</h3>
   <p>规范 Table 8-3:「对只读元素的 WRITE 是允许的,但没有任何效果。」</p>
@@ -4540,7 +4548,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.145.0<br>
+    CMIS Module Manager 操作手册 v2.146.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

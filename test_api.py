@@ -19060,6 +19060,8 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-192': 'Page 62h Overview',
         '8-193': 'Output Power Threshold Quad Data Structure',
         '8-194': 'Output Power Thresholds (Page 62h)',
+        '8-25': 'Password Change Entry (Lower Memory)',
+        '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-196': 'Media Lane Switching (Page 6Dh)',
     }
 
@@ -32413,6 +32415,102 @@ class TestAWriteToAReadOnlyRegisterHasNoEffect(CMISTestCase):
         self.assertEqual(self._read(0x00, 0x81, 1), [0x51])
         self._unchanged(0x00, 0x81)
         self.assertFalse(getattr(b, '_ro_bypass', False))
+
+
+class TestAWriteOnlyByteDoesNotReadBack(CMISTestCase):
+    """Table 8-3: a READ from a WO element "delivers unpredictable values",
+    from a WO/SC one "a zero value" - WO/SC being "mainly useful when privacy
+    protection of written data is to be specified". Page 10h adds of
+    ApplyDPInit and ApplyImmediate: "This byte must be written in a
+    single-byte WRITE".
+
+    The demo modules read the password areas (00h:118-125, WO/SC) back as
+    the password just entered, and ApplyDPInit as the 0xFF last written; the
+    Raw Registers dump showed those bytes as if they were values; and a raw
+    write could sweep a trigger into a longer WRITE. Now the demos read
+    write-only bytes as zero and ignore a trigger in a longer WRITE, the
+    tool refuses one, and a raw read says which bytes are write-only."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _write(self, page, addr, data):
+        return self.client.post('/api/register/write',
+                                data=json.dumps({'page': page, 'address': addr,
+                                                 'data': data}),
+                                content_type='application/json')
+
+    def _read(self, page, addr, n):
+        return self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': addr, 'length': n}),
+            content_type='application/json'))['data']
+
+    # ---- the table -------------------------------------------------------------------------
+    def test_the_overlap_is_clipped_to_the_read(self):
+        import cmis_registers as c
+        got = c.write_only_overlap(0x00, 120, 4)
+        self.assertEqual([(b['first'], b['last'], b['access']) for b in got],
+                         [(120, 121, 'WO/SC'), (122, 123, 'WO/SC')])
+        self.assertEqual(c.write_only_overlap(0x10, 143, 2)[0]['access'], 'WO')
+        self.assertEqual(c.write_only_overlap(0x10, 128, 8), [])
+        # Lower Memory whatever page is named
+        self.assertEqual(len(c.write_only_overlap(0x13, 118, 8)), 2)
+
+    # ---- the demo module ----------------------------------------------------------------------
+    def test_a_password_does_not_read_back(self):
+        self._connect()
+        self.assertOk(self._write(0x00, 122, [0x12, 0x34, 0x56, 0x78]))
+        self.assertOk(self._write(0x00, 118, [0xAA, 0xBB, 0xCC, 0xDD]))
+        self.assertEqual(self._read(0x00, 118, 8)['data'], [0] * 8)
+
+    def test_a_trigger_reads_back_zero(self):
+        self._connect()
+        self.assertOk(self._write(0x10, 0x8F, [0xFF]))
+        self.assertEqual(self._read(0x10, 0x8F, 1)['data'], [0])
+
+    def test_the_demo_ignores_a_trigger_in_a_longer_write(self):
+        self._connect()
+        b = _state['backend']
+        app_module._set_page(0x10)
+        b.write_bytes(0x8F, bytes([0xFF, 0x00]))
+        app_module._invalidate_page()
+        self.assertEqual(b._commands, [])
+        b.write_bytes(0x8F, bytes([0xFF]))
+        self.assertNotEqual(b._commands, [])
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_the_read_says_which_bytes_are_write_only(self):
+        self._connect()
+        d = self._read(0x00, 118, 8)
+        self.assertEqual([b['holds'] for b in d['write_only']],
+                         ['PasswordChangeEntryArea (Table 8-25)',
+                          'PasswordEntryArea (Table 8-25)'])
+        self.assertEqual(self._read(0x00, 0x00, 8)['write_only'], [])
+
+    def test_a_trigger_swept_into_a_longer_write_is_refused(self):
+        self._connect()
+        for addr, data in ((0x8E, [0x00, 0xFF]), (0x8F, [0xFF, 0x00]),
+                           (0x90, [0x01, 0x00])):
+            rv = self._write(0x10, addr, data)
+            self.assertErr(rv, 400)
+            self.assertIn('single-byte WRITE', json.loads(rv.data)['message'])
+        self.assertOk(self._write(0x10, 0x90, [0x00]))
+
+    def test_the_bytes_either_side_still_take_a_longer_write(self):
+        self._connect()
+        self.assertOk(self._write(0x10, 0x91, [0x10, 0x10]))
+
+    def test_the_dump_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('const writeOnly = res.data.write_only || [];', js)
+        self.assertIn("'write-only (' + b.access + '), not what was written: '", js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

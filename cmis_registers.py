@@ -398,6 +398,42 @@ CLEAR_ON_READ_BLOCKS = (
 )
 
 
+# Table 8-3: a READ from a WO element "delivers unpredictable values", and
+# from a WO/SC one "a zero value" once the module has taken it. Either way
+# what reads back is not what was written - for the password areas that is
+# the point of the type ("mainly useful when privacy protection of written
+# data is to be specified").
+# (page, or None for Lower Memory; first; last; access; what it is)
+WRITE_ONLY_BLOCKS = (
+    (None, 118, 121, 'WO/SC', 'PasswordChangeEntryArea (Table 8-25)'),
+    (None, 122, 125, 'WO/SC', 'PasswordEntryArea (Table 8-25)'),
+    (0x10, 143, 143, 'WO', 'ApplyDPInit, a trigger'),
+    (0x10, 144, 144, 'WO', 'ApplyImmediate, a trigger'),
+    (0x60, 192, 193, 'WO', 'ResetAcquisitionCounters (Table 8-189), a trigger'),
+    (0x6D, 160, 160, 'WO/SC', 'CommitMediaLaneRedirection (Table 8-196), a trigger'),
+)
+
+# Page 10h, ApplyDPInit and ApplyImmediate: "Restriction: This byte must be
+# written in a single-byte WRITE".
+SINGLE_BYTE_WRITE = ((0x10, 143, 'ApplyDPInit'), (0x10, 144, 'ApplyImmediate'))
+
+
+def write_only_overlap(page, address, length):
+    """The write-only blocks a read of this range reaches, as
+    clear_on_read_overlap reports the latched ones."""
+    last = address + max(length, 1) - 1
+    out = []
+    for blk_page, first, blk_last, access, what in WRITE_ONLY_BLOCKS:
+        if blk_page != (None if address < 0x80 else page):
+            continue
+        lo, hi = max(address, first), min(last, blk_last)
+        if lo > hi:
+            continue
+        out.append({'page': blk_page, 'first': lo, 'last': hi,
+                    'access': access, 'holds': what})
+    return out
+
+
 def clear_on_read_overlap(page, address, length):
     """The clear-on-read blocks a read of this range would touch.
 

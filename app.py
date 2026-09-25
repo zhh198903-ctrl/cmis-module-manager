@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.145.0'
+__version__ = '2.146.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5313,6 +5313,9 @@ def api_register_read():
             # it here as well would be the same rule in two places.
             'clears_on_read': cmis.clear_on_read_overlap(
                 page, address, length),
+            # And what was never kept to be read: write-only bytes read as
+            # zero or as anything, not as what was written (Table 8-3).
+            'write_only': cmis.write_only_overlap(page, address, length),
             # What the module will answer in one transaction, and therefore
             # whether this read was one or several. 128 is the ceiling only
             # when full page read is advertised (section 5.2.2.1).
@@ -5372,6 +5375,18 @@ def api_register_write():
                         'you. Write the rest of the header first, then the '
                         'part with byte 129, each in %d bytes or fewer'
                         % (MAX_WRITE, MAX_WRITE))
+
+        # ApplyDPInit and ApplyImmediate: "This byte must be written in a
+        # single-byte WRITE". A raw write that sweeps across one of them in
+        # a longer WRITE sends the trigger in a form the module need not act
+        # on - and a chunked write may land it in either kind.
+        for sb_page, sb_addr, sb_name in cmis.SINGLE_BYTE_WRITE:
+            if (page == sb_page and address <= sb_addr < address + len(data)
+                    and len(data) > 1):
+                return _err('%02Xh:%d is %s, and it "must be written in a '
+                            'single-byte WRITE". Write it on its own, and '
+                            'the bytes around it separately'
+                            % (sb_page, sb_addr, sb_name), 400)
 
         err = _check_bank(page, address, bank)
         if err:

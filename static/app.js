@@ -3648,12 +3648,20 @@ async function rawRead() {
   // Said again on the dump itself: the confirm is gone the moment it is
   // answered, and these bytes are now the only record of what was there.
   const cleared = res.data.clears_on_read || [];
+  // Table 8-3: a write-only byte reads as zero (WO/SC) or as anything (WO),
+  // never as what was written - a password does not read back.
+  const writeOnly = res.data.write_only || [];
   dumpEl.textContent =
     _rawWhere(res.data.page, res.data.bank, res.data.banked) + '\n'
     + (cleared.length
        ? cleared.map(b => 'cleared by this read: '
                           + _corWhere(b, res.data.page) + ' — ' + b.holds)
                 .join('\n') + '\n'
+       : '')
+    + (writeOnly.length
+       ? writeOnly.map(b => 'write-only (' + b.access + '), not what was written: '
+                            + _corWhere(b, res.data.page) + ' — ' + b.holds)
+                  .join('\n') + '\n'
        : '')
     + formatHexDump(res.data.data, address);
   _renderReadLimit(res.data.max_read);

@@ -506,6 +506,11 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 只写寄存器:读不回来,触发字节要单独写
+
+密码区 `00h:118-125`(WO/SC)、`10h:143/144`(ApplyDPInit / ApplyImmediate,WO)、`60h:192-193`、`6Dh:160` 读出来都不是写进去的值;
+`POST /api/register/read` 的 `write_only` 列出读到的只写字节。`10h:143/144` 必须单字节写,`POST /api/register/write` 夹在多字节里会 400。
+
 ## 写只读寄存器:成功但无效果
 
 Table 8-3:对只读元素的 WRITE 允许但没有效果。`POST /api/register/write` 写到只读位置照样返回 ok(`bytes_written` 是发出去的字节数),

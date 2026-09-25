@@ -2783,12 +2783,16 @@ class MockBackend(I2CInterface):
             # The command model is bank 0's. A trigger written in a later
             # bank started it on bank 0's lanes, so applying lanes 9-16 put
             # lanes 1-8 through DPInit and left them in ConfigInProgress.
-            if 0x8F in span and data[0x8F - register]:              # ApplyDPInit
+            # "This byte must be written in a single-byte WRITE" (Page 10h,
+            # ApplyDPInit and ApplyImmediate): one swept up in a longer
+            # WRITE is not a trigger.
+            single = len(data) == 1
+            if single and 0x8F in span and data[0x8F - register]:   # ApplyDPInit
                 if self._current_bank == 0:
                     self._start_apply(data[0x8F - register], hot=False)
                 else:
                     self._bank_apply(self._current_bank, data[0x8F - register])
-            if 0x90 in span and data[0x90 - register]:              # ApplyImmediate
+            if single and 0x90 in span and data[0x90 - register]:   # ApplyImmediate
                 # "When ApplyImmediate is not supported, WRITE access to it is
                 # ignored" - silently, which is why the host has to read Lower
                 # 02h before offering the trigger at all.
@@ -3563,6 +3567,17 @@ class MockBackend(I2CInterface):
         0x60: {192, 193},                                    # counter resets
     }
 
+    # Table 8-3: what a write-only byte reads back is not what was written -
+    # zero for WO/SC once taken, anything for WO. Kept as zero here. The
+    # password areas read back the password before.
+    _WRITE_ONLY = {None: set(range(118, 126)), 0x10: {143, 144},
+                   0x60: {192, 193}, 0x6D: {160}, 0x1D: {160}}
+
+    def _write_only(self, page, addr: int) -> bool:
+        if getattr(self, '_ro_bypass', False):
+            return False
+        return addr in self._WRITE_ONLY.get(None if addr < 0x80 else page, ())
+
     def _host_writable(self, page, addr: int) -> bool:
         if getattr(self, '_ro_bypass', False):
             return True
@@ -3595,7 +3610,8 @@ class MockBackend(I2CInterface):
             page_dict = self._registers.setdefault(None, {})
             for i, b in enumerate(data):
                 if self._host_writable(None, register + i):
-                    page_dict[register + i] = b
+                    page_dict[register + i] = (
+                        0 if self._write_only(None, register + i) else b)
             was = (self._current_page, self._current_bank)
             if register <= 0x7E <= register + len(data) - 1:
                 self._current_bank = data[0x7E - register]
@@ -3616,7 +3632,9 @@ class MockBackend(I2CInterface):
             for page_dict in self._write_targets():
                 for i, b in enumerate(data):
                     if self._host_writable(self._current_page, register + i):
-                        page_dict[register + i] = b
+                        page_dict[register + i] = (
+                            0 if self._write_only(self._current_page,
+                                                  register + i) else b)
         self._holdoff_until = time.perf_counter() + self.HOLDOFF_S
 
 
