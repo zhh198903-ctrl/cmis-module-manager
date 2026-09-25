@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 激光调谐:换信道先停 Data Path
+
+7.5.2:换栅格或信道时 Data Path 必须是 DPDeactivated;微调和目标功率只要不在过渡状态就能改。
+`POST /api/module/laser` 不满足时返回 409(消息里有 7.5.2 和当前状态),什么都不写;和当前值相同的字段不算修改。
+`GET /api/module/laser` 每条通道带 `datapath_state`(承载该媒体通道的 Data Path 的状态,没有 Data Path 时为 null)。
+要换信道:先 `POST /api/module/datapath` 带 `dp_deinit_mask` 和 `apply:true` 停下,调谐,再释放。
+
 ## 测量窗口和码型时钟源:按 Bank 看
 
 Page 13h 分 Bank,`13h:176-179`(Table 8-127)每个 Bank 一份。`/api/module/ber` 和 `/api/module/counters` 的 `measurement` 里,

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.140.0<br>
+      <b>版本</b>　2.141.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.140.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.140.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.141.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.141.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1723,6 +1723,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>换信道要先停下数据通道</h3>
+  <p>规范 7.5.2:「选择另一个光信道(栅格间隔或信道号)时,模块必须处于 DPDeactivated 状态。在其它 Data Path 状态下改信道,可能导致未定义的行为,因为模块可能在改动之前或之后调谐激光器。」微调偏移和目标输出功率则可以在 Data Path 不处于过渡状态时修改。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前两条都不检查:正在承载业务的激光器照样换信道,界面也照样提供输入框。</span>
+  </div>
+  <p>现在:承载该媒体通道的 Data Path 不在 DPDeactivated 时,<b>改栅格或信道</b>会被拒绝(409),什么都不写,并说明原因;Data Path 处于过渡状态时,<b>微调和目标功率</b>也会被拒绝。页面每次 Apply 都会重发所有字段,值没变的不算修改。激光调谐表里,Data Path 在运行时栅格和信道输入框<b>锁定</b>,悬停说明要先在 DataPath 页用 DP Deinit 停下;表格下方加了一行说明。通道 9 以后的寄存器悬停提示也改为引用各自 Bank 的地址(以前通道 9 指向的是 Bank 0 里通道 1 的字节)。</p>
 
   <h3>码型时钟源和测量窗口:每个 Bank 各有一份</h3>
   <p>规范 Table 8-127(时钟与测量控制)在 Page 13h 上,而 13h 是分 Bank 的:每组 8 条通道都有自己的码型时钟源(<code>13h:176</code> / <code>178</code>)和自己的门控时间、自动重启、更新周期(<code>13h:177</code>)。只有启停动作可以设成对所有 Bank 生效(177.7)。</p>
@@ -4111,6 +4119,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <h3>10.7 Laser Tuning（激光调谐）— 仅限可调谐模块</h3>
+  <p><b>换栅格或信道前,先在 DataPath 页用 DP Deinit 把承载该通道的 Data Path 停下</b>(规范 7.5.2);运行中这两个输入框是锁定的。微调偏移和目标功率随时可改,只要 Data Path 不在过渡状态。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>CMIS 5.4 新增两项</b>，模块广告支持时才出现：
@@ -4494,7 +4503,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.140.0<br>
+    CMIS Module Manager 操作手册 v2.141.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

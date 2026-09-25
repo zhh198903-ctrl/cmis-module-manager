@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.140.0'
+__version__ = '2.141.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1993,6 +1993,48 @@ def _await_mls_commit(banks: int) -> dict:
 _DP_PAST_INIT = ('Initialized', 'TxTurnOn', 'Activated', 'TxTurnOff')
 
 
+def _active_data_paths():
+    """The Data Paths the module is running, as (host lane groups, {first
+    host lane: nominal media lanes}, DataPath state per host lane).
+
+    From the Active Control Set - DPIDX and AppSel, what the module runs
+    rather than what is staged - and 7.9.1's allocation, which this tool can
+    derive for the first group of eight only (see _nominal_media_lanes).
+    """
+    lanes = _state['lanes']
+    states, active_sel, dpconfig = [], [], []
+    for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+        states += cmis.parse_dp_states(raw)
+    for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
+        active_sel += cmis.unpack_appselect(raw)
+        dpconfig += cmis.unpack_dpconfig(raw)
+    apps = cmis.parse_application_descriptors(
+        _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
+        _additional_app_descriptors(), _media_lane_assignments(),
+        _flat_memory())
+    groups = [[i + 1 for i in g] for g in _groups_from_dpidx(dpconfig)]
+    return groups, _nominal_media_lanes(groups, active_sel[:lanes], apps), states
+
+
+def _media_lane_dp_states() -> dict:
+    """{media lane: DataPath state of the Data Path carrying it}.
+
+    Page 12h is indexed by media lane and 11h:128-131 by host lane, and a
+    coherent module carries eight host lanes into one media lane - so the
+    state that governs a laser is its Data Path's, found through the media
+    lanes that Data Path occupies. Where those cannot be derived (past the
+    first group of eight) a Data Path's host lane numbers stand in. A media
+    lane no Data Path carries is left out.
+    """
+    groups, media, states = _active_data_paths()
+    out = {}
+    for g in groups:
+        st = states[g[0] - 1] if g[0] - 1 < len(states) else None
+        for m in (media.get(g[0]) or g):
+            out[m] = st
+    return out
+
+
 def _mls_splits_data_paths(targets=None) -> list:
     """Section 7.9.4: "The host must ensure that any initialized or activated
     Data Paths or Network Paths are either affected as a whole or not at all
@@ -2008,23 +2050,11 @@ def _mls_splits_data_paths(targets=None) -> list:
     derive them for the first group of eight only (see _nominal_media_lanes),
     so a Data Path it cannot place is not judged.
     """
-    lanes = _state['lanes']
     status = b''.join(raw for _b, raw in _read_banks(*cmis.REG_MLS_STATUS))
     if targets is None:
         targets = list(b''.join(
             raw for _b, raw in _read_banks(*cmis.REG_MLS_REDIRECTION)))
-    states, active_sel, dpconfig = [], [], []
-    for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
-        states += cmis.parse_dp_states(raw)
-    for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
-        active_sel += cmis.unpack_appselect(raw)
-        dpconfig += cmis.unpack_dpconfig(raw)
-    apps = cmis.parse_application_descriptors(
-        _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
-        _additional_app_descriptors(), _media_lane_assignments(),
-        _flat_memory())
-    groups = [[i + 1 for i in g] for g in _groups_from_dpidx(dpconfig)]
-    media = _nominal_media_lanes(groups, active_sel[:lanes], apps)
+    groups, media, states = _active_data_paths()
     out = []
     for group in groups:
         mlanes = media.get(group[0])
@@ -4736,6 +4766,7 @@ def api_laser_get():
 
         grid_codes = cmis.GRID_CODES
 
+        dp_of = _media_lane_dp_states()
         lanes = []
         for i in range(_state['lanes']):
             # 8.15: "Each Bank of Page 12h refers to 8 media lanes", and every
@@ -4796,6 +4827,8 @@ def api_laser_get():
                 # 5.4: when set, Page 02h's absolute Tx power thresholds stop
                 # applying to this lane and the relative ones take over.
                 'relative_thresholds_enabled': rel_thr_en,
+                # 7.5.2: the channel can be changed only in DPDeactivated.
+                'datapath_state': dp_of.get(i + 1),
             })
 
         return _ok({
@@ -4904,6 +4937,16 @@ def api_laser_set():
         # moved. Nothing is written unless all of it can be.
         plan = []
         written = 0
+        # Section 7.5.2: "When selecting another optical channel (grid
+        # spacing or channel number), the module must be in the DPDeactivated
+        # state" - otherwise "unspecified behavior, as the module may tune the
+        # laser before or after the change has been made". Fine tuning and
+        # target power "may be programmed if the corresponding Data Path is
+        # not in a transient state". Judged against what is there now, so the
+        # page resending an unchanged channel is not a change of channel.
+        dp_of = _media_lane_dp_states()
+        grid_now = _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)
+        ch_now_raw = _read_banked(*cmis.REG_CHANNEL_NUM_TX[:2], 2)
         for ldata in lanes:
             if not isinstance(ldata, dict):
                 return _err('Each lane entry must be an object, got %r' % (ldata,), 400)
@@ -4933,6 +4976,28 @@ def api_laser_set():
                     'to 8 media lanes" (8.15) - so there is no laser here to '
                     'tune' % (lane + 1), 400)
             bank, slot = divmod(lane, 8)
+            state = dp_of.get(lane + 1)
+            ch_now = struct.unpack('>h', ch_now_raw[lane * 2:lane * 2 + 2])[0]
+            retune = (('grid_code' in ldata and (int(ldata['grid_code']) & 0x0F)
+                       != grid_now[lane] >> 4)
+                      or ('channel' in ldata and int(ldata['channel']) != ch_now))
+            if retune and state not in (None, 'Deactivated'):
+                return _err(
+                    'Lane %d: selecting another optical channel needs its Data '
+                    'Path in DPDeactivated (7.5.2), and it is in DP%s - the '
+                    'module may tune before or after the change. Take the Data '
+                    'Path down (DP Deinit), tune, then bring it back'
+                    % (lane + 1, state), 409)
+            fine_now = bool(grid_now[lane] & 1)
+            finer = ('fine_offset_ghz' in ldata or 'target_power_dbm' in ldata
+                     or ('fine_tuning_enabled' in ldata
+                         and bool(ldata['fine_tuning_enabled']) != fine_now))
+            if finer and state is not None and cmis.dp_state_is_transient(state):
+                return _err(
+                    'Lane %d: fine tuning and target power may be programmed '
+                    'when the Data Path is not in a transient state (7.5.2), '
+                    'and it is in DP%s. Wait for it to settle'
+                    % (lane + 1, state), 409)
             # Counted per field, not per entry: {"lane": 3} on its own asks
             # for nothing, and reporting it as a written lane is the same
             # "parameters written" having written nothing that the shape check

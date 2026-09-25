@@ -53,7 +53,7 @@ def poke(page, addr, value):
     app_module._invalidate_page()
 
 
-def deactivated(client, lanes=0xFF):
+def deactivated(client, lanes=None):
     """Stop the Data Paths so a reconfiguration is legal.
 
     6.2.4.3 allows freeing a lane, or moving a Data Path to an Application of
@@ -63,6 +63,9 @@ def deactivated(client, lanes=0xFF):
     below take the path down before they reconfigure it. Doing it in one Apply
     earns ConfigRejectedLanesInUse, exactly as a real module answers.
     """
+    if lanes is None:
+        # Every lane the module has: a number is a mask over all of them.
+        lanes = (1 << _state['lanes']) - 1
     rv = client.post('/api/module/datapath',
                      data=json.dumps({'dp_deinit_mask': lanes, 'apply': True}),
                      content_type='application/json')
@@ -2999,6 +3002,9 @@ class TestATuningRequestTheLaserCannotServe(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         return self.assertOk(self.client.get('/api/module/laser'))['data']
 
     def _tune(self, **fields):
@@ -4938,6 +4944,9 @@ class TestCoherentProfiles(CMISTestCase):
         """Laser tuning had no test at all, so moving the only tunable profile
         to its own name could have taken the feature with it silently."""
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         d = self.assertOk(self.client.get('/api/module/laser'))['data']
         self.assertIn('100 GHz', d['grids_supported'])
         self.assertOk(self.client.post(
@@ -7947,6 +7956,9 @@ class TestTheGridCmis54Added(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
 
     def _laser(self):
         return self.assertOk(self.client.get('/api/module/laser'))['data']
@@ -15369,6 +15381,9 @@ class TestTuningAModuleWiderThanOneBank(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': self.BACKEND, 'address': 0x50}),
             content_type='application/json'))
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
 
     def _lanes(self):
         d = self.assertOk(self.client.get('/api/module/laser'))['data']
@@ -17722,6 +17737,9 @@ class TestOneWriteContractForEveryWriteEndpoint(CMISTestCase):
         """The field list is a whitelist, so a name missing from it refuses a
         request that used to work."""
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         r = self._post('/api/module/laser',
                        {'lanes': [{'lane': 1, 'grid_code': 4, 'channel': 1,
                                    'fine_offset_ghz': 0.0,
@@ -18562,6 +18580,9 @@ class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
         """No row the module would refuse, and no tunable lane without a row.
         Either way round is a panel that disagrees with its own Apply."""
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         rows = {l['lane'] for l in self._laser()['lanes']}
         import app as app_module
         for lane in range(1, app_module._state['lanes'] + 1):
@@ -18595,6 +18616,9 @@ class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
     def test_the_lane_that_exists_still_tunes(self):
         """A gate that refused everything would pass every test above."""
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         r = self._post({'lanes': [{'lane': 1, 'channel': 9}]})
         self.assertEqual(r['status'], 'ok', r.get('message'))
         self.assertEqual(self._laser()['lanes'][0]['channel'], 9)
@@ -18606,6 +18630,9 @@ class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
         unambiguously advertise unsupported media lanes", so 00h:210 is not
         used there and nothing is hidden on its strength."""
         self._connect('mock_zr16')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         rows = [l['lane'] for l in self._laser()['lanes']]
         self.assertEqual(len(rows), 16)
         self.assertEqual(self._post(
@@ -25222,6 +25249,9 @@ class TestTheFlagsNobodyIsToldAbout(CMISTestCase):
         """The module sets the summary bit as it sets the Flag, so a request
         the module refuses shows up in both."""
         self._connect()
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         d = self._laser()
         lane = d['lanes'][0]
         # Grid 0 has no advertised channel plan, so the host has nothing to
@@ -25763,6 +25793,9 @@ class TestTheWaitsThatWereGuesses(CMISTestCase):
         """Grid 0 has no advertised channel plan, so the module is the one
         that has to say no."""
         self._connect()
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         d = self._laser_apply(grid_code=0, channel=7)
         self.assertIn('1', [str(k) for k in d['refused']],
                       'the module refused and the reply did not say so')
@@ -28870,6 +28903,9 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
         profile is tunable - so the advertisement is forced on the sixteen
         media lane one."""
         self._connect('mock_zr16')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         _state['backend']._registers[0x01][0x9C] |= 0x80
         _state['caps']['controls']['bank_broadcast'] = True
         self._broadcast()
@@ -29040,6 +29076,9 @@ class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
         every tuning write for nothing. Forced on, so it is the bank count
         that stops the read."""
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         _state['caps']['controls']['bank_broadcast'] = True
         backend = _state['backend']
         backend.write_bytes(0x1A, bytes([0x80]))
@@ -29572,6 +29611,9 @@ class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
 
     def test_a_tunable_and_a_banked_module_too(self):
         self._connect('mock_coherent_zr')
+        # 7.5.2: another grid or channel only in DPDeactivated, and this
+        # retunes - so the Data Paths are taken down first.
+        deactivated(self.client)
         self.assertOk(self._post('/api/module/laser', {'lanes': [
             {'lane': 1, 'channel': 1}]}))
         self._connect('mock_24lane')
@@ -31862,6 +31904,172 @@ class TestEachBankHasItsOwnPatternSettings(CMISTestCase):
         self.assertIn('new Set(names).size > 1', js)
         self.assertNotIn(
             "Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference)", js)
+
+
+class TestAnotherChannelOnlyWithTheDataPathDown(CMISTestCase):
+    """Section 7.5.2: "When selecting another optical channel (grid spacing
+    or channel number), the module must be in the DPDeactivated state.
+    Attempts to change the optical channel ... while the corresponding Data
+    Path is in any other Data Path state may result in unspecified behavior,
+    as the module may tune the laser before or after the change has been
+    made." Fine tuning and target power "may be programmed if the
+    corresponding Data Path is not in a transient state".
+
+    The tuning endpoint checked neither: it retuned a laser carrying traffic,
+    and the panel offered to. A new grid or channel is now refused unless the
+    Data Path carrying that media lane is DPDeactivated, fine tuning and power
+    while it is transient; an unchanged value resent by the page is no
+    change. The table locks grid and channel while the path is up, and its
+    tooltips past lane 8 name their own bank's bytes."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _laser(self):
+        return {l['lane']: l for l in self.assertOk(
+            self.client.get('/api/module/laser'))['data']['lanes']}
+
+    def _tune(self, *lanes):
+        return self.client.post('/api/module/laser',
+                                data=json.dumps({'lanes': list(lanes)}),
+                                content_type='application/json')
+
+    # ---- the channel -----------------------------------------------------------------------
+    def test_a_new_channel_on_a_running_path_is_refused(self):
+        self._connect()
+        before = self._laser()[1]
+        rv = self._tune({'lane': 1, 'channel': before['channel'] + 1})
+        self.assertErr(rv, 409)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('7.5.2', msg)
+        self.assertIn('DPActivated', msg)
+        self.assertEqual(self._laser()[1]['channel'], before['channel'])
+
+    def test_a_new_grid_too(self):
+        self._connect()
+        before = self._laser()[1]
+        other = 4 if before['grid_code'] != 4 else 5
+        self.assertErr(self._tune({'lane': 1, 'grid_code': other}), 409)
+
+    def test_the_same_channel_is_no_change(self):
+        """The page sends every field of every row on Apply."""
+        self._connect()
+        l = self._laser()[1]
+        self.assertOk(self._tune({'lane': 1, 'grid_code': l['grid_code'],
+                                  'channel': l['channel']}))
+
+    def test_once_the_path_is_down_it_moves(self):
+        self._connect()
+        before = self._laser()[1]['channel']
+        deactivated(self.client)
+        self.assertOk(self._tune({'lane': 1, 'channel': before + 1}))
+        self.assertEqual(self._laser()[1]['channel'], before + 1)
+
+    # ---- fine tuning and power ----------------------------------------------------------------
+    def test_power_and_fine_tuning_are_allowed_while_up(self):
+        self._connect()
+        self.assertOk(self._tune({'lane': 1, 'target_power_dbm': -1.0}))
+        self.assertOk(self._tune({'lane': 1, 'fine_offset_ghz': 0.5}))
+
+    def test_switching_fine_tuning_on_is_not_a_new_channel(self):
+        self._connect()
+        l = self._laser()[1]
+        self.assertOk(self._tune({'lane': 1, 'grid_code': l['grid_code'],
+                                  'fine_tuning_enabled': not l['fine_tuning_enabled']}))
+
+    def test_not_while_the_path_is_moving(self):
+        self._connect()
+        _state['backend']._dp_lane_states = [0x2] * 8    # DPInit
+        rv = self._tune({'lane': 1, 'target_power_dbm': -1.0})
+        self.assertErr(rv, 409)
+        self.assertIn('transient', json.loads(rv.data)['message'])
+        self.assertErr(self._tune({'lane': 1, 'fine_offset_ghz': 0.5}), 409)
+
+    def test_a_fine_tuning_toggle_while_moving_too(self):
+        self._connect()
+        l = self._laser()[1]
+        _state['backend']._dp_lane_states = [0x5] * 8    # DPTxTurnOn
+        self.assertErr(self._tune({'lane': 1, 'grid_code': l['grid_code'],
+                                   'fine_tuning_enabled': not l['fine_tuning_enabled']}),
+                       409)
+
+    # ---- which Data Path --------------------------------------------------------------------
+    def test_each_lane_says_its_data_paths_state(self):
+        self._connect()
+        self.assertEqual(self._laser()[1]['datapath_state'], 'Activated')
+        deactivated(self.client)
+        self.assertEqual(self._laser()[1]['datapath_state'], 'Deactivated')
+
+    def test_a_wide_module_judges_each_lane_by_its_own_path(self):
+        self._connect('mock_zr16')
+        deactivated(self.client, 0xFF)                   # bank 0 only
+        lanes = self._laser()
+        self.assertEqual(lanes[1]['datapath_state'], 'Deactivated')
+        self.assertEqual(lanes[9]['datapath_state'], 'Activated')
+        self.assertOk(self._tune({'lane': 1, 'channel': lanes[1]['channel'] + 1}))
+        self.assertErr(self._tune({'lane': 9, 'channel': lanes[9]['channel'] + 1}), 409)
+
+    def test_a_lane_no_data_path_carries_can_be_tuned(self):
+        """An unused lane is not part of a Data Path (6.2.3.2), so there is
+        no path to take down first."""
+        self._connect('mock_zr16')
+        rv = self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [1] * 8 + [0] * 8, 'apply': True}),
+            content_type='application/json')
+        self.assertOk(rv)
+        lanes = self._laser()
+        self.assertIsNone(lanes[9]['datapath_state'])
+        self.assertOk(self._tune({'lane': 9, 'channel': lanes[9]['channel'] + 1}))
+
+    def test_a_media_lane_follows_its_data_path_not_its_number(self):
+        """A coherent Data Path on host lanes 5-8 can carry media lane 2:
+        the state that governs lane 2's laser is that path's, not host lane
+        2's."""
+        import app as a
+        real = a._active_data_paths
+        a._active_data_paths = lambda: (
+            [[1, 2, 3, 4], [5, 6, 7, 8]], {1: [1], 5: [2]},
+            ['Deactivated'] * 4 + ['Activated'] * 4)
+        self.addCleanup(setattr, a, '_active_data_paths', real)
+        self.assertEqual(a._media_lane_dp_states(), {1: 'Deactivated', 2: 'Activated'})
+
+    def test_nothing_is_written_when_one_lane_is_refused(self):
+        self._connect('mock_zr16')
+        deactivated(self.client, 0xFF)
+        lanes = self._laser()
+        self.assertErr(self._tune({'lane': 1, 'channel': lanes[1]['channel'] + 1},
+                                  {'lane': 9, 'channel': lanes[9]['channel'] + 1}), 409)
+        self.assertEqual(self._laser()[1]['channel'], lanes[1]['channel'])
+
+    # ---- the page -------------------------------------------------------------------------
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_the_table_locks_grid_and_channel_while_the_path_is_up(self):
+        js = self._read('static', 'app.js')
+        self.assertIn("const locked = !!l.datapath_state && l.datapath_state !== 'Deactivated';", js)
+        self.assertIn('id="laser-grid-${l.lane}" title="${tipGrid}${lockTip}"${lockAttr}>', js)
+        self.assertIn('id="laser-ch-${l.lane}" title="${tipCh}${lockTip}"${lockAttr}', js)
+
+    def test_the_tooltips_past_lane_8_name_their_own_bank(self):
+        js = self._read('static', 'app.js')
+        self.assertIn('const k = (l.lane - 1) % 8;', js)
+        for addr in ('addr: 0x80 + k', '0x88 + k * 2', '0x98 + k * 2',
+                     '0xA8 + k * 4', '0xC8 + k * 2', 'addr: 0xDE + k'):
+            self.assertIn(addr, js)
+        self.assertNotIn('addr: 0x80 + i,', js)
+
+    def test_the_card_says_why(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('id="laser-dp-note"')
+        self.assertIn('(7.5.2)', html[i:i + 500])
+        self.assertIn('DPDeactivated', html[i:i + 500])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

@@ -4957,31 +4957,42 @@ async function loadLaser() {
     const i = l.lane - 1;
     // Page 12h: 1 byte/lane grid, then S16 per lane for channel, fine offset
     // and target power; frequency and status are read-only feedback.
+    // Page 12h is banked by media lane: lane 9 is slot 0 of bank 1, not
+    // byte 0x88 - which is lane 1's channel number.
+    const k = (l.lane - 1) % 8;
+    const bankTag = AppState.lanes > 8 ? ` (Bank ${Math.floor((l.lane - 1) / 8)})` : '';
+    // 7.5.2: another grid or channel only while the Data Path is down.
+    const locked = !!l.datapath_state && l.datapath_state !== 'Deactivated';
+    const lockTip = locked ? esc('\n\nLocked: the Data Path carrying this lane '
+      + `is in DP${l.datapath_state}. Section 7.5.2 changes the grid or channel `
+      + 'only in DPDeactivated - take it down with DP Deinit on the DataPath '
+      + 'tab first.') : '';
+    const lockAttr = locked ? ' disabled' : '';
     const tipGrid = esc(regTip({
-      field: `GridSpacingTx${l.lane}`, page: 0x12, addr: 0x80 + i,
+      field: `GridSpacingTx${l.lane}${bankTag}`, page: 0x12, addr: 0x80 + k,
       note: `Bits 7-4 = ${l.grid_code} (${l.grid}); bit 0 FineTuningEnableTx = `
           + `${l.fine_tuning_enabled ? 1 : 0} (bits 3-1 reserved)`,
     }));
-    const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}`, 0x12, 0x88 + i * 2, 2,
+    const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}${bankTag}`, 0x12, 0x88 + k * 2, 2,
       `S16 channel number, current ${l.channel}`));
-    const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}`, 0x12, 0x98 + i * 2, 2,
+    const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}${bankTag}`, 0x12, 0x98 + k * 2, 2,
       `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`));
-    const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}`, 0x12, 0xA8 + i * 4, 4,
+    const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}${bankTag}`, 0x12, 0xA8 + k * 4, 4,
       `U32 in units of 0.001 GHz, current ${l.frequency_na ? 'NA (Table 7-8)'
         : l.frequency_thz.toFixed(6) + ' THz'} (read-only)`));
-    const tipPwr = esc(regTipRange(`TargetOutputPowerTx${l.lane}`, 0x12, 0xC8 + i * 2, 2,
+    const tipPwr = esc(regTipRange(`TargetOutputPowerTx${l.lane}${bankTag}`, 0x12, 0xC8 + k * 2, 2,
       `S16 in units of 0.01 dBm, current ${l.target_power_dbm} dBm`));
     const tipStat = esc(regTip({
-      field: `TuningInProgressTx${l.lane} / WavelengthUnlockedTx${l.lane}`,
-      page: 0x12, addr: 0xDE + i,
+      field: `TuningInProgressTx${l.lane} / WavelengthUnlockedTx${l.lane}${bankTag}`,
+      page: 0x12, addr: 0xDE + k,
       note: `Bit 1 TuningInProgressTx = ${l.tuning_in_progress ? 1 : 0}; `
           + `bit 0 WavelengthUnlockedTx = ${l.wavelength_locked ? 0 : 1} (bits 7-2 reserved)`,
     }));
 
     return `<tr>
       <td>${l.lane}</td>
-      <td title="${tipGrid}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}">${gridOpts(l.grid_code, l.grid)}</select></td>
-      <td title="${tipCh}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}" value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
+      <td title="${tipGrid}${lockTip}"><select class="app-select-input" id="laser-grid-${l.lane}" title="${tipGrid}${lockTip}"${lockAttr}>${gridOpts(l.grid_code, l.grid)}</select></td>
+      <td title="${tipCh}${lockTip}"><input type="number" id="laser-ch-${l.lane}" title="${tipCh}${lockTip}"${lockAttr} value="${l.channel}"${l.channel_range ? ` min="${l.channel_range[0]}" max="${l.channel_range[1]}"` : ''} style="width:70px" class="raw-data-input">${l.channel_range ? `<div class="range-hint">${l.channel_range[0]}..${l.channel_range[1]}</div>` : ''}</td>
       <td title="${tipFt}"><input type="number" id="laser-ft-${l.lane}" title="${tipFt}" value="${l.fine_offset_ghz}" step="0.001" style="width:80px" class="raw-data-input"></td>
       <td style="font-family:var(--font-mono)" title="${tipFreq}">${l.frequency_na
         ? naCell('no valid sample') : l.frequency_thz.toFixed(6)}</td>
