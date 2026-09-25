@@ -68,7 +68,7 @@ Then open **http://127.0.0.1:5000** in your browser (the default port — change
 python test_api.py
 ```
 
-2489 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+2496 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.152.0'
+__version__ = '2.153.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5046,7 +5046,18 @@ def api_laser_set():
         # The same gating as the GET side: without it the 300 GHz grid has no
         # advertised range here, and a channel written to it is the one channel
         # this handler never checks.
-        grid_300 = bool((_read_upper(*cmis.REG_GRID_SUPPORTED)[1] >> 5) & 1)
+        grid_sup_raw = _read_upper(*cmis.REG_GRID_SUPPORTED)
+        grid_300 = bool((grid_sup_raw[1] >> 5) & 1)
+        # Table 8-109 types FineTuningEnableTx (12h:128.0) and
+        # FineTuningOffsetTx (12h:152-167) "RW Adv.", and a 5.4 bug fix made
+        # that explicit: "Fine Tuning controls on Page 12h are advertised, not
+        # required". The advertisement they name is FineTuningSupported,
+        # 04h:129.7.
+        # An Adv. field is "Supported when indicated in a clearly associated
+        # feature advertisement" (8.1.3.7). The range check below trusted
+        # 04h:192-195 on a module that advertises no fine tuning, where they
+        # describe nothing.
+        fine_supported = bool((grid_sup_raw[1] >> 7) & 1)
         ch_ranges = cmis.parse_grid_channel_ranges(_read_grid_ranges(grid_300))
         _set_page(0x12)
 
@@ -5140,6 +5151,15 @@ def api_laser_set():
                         % (lane + 1, ch_eff, cmis.GRID_CODES.get(gc_eff, gc_eff),
                            {7: '25 GHz', 8: '25 GHz', 9: '12.5 GHz'}.get(
                                gc_eff, 'the grid'), mult), 400)
+            if not fine_supported and (
+                    ldata.get('fine_tuning_enabled')
+                    or float(ldata.get('fine_offset_ghz', 0) or 0)):
+                return _err(
+                    'Lane %d: this module does not advertise fine tuning '
+                    '(04h:129.7 clear), and FineTuningEnableTx and '
+                    'FineTuningOffsetTx are advertised controls (Table 8-109) '
+                    '- writing them would report success and change nothing'
+                    % (lane + 1), 400)
             if 'grid_code' in ldata:
                 gc = int(ldata['grid_code']) & 0x0F
                 fine_en = 1 if ldata.get('fine_tuning_enabled', False) else 0
@@ -5170,7 +5190,9 @@ def api_laser_set():
                 plan.append((bank, cmis.REG_CHANNEL_NUM_TX[1] + slot * 2,
                              struct.pack(">h", ch)))
                 fields += 1
-            if 'fine_offset_ghz' in ldata:
+            # A zero offset on a module without fine tuning is no request:
+            # its register is not there to write (8.1.3.7).
+            if 'fine_offset_ghz' in ldata and fine_supported:
                 off = float(ldata['fine_offset_ghz'])
                 if not (fine_lo <= off <= fine_hi):
                     return _err(

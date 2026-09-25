@@ -33670,6 +33670,112 @@ class TestThe54BadgeMarksOnlyWhat54Added(CMISTestCase):
         self.assertIn('这一页是 <b>CMIS 5.3</b> 引入的', sec)
 
 
+class TestFineTuningIsAnAdvertisedControl(CMISTestCase):
+    """Table 8-109: FineTuningEnableTx (12h:128.0) and FineTuningOffsetTx
+    (12h:152-167) are "RW Adv." with "Advertisement: 04h:129", and a CMIS
+    5.4 bug fix says so outright: "Fine Tuning controls on Page 12h are
+    advertised, not required". 8.1.3.7: an Adv. field is "Supported when
+    indicated in a clearly associated feature advertisement".
+
+    The laser table offered the fine-offset box and the POST wrote both
+    controls whatever 04h:129.7 said - and checked the offset against
+    04h:192-195, which describe nothing on a module without fine tuning. Now
+    the box is greyed there, the page sends no fine fields, the POST refuses
+    a non-zero offset or an enable and writes no offset, and the demo applies
+    no offset it has no fine tuning for."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+
+    def _no_fine_tuning(self):
+        b = _state['backend']
+        poke(0x04, 0x81, b._registers[0x04][0x81] & 0x7F)
+        self.assertFalse(self._laser()['fine_tuning_supported'])
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _post(self, **lane):
+        lane.setdefault('lane', 1)
+        return self.client.post('/api/module/laser',
+                                data=json.dumps({'lanes': [lane]}),
+                                content_type='application/json')
+
+    def test_an_advertising_module_takes_an_offset(self):
+        self._connect()
+        self.assertTrue(self._laser()['fine_tuning_supported'])
+        self.assertOk(self._post(fine_offset_ghz=0.5, fine_tuning_enabled=True))
+
+    def test_without_it_an_offset_is_refused(self):
+        self._connect()
+        self._no_fine_tuning()
+        rv = self._post(fine_offset_ghz=0.5)
+        self.assertErr(rv, 400)
+        self.assertIn('04h:129.7', json.loads(rv.data)['message'])
+
+    def test_without_it_an_enable_is_refused(self):
+        """With the lane's own grid, so the enable bit would be written."""
+        self._connect()
+        self._no_fine_tuning()
+        grid = self._laser()['lanes'][0]['grid_code']
+        rv = self._post(grid_code=grid, fine_tuning_enabled=True,
+                        fine_offset_ghz=0)
+        self.assertErr(rv, 400)
+        self.assertIn('04h:129.7', json.loads(rv.data)['message'])
+
+    def test_the_range_is_not_what_decides(self):
+        """04h:192-195 widened: still refused, because there is no fine
+        tuning at all."""
+        self._connect()
+        self._no_fine_tuning()
+        for addr, v in ((0xC0, 0x80), (0xC1, 0x00), (0xC2, 0x7F), (0xC3, 0xFF)):
+            poke(0x04, addr, v)
+        self.assertErr(self._post(fine_offset_ghz=1.0), 400)
+
+    def test_without_it_a_zero_offset_writes_nothing(self):
+        self._connect()
+        self._no_fine_tuning()
+        b = _state['backend']
+        writes = []
+        real = b.write_bytes
+
+        def spy(addr, data):
+            if b._current_page == 0x12:
+                writes.extend(range(addr, addr + len(data)))
+            return real(addr, data)
+        b.write_bytes = spy
+        self.addCleanup(setattr, b, 'write_bytes', real)
+        self.assertOk(self._post(fine_offset_ghz=0, target_power_dbm=0))
+        self.assertFalse([a for a in writes if 0x98 <= a <= 0xA7],
+                         'the fine-tuning offset register was written')
+
+    def test_the_demo_applies_no_offset_it_cannot_take(self):
+        self._connect()
+        before = self._laser()['lanes'][0]['frequency_thz']
+        self._no_fine_tuning()
+        b = _state['backend']
+        app_module._set_page(0x12)
+        b.write_bytes(0x98, bytes([0x01, 0xF4]))          # +0.5 GHz
+        b.write_bytes(0x80, bytes([b._registers[0x12][0x80] | 0x01]))
+        app_module._invalidate_page()
+        self.assertEqual(self._laser()['lanes'][0]['frequency_thz'], before)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_greys_the_box_and_sends_nothing(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('const noFine = !d.fine_tuning_supported;', js)
+        self.assertIn("step=\"${ftStep}\" style=\"width:80px\" "
+                      "class=\"raw-data-input\"${noFine ? ' disabled' : ''}>", js)
+        self.assertIn('...(ftInput.disabled ? {} : {', js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

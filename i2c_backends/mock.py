@@ -2748,7 +2748,11 @@ class MockBackend(I2CInterface):
                     ft_hi = p12.get(0x98 + lane * 2, 0)
                     ft_lo = p12.get(0x99 + lane * 2, 0)
                     ft_offset = struct.unpack(">h", bytes([ft_hi, ft_lo]))[0]
-                    fine_ghz = ft_offset * 0.001 if (grid_byte & 0x01) else 0.0
+                    # 04h:129.7: a laser without fine tuning has none to
+                    # apply, whatever is written into 12h (Table 8-109).
+                    fine_ghz = (ft_offset * 0.001 if (grid_byte & 0x01)
+                                and (self._registers.get(0x04, {}).get(0x81, 0) & 0x80)
+                                else 0.0)
                     if not self._tuning_accepted[lane_base + lane]:
                         continue        # refused: the laser has not moved
                     freq_thz = 193.1 + (ch_n + n_offset) * step_thz + fine_ghz / 1000.0

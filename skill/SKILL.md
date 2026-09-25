@@ -568,6 +568,11 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 微调要看 04h:129.7
+
+FineTuningEnableTx / FineTuningOffsetTx 是 `RW Adv.`(Table 8-109,由 `04h:129.7` 声明;5.4 缺陷修正明确「声明才有」)。
+`GET /api/module/laser` 的 `fine_tuning_supported` 为 false 时,`POST` 带非零 `fine_offset_ghz` 或 `fine_tuning_enabled: true` 返回 400;偏移为 0 时不写寄存器。
+
 ## 固件故障标志
 
 `Lower 0x08` bit 1-3(Table 8-9):ModuleFirmwareErrorFlag、DataPathFirmwareErrorFlag、AbnormalFwIndicationFlag,闩锁读清。
