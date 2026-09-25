@@ -1445,7 +1445,12 @@ async function loadExt54() {
     // value 3 means lane 3 in the first group and lane 11 in the second -
     // printing it bare said lane 11 was fed by lane 3.
     const groups = (m.enabled_banks || [true]).length;
-    const target = (abs, raw) => abs == null ? '—'
+    const target = (abs, raw, present) => abs == null ? '—'
+      // 7.9.3: an internal media lane the module does not have holds 0.
+      : (raw === 0 && present === false)
+      ? `<span class="reg-meta" title="${esc('Register value 0: this module '
+          + 'has no such internal media lane (00h:210), and section 7.9.3 has '
+          + 'the register hold 0 for it')}">none</span>`
       : `<span title="${esc('Register value ' + raw
           + (groups > 1 ? ', which is lane ' + raw + ' of this group of 8' : '')
           + '. 6Dh is banked and a target is a lane of its own group.'
@@ -1458,15 +1463,18 @@ async function loadExt54() {
       const grp = groups > 1
         ? `<div class="reg-meta">group ${l.bank + 1}, lane ${l.lane_in_bank}</div>` : '';
       return `<tr><td>${l.lane}${grp}</td>`
-        + `<td>${target(l.redirected_to, l.redirected_to_raw)}</td>`
-        + `<td${cls}>${target(l.active_target, l.active_target_raw)}</td>`
+        + `<td>${target(l.redirected_to, l.redirected_to_raw, l.media_lane_present)}</td>`
+        + `<td${cls}>${target(l.active_target, l.active_target_raw, l.media_lane_present)}</td>`
         + `<td>${mlsResultCell(l)}</td></tr>`;
     }).join('')
-      + (m.permutation_banks || []).map((ok, b) => ok ? '' :
+      // 7.9.3: one-to-one onto the eight external lanes - a permutation
+      // only where the module has all eight internal media lanes.
+      + (m.mapping_valid_banks || m.permutation_banks || []).map((ok, b) => ok ? '' :
           `<tr><td colspan="4"><span class="flag-active">■ ${esc(
-            groups > 1 ? 'Lanes ' + (b * 8 + 1) + '-' + (b * 8 + 8)
-                         + ' are not a permutation of their group'
-                       : 'Not a permutation')
+            (groups > 1 ? 'Lanes ' + (b * 8 + 1) + '-' + (b * 8 + 8) + ' are'
+                        : 'This is')
+            + ' not a one-to-one mapping of the media lanes this module has'
+            + ' onto external lanes 1-8 (7.9.3)')
           } — the module will reject this commit</span></td></tr>`).join('')
       + ((m.enabled_banks || []).length > 1
          && new Set(m.enabled_banks).size > 1
@@ -1486,7 +1494,7 @@ async function loadExt54() {
              + (m.commit_duration_label
                 ? '; this module advertises up to ' + m.commit_duration_label
                   + ' for it (6Dh:128)' : ''))}</span></td></tr>`
-         : m.committed === false && m.is_permutation
+         : m.committed === false && m.mapping_valid
          // Pressing Commit on a disabled switch does nothing at all (Table
          // 8-196), so the advice has to name the step that is missing.
          ? (m.enabled
@@ -1500,9 +1508,18 @@ async function loadExt54() {
     // endpoint took it silently.
     const box = document.getElementById('mls-mapping');
     if (box && AppState.lanes) {
+      // With fewer internal media lanes than eight, a permutation is not a
+      // valid example (7.9.3): show the lanes it has moved to the top
+      // external ones and the rest at 0.
+      const first = m.lanes.slice(0, 8);
+      const n = first.filter(l => l.media_lane_present !== false).length;
+      let k = 0;
+      const fewer = first.map(l => l.media_lane_present === false
+        ? '0' : String(9 - n + k++)).join(',');
       box.placeholder = 'target order for all ' + AppState.lanes
-        + ' lanes, e.g. ' + (AppState.lanes > 8 ? '2,1,3,4,5,6,7,8,2,1,...'
-                                                : '2,1,4,3,5,6,7,8');
+        + ' lanes, e.g. ' + (n < first.length ? fewer
+          : AppState.lanes > 8 ? '2,1,3,4,5,6,7,8,2,1,...'
+                               : '2,1,4,3,5,6,7,8');
     }
   }
   document.getElementById('ext54-pagemap').textContent = '';

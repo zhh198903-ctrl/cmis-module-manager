@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.135.0'
+__version__ = '2.136.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1840,7 +1840,10 @@ def api_module_ext54():
                 [raw[0] for _b, raw in _read_banks(*cmis.REG_MLS_ENABLE)],
                 _mls_banks(cmis.REG_MLS_RESULT),
                 _mls_banks(cmis.REG_MLS_STATUS),
-                _state['lanes'])
+                _state['lanes'],
+                # 7.9.3: a lane the module does not have holds 0.
+                present=[_media_lane_present(i + 1)
+                         for i in range(_state['lanes'])])
             out['available']['6Dh'] = True
 
         if caps.get('host_lane_switching_supported'):
@@ -2034,14 +2037,32 @@ def api_media_lane_switching():
                             % (_state['lanes'], len(targets)), 400)
             groups = [targets[i * 8:i * 8 + 8]
                       for i in range((len(targets) + 7) // 8)]
+            # 7.9.3: there are always eight external media lanes, and only
+            # the internal ones the module has (00h:210) carry a target - the
+            # rest hold 0. Demanding a permutation of eight refused the one
+            # valid request a module with fewer media lanes can take, and
+            # accepted targets for internal lanes it does not have.
+            present = [_media_lane_present(i + 1)
+                       for i in range(_state['lanes'])]
             for bank, group in enumerate(groups):
-                if sorted(group) != list(range(1, len(group) + 1)):
+                have = present[bank * 8:bank * 8 + len(group)]
+                if cmis.mls_group_valid(group, have):
+                    continue
+                if all(have):
                     return _err(
                         'Redirection must be a permutation of the media lanes '
                         'within each group of 8 (6Dh is banked, and a target '
                         'is a lane of its own group). Lanes %d-%d are not one; '
                         'the module would reject it'
                         % (bank * 8 + 1, bank * 8 + len(group)), 400)
+                missing = [bank * 8 + k + 1 for k, p in enumerate(have) if not p]
+                return _err(
+                    'Lanes %d-%d: this module has %d of these internal media '
+                    'lanes (00h:210). Each of them must go to a different '
+                    'external lane 1-8, and lane %s, which it does not have, '
+                    'must be 0 (7.9.3). The module would reject it'
+                    % (bank * 8 + 1, bank * 8 + len(group), sum(have),
+                       ', '.join(map(str, missing))), 400)
             err = _refuse_broadcast_divergence({'The redirection': groups})
             if err:
                 return err

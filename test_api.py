@@ -7026,7 +7026,8 @@ class TestManualMatchesBehaviour(CMISTestCase):
             self.assertIn(reg, manual, f'{reg} panel is undocumented')
         # The reasons, not just the addresses.
         self.assertIn('可以合法地不一致', manual, '60h vs 01h polarity')
-        self.assertIn('必须是通道的一个置换', manual, 'the redirection rule')
+        self.assertIn('模块有的每条内部媒体通道各对应一条不同的外部通道', manual,
+                      'the redirection rule (7.9.3)')
         self.assertIn('都印成了字节 195', manual, 'the spec typo behind the missing reset')
         self.assertIn('没有广告的页本工具不会去读', manual, 'why unadvertised pages are skipped')
 
@@ -27707,7 +27708,7 @@ class TestACommitTheModuleIgnores(CMISTestCase):
 
     def test_a_disabled_switch_is_not_told_to_press_commit(self):
         js = self._js()
-        i = js.index('m.committed === false && m.is_permutation')
+        i = js.index('m.committed === false && m.mapping_valid')
         hint = re.sub(r"'\s*\+\s*'", '', js[i:i + 900])
         self.assertIn('m.enabled', hint)
         self.assertIn('tick Enable, then Commit', hint)
@@ -31144,6 +31145,187 @@ class TestTheDataPathsGoDownFirst(CMISTestCase):
                               'label': 'L', 'advertisement': 'A'})
         self.assertEqual(len(toasts), 1)
         self.assertNotIn('Eq. 6-6', toasts[0])
+
+
+class TestFewerMediaLanesThanExternalOnes(CMISTestCase):
+    """Section 7.9: there are always eight external media lanes per group,
+    and n internal ones - "the number of media lanes per bank advertised as
+    being supported by the module" (7.9.1, via 00h:210). 7.9.3: "Only the
+    first n locations will be populated with numbers j in {1, ..., 8} ... If
+    n is less than 8, locations n+1 to 8 will be populated with 0", and 7.9.4
+    asks for "a one-to-one mapping of the n internal media lanes to n of the
+    8 external media lanes". A permutation of eight only when n is 8.
+
+    The tool required a permutation of eight everywhere. On a module with
+    fewer media lanes - the leaf node of 7.9's own point-to-multipoint
+    example - it refused the only valid request ([5, 0, 0, ...] puts the one
+    internal lane on external lane 5), would have written targets for
+    internal lanes the module does not have, and painted the module's own
+    zeros red as "not a permutation". The demo module said the same.
+
+    The ZR coherent demo, one internal media lane, now advertises the switch."""
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _mls(self):
+        return self.assertOk(
+            self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+
+    def _post(self, redirection, commit=True):
+        return self.client.post(
+            '/api/module/media_lane_switching',
+            data=json.dumps({'redirection': redirection, 'enable': True,
+                             'commit': commit}),
+            content_type='application/json')
+
+    # ---- the rule ---------------------------------------------------------------------
+    def test_all_eight_is_still_a_permutation(self):
+        import cmis_registers as c
+        self.assertTrue(c.mls_group_valid([2, 1, 3, 4, 5, 6, 7, 8]))
+        self.assertFalse(c.mls_group_valid([2, 2, 3, 4, 5, 6, 7, 8]))
+        self.assertFalse(c.mls_group_valid([0, 2, 3, 4, 5, 6, 7, 8]))
+
+    def test_n_internal_lanes_onto_n_of_eight(self):
+        import cmis_registers as c
+        four = [True] * 4 + [False] * 4
+        self.assertTrue(c.mls_group_valid([5, 6, 7, 8, 0, 0, 0, 0], four))
+        self.assertTrue(c.mls_group_valid([1, 2, 3, 4, 0, 0, 0, 0], four))
+        # one-to-one
+        self.assertFalse(c.mls_group_valid([5, 5, 7, 8, 0, 0, 0, 0], four))
+        # every lane it has is connected
+        self.assertFalse(c.mls_group_valid([5, 0, 7, 8, 0, 0, 0, 0], four))
+        # and none it does not have
+        self.assertFalse(c.mls_group_valid([1, 2, 3, 4, 5, 6, 7, 8], four))
+        # external lanes run to eight, no further
+        self.assertFalse(c.mls_group_valid([9, 6, 7, 8, 0, 0, 0, 0], four))
+
+    # ---- what is shown ------------------------------------------------------------------
+    def test_the_demo_starts_with_its_one_lane_in_place(self):
+        self._connect()
+        m = self._mls()
+        self.assertEqual([l['redirected_to_raw'] for l in m['lanes']],
+                         [1, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual([l['active_target_raw'] for l in m['lanes']],
+                         [1, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual([l['media_lane_present'] for l in m['lanes']],
+                         [True] + [False] * 7)
+
+    def test_its_zeros_are_not_called_invalid(self):
+        self._connect()
+        m = self._mls()
+        self.assertTrue(m['mapping_valid'])
+        self.assertEqual(m['mapping_valid_banks'], [True])
+        self.assertFalse(m['is_permutation'])      # still true to its name
+
+    def test_a_full_module_is_judged_as_before(self):
+        self._connect('mock_1600g_dr8')
+        m = self._mls()
+        self.assertTrue(m['mapping_valid'])
+        self.assertEqual(m['mapping_valid'], m['is_permutation'])
+
+    # ---- what is written ----------------------------------------------------------------
+    def test_the_leaf_can_move_its_lane(self):
+        self._connect()
+        self.assertOk(self._post([5, 0, 0, 0, 0, 0, 0, 0]))
+        m = self._mls()
+        self.assertEqual(m['lanes'][0]['active_target'], 5)
+        self.assertEqual(m['lanes'][0]['commit_result_name'], 'Success')
+        self.assertTrue(m['committed'])
+
+    def test_a_target_for_a_lane_it_does_not_have_is_refused(self):
+        self._connect()
+        rv = self._post([1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertErr(rv, 400)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('00h:210', msg)
+        self.assertIn('7.9.3', msg)
+        self.assertIn('has 1 of these', msg)
+        # and nothing was staged
+        self.assertEqual(self._mls()['lanes'][1]['redirected_to_raw'], 0)
+
+    def test_leaving_its_lane_unconnected_is_refused(self):
+        self._connect()
+        self.assertErr(self._post([0] * 8), 400)
+
+    def test_a_full_module_keeps_the_permutation_message(self):
+        self._connect('mock_1600g_dr8')
+        rv = self._post([1, 1, 3, 4, 5, 6, 7, 8], commit=False)
+        self.assertErr(rv, 400)
+        self.assertIn('permutation', json.loads(rv.data)['message'])
+
+    # ---- the demo module keeps the rule --------------------------------------------------
+    def test_the_demo_rejects_what_the_rule_rejects(self):
+        """Bypassing the tool's own check, straight into the registers."""
+        self._connect()
+        backend = _state['backend']
+        p6d = backend._registers[0x6D]
+        p6d[0x98] = 1
+        for staged, ok in (([5, 0, 0, 0, 0, 0, 0, 0], True),
+                           ([5, 6, 0, 0, 0, 0, 0, 0], False),
+                           ([0, 0, 0, 0, 0, 0, 0, 0], False),
+                           ([9, 0, 0, 0, 0, 0, 0, 0], False)):
+            for i, v in enumerate(staged):
+                p6d[0x88 + i] = v
+            backend._current_bank = 0
+            backend._commit_media_lane_redirection()
+            self.assertEqual(p6d[0xA8], 1 if ok else 4, staged)
+
+    def test_a_full_demo_still_wants_a_permutation(self):
+        self._connect('mock_1600g_dr8')
+        backend = _state['backend']
+        p6d = backend._registers[0x6D]
+        p6d[0x98] = 1
+        for staged in ([5, 0, 0, 0, 0, 0, 0, 0], [1, 1, 3, 4, 5, 6, 7, 8]):
+            for i, v in enumerate(staged):
+                p6d[0x88 + i] = v
+            backend._current_bank = 0
+            backend._commit_media_lane_redirection()
+            self.assertEqual(p6d[0xA8], 4, staged)
+
+    # ---- the page -------------------------------------------------------------------
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_the_page_judges_by_the_rule(self):
+        js = self._js()
+        i = js.index('if (d.media_lane_switching) {')
+        body = js[i:js.index('\n  }\n', i)]
+        self.assertIn('m.mapping_valid_banks', body)
+        self.assertIn('(7.9.3)', body)
+        self.assertNotIn('not a permutation', body)
+
+    def test_the_card_text_follows_the_rule(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        i = html.index('id="card-mls"')
+        card = html[i:html.index('id="tbl-mls"', i) + 3000]
+        self.assertNotIn('must be a permutation of the lanes', card)
+        self.assertIn('(7.9.3)', card)
+        self.assertIn('00h:210', card)
+
+    def test_the_example_fits_a_module_with_fewer_lanes(self):
+        js = self._js()
+        i = js.index("const box = document.getElementById('mls-mapping');")
+        body = js[i:i + 1200]
+        self.assertIn("? '0' : String(9 - n + k++)", body)
+        self.assertIn('n < first.length ? fewer', body)
+
+    def test_the_page_shows_an_absent_lane_as_none(self):
+        js = self._js()
+        i = js.index('const target = (abs, raw, present)')
+        body = js[i:i + 600]
+        self.assertIn("raw === 0 && present === false", body)
+        self.assertIn('>none</span>', body)
+        self.assertIn('l.media_lane_present)', js[i:i + 2000])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

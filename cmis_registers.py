@@ -3479,6 +3479,26 @@ def mls_result_kind(code: int) -> str:
     return {0: 'none', 1: 'success', 2: 'in_progress'}.get(code, 'reserved')
 
 
+def mls_group_valid(group, present=None) -> bool:
+    """Section 7.9.3: one group's RedirectionOfMediaLane<i> values.
+
+    There are always eight external media lanes, and n internal ones - "the
+    number of media lanes per bank advertised as being supported by the
+    module" (7.9.1, via 00h:210). Only the first n locations hold a target
+    in {1, ..., 8}; if n is less than 8 the rest "will be populated with 0".
+    A valid configuration is "a one-to-one mapping of the n internal media
+    lanes to n of the 8 external media lanes" (7.9.4) - a permutation only
+    when the module has all eight.
+
+    `present` says which of the group's internal media lanes the module has;
+    left out, all of them.
+    """
+    present = list(present) if present is not None else [True] * len(group)
+    have = [t for t, p in zip(group, present) if p]
+    return (all(1 <= t <= 8 for t in have) and len(set(have)) == len(have)
+            and all(t == 0 for t, p in zip(group, present) if not p))
+
+
 def mls_result_name(code: int) -> str:
     return MLS_RESULT_NAMES.get(code, 'Reserved (%d)' % code)
 
@@ -3496,7 +3516,8 @@ def mls_disabled_groups(enables) -> list:
 
 def parse_media_lane_switching(advert: int, redirection: bytes,
                                enable, result: bytes,
-                               status: bytes = b'', lanes_total: int = 8) -> dict:
+                               status: bytes = b'', lanes_total: int = 8,
+                               present=None) -> dict:
     """6Dh (Table 8-196): which external media lane each internal one feeds.
 
     Table 8-196 keeps two arrays apart on purpose: 136-143 is what the host has
@@ -3520,8 +3541,14 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
     1 is lane 11. Both are reported - `redirected_to` is the absolute lane, so
     the table can be read straight down, and `redirected_to_raw` is what the
     register holds.
+
+    `present` is per lane: whether the module has that internal media lane
+    (00h:210). Where it does not, 7.9.3 has the register hold 0, and that is
+    the right answer rather than a broken mapping.
     """
     enables = list(enable) if isinstance(enable, (list, tuple)) else [enable]
+    present = (list(present) if present is not None
+               else [True] * min(lanes_total, len(redirection)))
     lanes = []
     for i in range(min(lanes_total, len(redirection))):
         bank, within = divmod(i, 8)
@@ -3543,15 +3570,19 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
             'commit_result': res,
             'commit_result_name': mls_result_name(res),
             'commit_result_kind': mls_result_kind(res),
+            'media_lane_present': bool(present[i]) if i < len(present) else True,
         })
     # The permutation has to hold inside each group, not across the module:
     # a target is a lane of its own group, so eight lanes redirected to 1-8 in
     # bank 1 is valid and would fail a check run over the whole list.
     banks_ok = []
+    valid_banks = []
     enabled_banks = []
     for bank in range(0, (len(lanes) + 7) // 8):
         group = [l['redirected_to_raw'] for l in lanes[bank * 8:bank * 8 + 8]]
         banks_ok.append(sorted(group) == list(range(1, len(group) + 1)))
+        valid_banks.append(mls_group_valid(
+            group, [l['media_lane_present'] for l in lanes[bank * 8:bank * 8 + 8]]))
         enabled_banks.append(bool((enables[bank] if bank < len(enables)
                                    else 0) & 1))
     return {
@@ -3568,6 +3599,10 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
         # or an unfinished commit, and committing it would be the wrong move.
         'is_permutation': all(banks_ok),
         'permutation_banks': banks_ok,
+        # What the specification asks for (7.9.3), which is a permutation
+        # only on a module with all eight media lanes.
+        'mapping_valid': all(valid_banks),
+        'mapping_valid_banks': valid_banks,
         # True only when every lane's staged target is the one in effect.
         'committed': bool(status) and all(
             l['active_target'] == l['redirected_to'] for l in lanes),

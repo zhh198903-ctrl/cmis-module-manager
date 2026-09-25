@@ -245,6 +245,11 @@ _ZR_800G = {
     # Lanes 1-4 were left switched to relative supervision by whoever
     # configured this module; 5-8 still use the module-wide thresholds.
     'rel_thr_enabled_lanes': (1, 1, 1, 1, 0, 0, 0, 0),
+    # 01h:252.5 MediaLaneSwitchingSupported. Section 7.9's own case: a leaf
+    # node of a point-to-multipoint link, with one internal media lane that
+    # can be put on any of the eight external ones - so the redirection is
+    # one target and seven zeros, not a permutation (7.9.3).
+    'misc_caps_252':       0b00100000,
     # Section 8.5: Page 02h's thresholds "can depend on the commissioned set
     # of Applications". AppSel 2 has optical power thresholds of its own
     # (demo values: the point is only that they differ), put in force when a
@@ -1740,13 +1745,17 @@ class MockBackend(I2CInterface):
 
             if p.get('misc_caps_252', 0) & 0x20:
                 p6d = {0x80: 0x30}                     # commit duration code 3
+                # 7.9.3: only the internal media lanes the module has carry a
+                # target; "locations n+1 to 8 will be populated with 0".
+                absent = p.get('media_lane_unsupported', 0x00)
                 for lane in range(8):
-                    p6d[0x88 + lane] = lane + 1        # staged (RW), identity
+                    ident = 0 if (absent >> lane) & 1 else lane + 1
+                    p6d[0x88 + lane] = ident           # staged (RW), identity
                     p6d[0xA8 + lane] = 0               # no commit result yet
                     # 6Dh:184-191 is what the switch is actually doing. The
                     # spec says it starts unpermuted and that enabling alone
                     # does not commit, so it only moves on a commit command.
-                    p6d[0xB8 + lane] = lane + 1
+                    p6d[0xB8 + lane] = ident
                 p6d[0x98] = 0x00                       # redirection disabled
                 regs[0x6D] = p6d
 
@@ -3307,7 +3316,15 @@ class MockBackend(I2CInterface):
         if p6d is None or not (p6d.get(0x98, 0) & 1):
             return                              # disabled: commit has no effect
         staged = [p6d.get(0x88 + i, 0) for i in range(8)]
-        ok = sorted(staged) == list(range(1, 9))
+        # 7.9.4: "a one-to-one mapping of the n internal media lanes to n of
+        # the 8 external media lanes", the others 0 (7.9.3). 00h:210 names
+        # the internal ones this module does not have - in bank 0; the byte
+        # says nothing about lanes past eight.
+        absent = (self._registers.get(0x00, {}).get(0xD2, 0)
+                  if self._current_bank == 0 else 0)
+        have = [staged[i] for i in range(8) if not (absent >> i) & 1]
+        ok = (all(1 <= t <= 8 for t in have) and len(set(have)) == len(have)
+              and all(staged[i] == 0 for i in range(8) if (absent >> i) & 1))
         for i in range(8):
             p6d[0xA8 + i] = 1 if ok else 4      # success / not a permutation
             if ok:

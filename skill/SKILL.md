@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 媒体通道切换:不一定是置换
+
+7.9.3:每组 8 条外部通道,内部通道 n 条(`00h:210`)。重定向只有模块有的内部通道填 1-8 的不同目标,其余填 0;n = 8 时才是置换。
+`POST /api/module/media_lane_switching` 按这条规则校验;`ext54` 的 `media_lane_switching` 用 `mapping_valid` / `mapping_valid_banks` 判断,
+每条通道带 `media_lane_present`。`is_permutation` 仍在,但它只是字面意思,内部通道少于 8 条的模块上本来就是 false。
+ZR 相干演示模块只有 1 条内部媒体通道,`[5,0,0,0,0,0,0,0]` 就是把它放到外部通道 5。
+
 ## 低功耗请求:模块先停数据通道
 
 Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据通道自己停下;Eq. 6-4:全部到 DPDeactivated 后模块才离开 ModuleReady。
