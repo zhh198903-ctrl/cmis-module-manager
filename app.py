@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.149.0'
+__version__ = '2.150.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4318,10 +4318,17 @@ def api_prbs_get():
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
+        # PatternCheckGatingCompleteFlag is RO/COR like the four LOL Flags:
+        # "When gating is complete, this bit will be set", and this read has
+        # just cleared it. It was read, cleared and dropped - the one signal
+        # that a gated result (Selectors 11h-15h) is ready never reached the
+        # page.
         for masks, name in ((host_lol_banks, 'host_prbs_lol'),
                             (media_lol_banks, 'media_prbs_lol'),
                             (host_gen_lol_banks, 'host_gen_lol'),
-                            (media_gen_lol_banks, 'media_gen_lol')):
+                            (media_gen_lol_banks, 'media_gen_lol'),
+                            (host_gate_banks, 'host_gate_done'),
+                            (media_gate_banks, 'media_gate_done')):
             for bank, mask in enumerate(masks):
                 for bit in range(8):
                     if (mask >> bit) & 1:
@@ -4423,6 +4430,8 @@ def api_prbs_get():
             'media_gate_done_mask': media_gate_banks[0],
             'host_gate_done_mask_banks':  host_gate_banks,
             'media_gate_done_mask_banks': media_gate_banks,
+            'host_gate_done_seen':  lol_seen('host_gate_done'),
+            'media_gate_done_seen': lol_seen('media_gate_done'),
             # 132.7 is module-wide, but it only invalidates a pattern run
             # for the engines actually clocked from the reference clock.
             'reference_clock_lost': ref_clock_lost,

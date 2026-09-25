@@ -33326,6 +33326,122 @@ class TestTheLastCompletedGateIsShown(CMISTestCase):
         self.assertIn('if (data.last_gate) {', win)
 
 
+class TestAGateThatEndsSaysSo(CMISTestCase):
+    """Table 8-138: PatternCheckGatingCompleteFlagHostLane<i> /
+    MediaLane<i> (14h:134-135), "Latched per-host lane gating complete Flag.
+    When gating is complete, this bit will be set." - RO/COR.
+
+    The PRBS reply read both bytes - which clears them - and dropped them:
+    no history, nothing on the page. The demo modules never set them at all.
+    So the one signal that a gated result (Selectors 11h-15h, round 99) was
+    ready never reached anyone. Now the demos latch them for the running
+    checkers when a gate ends, the tool keeps them in the flag history, and
+    the checker tables mark the lane "gate done"."""
+
+    def _connect(self, backend='mock_sr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _prbs(self):
+        return self.assertOk(self.client.get('/api/module/prbs'))['data']
+
+    def _enable(self, **sections):
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({k: {'enable_mask': v} for k, v in sections.items()}),
+            content_type='application/json'))
+
+    def _end_gate(self, lane_base=0):
+        self.client.get('/api/module/counters')
+        _state['backend']._gates[lane_base]['start'] -= 1000
+        self.client.get('/api/module/counters')
+
+    def test_the_running_checkers_raise_it(self):
+        self._connect()
+        self._enable(host_chk=0x0F, media_chk=0x30)
+        self._end_gate()
+        d = self._prbs()
+        self.assertEqual(d['host_gate_done_mask'], 0x0F)
+        self.assertEqual(d['media_gate_done_mask'], 0x30)
+
+    def test_it_is_latched_until_read(self):
+        self._connect()
+        self._enable(host_chk=0x01)
+        self._end_gate()
+        self.assertEqual(self._prbs()['host_gate_done_mask'], 0x01)
+        self.assertEqual(self._prbs()['host_gate_done_mask'], 0x00)
+
+    def test_the_history_keeps_it(self):
+        self._connect()
+        self._enable(host_chk=0x03, media_chk=0x04)
+        self._end_gate()
+        self._prbs()
+        d = self._prbs()
+        self.assertEqual(d['host_gate_done_seen'],
+                         [True, True] + [False] * 6)
+        self.assertEqual(d['media_gate_done_seen'],
+                         [False, False, True] + [False] * 5)
+
+    def test_clearing_the_history_forgets_it(self):
+        self._connect()
+        self._enable(host_chk=0x01)
+        self._end_gate()
+        self._prbs()
+        self.assertOk(self.client.post('/api/module/flags/clear'))
+        self.assertEqual(self._prbs()['host_gate_done_seen'], [False] * 8)
+
+    def test_no_gate_no_flag(self):
+        self._connect('mock_dr8')                # ungated
+        self._enable(host_chk=0xFF)
+        self._end_gate()
+        d = self._prbs()
+        self.assertEqual(d['host_gate_done_mask'], 0)
+        self.assertEqual(d['host_gate_done_seen'], [False] * 8)
+
+    def test_every_auto_restarted_gate_raises_it(self):
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x13, 'address': 177, 'data': [0x18]}),
+            content_type='application/json'))
+        self._enable(host_chk=0x01)
+        for _ in range(2):
+            self._end_gate()
+            self.assertEqual(self._prbs()['host_gate_done_mask'], 0x01)
+
+    def test_a_later_bank_raises_its_own(self):
+        self._connect('mock_1600g_16lane')
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x13, 'address': 177, 'data': [0x08],
+                             'bank': 1}),
+            content_type='application/json'))
+        self._enable(host_chk=[0x00, 0x02])
+        self._end_gate(8)
+        d = self._prbs()
+        self.assertEqual(d['host_gate_done_mask_banks'], [0x00, 0x02])
+        self.assertEqual(d['host_gate_done_seen'],
+                         [False] * 9 + [True] + [False] * 6)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_checker_tables_mark_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('lolMasked, gate) {', js)
+        self.assertIn('{banks: d.host_gate_done_mask_banks, seen: '
+                      'd.host_gate_done_seen}', js)
+        self.assertIn('{banks: d.media_gate_done_mask_banks, seen: '
+                      'd.media_gate_done_seen}', js)
+        fn = js[js.index('function _renderPrbsTable'):]
+        fn = fn[:fn.index(chr(10) + '}')]
+        self.assertIn("const gateNote = gateNow || (g.seen && g.seen[i])", fn)
+        self.assertIn("+ '>●</span>'}${gateNote}</td>`;", fn)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

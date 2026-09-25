@@ -3390,6 +3390,16 @@ class MockBackend(I2CInterface):
         if time.time() - gate['start'] < seconds:
             return gate
         self._snapshot_gate(lane_base, gate, ber_now)
+        # Table 8-138, PatternCheckGatingCompleteFlag: "When gating is
+        # complete, this bit will be set" - per lane, for the checkers that
+        # were running (13h:160 host, 13h:168 media). Latched, cleared by the
+        # read (_COR_BYTES); the mock never set it, so a gated result had no
+        # signal that it was ready.
+        p14 = (self._registers.get(0x14) if lane_base == 0
+               else self._registers.get((0x14, lane_base // 8)))
+        if p14 is not None:
+            p14[0x86] = p14.get(0x86, 0) | p13.get(0xA0, 0)
+            p14[0x87] = p14.get(0x87, 0) | p13.get(0xA8, 0)
         if b177 & 0x10 and caps & 0x04:
             self._restart_counting(lane_base, gate)
         else:

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.149.0<br>
+      <b>版本</b>　2.150.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.149.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.149.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.150.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.150.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>门控结束时,PRBS 检测表标出「gate done」</h3>
+  <p>规范 Table 8-138:<code>14h:134</code> / <code>14h:135</code> 是逐通道的 PatternCheckGatingCompleteFlag(主机侧 / 媒体侧),「门控完成时,这一位会被置位」——闩锁、读清。它是「上一个门控结果已经就绪」的唯一信号。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前读了这两个字节(读就会清掉),然后直接丢弃:不进 Flag 历史,页面上也不显示;演示模块则根本不置位。门控结果什么时候更新了,没有任何地方能看出来。</span>
+  </div>
+  <p>现在:工具把它记进 Flag 历史,PRBS 页的主机侧 / 媒体侧检测表在对应通道的 LOL 一栏后面标出 <span class="flag-was">gate done</span>(悬停说明结果在 BER / 计数表的 last gate 行里),点「Clear flag history」后清掉。演示模块在门控到时,为正在运行检测器的通道(<code>13h:160</code> / <code>13h:168</code>)置位,每个 bank 各自置位。</p>
 
   <h3>BER / 计数器:上一个完整门控周期的结果</h3>
   <p>规范 Table 8-137 把诊断选择器分成两组:01h–06h 是「实时结果」,11h–15h 是「最近一个已完成门控周期的结果(在门控周期内保持不变)」,模块在 <code>13h:129.5</code> GatingResultsSupported 声明是否提供。Table 8-129 自动重启门控那一行写得很明白:门控到时,当前误码信息清零、门控重新开始,「主机必须用选择器 11h–15h 读取上一个门控时段的误码信息」。</p>
@@ -4574,7 +4582,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.149.0<br>
+    CMIS Module Manager 操作手册 v2.150.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

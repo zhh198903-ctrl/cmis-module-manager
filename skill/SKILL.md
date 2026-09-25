@@ -574,6 +574,8 @@ Table 8-137:选择器 01h–06h 是实时结果,11h–15h 是最近一个已完�
 开了自动重启门控(`13h:177.4`)时实时数每个周期清零,门控结果只在 11h–15h(Table 8-129 / 8-130)。
 `GET /api/module/ber` 和 `GET /api/module/counters` 在模块支持时带 `last_gate.lanes`(结构与 `lanes` 相同),不支持时为 `null`。
 用户问「门控 60 秒的 BER 在哪看」:看 `last_gate`,不是 `lanes`;还没完成过门控时是 0。
+门控结束的信号是 `14h:134/135` PatternCheckGatingCompleteFlag(闩锁、读清):`GET /api/module/prbs` 带
+`host_gate_done_mask(_banks)` 和按通道的历史 `host_gate_done_seen` / `media_gate_done_seen`,页面在检测表里标「gate done」。
 
 ## 关掉一路 Tx:整条数据通道到 Initialized
 

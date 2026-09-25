@@ -4311,7 +4311,7 @@ const PRBS_MASK_TIP = 'Masked in 13h:206-213, so the module reports this here '
 
 function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supported,
                          isChecker, controls, location, lolMaskBanks,
-                         lolMasked) {
+                         lolMasked, gate) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   // The role used to be inferred from whether a LOL mask was passed, which
@@ -4423,6 +4423,17 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
       const maskNote = off
         ? ` <span class="flag-none" title="${esc(PRBS_MASK_TIP)}">masked</span>`
         : '';
+      // Table 8-138: PatternCheckGatingCompleteFlag latches when a gated
+      // measurement ends on this lane - the signal that the "last gate"
+      // rows under BER and the counters hold a new result.
+      const g = gate || {};
+      const gateNow = !!(((Array.isArray(g.banks) ? g.banks[b] : 0) >> bit) & 1);
+      const gateNote = gateNow || (g.seen && g.seen[i])
+        ? ` <span class="flag-was" title="${esc('PatternCheckGatingCompleteFlag '
+          + '(14h:' + (side === 'Host' ? 134 : 135) + ', Table 8-138): a gated '
+          + 'measurement ended on this lane since the flag history was '
+          + 'cleared - its result is in the last gate rows below')}">gate done</span>`
+        : '';
       lolCell = `<td>${lol
         ? '<span class="flag-active">LOL</span>' + maskNote
         : slipped
@@ -4430,7 +4441,7 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
           + 'was lost since the flag history was cleared')}">&#9679;<sup>!</sup></span>`
           + maskNote
         : `<span class="flag-ok"${off ? ` title="${esc(PRBS_MASK_TIP)}"` : ''}`
-          + '>●</span>'}</td>`;
+          + '>●</span>'}${gateNote}</td>`;
     }
     // Lane i's 4-bit pattern selector sits in the low or high nibble of
     // pattern byte base+4+(i>>1).
@@ -4577,12 +4588,14 @@ async function loadPrbs() {
                    'Host', d.host_chk_lol_seen,
                    (d.pattern_capabilities || {}).host_chk, true, pc.host_chk,
                    pl.host_chk, d.host_chk_lol_mask_banks,
-                   d.host_chk_lol_masked);
+                   d.host_chk_lol_masked,
+                   {banks: d.host_gate_done_mask_banks, seen: d.host_gate_done_seen});
   _renderPrbsTable('tbl-prbs-media-chk', d.media_chk, d.media_chk_lol_mask, 0xA8,
                    'Media', d.media_chk_lol_seen,
                    (d.pattern_capabilities || {}).media_chk, true, pc.media_chk,
                    pl.media_chk, d.media_chk_lol_mask_banks,
-                   d.media_chk_lol_masked);
+                   d.media_chk_lol_masked,
+                   {banks: d.media_gate_done_mask_banks, seen: d.media_gate_done_seen});
   // The media side engines run per media lane ("individually toggle ...
   // media (13h:168) lane checker enable bits", 8.16.11.1). A row for a media
   // lane the module lacks is greyed whole, its values kept: the page writes
