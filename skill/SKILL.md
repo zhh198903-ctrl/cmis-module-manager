@@ -506,6 +506,13 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 `ext54` 里每条通道的 `commit_result_kind` 是 `none` / `success` / `in_progress` /
 `rejected`(码 3–6)/ `reserved`(> 6),按类判断,别自己记码值。
 
+## 媒体通道切换:运行中的 Data Path 整条移动
+
+7.9.4:已初始化或已激活的 Data Path,切换配置变化时要么整条受影响、要么不受影响。
+`POST /api/module/media_lane_switching` 带 `commit:true` 时,若会只移动某条运行中 Data Path 的一部分媒体通道(相对 `6Dh:184-191` 当前连接),
+直接 400,什么都不写,消息里有 7.9.4 和那条 Data Path 的主机通道。只暂存不受限。只判断第一组 8 条通道里的 Data Path。
+要做部分调整:先 DPDeinit 那条 Data Path,或者整条移动(如 `5,6,7,8,1,2,3,4`)。
+
 ## 媒体通道切换:不一定是置换
 
 7.9.3:每组 8 条外部通道,内部通道 n 条(`00h:210`)。重定向只有模块有的内部通道填 1-8 的不同目标,其余填 0;n = 8 时才是置换。

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.136.0'
+__version__ = '2.137.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1966,6 +1966,57 @@ def _await_mls_commit(banks: int) -> dict:
             'commit_duration_label': cmis.state_duration(code).get('label')}
 
 
+# The DataPath states from DPInitialized on - 7.9.4's "initialized or
+# activated", with the two transients between them.
+_DP_PAST_INIT = ('Initialized', 'TxTurnOn', 'Activated', 'TxTurnOff')
+
+
+def _mls_splits_data_paths(targets=None) -> list:
+    """Section 7.9.4: "The host must ensure that any initialized or activated
+    Data Paths or Network Paths are either affected as a whole or not at all
+    by a change in the Media Lane Switch configuration."
+
+    `targets` is the redirection about to be committed (None: whatever is
+    staged). Compared with what the switch is doing now (6Dh:184-191), a
+    Data Path past DPInit whose internal media lanes would move only in part
+    is returned as (host lanes, media lanes, the ones that move).
+
+    The media lanes of a Data Path are its nominal ones (7.9.1) from the
+    Active Control Set, which is what the module is running; the tool can
+    derive them for the first group of eight only (see _nominal_media_lanes),
+    so a Data Path it cannot place is not judged.
+    """
+    lanes = _state['lanes']
+    status = b''.join(raw for _b, raw in _read_banks(*cmis.REG_MLS_STATUS))
+    if targets is None:
+        targets = list(b''.join(
+            raw for _b, raw in _read_banks(*cmis.REG_MLS_REDIRECTION)))
+    states, active_sel, dpconfig = [], [], []
+    for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+        states += cmis.parse_dp_states(raw)
+    for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
+        active_sel += cmis.unpack_appselect(raw)
+        dpconfig += cmis.unpack_dpconfig(raw)
+    apps = cmis.parse_application_descriptors(
+        _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
+        _additional_app_descriptors(), _media_lane_assignments(),
+        _flat_memory())
+    groups = [[i + 1 for i in g] for g in _groups_from_dpidx(dpconfig)]
+    media = _nominal_media_lanes(groups, active_sel[:lanes], apps)
+    out = []
+    for group in groups:
+        mlanes = media.get(group[0])
+        if not mlanes or not any(states[l - 1] in _DP_PAST_INIT
+                                 for l in group if l - 1 < len(states)):
+            continue
+        moving = [m for m in mlanes
+                  if m - 1 < len(targets) and m - 1 < len(status)
+                  and targets[m - 1] != status[m - 1]]
+        if moving and len(moving) != len(mlanes):
+            out.append((group, mlanes, moving))
+    return out
+
+
 @app.route('/api/module/media_lane_switching', methods=['POST'])
 def api_media_lane_switching():
     """Stage a media lane redirection, and optionally commit it.
@@ -2066,6 +2117,24 @@ def api_media_lane_switching():
             err = _refuse_broadcast_divergence({'The redirection': groups})
             if err:
                 return err
+        if commit:
+            split = _mls_splits_data_paths(targets if mapping else None)
+            if split:
+                host, media, moving = split[0]
+                return _err(
+                    'This commit would move media lane%s %s of the Data Path '
+                    'on host lane%s %s but not the rest of its media lanes '
+                    '(%s). Section 7.9.4: the host must ensure an initialized '
+                    'or activated Data Path is affected as a whole or not at '
+                    'all. Move all of its lanes, none of them, or take the '
+                    'Data Path down first'
+                    % ('s' if len(moving) > 1 else '',
+                       ', '.join(map(str, moving)),
+                       's' if len(host) > 1 else '',
+                       '%d-%d' % (host[0], host[-1]) if len(host) > 1
+                       else str(host[0]),
+                       ', '.join(map(str, media))), 400)
+        if mapping:
             for bank, group in enumerate(groups):
                 _set_page(0x6D, bank)
                 _bus_write(cmis.REG_MLS_REDIRECTION[1],

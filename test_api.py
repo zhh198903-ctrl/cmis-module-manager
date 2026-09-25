@@ -4243,9 +4243,11 @@ class TestCmis54Pages(CMISTestCase):
 
     def test_a_valid_redirection_is_staged_and_reads_back(self):
         self._connect54()
+        # 7.9.4: a running Data Path moves whole or not at all, so the
+        # first group's Data Path (lanes 1-8) is moved as a whole.
         self.assertOk(self.client.post(
             '/api/module/media_lane_switching',
-            data=json.dumps({'redirection': [2, 1, 4, 3, 5, 6, 7, 8]
+            data=json.dumps({'redirection': [5, 6, 7, 8, 1, 2, 3, 4]
                                             + [1, 2, 3, 4, 5, 6, 7, 8],
                              'enable': True, 'commit': True}),
             content_type='application/json'))
@@ -4253,7 +4255,7 @@ class TestCmis54Pages(CMISTestCase):
         # 6Dh is banked and this module has two groups, so the targets read
         # back as absolute lanes: the second group's 1-8 is lanes 9-16.
         self.assertEqual([l['redirected_to'] for l in m['lanes']],
-                         [2, 1, 4, 3, 5, 6, 7, 8] + list(range(9, 17)))
+                         [5, 6, 7, 8, 1, 2, 3, 4] + list(range(9, 17)))
         self.assertTrue(m['enabled'])
         self.assertTrue(m['is_permutation'])
 
@@ -5252,6 +5254,9 @@ class TestDj1600GAlignment(CMISTestCase):
         commit. Reporting the staged one as the module's mapping would show a
         lane assignment the hardware is not using."""
         self._connect_dr8()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         staged = [2, 1, 3, 4, 5, 6, 7, 8]
         self.assertOk(self.client.post(
             '/api/module/media_lane_switching',
@@ -13212,8 +13217,10 @@ class TestMediaLaneSwitchingPastTheFirstBank(CMISTestCase):
 
     def test_commit_reaches_every_group(self):
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, so the
+        # first group's Data Path (lanes 1-8) is moved as a whole.
         self.assertOk(self._mls(
-            redirection=[2, 1, 3, 4, 5, 6, 7, 8, 2, 1, 3, 4, 5, 6, 7, 8],
+            redirection=[5, 6, 7, 8, 1, 2, 3, 4, 2, 1, 3, 4, 5, 6, 7, 8],
             enable=True, commit=True))
         self.assertEqual(self._bank(0xB8, 8, 1), [2, 1, 3, 4, 5, 6, 7, 8],
                          'the second group was staged but never committed')
@@ -14006,6 +14013,9 @@ class TestACommitThatIsStillRunning(CMISTestCase):
 
     def test_the_commit_waits_on_the_advertised_duration(self):
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         d = self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], enable=True,
                       commit=True)
         self.assertEqual(d['commit_max_seconds'], 0.05)
@@ -14031,6 +14041,9 @@ class TestACommitThatIsStillRunning(CMISTestCase):
         8-196 makes that commit "without effect", so what it timed was a
         commit that never ran, and fast for that reason."""
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         started = time.time()
         self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8], enable=True,
                   commit=True)
@@ -14040,6 +14053,9 @@ class TestACommitThatIsStillRunning(CMISTestCase):
 
     def test_the_answer_says_whether_it_finished(self):
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         self.assertTrue(self._mls(redirection=[2, 1, 3, 4, 5, 6, 7, 8],
                                   enable=True, commit=True)['commit_complete'])
 
@@ -27608,6 +27624,9 @@ class TestACommitTheModuleIgnores(CMISTestCase):
 
     def test_enable_omitted_reads_what_the_module_has(self):
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         self.assertErr(self._post(commit=True), 400)
         self.assertOk(self._post(enable=True))
         self.assertOk(self._post(redirection=self._perm(), commit=True))
@@ -27618,6 +27637,9 @@ class TestACommitTheModuleIgnores(CMISTestCase):
         """The enable is written before the commit, so the request's own
         enable is the one the commit meets."""
         self._connect()
+        # 7.9.4: a running Data Path moves whole or not at all, and this
+        # swaps two of its lanes - so it is taken down first.
+        deactivated(self.client)
         self.assertOk(self._post(redirection=self._perm(), enable=True,
                                  commit=True))
         self.assertEqual(
@@ -31326,6 +31348,135 @@ class TestFewerMediaLanesThanExternalOnes(CMISTestCase):
         self.assertIn("raw === 0 && present === false", body)
         self.assertIn('>none</span>', body)
         self.assertIn('l.media_lane_present)', js[i:i + 2000])
+
+
+class TestARunningDataPathMovesWhole(CMISTestCase):
+    """Section 7.9.4: "The host must ensure that any initialized or activated
+    Data Paths or Network Paths are either affected as a whole or not at all
+    by a change in the Media Lane Switch configuration." The module only
+    "should validate" it (Table 8-196 result 5, "inconsistent with active
+    Data Path"), so a module that does not would commit it and break the
+    path in half.
+
+    The tool asked for a confirmation and committed whatever it was given -
+    its own example, 2,1,4,3,5,6,7,8, swaps two lanes of the single eight
+    lane Data Path every shipped switching module runs. A commit is now
+    refused, before anything is written, when it would move some but not
+    all of a running Data Path's media lanes - compared with what the switch
+    is doing now, not with the identity."""
+
+    def _connect(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, redirection=None, commit=True):
+        body = {'enable': True, 'commit': commit}
+        if redirection is not None:
+            body['redirection'] = redirection
+        return self.client.post('/api/module/media_lane_switching',
+                                data=json.dumps(body),
+                                content_type='application/json')
+
+    def _mls(self):
+        return self.assertOk(
+            self.client.get('/api/module/ext54'))['data']['media_lane_switching']
+
+    def test_half_a_path_is_refused(self):
+        self._connect()
+        rv = self._post([2, 1, 3, 4, 5, 6, 7, 8])
+        self.assertErr(rv, 400)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('7.9.4', msg)
+        self.assertIn('host lanes 1-8', msg)
+        self.assertIn('media lanes 1, 2 ', msg)
+        # Nothing was written: not the staged set, not the switch.
+        m = self._mls()
+        self.assertEqual([l['redirected_to'] for l in m['lanes']], list(range(1, 9)))
+        self.assertEqual([l['active_target'] for l in m['lanes']], list(range(1, 9)))
+
+    def test_the_whole_path_may_move(self):
+        self._connect()
+        self.assertOk(self._post([5, 6, 7, 8, 1, 2, 3, 4]))
+        self.assertEqual([l['active_target'] for l in self._mls()['lanes']],
+                         [5, 6, 7, 8, 1, 2, 3, 4])
+
+    def test_one_path_moves_and_the_other_stays(self):
+        self._connect()
+        reconfigure(self.client, [2] * 8)          # two Data Paths of four
+        # The DPDeinit release commissions without a ConfigInProgress for
+        # settled() to wait on; wait for the Active Control Set instead.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            lanes = self.assertOk(self.client.get(
+                '/api/module/monitoring'))['data']['lanes']
+            if all(l['active_app_sel'] == 2 and l['datapath_state'] == 'Activated'
+                   for l in lanes):
+                break
+            time.sleep(0.05)
+        self.assertOk(self._post([2, 3, 4, 1, 5, 6, 7, 8]))
+        rv = self._post([2, 3, 4, 1, 6, 5, 7, 8])
+        self.assertErr(rv, 400)
+        self.assertIn('host lanes 5-8', json.loads(rv.data)['message'])
+
+    def test_it_is_judged_against_the_switch_as_it_is(self):
+        """Not against the identity: once moved, leaving it there is no
+        change at all, and moving part of it back is."""
+        self._connect()
+        self.assertOk(self._post([5, 6, 7, 8, 1, 2, 3, 4]))
+        self.assertOk(self._post([5, 6, 7, 8, 1, 2, 3, 4]))
+        self.assertErr(self._post([1, 6, 7, 8, 5, 2, 3, 4]), 400)
+        # Every lane moves from where it is now, although lanes 1-4 end up
+        # back where they started - a whole move, not half of one.
+        self.assertOk(self._post([1, 2, 3, 4, 6, 5, 8, 7]))
+        self.assertEqual([l['active_target'] for l in self._mls()['lanes']],
+                         [1, 2, 3, 4, 6, 5, 8, 7])
+
+    def test_a_path_that_is_down_is_not_held_to_it(self):
+        self._connect()
+        deactivated(self.client)
+        self.assertOk(self._post([2, 1, 3, 4, 5, 6, 7, 8]))
+
+    def test_initialized_counts_as_up(self):
+        self._connect()
+        _state['backend']._dp_lane_states = [0x7] * 8     # DPInitialized
+        self.assertErr(self._post([2, 1, 3, 4, 5, 6, 7, 8]), 400)
+
+    def test_staging_alone_is_not_a_change(self):
+        """Only a commit touches the switch; the check waits for it, and
+        then applies to what is staged."""
+        self._connect()
+        self.assertOk(self._post([2, 1, 3, 4, 5, 6, 7, 8], commit=False))
+        self.assertErr(self._post(commit=True), 400)
+        self.assertEqual([l['active_target'] for l in self._mls()['lanes']],
+                         list(range(1, 9)))
+
+    def test_a_one_lane_path_moves_whole_by_itself(self):
+        self._connect('mock_coherent_zr')
+        self.assertOk(self._post([5, 0, 0, 0, 0, 0, 0, 0]))
+
+    # ---- the page -------------------------------------------------------------------
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_the_examples_move_whole_paths(self):
+        html = self._read('templates', 'index.html')
+        self.assertIn('placeholder="target order, e.g. 5,6,7,8,1,2,3,4"', html)
+        self.assertNotIn('2,1,4,3,5,6,7,8', html)
+        js = self._read('static', 'app.js')
+        i = js.index("const box = document.getElementById('mls-mapping');")
+        body = js[i:i + 1500]
+        self.assertIn("'5,6,7,8,1,2,3,4'", body)
+        self.assertNotIn('2,1,4,3', body)
+
+    def test_the_card_says_so(self):
+        html = self._read('templates', 'index.html')
+        i = html.index('id="card-mls"')
+        card = html[i:html.index('id="tbl-mls"', i) + 3000]
+        self.assertIn('(7.9.4)', card)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

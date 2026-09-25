@@ -1518,8 +1518,10 @@ async function loadExt54() {
         ? '0' : String(9 - n + k++)).join(',');
       box.placeholder = 'target order for all ' + AppState.lanes
         + ' lanes, e.g. ' + (n < first.length ? fewer
-          : AppState.lanes > 8 ? '2,1,3,4,5,6,7,8,2,1,...'
-                               : '2,1,4,3,5,6,7,8');
+          // 7.9.4: a running Data Path moves whole or not at all. Swapping
+          // the halves moves every aligned Data Path whole, whatever its width.
+          : AppState.lanes > 8 ? '5,6,7,8,1,2,3,4,5,6,...'
+                               : '5,6,7,8,1,2,3,4');
     }
   }
   document.getElementById('ext54-pagemap').textContent = '';
