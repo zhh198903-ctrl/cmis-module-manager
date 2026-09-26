@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.161.0<br>
+      <b>版本</b>　2.162.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.161.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.161.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.162.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.162.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>ModuleFault 会说明原因</h3>
+  <p>规范 Table 8-16:<code>Lower 41</code> ModuleFaultCause 记录模块进入 ModuleFault 的原因——1 TEC 失控、2 数据存储损坏、3 程序存储损坏、4 发送器故障、5 接收器故障、6 温度相关故障,32–63 为厂商自定义;0 表示没有检测到故障或不支持这一字段。ModuleFault 只响应复位(6.3.2.5.8)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只在 Module State 一行显示「ModuleFault」,从不读原因,用户拿到一个状态却不知道该查什么。演示模块根本停不在 ModuleFault:它的状态机会把任何非 Ready 状态直接拉回 ModuleReady。</span>
+  </div>
+  <p>现在:模块处于 ModuleFault 时,Module State 一行显示红色的 ModuleFault 和原因(例如「cause: TEC runaway」);原因为 0 时写明「cause not reported」。顶栏同时出现红色 <b>✖</b> 图标,悬停说明原因并提示只有复位能让它离开。演示模块进入 ModuleFault 后一直保持到复位,复位时原因清零。</p>
 
   <h3>警告不是告警</h3>
   <p>规范 Table 8-9:<code>Lower 0x09–0x0B</code> 里每个模块级监控(温度、电压、Aux1–3、自定义)都有高 / 低<b>告警</b>和高 / 低<b>警告</b>四个标志,闩锁、读清。</p>
@@ -4684,7 +4692,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.161.0<br>
+    CMIS Module Manager 操作手册 v2.162.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

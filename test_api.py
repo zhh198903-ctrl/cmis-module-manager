@@ -19204,6 +19204,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-11': 'Module Global Controls (not for static memory modules ) (Lower Memory)',
         '8-12': 'Module Level Masks (not for static memory modules) (Lower Memory)',
         '8-15': 'Module Active Firmware Version (Lower Memory)',
+        '8-16': 'Fault Information (not for static memory modules) (Lower Memory)',
         '8-18': 'Extended Module Information (Lower Memory)',
         '8-20': 'Media Type Encodings (Table Selection)',
         '8-21': 'Media Type Register (Lower Memory)',
@@ -35010,6 +35011,129 @@ class TestAWarningIsNotAnAlarm(CMISTestCase):
         header = header[:header.index(chr(10) + '}')]
         self.assertIn("else if (s.warning_active)", header)
         self.assertIn(": s.warning_active ? `&ensp;|&ensp;<span class=\"text-warning\">▲ Warning</span>`", js)
+
+
+class TestAFaultSaysWhy(CMISTestCase):
+    """Lower 41 ModuleFaultCause (Table 8-16, RO Opt.): "Reason of entering
+    the ModuleFault state" - TEC runaway, corrupted data or program memory, a
+    transmitter, receiver or temperature related fault, 32-63 the vendor's.
+
+    The tool showed "ModuleFault" in Module Info and never read why, so a
+    faulted module gave the operator a state and nothing to act on. The demo
+    could not even hold the state: its state machine put any module back in
+    ModuleReady, where 6.3.2.5.8 says ModuleFault "reacts only to a reset".
+    Now the status reply carries the cause, the row and a header chip show
+    it, and the demo stays faulted until a reset."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        self.client.get('/api/module/status')
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def test_the_decoder(self):
+        import cmis_registers as c
+        name = lambda code: (c.parse_module_fault_cause(code)['kind'],
+                             c.parse_module_fault_cause(code)['name'])
+        self.assertEqual(name(0)[0], 'none')
+        self.assertEqual(name(1), ('defined', 'TEC runaway'))
+        self.assertEqual(name(6), ('defined', 'Temperature related fault'))
+        self.assertEqual(name(7)[0], 'reserved')
+        self.assertEqual(name(31)[0], 'reserved')
+        self.assertEqual(name(32), ('custom', 'Vendor fault code 32'))
+        self.assertEqual(name(63)[0], 'custom')
+        self.assertEqual(name(64)[0], 'reserved')
+
+    def test_the_cause_is_in_the_reply(self):
+        self._connect()
+        _state['backend'].enter_fault(4)
+        d = self._status()
+        self.assertEqual(d['module_state'], 'ModuleFault')
+        self.assertEqual(d['fault_cause'],
+                         {'code': 4, 'name': 'Transmitter fault',
+                          'kind': 'defined'})
+
+    def test_no_fault_no_cause(self):
+        self._connect()
+        self.assertEqual(self._status()['fault_cause']['kind'], 'none')
+
+    def test_the_demo_stays_faulted_until_a_reset(self):
+        self._connect()
+        _state['backend'].enter_fault(1)
+        for _ in range(3):
+            self.assertEqual(self._status()['module_state'], 'ModuleFault')
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps({'software_reset': True}),
+            content_type='application/json'))
+        deadline, d = time.time() + 3.0, {}
+        while time.time() < deadline:
+            time.sleep(0.1)
+            rv = json.loads(self.client.get('/api/module/status').data)
+            if rv['status'] == 'ok':
+                d = rv['data']
+                if d['module_state'] == 'ModuleReady':
+                    break
+        self.assertEqual(d.get('module_state'), 'ModuleReady')
+        self.assertEqual(d['fault_cause']['code'], 0)
+
+    def test_entering_it_is_flagged(self):
+        """Table 6-9: ModuleFault - "flagged on state entry? Yes"."""
+        self._connect()
+        self.client.get('/api/module/status')
+        _state['backend'].enter_fault(2)
+        self.assertTrue(self._status()['module_state_changed'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function faultCauseText\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function moduleStateCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_row_says_why(self):
+        cell = self._run("moduleStateCell({module_state: 'ModuleFault', "
+                         "fault_cause: {code: 1, kind: 'defined', "
+                         "name: 'TEC runaway'}})")
+        self.assertIn('<span class="text-danger">ModuleFault</span>', cell)
+        self.assertIn('cause: TEC runaway', cell)
+        self.assertIn('Lower 41 (Table 8-16)', cell)
+
+    def test_an_unreported_cause_is_said_to_be(self):
+        cell = self._run("moduleStateCell({module_state: 'ModuleFault', "
+                         "fault_cause: {code: 0, kind: 'none'}})")
+        self.assertIn('cause not reported', cell)
+        self.assertEqual(self._run("moduleStateCell({module_state: "
+                                   "'ModuleReady', fault_cause: {code: 3, "
+                                   "kind: 'defined', name: 'x'}})"),
+                         'ModuleReady')
+
+    def test_the_page_uses_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("['Module State',    moduleStateCell(s),", js)
+        header = js[js.index('function renderHealthIndicator('):]
+        header = header[:header.index(chr(10) + '}')]
+        self.assertIn("if (s.module_state === 'ModuleFault')", header)
+        self.assertIn('${faultCauseText(s)}', header)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

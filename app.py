@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.161.0'
+__version__ = '2.162.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1684,6 +1684,10 @@ def api_module_status():
         return err
     try:
         state_raw = _read_lower(0x03, 1)             # CORRECT: byte 3, bits[3:1]
+        # Table 8-16: why the module is in ModuleFault. The state was shown
+        # and the cause never read, so a faulted module said "ModuleFault"
+        # and nothing a person could act on.
+        fault_raw = _read_lower(*cmis.REG_FAULT_CAUSE[1:])
         temp_raw  = _read_lower(0x0E, 2)
         volt_raw  = _read_lower(0x10, 2)
         # Table 8-8: which Page and Bank hold a set Flag - RO, read before the
@@ -1795,6 +1799,7 @@ def api_module_status():
 
         return _ok({
             'module_state': cmis.parse_module_state(state_raw[0]),
+            'fault_cause': cmis.parse_module_fault_cause(fault_raw[0]),
             'interrupt_asserted': cmis.parse_interrupt_asserted(state_raw[0]),
             'module_flag_masks': module_flag_masks,
             # Set, and masked: the module is reporting the condition and has

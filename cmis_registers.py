@@ -33,6 +33,7 @@ REG_CUSTOM_MON       = (None, 0x18, 2)
 REG_MODULE_CONTROL   = (None, 0x1A, 1)   # Module-level control register
 REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15)
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
+REG_FAULT_CAUSE      = (None, 0x29, 1)   # Lower 41: ModuleFaultCause (Table 8-16)
 # Lower 56-57 (Table 8-18), both RO and Required, and both in the same
 # table as the subtype byte below that this already reads.
 # Lower 31-36 (Table 8-12), the Masks for the module-level Flags at 8-13.
@@ -1130,6 +1131,33 @@ def parse_ascii(raw: bytes) -> str:
 def parse_oui(raw: bytes) -> str:
     """Format 3-byte IEEE OUI as XX-XX-XX hex string."""
     return "-".join(f"{b:02X}" for b in raw[:3])
+
+
+# Lower 41 ModuleFaultCause (Table 8-16), RO Opt.: "Reason of entering the
+# ModuleFault state".
+MODULE_FAULT_CAUSES = {
+    0: 'No fault detected (or field not supported)',
+    1: 'TEC runaway',
+    2: 'Data memory corrupted',
+    3: 'Program memory corrupted',
+    4: 'Transmitter fault',
+    5: 'Receiver fault',
+    6: 'Temperature related fault',
+}
+
+
+def parse_module_fault_cause(code: int) -> dict:
+    """Lower 41 (Table 8-16): 1-6 defined, 7-31 reserved fault codes, 32-63
+    custom fault codes, 64-255 reserved. 0 is both "no fault detected" and
+    "field not supported", so it is no cause either way."""
+    if code in MODULE_FAULT_CAUSES:
+        return {'code': code, 'name': MODULE_FAULT_CAUSES[code],
+                'kind': 'none' if code == 0 else 'defined'}
+    if 32 <= code <= 63:
+        return {'code': code, 'name': 'Vendor fault code %d' % code,
+                'kind': 'custom'}
+    return {'code': code, 'name': 'Reserved code %d' % code,
+            'kind': 'reserved'}
 
 
 def parse_module_state(byte_val: int) -> str:

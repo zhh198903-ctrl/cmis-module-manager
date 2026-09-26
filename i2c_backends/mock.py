@@ -1930,6 +1930,10 @@ class MockBackend(I2CInterface):
                 # Every lane came back through DPInit after the reset.
                 self._registers[0x11][0x86] = 0xFF
                 self._commands = []
+        elif self._module_state == 0b101:
+            # 6.3.2.5.8: ModuleFault "reacts only to a reset". Anything else
+            # here used to put the module straight back in ModuleReady.
+            pass
         elif self._lp_request_time > 0:
             self._module_state = 0b001
             self._dp_lane_states = [0x1] * 8
@@ -2844,6 +2848,7 @@ class MockBackend(I2CInterface):
                     for _lb, regs in self._banked_page_dicts(0x13):
                         for a in range(0xB8, 0xC0):
                             regs[a] = 0x00
+                    self._registers[None][0x29] = 0x00  # ModuleFaultCause
                     self._current_page = 0x00
                     self._current_bank = 0x00
                     self._prev_selected = None
@@ -3438,6 +3443,12 @@ class MockBackend(I2CInterface):
                 self._checkers_changed(lane_base,
                                        'host' if engine == 'hc' else 'media',
                                        started, stopped)
+
+    def enter_fault(self, cause: int) -> None:
+        """Put the module in ModuleFault with ModuleFaultCause (Lower 41,
+        Table 8-16) - what a demo or a test uses to show one."""
+        self._module_state = 0b101
+        self._registers[None][0x29] = cause & 0xFF
 
     def _start_stop_is_global(self, p13: dict) -> bool:
         """13h:177.7 StartStopIsGlobal in the Bank written (Table 8-127) -

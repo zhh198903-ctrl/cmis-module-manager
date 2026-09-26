@@ -652,7 +652,7 @@ async function loadInfo() {
     ['MCI Max Speed',   (d.config_capabilities || {}).mci_max_speed_i2c
                           || `Reserved (${(d.config_capabilities || {}).mci_max_speed_code})`,    'Lower', '0x02[5:2]',   'MciMaxSpeed, read on the I2C scale'],
     ['Media Type',      d.media_type,                                                             'Lower', '0x55',        'Media type code (Table 8-21), decoded per Table 8-20'],
-    ['Module State',    s.module_state,                                                           'Lower', '0x03[3:1]',   'Current state machine (Table 8-7)'],
+    ['Module State',    moduleStateCell(s),                                                       'Lower', '0x03[3:1]',   'Current state machine (Table 8-7); in ModuleFault, the cause from ModuleFaultCause, Lower 41 (Table 8-16)'],
     ['Vendor Name',     d.vendor_name,                                                            '00h',   '0x81–0x90',   'Vendor Name, 16-byte ASCII'],
     ['Vendor OUI',      d.vendor_oui,                                                             '00h',   '0x91–0x93',   'IEEE OUI (3 bytes hex)'],
     ['Vendor P/N',      d.vendor_pn,                                                              '00h',   '0x94–0xA3',   'Vendor Part Number, 16-byte ASCII'],
@@ -1096,6 +1096,23 @@ function firmwareFlagCell(s) {
     return '';
   }).filter(Boolean);
   return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
+}
+
+// Lower 41 ModuleFaultCause (Table 8-16): why the module entered
+// ModuleFault. The row said "ModuleFault" and nothing more.
+function faultCauseText(s) {
+  const fc = s.fault_cause || {};
+  return fc.kind && fc.kind !== 'none'
+    ? `cause: ${fc.name}`
+    : 'cause not reported (Lower 41 is 0: none detected, or not supported)';
+}
+
+function moduleStateCell(s) {
+  const state = s.module_state || '';
+  if (state !== 'ModuleFault') return state;
+  return `<span class="text-danger">${state}</span> <span class="reg-meta" `
+    + 'title="ModuleFaultCause, Lower 41 (Table 8-16). ModuleFault reacts '
+    + `only to a reset (6.3.2.5.8)">\u2014 ${esc(faultCauseText(s))}</span>`;
 }
 
 // Lower 9-11 (Table 8-9): each module monitor's alarm and warning Flags,
@@ -1767,6 +1784,8 @@ function renderHealthIndicator(s, flags) {
   const bounced = (flags && flags.lanes || []).filter(
     l => (l.seen || []).includes('dp_state_changed')).length;
   const chips = [];
+  if (s.module_state === 'ModuleFault')
+    chips.push(['danger', '✖', '', `The module is in ModuleFault - ${faultCauseText(s)}. It leaves that state only on a reset (6.3.2.5.8)`]);
   // Module monitors only (Lower 9-11); the lanes have their own table.
   if (s.alarm_active)
     chips.push(['danger', '⚠', '', 'A module monitor (temperature, Vcc, Aux) reported an alarm on this poll - its latched alarm Flag was set (Lower 9-11)']);

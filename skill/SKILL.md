@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## ModuleFault 看原因
+
+`GET /api/module/status` 的 `fault_cause`({code, name, kind})来自 `Lower 41` ModuleFaultCause(Table 8-16):`kind` 为 `defined`(1-6)、`custom`(32-63)、`reserved`,`none` 表示 0(没检测到或不支持)。
+`module_state` 为 `ModuleFault` 时先看它;这个状态只有复位能离开(6.3.2.5.8),DataPath 相关写入会 409。
+
 ## 模块级告警和警告分开看
 
 `GET /api/module/status` 的 `alarm_active` 只算 `Lower 0x09-0x0B`(Table 8-9)里的**告警**标志,`warning_active` 只算**警告**;逐项在 `temp_high_alarm` / `vcc_low_warn` / `aux1_high_warn` … 里,两次刷新之间出现过的在 `seen` 里。
