@@ -35773,6 +35773,39 @@ class TestNoPowerIsNotMinusFortyDbm(CMISTestCase):
         self.assertIn("map(k => pwrThr(d, 'rx_power_' + k))", js)
 
 
+class TestTheManualDescribesTheDemosAsTheyAre(CMISTestCase):
+    """Section 10.8 lists how the demo modules react, and it had not kept
+    up: Tx disable still "set TxFault" and sent the lane to Deactivated
+    (rounds 98 and 107 made it take the whole Data Path to Initialized and
+    raise no Tx Failure), a PRBS checker's LOL still "cleared by itself
+    after 0.3 s" (round 108 latched it until read, and made the enable start
+    and stop the count), and leaving low power still activated every Data
+    Path (round 97 keeps the ones DPDeinit holds). The manual follows the
+    code, so the table is pinned to what the demos do."""
+
+    def _section(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        sec = html[html.index('10.8 状态机模拟'):]
+        return sec[:sec.index('</table>')]
+
+    def test_the_stale_behaviours_are_gone(self):
+        sec = self._section()
+        for stale in ('TxFault 标志置位', '0.3s 后自动清除',
+                      '所有 DataPath → Activated</td>'):
+            self.assertNotIn(stale, sec)
+
+    def test_what_the_demos_do_now(self):
+        sec = self._section()
+        for fact in ('Initialized(Eq. 6-12)', '不</b>置 Tx Failure',
+                     '闩锁到被读取为止', '未被 DPDeinit 按住',
+                     'ConfigRejectedInvalidDataPath', 'Host Scratchpad',
+                     '13h:177.7 置 1'):
+            self.assertIn(fact, sec)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

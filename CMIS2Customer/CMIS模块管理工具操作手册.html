@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.168.0<br>
+      <b>版本</b>　2.169.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.168.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.168.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.169.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.169.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -4401,12 +4401,13 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <table>
       <thead><tr><th>操作</th><th>响应行为</th></tr></thead>
       <tbody>
-        <tr><td><b>Software Reset</b></td><td class="label">ModuleState: Ready → LowPwr (0.3s) → PwrUp (0.5s) → Ready (0.8s)，所有 DataPath 经历 Deactivated → Activated</td></tr>
+        <tr><td><b>Software Reset</b></td><td class="label">ModuleState: Ready → LowPwr (0.3s) → PwrUp (0.5s) → Ready (0.8s)，所有 DataPath 经历 Deactivated → Activated;Host Scratchpad(13h:184–191)与 ModuleFaultCause(Lower 41)清零;ModuleStateChangedFlag 只在进入 ModuleReady 时置位(Table 6-9)</td></tr>
         <tr><td><b>Enter LowPwr</b></td><td class="label">ModuleState → LowPwr，所有 DataPath → Deactivated，TxPower = 0</td></tr>
-        <tr><td><b>Exit LowPwr</b></td><td class="label">ModuleState → Ready，所有 DataPath → Activated</td></tr>
-        <tr><td><b>TX Disable</b></td><td class="label">被禁用 lane 的 TxPower 降为 0，TxFault 标志置位，DP State → Deactivated</td></tr>
-        <tr><td><b>Apply DataPath</b></td><td class="label">Config Status 先变为 ConfigInProgress，DP State 经历 Init → TxTurnOn → Activated（约 0.5s）</td></tr>
-        <tr><td><b>PRBS Checker Enable</b></td><td class="label">LOL Flag 先置位（失锁），0.3s 后自动清除（锁定）</td></tr>
+        <tr><td><b>Exit LowPwr</b></td><td class="label">ModuleState → Ready;<b>未被 DPDeinit 按住</b>的 DataPath → Activated,被按住的保持 Deactivated</td></tr>
+        <tr><td><b>TX Disable</b></td><td class="label">该通道 TxPower 降为 0;运行中的整条数据通路经 TxTurnOff 退到 Initialized(Eq. 6-12),重新使能后经 TxTurnOn 回到 Activated;<b>不</b>置 Tx Failure 标志</td></tr>
+        <tr><td><b>Apply DataPath</b></td><td class="label">Config Status 先变为 ConfigInProgress，DP State 经历 Init → TxTurnOn → Activated（约 0.5s）;暂存的 DPIDX 必须指向该通道所在数据通路,否则 ConfigRejectedInvalidDataPath</td></tr>
+        <tr><td><b>PRBS Checker Enable</b></td><td class="label">该通道的误码计数清零并开始累积(关闭时停止并保留结果);锁定前在该通道置 LOL,闩锁到被读取为止</td></tr>
+        <tr><td><b>13h:177.7 置 1</b></td><td class="label">检测器使能和 ResetErrorInformation 的改动带到所有 Bank(门控 + 全局定时器时不带)</td></tr>
         <tr><td><b>Laser Tune</b></td><td class="label">写入 Grid/Channel 后，Current Frequency 实时更新，Status 显示 Locked</td></tr>
       </tbody>
     </table>
@@ -4741,7 +4742,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.168.0<br>
+    CMIS Module Manager 操作手册 v2.169.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
