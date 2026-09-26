@@ -35806,6 +35806,37 @@ class TestTheManualDescribesTheDemosAsTheyAre(CMISTestCase):
             self.assertIn(fact, sec)
 
 
+class TestTheManualListsEveryRuntimeRow(CMISTestCase):
+    """Section 7.3 of the manual tabulates Module Info's runtime rows, and
+    rows added in later rounds - Firmware Faults, Module State Changes,
+    Module Restarts, the masked alarms and the Custom monitor - were
+    described only in their own release notes, never in the table a reader
+    looks up. Each runtime row on the page has a row in section 7."""
+
+    ROWS = ('Module State', 'Temperature', 'Supply Voltage', 'Module Flags',
+            'Interrupt', 'Masked module alarms', 'Module State Changes',
+            'Module Restarts', 'Firmware Faults', 'Custom Monitor')
+
+    def test_the_page_has_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        for row in self.ROWS:
+            self.assertRegex(js, r"\['" + re.escape(row) + r"',", row)
+
+    def test_the_manual_tabulates_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer',
+                            'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s7 = man[man.index('id="s7"'):man.index('id="s8"')]
+        for row in self.ROWS:
+            self.assertIn('<tr><td>%s</td>' % row, s7, row)
+        self.assertIn('ModuleFaultCause', s7)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
