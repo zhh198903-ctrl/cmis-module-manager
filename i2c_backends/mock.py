@@ -976,18 +976,18 @@ class MockBackend(I2CInterface):
         # {first lane of a Data Path: (started, state it is heading for)}
         # while DPTxTurnOff or DPTxTurnOn runs - see _follow_tx_outputs.
         self._tx_turns = {}
-        # (bank, role) -> when that bank's pattern engine was enabled: each
-        # bank's Page 14h reports its own lanes' lock.
-        self._prbs_enable_times = {}
-        # Per absolute lane, not per bank position: a 16 lane module has 16
-        # independent counters, and eight of them were being shared.
-        _lanes = max(8, self.PROFILE.get('lanes', 8))
-        self._error_counts = [0] * _lanes
-        self._bit_counts = [0] * _lanes
+        # (bank, engine, lane in bank) -> when that engine was enabled. Until
+        # it has locked it reports loss of lock (Table 8-138) - on its own
+        # lane, in its own bank's Page 14h. See _engines_changed.
+        self._locking = {}
+        # ('host' | 'media', absolute lane) -> [errors, bits]. Each checker
+        # counts for itself and only while it is enabled (_checkers_changed);
+        # per absolute lane, so a 16 lane module has 16 on each side.
+        self._counter_lanes = max(8, self.PROFILE.get('lanes', 8))
+        self._counts = {}
         # {first lane of a bank: its measurement gate} - see _advance_gate.
         self._gates = {}
         self._last_counter_time = 0.0
-        self._counter_dt = 0.1
         self._registers = self._build_initial_registers()
         # Lanes of a later bank that a DPDeinit there took down, so that
         # releasing it brings back only those (see _set_bank_dp_deinit).
@@ -1986,19 +1986,21 @@ class MockBackend(I2CInterface):
             state = 0x1 if self._lane_unused(i) else self._dp_lane_states[i]
             self._registers[0x11][addr] = (old & ~mask) | ((state & 0x0F) << nibble_pos)
 
-        # PRBS LOL flags (lock after 0.3 s). Table 8-138 reports the
-        # generators as well as the checkers: a generator that has not locked
-        # is not sending the pattern its control registers name, which is a
-        # different fault from a checker that cannot find one.
-        # Per bank: enabling a generator for lanes 9-16 used to unlock the
-        # LOL flags of lanes 1-8, the only ones this looked at.
-        lol_of = {'hc': 0x8A, 'mc': 0x8B, 'hg': 0x88, 'mg': 0x89}
-        for (bank, key), t_en in self._prbs_enable_times.items():
-            p14 = (self._registers.get(0x14) if bank == 0
-                   else self._registers.get((0x14, bank)))
-            if p14 is None or not t_en:
-                continue
-            p14[lol_of[key]] = 0xFF if (now - t_en) < 0.3 else 0x00
+        # PRBS LOL Flags. Table 8-138 reports the generators as well as the
+        # checkers: a generator that has not locked is not sending the
+        # pattern its control registers name, which is a different fault
+        # from a checker that cannot find one. An engine reports it on its
+        # own lane while it locks, and the Flag is latched - set here, never
+        # cleared here; only a read clears it (_COR_BYTES). This used to
+        # write FFh over the whole bank while any one engine locked and 00h
+        # once it had, so enabling one checker flagged seven lanes that had
+        # none, and a host that read after the lock never saw the Flag.
+        # Raised once more on the pass that finds it locked: it was unlocked
+        # from the last read up to that moment, so the next read sees it.
+        for key, t_en in list(self._locking.items()):
+            self._raise_lol(*key)
+            if now - t_en >= self._LOCK_S:
+                del self._locking[key]
 
     # ------------------------------------------------------------------
     def _refresh_lane_thresholds(self) -> None:
@@ -2646,8 +2648,10 @@ class MockBackend(I2CInterface):
         # bank 0's selector and fill bank 0's window for the whole module,
         # which made a host that selected only in bank 0 look correct: lanes 9
         # and up got the values bank 0 had just been asked for.
-        base_ber = p['base_ber']
-        counters_ticked = False
+        now_t = time.time()
+        dt = (now_t - self._last_counter_time
+              if self._last_counter_time > 0 else 0.0)
+        self._last_counter_time = now_t
         for lane_base, p14 in self._banked_page_dicts(0x14):
             sel = p14.get(0x80, 0)
             p13 = self._page13_of(lane_base)
@@ -2660,29 +2664,39 @@ class MockBackend(I2CInterface):
                 for a in range(0xC0, 0x100):
                     p14[a] = 0
 
-            ber_now = self._ber_now(lane_base)
-            gate = self._advance_gate(lane_base, p13, ber_now)
-            # 11h is the last completed gate, "stable for Gating Period"; 01h
-            # is the running one, which stops where a gate ended without
+            gate = self._advance_gate(lane_base, p13)
+            # Counting runs on time whatever window is selected, for the
+            # enabled checkers only, and stops where a gate ended without
             # restarting (Table 8-129: "When the gate timer expires, the error
-            # counters stop counting").
-            shown = (gate['ber'] if sel == 0x11 or gate['frozen']
-                     else ber_now)
+            # counters stop counting"). It used to tick only while a counter
+            # window was selected, so lanes 1-4 and 5-8 counted different
+            # lengths of the same second.
+            if not gate['frozen']:
+                self._count_errors(lane_base, p13, dt)
+            # 11h-15h are the last completed gate, "stable for Gating
+            # Period"; 01h-05h the running count - unless 13h:129.4
+            # PeriodicUpdatesSupported is clear, when "real time error
+            # information is not updated and error information is only
+            # available when the error counting is stopped by checker
+            # disable" (Table 8-128), or "at the end of the gate" (8-129).
+            # Both land in the gated copy. mock_fr4x2 advertises exactly
+            # that, and its figures moved every read.
+            live = p13.get(0x81, 0) & 0x10
+            counts = (gate['counts'] if sel >= 0x11 or not live
+                      else self._counts)
 
             for li in range(8):
                 lane = lane_base + li
                 phase = lane * math.pi / 4 + lane_base * 0.37
 
                 if sel == 0x01 or sel == 0x11:
-                    h_ber, m_ber = shown[li] if shown[li] else (0.0, 0.0)
-                    w = cmis.encode_f16_ber(h_ber)
-                    a = 0xC0 + li * 2
-                    p14[a] = (w >> 8) & 0xFF
-                    p14[a + 1] = w & 0xFF
-                    w = cmis.encode_f16_ber(m_ber)
-                    a = 0xD0 + li * 2
-                    p14[a] = (w >> 8) & 0xFF
-                    p14[a + 1] = w & 0xFF
+                    # The errors over the bits the checker counted - so zero
+                    # where no checker has run, and held where one stopped.
+                    for side, a in (('host', 0xC0), ('media', 0xD0)):
+                        errors, bits = counts.get((side, lane), (0, 0))
+                        w = cmis.encode_f16_ber(errors / bits if bits else 0.0)
+                        p14[a + li * 2] = (w >> 8) & 0xFF
+                        p14[a + li * 2 + 1] = w & 0xFF
 
                 elif sel == 0x06:
                     snr_db = p['snr_db_nom'] + 2.0 * math.sin(2 * math.pi * t / 40.0 + phase)
@@ -2694,36 +2708,17 @@ class MockBackend(I2CInterface):
                     p14[a_m] = snr_val & 0xFF
                     p14[a_m + 1] = (snr_val >> 8) & 0xFF
 
-            # Error/Bit counters (selectors 0x02-0x05, 0x12-0x15)
+            # Error/Bit counters (selectors 0x02-0x05, 0x12-0x15): host lanes
+            # 1-4, 5-8, then media - each side its own checker's count. Both
+            # used to read one shared count.
             if sel in (0x02, 0x03, 0x04, 0x05, 0x12, 0x13, 0x14, 0x15):
-                if not counters_ticked:
-                    now_t = time.time()
-                    self._counter_dt = (now_t - self._last_counter_time
-                                        if self._last_counter_time > 0 else 0.1)
-                    self._last_counter_time = now_t
-                    counters_ticked = True
-                bits_per_sec = int(100e9)   # 100 Gbps per lane
-                is_high = sel in (0x03, 0x05, 0x13, 0x15)
-                lane_start = 4 if is_high else 0
+                side = 'host' if (sel & 0x0F) in (0x02, 0x03) else 'media'
+                lane_start = 4 if (sel & 0x0F) in (0x03, 0x05) else 0
                 for li in range(4):
                     lane = lane_base + lane_start + li
-                    if lane >= len(self._bit_counts):
-                        continue
-                    # A gate that ended without a restart has stopped
-                    # counting. The count runs on time, so which window is
-                    # read to advance it does not matter.
-                    if not gate['frozen']:
-                        new_bits = int(bits_per_sec * self._counter_dt)
-                        new_errors = int(new_bits * base_ber
-                                         * (1.0 + 0.2 * math.sin(t + lane)))
-                        self._bit_counts[lane] += new_bits
-                        self._error_counts[lane] += max(new_errors, 0)
                     off = 0xC0 + li * 16
-                    # The gated window is the copy taken when a gate ended.
-                    ec, bc = (gate['counts'].get(lane, (0, 0)) if sel >= 0x12
-                              else (self._error_counts[lane],
-                                    self._bit_counts[lane]))
-                    bc &= ~1                            # PSL=0 in LSB
+                    ec, bc = counts.get((side, lane), (0, 0))
+                    ec, bc = int(ec), int(bc) & ~1      # PSL=0 in LSB
                     for j in range(8):
                         p14[off + j] = (ec >> (j * 8)) & 0xFF
                     for j in range(8):
@@ -2924,10 +2919,6 @@ class MockBackend(I2CInterface):
                 for lane_base, p12 in judged:
                     self._judge_tuning(touched, p12, lane_base)
         elif self._current_page == 0x13:
-            prbs_map = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
-            if register in prbs_map and data[0] != 0:
-                self._prbs_enable_times[(self._current_bank,
-                                         prbs_map[register])] = time.time()
             # Table 8-131: "If the Per-lane ... Loopback Supported field=1,
             # loopback control is per lane. Otherwise, if any loopback enable
             # bit is set to 1, all ... lanes are in ... loopback." So a module
@@ -3384,26 +3375,102 @@ class MockBackend(I2CInterface):
         return self._registers.get((0x13, lane_base // 8), {})
 
     def _gate_of(self, lane_base: int) -> dict:
+        # 'counts' is the last completed gate: (side, lane) -> (errors, bits).
         return self._gates.setdefault(lane_base, {
-            'start': time.time(), 'frozen': False,
-            'ber': [None] * 8, 'counts': {}})
+            'start': time.time(), 'frozen': False, 'counts': {}})
 
-    def _snapshot_gate(self, lane_base: int, gate: dict, ber_now) -> None:
-        """Copy the running error information into the gated results, as a
-        gate end or a ResetErrorInformation freeze does (Table 8-127)."""
-        gate['ber'] = list(ber_now)
-        gate['counts'] = {
-            lane: (self._error_counts[lane], self._bit_counts[lane])
-            for lane in range(lane_base, min(lane_base + 8,
-                                             len(self._bit_counts)))}
+    # 13h:144, 152, 160, 168 (Tables 8-119, 8-121, 8-123, 8-125): one enable
+    # bit per lane for each pattern engine.
+    _ENGINE_ENABLES = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
+    _LOL_FLAG = {'hg': 0x88, 'mg': 0x89, 'hc': 0x8A, 'mc': 0x8B}
+    _LOCK_S = 0.3                   # how long an engine takes to lock
+    _LANE_BITS_PER_S = int(100e9)   # the rate the demo counts bits at
+
+    def _raise_lol(self, bank: int, engine: str, li: int) -> None:
+        p14 = (self._registers.get(0x14) if bank == 0
+               else self._registers.get((0x14, bank)))
+        if p14 is not None:
+            a = self._LOL_FLAG[engine]
+            p14[a] = p14.get(a, 0) | (1 << li)
+
+    def _engines_changed(self, p13: dict, before: dict) -> None:
+        """A write to the engine enables of one bank's Page 13h. An engine
+        newly enabled starts locking - its LOL is raised by the next pass of
+        _update_state_machine, which every read runs first; a checker newly
+        enabled or disabled starts or stops its count."""
+        lane_base = next(b for b, d in self._banked_page_dicts(0x13)
+                         if d is p13)
+        now = time.time()
+        for addr, engine in self._ENGINE_ENABLES.items():
+            new = p13.get(addr, 0)
+            started, stopped = new & ~before[addr], before[addr] & ~new
+            for li in range(8):
+                key = (lane_base // 8, engine, li)
+                if (started >> li) & 1:
+                    self._locking[key] = now
+                elif (stopped >> li) & 1:
+                    self._locking.pop(key, None)
+            if engine in ('hc', 'mc'):
+                self._checkers_changed(lane_base,
+                                       'host' if engine == 'hc' else 'media',
+                                       started, stopped)
+
+    def _checkers_changed(self, lane_base: int, side: str, started: int,
+                          stopped: int) -> None:
+        """Tables 8-128 to 8-130: the checker enable starts and stops the
+        count. "When the host enables disabled PRBS checkers (in 13h:160 or in
+        13h:168) all error counters for the enabled lanes are cleared and then
+        start accumulating", and the gate timer "resets to 0"; "When the host
+        disables enabled PRBS checkers ... error counting is stopped, and
+        error counting results will be available both via Selector 01-05h and
+        11h-15h". The demo counted from connect on every lane, checker or no
+        checker, with host and media sharing one count."""
+        gate = self._gate_of(lane_base)
+        for li in range(8):
+            lane = lane_base + li
+            if lane >= self._counter_lanes:
+                break
+            if (started >> li) & 1:
+                self._counts[(side, lane)] = [0.0, 0]
+            elif (stopped >> li) & 1:
+                gate['counts'][(side, lane)] = tuple(
+                    self._counts.get((side, lane), (0, 0)))
+        # A held ResetErrorInformation keeps the gate stopped (Table 8-127).
+        if started and not self._page13_of(lane_base).get(0xB1, 0) & 0x20:
+            gate['start'], gate['frozen'] = time.time(), False
+
+    def _checking(self, lane_base: int, p13: dict = None):
+        """(side, absolute lane) of every enabled checker in a bank."""
+        p13 = self._page13_of(lane_base) if p13 is None else p13
+        for side, addr in (('host', 0xA0), ('media', 0xA8)):
+            on = p13.get(addr, 0)
+            for li in range(8):
+                if (on >> li) & 1 and lane_base + li < self._counter_lanes:
+                    yield side, lane_base + li
+
+    def _count_errors(self, lane_base: int, p13: dict, dt: float) -> None:
+        bits = int(self._LANE_BITS_PER_S * dt)
+        ber = self._ber_now(lane_base)
+        for side, lane in self._checking(lane_base, p13):
+            c = self._counts.setdefault((side, lane), [0.0, 0])
+            c[0] += bits * ber[lane - lane_base][side == 'media']
+            c[1] += bits
+
+    def _snapshot_gate(self, lane_base: int, gate: dict) -> None:
+        """Copy the enabled checkers' running error information into the
+        gated results, as a gate end or a ResetErrorInformation freeze does
+        (Table 8-127). A stopped checker keeps what it left there."""
+        for key in self._checking(lane_base):
+            gate['counts'][key] = tuple(self._counts.get(key, (0, 0)))
 
     def _restart_counting(self, lane_base: int, gate: dict) -> None:
-        for lane in range(lane_base, min(lane_base + 8,
-                                         len(self._bit_counts))):
-            self._error_counts[lane] = self._bit_counts[lane] = 0
+        """Table 8-128: reset "and restart accumulation on the enabled
+        lanes"."""
+        for key in self._checking(lane_base):
+            self._counts[key] = [0.0, 0]
         gate['start'], gate['frozen'] = time.time(), False
 
-    def _advance_gate(self, lane_base: int, p13: dict, ber_now) -> dict:
+    def _advance_gate(self, lane_base: int, p13: dict) -> dict:
         """A gated measurement (13h:177.3-1 non-zero, 13h:129.7-6 GatingSupport)
         ends when its time is up. Tables 8-129/8-130: the results of that
         gate go to Selectors 11h-15h; with AutoRestartGating (13h:177.4,
@@ -3420,7 +3487,7 @@ class MockBackend(I2CInterface):
             return gate
         if time.time() - gate['start'] < seconds:
             return gate
-        self._snapshot_gate(lane_base, gate, ber_now)
+        self._snapshot_gate(lane_base, gate)
         # Table 8-138, PatternCheckGatingCompleteFlag: "When gating is
         # complete, this bit will be set" - per lane, for the checkers that
         # were running (13h:160 host, 13h:168 media). Latched, cleared by the
@@ -3445,9 +3512,8 @@ class MockBackend(I2CInterface):
         restart setting starts a new gate."""
         gate = self._gate_of(lane_base)
         if not old & 0x20 and new & 0x20:
-            shown = gate['ber'] if gate['frozen'] else self._ber_now(lane_base)
             if not gate['frozen']:
-                self._snapshot_gate(lane_base, gate, shown)
+                self._snapshot_gate(lane_base, gate)
             gate['frozen'] = True
         elif old & 0x20 and not new & 0x20:
             self._restart_counting(lane_base, gate)
@@ -3992,13 +4058,23 @@ class MockBackend(I2CInterface):
                 self._prev_selected = was
                 self._page_changed_at = time.perf_counter()
         else:
-            for page_dict in self._write_targets():
+            span = range(register, register + len(data))
+            targets = self._write_targets()
+            # The pattern engine enables, per bank as they were before the
+            # write, so that what it started and stopped can be told apart.
+            engines = ([(d, {a: d.get(a, 0) for a in self._ENGINE_ENABLES})
+                        for d in targets]
+                       if self._current_page == 0x13
+                       and any(a in span for a in self._ENGINE_ENABLES)
+                       else [])
+            for page_dict in targets:
                 for i, b in enumerate(data):
                     if self._host_writable(self._current_page, register + i):
                         page_dict[register + i] = (
                             0 if self._write_only(self._current_page,
                                                   register + i) else b)
-            span = range(register, register + len(data))
+            for p13, before in engines:
+                self._engines_changed(p13, before)
             if self._current_page == 0x10 and (0x82 in span or 0x84 in span):
                 # The Tx transient starts at the write that asked for it,
                 # not at whichever read happens to come next.

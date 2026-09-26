@@ -3851,6 +3851,36 @@ function mediaAbsent(present, i) {
   return present[i] === false;
 }
 
+// Tables 8-128 to 8-130: a checker's enable (13h:160 host, 13h:168 media)
+// starts its count from zero, and disabling it stops the count and holds the
+// result. A lane with no checker running therefore shows the last result or
+// nothing - never a live figure, which is how both tables used to print it.
+const CHECKER_OFF_TIP = 'No pattern checker is running on this lane (13h:160 '
+  + 'host, 13h:168 media). Tables 8-128 to 8-130: enabling one clears the count '
+  + 'and starts it; disabling it stops the count and holds the result. Enable '
+  + 'the checker on the PRBS tab to measure.';
+
+function checkerOff(checking, side, i) {
+  return !!(checking && checking[side] && checking[side][i] === false);
+}
+
+function checkerOffCell(held, html) {
+  return held
+    ? `<td class="text-muted" title="${esc(CHECKER_OFF_TIP + ' This is the '
+      + 'result it held when it stopped.')}">${html} <small>held</small></td>`
+    : `<td class="text-muted" title="${esc(CHECKER_OFF_TIP)}">off</td>`;
+}
+
+function checkersOffNote(checking, present) {
+  const c = checking || {};
+  const live = ['host', 'media'].some(side => (c[side] || []).some((on, i) =>
+    on && !(side === 'media' && mediaAbsent(present || [], i))));
+  if (!c.host || live) return '';
+  return `<tr><td colspan="9" class="text-muted" style="font-size:var(--fs-xs)">`
+    + `No pattern checker is running, so nothing is being counted. Enabling one `
+    + `on the PRBS tab clears that lane's count and starts it (Table 8-128).</td></tr>`;
+}
+
 function formatBer(ber) {
   if (ber == null || !isFinite(ber)) return '—';
   if (ber === 0) {
@@ -4509,6 +4539,10 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
         ? `<span class="flag-was" title="${esc(role + ' is locked now, but lock '
           + 'was lost since the flag history was cleared')}">&#9679;<sup>!</sup></span>`
           + maskNote
+        // A stopped engine has no lock to report; a green dot said "locked".
+        : !en
+        ? `<span class="flag-none" title="${esc(role + ' not running on this '
+          + 'lane, so it has no pattern lock to report')}">&ndash;</span>`
         : `<span class="flag-ok"${off ? ` title="${esc(PRBS_MASK_TIP)}"` : ''}`
           + '>●</span>'}${gateNote}</td>`;
     }
@@ -4883,17 +4917,23 @@ async function loadBer() {
   // Table 7-8: 0.5 is the BER's NA value, reported as such where the module
   // advertises NA values - not a link failing every other bit.
   const berCell = (v, na) => `<td>${na ? naCell('no valid sample') : formatBer(v)}</td>`;
-  const berRows = (lanes, label, sel) => {
-    const hostCells = lanes.map(l => berCell(l.host_ber, l.host_ber_na)).join('');
+  // Only the running rows: the last gate is a result either way.
+  const berRows = (lanes, label, sel, checking) => {
+    const hostCells = lanes.map((l, i) => checkerOff(checking, 'host', i)
+      ? checkerOffCell(!!l.host_ber, formatBer(l.host_ber))
+      : berCell(l.host_ber, l.host_ber_na)).join('');
     const mediaCells = lanes.map((l, i) =>
       mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
+        : checkerOff(checking, 'media', i)
+          ? checkerOffCell(!!l.media_ber, formatBer(l.media_ber))
         : berCell(l.media_ber, l.media_ber_na)).join('');
     return `<tr><td style="color:var(--text-muted)">Host${label}<span class="reg-badge">14h/0xC0${sel}</span></td>${hostCells}</tr>` +
       `<tr><td style="color:var(--text-muted)">Media${label}<span class="reg-badge">14h/0xD0${sel}</span></td>${mediaCells}</tr>`;
   };
-  tbody.innerHTML = berRows(res.data.lanes, '', '')
+  tbody.innerHTML = berRows(res.data.lanes, '', '', res.data.checking)
     + (res.data.last_gate
-      ? berRows(res.data.last_gate.lanes, ' \u00b7 last gate', ' sel 11h') : '');
+      ? berRows(res.data.last_gate.lanes, ' \u00b7 last gate', ' sel 11h') : '')
+    + checkersOffNote(res.data.checking, res.data.media_lanes_present);
 }
 
 // ---------------------------------------------------------------------------
@@ -4927,16 +4967,22 @@ async function loadCounters() {
   const present = res.data.media_lanes_present;
   // The six rows for one set of lanes: the running figures, and - where
   // 13h:129.5 offers them - the last completed gate (Selectors 12h-15h).
-  const counterRows = (lanes, label) => {
+  const counterRows = (lanes, label, checking) => {
+    // A stopped checker's count is held, and one that never ran has none.
+    const off = (side, i) => checkerOff(checking, side, i);
+    const offCell = (side, l, html) =>
+      checkerOffCell(l[`${side}_total_bits`] > 0, html);
     // MAX(U64) is the error count's NA value (Table 7-8); the BER built on
     // it is no measurement either.
     const row = (side, field, fmt) => lanes.map((l, i) =>
       side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+        : off(side, i) ? offCell(side, l, fmt(l[`${side}_${field}`]))
         : field === 'error_count' && l[`${side}_errors_na`]
           ? cell(l, false, naCell('no valid sample'))
         : cell(l, l[`${side}_psl`], fmt(l[`${side}_${field}`]))).join('');
     const berRow = (side) => lanes.map((l, i) =>
       side === 'media' && mediaAbsent(present, i) ? noMediaLaneCell(l.lane)
+        : off(side, i) ? offCell(side, l, fmtBer(l[`${side}_ber`], l[`${side}_psl`]))
         : l[`${side}_errors_na`] ? cell(l, false, naCell('no valid error count'))
         : cell(l, l[`${side}_psl`], fmtBer(l[`${side}_ber`], l[`${side}_psl`]))).join('');
     const th = (name) => `<td style="color:var(--text-muted)">${name}${label}</td>`;
@@ -4957,9 +5003,9 @@ async function loadCounters() {
       + `and bit counts are not a valid BER measurement.</td></tr>`
     : '';
 
-  tbody.innerHTML = counterRows(lanes, '')
+  tbody.innerHTML = counterRows(lanes, '', res.data.checking)
     + (res.data.last_gate ? counterRows(gated, ' \u00b7 last gate') : '')
-    + note;
+    + note + checkersOffNote(res.data.checking, present);
 }
 
 // ---------------------------------------------------------------------------

@@ -603,6 +603,13 @@ Table 8-137:选择器 01h–06h 是实时结果,11h–15h 是最近一个已完�
 门控结束的信号是 `14h:134/135` PatternCheckGatingCompleteFlag(闩锁、读清):`GET /api/module/prbs` 带
 `host_gate_done_mask(_banks)` 和按通道的历史 `host_gate_done_seen` / `media_gate_done_seen`,页面在检测表里标「gate done」。
 
+## 检测器没开就没有计数
+
+Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)就是误码计数的开关——启用时这条通道清零并开始累积,门控定时器从 0 开始;关闭时停止,结果保持,选择器 01h–05h 和 11h–15h 都能读到。
+`GET /api/module/ber` 和 `GET /api/module/counters` 带 `checking.host` / `checking.media`(每通道一个 bool)。为 `false` 的通道,数字是检测器停下时留下的结果,或者从没跑过(0);页面标 **off** / **held**。
+用户说「BER 全是 0」「误码计数不动」:先看 `checking`,多半是检测器没开。`13h:129.4` PeriodicUpdatesSupported 为 0 的模块测量期间本来就不更新,检测器关掉(或门控到时)才出结果。
+检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
+
 ## 关掉一路 Tx:整条数据通道到 Initialized
 
 Eq. 6-12:DPDeactivateS 含 DPTxDisableT 和 DPTxForceSquelchT,对数据通道的所有媒体通道取或。

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.157.0<br>
+      <b>版本</b>　2.158.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.157.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.157.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.158.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.158.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1724,6 +1724,18 @@
     0 °C 和“TEC 没在工作”都是看上去很合理的读数。
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
+  </div>
+
+  <h3>误码计数由检测器的启用开始、停止</h3>
+  <p>规范 Table 8-128 ~ 8-130:检测器的使能位(<code>13h:160</code> 主机侧、<code>13h:168</code> 媒体侧)就是误码计数的开关。启用原本关闭的检测器时,这些通道的计数清零后开始累积,门控定时器也从 0 开始;关闭检测器时计数停止,结果仍可通过选择器 01h–05h(以及支持时的 11h–15h)读到。模块声明测量期间不更新(<code>13h:129.4</code> = 0)时,检测器在跑时数字不动,关掉或门控到时才出结果。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>演示模块以前不管检测器开没开:一连上就在每条通道上计数,主机侧和媒体侧共用同一个计数;而且只在读到某个计数窗口时才累加,同一秒里第 5–8 通道计的比特数能是第 1–4 通道的好几倍。声明「测量期间不更新」的 <code>mock_fr4x2</code> 数字照样每次都变。PRBS 的 LOL 标志也不对:任何一个引擎在锁定过程中,整个 bank 八条通道全部置位,锁上后直接写 0——只启用一条通道,另外七条也显示失锁;锁上之后才读的主机则根本看不到这次失锁。</span>
+  </div>
+  <p>现在:演示模块每个检测器各自计数,只在启用期间累加,启用时清零重来,关闭时停住并保留结果;BER 就是它计到的误码数除以比特数。LOL 只在正在锁定的那条通道上置位,闩锁到被读取为止。BER 表和误码计数表里,没有检测器在运行的通道显示灰色 <b>off</b>;检测器已关闭、留有结果的显示数值并标 <b>held</b>(悬停有说明);一个检测器都没开时表下写明「No pattern checker is running」。PRBS 表里没有运行的发生器 / 检测器,Lock 一栏显示「–」,不再是表示已锁定的绿点。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>检测器刚启用、还没锁上时会置一次 LOL(真实模块通常也是这样),PRBS 表会留下 <span class="flag-was">●<sup>!</sup></span>。要判断测量期间有没有失锁:启用检测器,等它锁上,点一次 <b>Clear flag history</b>,之后再出现的 <span class="flag-was">●<sup>!</sup></span> 才是测量中的失锁。</span>
   </div>
 
   <h3>关断 Tx 输出不是「发送器故障」</h3>
@@ -3762,7 +3774,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     而下一次刷新它已经重新锁上，表里看起来一切正常。<br>
     现在失过锁的通道会在 Lock 列保留
     <span class="flag-was">●<sup>!</sup></span> 标记。<b>看到它就说明这条通道的
-    BER 结果不可信</b>——计数器在失锁期间是无意义的，应该清一次重跑。</span>
+    BER 结果不可信</b>——计数器在失锁期间是无意义的，应该清一次重跑。
+    检测器刚启用、锁定之前那一次 LOL 也会留下标记：等它锁上后先点一次
+    Clear flag history 再开始看。</span>
   </div>
 
   <div class="callout callout-note">
@@ -4641,7 +4655,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.157.0<br>
+    CMIS Module Manager 操作手册 v2.158.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

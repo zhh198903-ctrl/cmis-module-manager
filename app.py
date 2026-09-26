@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.157.0'
+__version__ = '2.158.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4793,6 +4793,7 @@ def api_module_ber():
         present = _media_lanes_present()
         return _ok({'lanes': _ber_lanes(0x01, present), 'supported': True,
                     'media_lanes_present': present,
+                    'checking': _checkers_running(),
                     'last_gate': ({'lanes': _ber_lanes(0x11, present)}
                                   if _gated_results_supported() else None),
                     'measurement': _measurement_window()})
@@ -5324,11 +5325,32 @@ def api_module_counters():
         present = _media_lanes_present()
         return _ok({'lanes': _counter_lanes(0x02, present), 'supported': True,
                     'media_lanes_present': present,
+                    'checking': _checkers_running(),
                     'last_gate': ({'lanes': _counter_lanes(0x12, present)}
                                   if _gated_results_supported() else None),
                     'measurement': _measurement_window()})
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _checkers_running() -> dict:
+    """Which lanes have a pattern checker enabled - 13h:160 host, 13h:168
+    media (Tables 8-123, 8-125), one bit per lane in each Bank.
+
+    Tables 8-128 to 8-130 make that enable the start and stop of the count:
+    "When the host enables disabled PRBS checkers ... all error counters for
+    the enabled lanes are cleared and then start accumulating", and disabling
+    one stops it with the result left readable. So a lane whose checker is
+    off holds its last result or has none - and the BER and counter tables
+    printed either as if it were being measured."""
+    out = {}
+    for side, reg in (('host', cmis.REG_HOST_PRBS_CHK),
+                      ('media', cmis.REG_MEDIA_PRBS_CHK)):
+        bits = []
+        for _b, raw in _read_banks(reg[0], reg[1], 1):
+            bits += [bool((raw[0] >> i) & 1) for i in range(8)]
+        out[side] = bits[:_state['lanes']]
+    return out
 
 
 def _counter_lanes(first_sel: int, present) -> list:

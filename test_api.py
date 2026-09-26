@@ -1244,6 +1244,7 @@ class TestMultiBankLanes(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': 'mock_1600g_dr8', 'bus': 0, 'address': 80}),
             content_type='application/json'))
+        run_checkers(self.client)
         ber = self.assertOk(self.client.get('/api/module/ber'))['data']['lanes']
         self.assertGreater(ber[0]['media_ber'], 1e-5)
         self.assertLess(ber[0]['media_ber'], 1e-3)
@@ -5205,6 +5206,7 @@ class TestDj1600GAlignment(CMISTestCase):
         stays inside the share Table 174A-1 gives the PMD, which is stricter
         than the whole path's 2.921e-4."""
         self._connect_dr8()
+        run_checkers(self.client)
         lanes = self.assertOk(self.client.get('/api/module/ber'))['data']['lanes']
         self.assertLess(self.PMD_BER_ALLOCATION, self.PRE_FEC_BER_LIMIT)
         for lane in lanes:
@@ -10530,6 +10532,9 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         self.assertEqual(self._prbs()['host_gen_lol_mask'], 0xFF,
                          'a generator just enabled reports itself locked')
         time.sleep(0.7)
+        # Latched: unlocked up to the lock, so the first read after it still
+        # sees the Flag - and the one after that does not.
+        self.assertEqual(self._prbs()['host_gen_lol_mask'], 0xFF)
         self.assertEqual(self._prbs()['host_gen_lol_mask'], 0x00,
                          'the generator never reached lock')
 
@@ -10540,6 +10545,7 @@ class TestWhetherTheGeneratorIsActuallySending(CMISTestCase):
         self._start_generator()
         self._prbs()                       # the read that latches and clears
         time.sleep(0.7)
+        self._prbs()                       # the last of it, up to the lock
         d = self._prbs()
         self.assertEqual(d['host_gen_lol_mask'], 0x00)
         self.assertTrue(all(d['host_gen_lol_seen'][:8]),
@@ -18112,6 +18118,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
 
     def test_the_ber_of_the_upper_bank_is_its_own(self):
         self._connect()
+        run_checkers(self.client, host=0xFFFF, media=0)
         d = self.assertOk(self.client.get('/api/module/ber'))['data']
         lanes = d['lanes']
         self.assertEqual(len(lanes), 16)
@@ -18125,6 +18132,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         """It used to read bank 0's selector and fill bank 0's window for the
         whole module, which made the broken reader look correct."""
         self._connect()
+        run_checkers(self.client, host=0xFFFF, media=0)
         banks = self._banks()
         self.assertEqual(len(banks), 2)
         # Selector 06h fills 0xD0 and 0xF0; selector 01h fills 0xC0 and 0xD0.
@@ -18161,7 +18169,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         backend = app_module._state['backend']
         marker = 10 ** 9
         for lane in range(8, 16):
-            backend._error_counts[lane] = marker
+            backend._counts[('host', lane)] = [marker, 0]
         d = self.assertOk(self.client.get('/api/module/counters'))['data']
         lanes = d['lanes']
         self.assertEqual(len(lanes), 16)
@@ -18201,8 +18209,11 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         lane 1's."""
         import app as app_module
         self._connect()
-        self.assertGreaterEqual(
-            len(app_module._state['backend']._bit_counts), 16)
+        run_checkers(self.client, host=0xFFFF, media=0)
+        self.client.get('/api/module/counters')
+        counts = app_module._state['backend']._counts
+        self.assertEqual(len({lane for side, lane in counts
+                              if side == 'host'}), 16)
 
     def test_the_helper_is_what_every_endpoint_uses(self):
         """Three copies of "write the selector, then read" is how two of them
@@ -28572,6 +28583,7 @@ class TestDiagnosticsOfALaneThatIsNotThere(CMISTestCase):
 
     def test_counters_of_a_missing_media_lane_are_null(self):
         self._connect()
+        run_checkers(self.client, media=0x01)
         lanes = self._get('counters')['lanes']
         for field in ('error_count', 'total_bits', 'psl', 'ber'):
             self.assertIsNotNone(lanes[0]['media_' + field], field)
@@ -32022,6 +32034,10 @@ class TestADemoBankAnswersForItsOwnLanes(CMISTestCase):
         d = self.assertOk(self.client.get('/api/module/prbs'))['data']
         self.assertEqual(d['host_gen_lol_mask_banks'], [0x00, 0xFF])
         time.sleep(0.4)
+        # Latched: unlocked up to the lock, so the read after it still sees
+        # it, and the one after that does not.
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_gen_lol_mask_banks'], [0x00, 0xFF])
         d = self.assertOk(self.client.get('/api/module/prbs'))['data']
         self.assertEqual(d['host_gen_lol_mask_banks'], [0x00, 0x00])
 
@@ -33148,6 +33164,9 @@ class TestTheLastCompletedGateIsShown(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
+        # Only an enabled checker counts (Table 8-128).
+        every = (1 << _state['lanes']) - 1
+        run_checkers(self.client, every, every, wait=0.02)
 
     def _get(self, what):
         return self.assertOk(self.client.get('/api/module/' + what))['data']
@@ -33241,6 +33260,8 @@ class TestTheLastCompletedGateIsShown(CMISTestCase):
     def test_the_gated_ber_is_held(self):
         self._connect()
         self._write(0x13, 177, [0x18])
+        time.sleep(0.02)
+        self._get('counters')           # the new gate has counted something
         self._end_gate()
         first = self._get('ber')['last_gate']['lanes'][0]['host_ber']
         self.assertGreater(first, 0)
@@ -34195,6 +34216,285 @@ class TestDisablingATxIsNotAFailure(CMISTestCase):
         self.assertNotIn('>Tx Fault<', html)
         th = html[html.rindex('<th', 0, html.index('>Tx Failure<')):]
         self.assertIn('formerly Tx Fault', th[:th.index('</th>')])
+
+
+def run_checkers(client, host=0xFF, media=0xFF, wait=0.1):
+    """Enable pattern checkers and let them count: Tables 8-128 to 8-130
+    make the enable what starts a count, so a demo with none running reports
+    no errors and no bits."""
+    rv = client.post('/api/module/prbs',
+                     data=json.dumps({'host_chk': {'enable_mask': host},
+                                      'media_chk': {'enable_mask': media}}),
+                     content_type='application/json')
+    assert json.loads(rv.data)['status'] == 'ok', rv.data
+    time.sleep(wait)
+
+
+class TestTheCheckerStartsAndStopsTheCount(CMISTestCase):
+    """Tables 8-128 to 8-130: the checker enable is the start and stop of
+    error counting. "When the host enables disabled PRBS checkers (in 13h:160
+    or in 13h:168) all error counters for the enabled lanes are cleared and
+    then start accumulating"; "When the host disables enabled PRBS checkers
+    ... error counting is stopped, and error counting results will be
+    available both via Selector 01-05h and 11h-15h".
+
+    The demos counted from connect on every lane, with no checker running,
+    host and media sharing one count - and lanes 1-4 and 5-8 counting
+    different lengths of the same second, because a lane only ticked while
+    its window was selected. Their LOL Flags (Table 8-138, latched, RO/COR)
+    were written FFh over the whole bank while one engine locked and 00h once
+    it had. The tables printed a lane without a checker as a measurement.
+    mock_fr4x2 advertises no periodic updates (13h:129.4 = 0) - "error
+    information is only available when the error counting is stopped by
+    checker disable" - and its figures moved on every read. Now the demos
+    count per checker, publish per 129.4, latch LOL on the lane that is
+    locking, and the replies and the page say which lanes are counted."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _enable(self, **sections):
+        self.assertOk(self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({k: {'enable_mask': v} for k, v in sections.items()}),
+            content_type='application/json'))
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _bits(self, side='host'):
+        return [l[side + '_total_bits'] for l in self._get('counters')['lanes']]
+
+    # ---- counting ----------------------------------------------------------------------------
+    def test_nothing_counts_without_a_checker(self):
+        self._connect()
+        self._get('counters')
+        time.sleep(0.1)
+        d = self._get('counters')
+        self.assertEqual({(l['host_total_bits'], l['host_error_count'],
+                           l['media_total_bits'], l['media_error_count'])
+                          for l in d['lanes']}, {(0, 0, 0, 0)})
+        self.assertEqual({(l['host_ber'], l['media_ber'])
+                          for l in self._get('ber')['lanes']}, {(0.0, 0.0)})
+
+    def test_a_checker_counts_its_own_lane_and_side(self):
+        self._connect()
+        self._enable(host_chk=0x01, media_chk=0x02)
+        time.sleep(0.1)
+        host, media = self._bits('host'), self._bits('media')
+        self.assertGreater(host[0], 0)
+        self.assertEqual(host[1:], [0] * 7)
+        self.assertGreater(media[1], 0)
+        self.assertEqual(media[:1] + media[2:], [0] * 7)
+        ber = self._get('ber')['lanes']
+        self.assertGreater(ber[0]['host_ber'], 0)
+        self.assertEqual(ber[0]['media_ber'], 0.0)
+
+    def test_every_lane_counts_the_same_time(self):
+        self._connect()
+        self._enable(host_chk=0xFF)
+        time.sleep(0.1)
+        bits = self._bits()
+        # read one after another while they run, so a little apart - lanes
+        # 5-8 used to come back several times lanes 1-4
+        self.assertLess(max(bits), min(bits) * 1.25, bits)
+        counts = _state['backend']._counts
+        self.assertEqual(len({counts[('host', i)][1] for i in range(8)}), 1)
+
+    def test_enabling_clears_the_count(self):
+        self._connect()
+        self._enable(host_chk=0x01)
+        time.sleep(0.3)
+        ran = self._bits()[0]
+        self._enable(host_chk=0x00)
+        self._enable(host_chk=0x01)
+        self.assertLess(self._bits()[0], ran / 2)
+
+    def test_disabling_holds_the_result(self):
+        self._connect('mock_sr8')
+        self._enable(host_chk=0x01)
+        time.sleep(0.1)
+        self._enable(host_chk=0x00)
+        held = self._get('counters')
+        time.sleep(0.1)
+        again = self._get('counters')
+        self.assertGreater(held['lanes'][0]['host_total_bits'], 0)
+        self.assertEqual(again['lanes'][0]['host_total_bits'],
+                         held['lanes'][0]['host_total_bits'])
+        # "... available both via Selector 01-05h and 11h-15h"
+        self.assertEqual(again['last_gate']['lanes'][0]['host_total_bits'],
+                         held['lanes'][0]['host_total_bits'])
+
+    def test_without_periodic_updates_the_result_comes_at_the_stop(self):
+        """Table 8-128: "If 13h:129.4=0, real time error information is not
+        updated and error information is only available when the error
+        counting is stopped by checker disable." mock_fr4x2 advertises that,
+        and its figures moved on every read."""
+        self._connect('mock_fr4x2')
+        self._enable(host_chk=0xFF)
+        time.sleep(0.1)
+        self.assertEqual(self._bits(), [0] * 8)
+        self.assertEqual(self._get('ber')['lanes'][0]['host_ber'], 0.0)
+        self._enable(host_chk=0x00)
+        bits = self._bits()
+        self.assertGreater(bits[0], 0)
+        self.assertGreater(self._get('ber')['lanes'][0]['host_ber'], 0)
+        time.sleep(0.05)
+        self.assertEqual(self._bits(), bits)
+
+    def _write177(self, value):
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x13, 'address': 177, 'data': [value]}),
+            content_type='application/json'))
+
+    def test_a_reset_restarts_only_the_running_checkers(self):
+        """Table 8-128: toggling 13h:177.5 resets "and restart[s]
+        accumulation on the enabled lanes" - a stopped checker's result is
+        not one of them."""
+        self._connect()
+        self._enable(host_chk=0x03)
+        time.sleep(0.1)
+        self._enable(host_chk=0x02)             # lane 1 stops, holds
+        held = self._bits()[0]
+        self._write177(0x20)
+        self._write177(0x00)
+        bits = self._bits()
+        self.assertEqual(bits[0], held)
+        self.assertLess(bits[1], held)
+
+    def test_a_held_reset_is_not_undone_by_a_new_checker(self):
+        """13h:177.5 held: "error counters are frozen for all enabled lane
+        checkers" - enabling another lane does not start the gate again."""
+        self._connect()
+        self._enable(host_chk=0x01)
+        time.sleep(0.05)
+        self._write177(0x20)
+        frozen = self._bits()[0]
+        self._enable(host_chk=0x03)
+        time.sleep(0.05)
+        self.assertEqual(self._bits()[0], frozen)
+
+    def test_a_later_bank_counts_its_own_checkers(self):
+        self._connect('mock_1600g_16lane')
+        self._enable(host_chk=[0x00, 0x80])
+        time.sleep(0.1)
+        bits = self._bits()
+        self.assertGreater(bits[15], 0)
+        self.assertEqual(bits[:15], [0] * 15)
+
+    # ---- the LOL Flags -----------------------------------------------------------------------
+    def test_loss_of_lock_is_on_the_lane_that_locks(self):
+        self._connect()
+        self._enable(host_chk=0x04, media_gen=0x10)
+        d = self._get('prbs')
+        self.assertEqual(d['host_chk_lol_mask'], 0x04)
+        self.assertEqual(d['media_gen_lol_mask'], 0x10)
+        self.assertEqual(d['media_chk_lol_mask'], 0x00)
+
+    def test_loss_of_lock_is_latched_past_the_lock(self):
+        self._connect()
+        self._enable(host_chk=0x01)
+        time.sleep(0.4)                     # locked, nobody has read
+        self.assertEqual(self._get('prbs')['host_chk_lol_mask'], 0x01)
+        self.assertEqual(self._get('prbs')['host_chk_lol_mask'], 0x00)
+
+    def test_a_read_while_it_locks_does_not_end_it(self):
+        """Read - and cleared - while the checker locks, the Flag is set
+        again by the condition that lasts up to the lock, so the first read
+        after the lock still sees it."""
+        self._connect()
+        self._enable(host_chk=0x01)
+
+        def lol():
+            return self.assertOk(self.client.post(
+                '/api/register/read',
+                data=json.dumps({'page': 0x14, 'address': 138, 'length': 1}),
+                content_type='application/json'))['data']['data'][0]
+        self.assertEqual(lol(), 0x01)
+        time.sleep(0.4)
+        self.assertEqual(lol(), 0x01)
+        self.assertEqual(lol(), 0x00)
+
+    def test_a_later_bank_locks_on_its_own_lane(self):
+        self._connect('mock_1600g_16lane')
+        self._enable(host_chk=[0x00, 0x02])
+        d = self._get('prbs')
+        self.assertEqual(d['host_chk_lol_mask_banks'], [0x00, 0x02])
+
+    # ---- the replies -------------------------------------------------------------------------
+    def test_the_replies_say_which_checkers_run(self):
+        self._connect('mock_1600g_16lane')
+        self._enable(host_chk=[0x03, 0x00], media_chk=[0x00, 0x01])
+        for what in ('ber', 'counters'):
+            c = self._get(what)['checking']
+            self.assertEqual(c['host'], [True, True] + [False] * 14)
+            self.assertEqual(c['media'], [False] * 8 + [True] + [False] * 7)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/const CHECKER_OFF_TIP = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function checkerOff\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function checkerOffCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function mediaAbsent\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function checkersOffNote\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_lane_without_a_checker_is_marked(self):
+        c = "{host: [true, false], media: [false, false]}"
+        self.assertEqual(self._run("[checkerOff(%s, 'host', 0), "
+                                   "checkerOff(%s, 'host', 1), "
+                                   "checkerOff(undefined, 'host', 1)]" % (c, c)),
+                         [False, True, False])
+        self.assertIn('>off</td>', self._run("checkerOffCell(false, '0')"))
+        held = self._run("checkerOffCell(true, '1,234')")
+        self.assertIn('1,234 <small>held</small>', held)
+        self.assertIn('holds the result', held)
+
+    def test_the_tables_say_when_nothing_is_counted(self):
+        note = self._run('checkersOffNote({host: [false], media: [false]}, [true])')
+        self.assertIn('No pattern checker is running', note)
+        self.assertEqual(self._run('checkersOffNote({host: [false], '
+                                   'media: [true]}, [true])'), '')
+        # a media checker on a lane the module does not have counts nothing
+        self.assertIn('No pattern checker', self._run(
+            'checkersOffNote({host: [false], media: [true]}, [false])'))
+        self.assertEqual(self._run('checkersOffNote(undefined, [])'), '')
+
+    def test_the_tables_use_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("berRows(res.data.lanes, '', '', res.data.checking)", js)
+        self.assertIn("counterRows(lanes, '', res.data.checking)", js)
+        self.assertIn("+ checkersOffNote(res.data.checking, "
+                      "res.data.media_lanes_present);", js)
+        self.assertIn("+ note + checkersOffNote(res.data.checking, present);", js)
+        self.assertIn(": off(side, i) ? offCell(side, l, fmt(", js)
+        self.assertIn(": off(side, i) ? offCell(side, l, fmtBer(", js)
+        self.assertIn("? checkerOffCell(!!l.host_ber, formatBer(l.host_ber))", js)
+        self.assertIn("? checkerOffCell(!!l.media_ber, formatBer(l.media_ber))", js)
+        # a stopped engine's LOL cell is a dash, not a green "locked" dot
+        self.assertIn("        : !en\n        ? `<span class=\"flag-none\"",
+                      js.replace('\r\n', '\n'))
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
