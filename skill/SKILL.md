@@ -611,6 +611,12 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## CDB 命令完成看 status,不看裸读 Lower 8
+
+CdbCmdCompleteFlag1/2(`Lower 8` bit 6–7,Table 8-9)是闩锁读清的,而 `GET /api/module/status` 每次都读这个字节。
+所以用 `register/write` 发了 CDB 命令(写到 `9Fh:129`)之后,别去裸读 Lower 8 等完成位——看 `status` 的 `cdb_complete`(`cdb_complete_1` / `cdb_complete_2`;模块没有的实例为 `null`)和 `seen` 里的 `cdb_complete_N`,屏蔽位在 `cdb_complete_masks`。
+成功还是失败看 CdbStatus(`Lower 37–38`,Table 8-13),工具目前不解码它,用 `register/read` 读。
+
 ## 调谐完成要等数据通道起来
 
 `POST /api/module/laser` 的回复带 `completed`:这次读到 TuningCompleteFlag(`12h:231-238` bit 0,读清)的通道。

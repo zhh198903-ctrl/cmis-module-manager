@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.171.0'
+__version__ = '2.172.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1766,6 +1766,11 @@ def api_module_status():
         # was read, cleared and forgotten.
         firmware_flags = cmis.parse_module_firmware_flags(mod_flags_raw[0])
         firmware_masks = cmis.parse_module_firmware_flags(mod_masks_raw[0])
+        # And bits 6-7, one per CDB instance the module has (01h:163.7-6).
+        _cdb_n = (_caps.get('cdb') or {}).get('instances', 0)
+        cdb_complete = cmis.parse_cdb_complete_flags(mod_flags_raw[0], _cdb_n)
+        cdb_complete_masks = cmis.parse_cdb_complete_flags(mod_masks_raw[0],
+                                                           _cdb_n)
         # A state change is an event, not a fault. Folding it in here lit the
         # alarm indicator every time somebody reset the module on purpose, and
         # an indicator that cries wolf is one people stop reading.
@@ -1786,6 +1791,9 @@ def api_module_status():
             if value is True:
                 module_seen.add(name)
         for name, value in firmware_flags.items():
+            if value:
+                module_seen.add(name)
+        for name, value in cdb_complete.items():
             if value:
                 module_seen.add(name)
         try:
@@ -1834,6 +1842,8 @@ def api_module_status():
             # this poll's other reads clear any of them.
             'flags_summary': cmis.parse_flags_summary(summary_raw),
             'firmware_flag_masks': firmware_masks,
+            'cdb_complete': cdb_complete,
+            'cdb_complete_masks': cdb_complete_masks,
             'alarm_active': any_alarm,
             'warning_active': any_warning,
             'seen': sorted(module_seen),

@@ -970,6 +970,17 @@ async function loadInfo() {
     ['Module State Changes', moduleStateChangeCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (Table 6-9) — set on entering ModuleLowPwr, ModuleReady or ModuleFault: a reset, but equally a power-mode change. Latched, cleared by the read that reports it'],
     ['Module Restarts', moduleRestartCell(s), '13h', '0xB8-0xBF', 'Host Scratchpad (8.16.13, Table 8-132) — the module clears it on every firmware restart, including recovery reboots. The tool keeps a mark there and reports a restart when it is gone'],
     ['Firmware Faults', firmwareFlagCell(s), 'Lower', '0x08[3:1]', 'ModuleFirmwareErrorFlag, DataPathFirmwareErrorFlag and AbnormalFwIndicationFlag (Table 8-9) — latched, cleared by the read that reports them'],
+    // Only on a module that does CDB (01h:163.7-6): elsewhere the bits
+    // belong to nothing.
+    ...(Object.values(s.cdb_complete || {}).some(v => v !== null) ? [
+      ['CDB Command Complete', cdbCompleteCell(s), 'Lower', '0x08[7:6]',
+       'CdbCmdCompleteFlag1/2 (Table 8-9) — set when a CDB command finishes '
+       + 'on that instance (7.2.5.2). Latched, cleared by the read that '
+       + 'reports it, and this panel’s refresh is such a read: a command '
+       + 'sent from Raw Registers shows its completion here, not in a later '
+       + 'raw read of Lower 8. Whether it succeeded is in CdbStatus, Lower '
+       + '37-38 (Table 8-13)'],
+    ] : []),
   ];
 
   // Aux1-3 are plain S16 registers whose meaning is chosen by 01h:145: Aux2 is
@@ -1122,6 +1133,23 @@ function firmwareFlagCell(s) {
     return '';
   }).filter(Boolean);
   return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
+}
+
+// Lower 8 bits 6-7, one per CDB instance: an event, not a fault, and
+// consumed by the poll that sees it - so what stays is the history.
+function cdbCompleteCell(s) {
+  const now = s.cdb_complete || {};
+  const seen = s.seen || [];
+  const masks = s.cdb_complete_masks || {};
+  return Object.keys(now).filter(k => now[k] !== null).map(k => {
+    const inst = 'Instance ' + k.slice(-1);
+    const masked = masks[k]
+      ? ' <span class="flag-none" title="Its Mask (Lower 31) is set: the module raises no Interrupt for it">masked</span>'
+      : '';
+    if (now[k]) return `<span class="text-success">${inst}: command complete</span>${masked}`;
+    if (seen.includes(k)) return `<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">${inst}: a command completed since last clear</span>${masked}`;
+    return `${inst}: <span class="text-muted">none since last clear</span>`;
+  }).join('<br>');
 }
 
 // Lower 41 ModuleFaultCause (Table 8-16): why the module entered

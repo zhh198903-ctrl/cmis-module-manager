@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.171.0<br>
+      <b>版本</b>　2.172.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.171.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.171.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.172.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.172.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1179,6 +1179,7 @@
         <tr><td>Module Restarts</td><td class="label">由 Host Scratchpad 判断模块是否真的重启过(8.16.13);无法判断时写明原因(见「Module State Changes 与 Module Restarts」)</td><td><code>13h / 0xB8–0xBF</code></td></tr>
         <tr><td>Firmware Faults</td><td class="label">模块 / DSP 固件错误与异常固件指示(Table 8-9);已读清的保留 ●! 记录,被屏蔽时标 masked</td><td><code>Lower / 0x08[3:1]</code></td></tr>
         <tr><td>Custom Monitor</td><td class="label">只在模块声明有自定义监控时出现:编码由厂商定义,只显示它的告警 / 警告标志</td><td><code>Lower / 0x0B[7:4]</code></td></tr>
+        <tr><td>CDB Command Complete</td><td class="label">只在模块声明支持 CDB(<code>01h:163.7-6</code>)时出现:每个 CDB 实例一项,命令执行完时模块置位(7.2.5.2);已读清的保留 ●! 记录,被屏蔽时标 masked。命令成功与否看 CdbStatus(<code>Lower 37–38</code>)</td><td><code>Lower / 0x08[7:6]</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -1733,6 +1734,14 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>CDB 命令完成标志不再被刷新吃掉</h3>
+  <p>Lower 8 的 bit 6–7 是 CdbCmdCompleteFlag1/2(Table 8-9):CDB 命令执行完,模块置位对应实例的这一位(7.2.5.2)。它和同一字节的其它标志一样是闩锁、读后清除的,而 Module Info 每次刷新都会读这个字节。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前工具认为「本工具不发 CDB 命令」,读到这两位就丢掉。可 Raw Registers 页能发 CDB 命令(写到 <code>9Fh:129</code> 即发送),发完再去读 Lower 8,完成标志早已被下一次刷新清掉,看不到。</span>
+  </div>
+  <p>现在:模块声明支持 CDB 时,Module Info 多一行 <b>CDB Command Complete</b>,每个实例一项——当前置位显示 <b>command complete</b>,已被读清的保留 <span class="flag-was">●<sup>!</sup></span> <i>a command completed since last clear</i>,屏蔽位(<code>Lower 31</code> bit 6–7)置位时标 masked;与其它标志共用 <b>Clear flag history</b>。它不是告警,不会点亮 ⚠。命令成功与否仍看 CdbStatus(<code>Lower 37–38</code>,Table 8-13)。Raw Registers 读 Lower 8–13 前的清除提示也写明了这一块包含 CDB 命令完成标志。</p>
+
   <h3>激光调谐:TuningComplete 在数据通道起来之后才报</h3>
   <p>Table 6-21 规定 TuningCompleteFlag 在 DPDeactivated、DPInit、DPDeinit 下是 N/A,模块在这些状态下不得置位(6.3.4.2);而换栅格或信道只能在 DPDeactivated 下进行(7.5.2)。所以在停下的数据通道上换信道后,Tuning Flags 列的 <b>Tuned</b> 要等数据通道回到 DPInitialized 才出现。</p>
   <div class="callout callout-warn">
@@ -1884,7 +1893,7 @@
     <span class="callout-icon">⚠</span>
     <span>状态刷新每次都读这个字节,却只保留 bit 0:模块报告自己的固件或 DSP 固件出错了,这一读就把标志清掉,下一次刷新什么都看不到。</span>
   </div>
-  <p>现在 Module Info 多了一行 <b>Firmware Faults</b>:当前置位的显示为红字,已被读清的保留 <span class="flag-was">●<sup>!</sup></span> <i>… since last clear</i>,对应的屏蔽位(<code>Lower 0x1F</code>)置位时标出 masked;前两个固件错误还会在顶部摘要栏出现 <b style="color:#f38ba8">✖</b>。与其它标志共用 <b>Clear flag history</b>。它们不算「监控值超阀值」,不会点亮 ⚠。CdbCmdCompleteFlag(bit 6–7)不显示——本工具不发 CDB 命令。</p>
+  <p>现在 Module Info 多了一行 <b>Firmware Faults</b>:当前置位的显示为红字,已被读清的保留 <span class="flag-was">●<sup>!</sup></span> <i>… since last clear</i>,对应的屏蔽位(<code>Lower 0x1F</code>)置位时标出 masked;前两个固件错误还会在顶部摘要栏出现 <b style="color:#f38ba8">✖</b>。与其它标志共用 <b>Clear flag history</b>。它们不算「监控值超阀值」,不会点亮 ⚠。CdbCmdCompleteFlag(bit 6–7)当时不显示;v2.172.0 起另有一行 <b>CDB Command Complete</b>(见上文)。</p>
 
   <h3>门控结束时,PRBS 检测表标出「gate done」</h3>
   <p>规范 Table 8-138:<code>14h:134</code> / <code>14h:135</code> 是逐通道的 PatternCheckGatingCompleteFlag(主机侧 / 媒体侧),「门控完成时,这一位会被置位」——闩锁、读清。它是「上一个门控结果已经就绪」的唯一信号。</p>
@@ -4789,7 +4798,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.171.0<br>
+    CMIS Module Manager 操作手册 v2.172.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

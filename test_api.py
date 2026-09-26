@@ -19202,6 +19202,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-10': 'Module-Level Monitor Values (not for static memory modules) (Lower Memory)',
         '8-11': 'Module Global Controls (not for static memory modules ) (Lower Memory)',
         '8-12': 'Module Level Masks (not for static memory modules) (Lower Memory)',
+        '8-13': 'CdbStatus Registers (paged memory modules only) (Lower Memory)',
         '8-15': 'Module Active Firmware Version (Lower Memory)',
         '8-16': 'Fault Information (not for static memory modules) (Lower Memory)',
         '8-18': 'Extended Module Information (Lower Memory)',
@@ -33520,8 +33521,9 @@ class TestAFirmwareFaultIsNotForgotten(CMISTestCase):
     own firmware had failed was read, cleared and forgotten on the next
     refresh. Now the reply carries them and their Masks (Lower 31), they go
     into the flag history, the status table has a Firmware Faults row and a
-    firmware error puts a chip in the header. CdbCmdCompleteFlag1/2 stay out:
-    this tool issues no CDB command."""
+    firmware error puts a chip in the header. CdbCmdCompleteFlag1/2 are not
+    firmware Flags: they have a row of their own (see
+    TestACdbCompletionIsNotLostToThePoll)."""
 
     def _connect(self, backend='mock_dr8'):
         self.assertOk(self.client.post(
@@ -35815,7 +35817,8 @@ class TestTheManualListsEveryRuntimeRow(CMISTestCase):
 
     ROWS = ('Module State', 'Temperature', 'Supply Voltage', 'Module Flags',
             'Interrupt', 'Masked module alarms', 'Module State Changes',
-            'Module Restarts', 'Firmware Faults', 'Custom Monitor')
+            'Module Restarts', 'Firmware Faults', 'Custom Monitor',
+            'CDB Command Complete')
 
     def test_the_page_has_them(self):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -36031,6 +36034,111 @@ class TestTheDiagnosticsChapterMatchesThePage(CMISTestCase):
         chk = html[html.index('<!-- PRBS Checker card -->'):
                    html.index('<!-- BER Results card -->')]
         self.assertIn('gate done = a gated measurement ended on the lane (14h:134·135)', chk)
+
+
+class TestACdbCompletionIsNotLostToThePoll(CMISTestCase):
+    """Lower 8 bits 6-7 are CdbCmdCompleteFlag1/2 (Table 8-9): "The module
+    indicates command completion by setting Flag 00h:8.6" (7.2.5.2). They
+    are RO/COR with the rest of the byte, and the status poll reads the
+    byte every refresh. They were left out "because this tool issues no CDB
+    command" - but the register panel sends one when a write reaches
+    9Fh:129, and the next poll cleared the completion before a raw read of
+    Lower 8 could find it. The poll now keeps them, per instance the module
+    advertises (01h:163.7-6), and Module Info shows them."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def test_the_bits_decode(self):
+        import cmis_registers as c
+        f = c.parse_cdb_complete_flags
+        self.assertEqual(f(0xC0, 1), {'cdb_complete_1': True, 'cdb_complete_2': None})
+        self.assertEqual(f(0x80, 2), {'cdb_complete_1': False, 'cdb_complete_2': True})
+        self.assertEqual(f(0xC0, 0), {'cdb_complete_1': None, 'cdb_complete_2': None})
+        # 3 is Reserved: no count, so both bits as read
+        self.assertEqual(f(0x40, 3), {'cdb_complete_1': True, 'cdb_complete_2': False})
+        self.assertEqual(f(0x3F, 2), {'cdb_complete_1': False, 'cdb_complete_2': False})
+
+    def test_a_completion_survives_the_read_that_cleared_it(self):
+        self._connect()
+        self._status()
+        poke(0, 0x08, 0x40)                     # CdbCmdCompleteFlag1
+        first = self._status()
+        self.assertIs(first['cdb_complete']['cdb_complete_1'], True)
+        self.assertIsNone(first['cdb_complete']['cdb_complete_2'],
+                          'mock_dr8 has one CDB instance')
+        second = self._status()
+        self.assertIs(second['cdb_complete']['cdb_complete_1'], False,
+                      'the Flag was not cleared by the read, so this proves nothing')
+        self.assertIn('cdb_complete_1', second['seen'])
+        self.assertFalse(second['alarm_active'], 'a completion is not an alarm')
+
+    def test_its_mask_is_read(self):
+        self._connect()
+        poke(0, 0x1F, 0x40)                     # M-Cdb1CommandComplete
+        self.assertIs(self._status()['cdb_complete_masks']['cdb_complete_1'], True)
+
+    def test_a_module_without_cdb_has_none(self):
+        self._connect('mock_sr8')
+        poke(0, 0x08, 0x40)
+        s = self._status()
+        self.assertEqual(s['cdb_complete'],
+                         {'cdb_complete_1': None, 'cdb_complete_2': None})
+        self.assertNotIn('cdb_complete_1', s['seen'])
+
+    def test_the_raw_panel_names_it(self):
+        import cmis_registers as c
+        lower = [b for b in c.CLEAR_ON_READ_BLOCKS if b[0] is None][0]
+        self.assertIn('CDB command completion', lower[3])
+        self.assertIn('(Table 8-9)', lower[3])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _cell(self, s):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/function cdbCompleteCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(cdbCompleteCell(' + s + ')));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_cell_says_now_since_and_none(self):
+        now = self._cell("{cdb_complete: {cdb_complete_1: true, cdb_complete_2: null}}")
+        self.assertIn('Instance 1: command complete', now)
+        self.assertNotIn('Instance 2', now)
+        was = self._cell("{cdb_complete: {cdb_complete_1: false, cdb_complete_2: false},"
+                         " seen: ['cdb_complete_2'],"
+                         " cdb_complete_masks: {cdb_complete_2: true}}")
+        self.assertIn('Instance 1: <span class="text-muted">none since last clear', was)
+        self.assertIn('Instance 2: a command completed since last clear', was)
+        self.assertIn('masked', was)
+        self.assertNotIn('masked', self._cell(
+            "{cdb_complete: {cdb_complete_1: false}, cdb_complete_masks: {cdb_complete_1: true}}"))
+
+    def test_the_row_is_only_there_with_cdb(self):
+        js = self._js()
+        self.assertIn("...(Object.values(s.cdb_complete || {}).some(v => v !== null) ? [", js)
+        self.assertIn("['CDB Command Complete', cdbCompleteCell(s), 'Lower', '0x08[7:6]',", js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

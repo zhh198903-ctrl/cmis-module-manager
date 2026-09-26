@@ -376,9 +376,10 @@ TIMING_SECONDS = {
 #
 # (page, or None for Lower Memory; first byte; last byte; what it holds)
 CLEAR_ON_READ_BLOCKS = (
-    (None, 0x08, 0x0D, 'module Flags (Tables 8-9 and 8-10) - temperature, '
-                       'supply voltage, Aux and Custom monitor thresholds, '
-                       'and the module-level fault and firmware Flags'),
+    (None, 0x08, 0x0D, 'module Flags (Table 8-9) - temperature, supply '
+                       'voltage, Aux and Custom monitor thresholds, the '
+                       'module state change and firmware Flags, and CDB '
+                       'command completion'),
     (0x11, 134, 153, 'lane Flags (Tables 8-96 to 8-98) - data path state '
                      'changes, Tx failure, LOS, CDR loss of lock, adaptive '
                      'equalizer failure and every optical threshold'),
@@ -2665,8 +2666,7 @@ def parse_flags_summary(raw: bytes) -> list:
 
 # Table 8-9, Lower 8 bits 1-3: the firmware Flags, RO/COR like the rest of
 # the byte. ModuleStateChangedFlag (bit 0) has its own place in the status
-# reply; CdbCmdCompleteFlag1/2 (bits 6-7) are left out because this tool
-# issues no CDB command, so a completion is never its news.
+# reply, and CdbCmdCompleteFlag1/2 (bits 6-7) theirs below.
 # (bit, key, register name)
 MODULE_FIRMWARE_FLAGS = (
     (1, 'module_firmware_error', 'ModuleFirmwareErrorFlag'),
@@ -2681,6 +2681,28 @@ def parse_module_firmware_flags(byte8: int) -> dict:
     8-12) - the Mask byte mirrors the Flag byte bit for bit."""
     return {key: bool((byte8 >> bit) & 1)
             for bit, key, _name in MODULE_FIRMWARE_FLAGS}
+
+
+# Lower 8 bits 6-7 (Table 8-9): "The module indicates command completion by
+# setting Flag 00h:8.6 (CdbCmdCompleteFlag1)" (7.2.5.2), one per CDB instance.
+# The status poll reads the byte and clears them with the rest. They were
+# left out because this tool sends no CDB command - but its register panel
+# does, and the next poll took the completion before anyone could read it.
+# (bit, key, register name)
+MODULE_CDB_FLAGS = (
+    (6, 'cdb_complete_1', 'CdbCmdCompleteFlag1'),
+    (7, 'cdb_complete_2', 'CdbCmdCompleteFlag2'),
+)
+
+
+def parse_cdb_complete_flags(byte8: int, instances: int) -> dict:
+    """Lower 8 bits 6-7 (Table 8-9), or their Masks at Lower 31.
+
+    `instances` is 01h:163.7-6 (Table 8-55); a flag for an instance the
+    module does not have is None. 3 is Reserved - no count at all - and
+    reports both bits as read rather than guessing either away."""
+    return {key: (bool((byte8 >> bit) & 1) if i < instances else None)
+            for i, (bit, key, _name) in enumerate(MODULE_CDB_FLAGS)}
 
 
 def parse_module_monitor_flags(data: bytes, first: int = 0x08) -> dict:
