@@ -2693,9 +2693,8 @@ class MockBackend(I2CInterface):
             sel = p14.get(0x80, 0)
             p13 = self._page13_of(lane_base)
             # Table 8-136: the selector "Reverts to 0 if value not
-            # supported", and 00h selects "All zeroes". 11h-15h exist only
-            # where 13h:129.5 GatingResultsSupported says so.
-            if 0x11 <= sel <= 0x15 and not (p13.get(0x81, 0) & 0x20):
+            # supported", and 00h selects "All zeroes".
+            if sel not in self._selectors_supported(p13):
                 sel = p14[0x80] = 0x00
             if sel == 0x00:
                 for a in range(0xC0, 0x100):
@@ -3325,6 +3324,26 @@ class MockBackend(I2CInterface):
             # 6.3.3: reached a steady state through a real change.
             p11b[0x86] = p11b.get(0x86, 0) | bit
         self._bank_deinit_taken[bank] = taken
+
+    @staticmethod
+    def _selectors_supported(p13) -> set:
+        """The DiagnosticsSelector values this module fills (Table 8-137):
+        what 13h:130 reports (Table 8-113) - 01h BER, 02h-05h the counters,
+        06h SNR on either side - and their gated twins 11h-15h only where
+        13h:129.5 GatingResultsSupported says so. Only 11h-15h used to
+        revert; an SNR selector on a module without SNR stuck, and read as
+        a window of values."""
+        rep, meas = p13.get(0x82, 0), p13.get(0x81, 0)
+        out = {0x00}
+        if rep & 0x01:
+            out.add(0x01)
+        if rep & 0x02:
+            out.update(range(0x02, 0x06))
+        if rep & 0x30:
+            out.add(0x06)
+        if meas & 0x20:
+            out |= {s + 0x10 for s in out if 0x01 <= s <= 0x05}
+        return out
 
     def _laser_is_down(self, media_lane: int) -> bool:
         """Whether the Data Path carrying this media lane (0-based) is in

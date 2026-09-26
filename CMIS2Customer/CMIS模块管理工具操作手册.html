@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.172.0<br>
+      <b>版本</b>　2.173.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.172.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.172.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.173.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.173.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>诊断选择器没被接受时,不再显示成 0</h3>
+  <p>BER、误码计数、SNR 都是先写 Page 14h 的 DiagnosticsSelector(<code>14h:128</code>),等 tDDCS,再读结果窗口。规范 Table 8-136 规定:模块不支持的值会<b>退回 0</b>,而 Selector 00h 的内容是全零(Table 8-137)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前工具写完不读回,选择器被模块退回时,读到的全零窗口会显示成 <b>BER 0</b>、<b>计数 0</b>、<b>SNR 0.00 dB</b>——看起来都像测量结果。演示模块也只对门控选择器(11h–15h)做了退回,其它没声明支持的选择器照样「生效」。</span>
+  </div>
+  <p>现在:每个 Bank 写完选择器都会读回;没被接受的 Bank,它的通道显示 —,表格下方写明是哪个选择器、哪个 Bank、读回了什么。接口在 <code>/api/module/ber</code>、<code>/counters</code>、<code>/snr</code> 的回复里加了 <code>selector_refused</code>。演示模块按自己 <code>13h:129–130</code> 的声明退回所有不支持的选择器(包括保留值和厂商自定义值)。</p>
 
   <h3>CDB 命令完成标志不再被刷新吃掉</h3>
   <p>Lower 8 的 bit 6–7 是 CdbCmdCompleteFlag1/2(Table 8-9):CDB 命令执行完,模块置位对应实例的这一位(7.2.5.2)。它和同一字节的其它标志一样是闩锁、读后清除的,而 Module Info 每次刷新都会读这个字节。</p>
@@ -4336,6 +4344,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     “本模块不上报此项”并标出具体位，
     <b>而不是留一行空白</b>（空白会被看成零）；
     工具也<b>不再写入</b>那个 Selector。<br>
+    声明了支持、写进去却没被接受的,工具也看得出来:写完会<b>读回</b> <code>14h:128</code>——规范 Table 8-136 规定不支持的值「退回 0」,而 Selector 00h 选的是全零,不读回的话会被当成 BER 0、计数 0、SNR 0 dB。没接受的 Bank,表格下方会写明,那些通道显示 — 而不是 0。<br>
     两侧 SNR 是<b>分开广告</b>的，所以可能只有一边有值。
     内置模拟模块里 <code>mock_sr8</code> 声明不做 SNR 测量（只有
     BER 和计数），可用来看这个差别。</span>
@@ -4464,6 +4473,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td><b>Apply DataPath</b></td><td class="label">Config Status 先变为 ConfigInProgress，DP State 经历 Init → TxTurnOn → Activated（约 0.5s）;暂存的 DPIDX 必须指向该通道所在数据通路,否则 ConfigRejectedInvalidDataPath</td></tr>
         <tr><td><b>PRBS Checker Enable</b></td><td class="label">该通道的误码计数清零并开始累积(关闭时停止并保留结果);锁定前在该通道置 LOL,闩锁到被读取为止</td></tr>
         <tr><td><b>13h:177.7 置 1</b></td><td class="label">检测器使能和 ResetErrorInformation 的改动带到所有 Bank(门控 + 全局定时器时不带)</td></tr>
+        <tr><td><b>DiagnosticsSelector</b></td><td class="label">写入 <code>14h:128</code> 的值若不在 <code>13h:129–130</code> 声明支持的范围内(含保留值、厂商自定义值),退回 00h,结果窗口全零(Table 8-136)</td></tr>
         <tr><td><b>Laser Tune</b></td><td class="label">被接受的请求:Current Frequency 更新;数据通道在运行时立即置 TuningComplete,在停下的数据通道上(换栅格/信道只能在这时)等它回到 DPInitialized 才置位(Table 6-21)。超出范围或未声明的栅格:置 InvalidChannelNumber / TuningNotAccepted 等标志,频率不变</td></tr>
       </tbody>
     </table>
@@ -4798,7 +4808,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.172.0<br>
+    CMIS Module Manager 操作手册 v2.173.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.172.0'
+__version__ = '2.173.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -790,8 +790,14 @@ def _read_banks_scalars(page: int, addr: int, length: int, size: int,
         yield bank, _read_upper_scalars(page, addr, length, size, bank)
 
 
-def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
+def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0,
+                     refused=None):
     """Yield (bank, data) from Page 14h, selecting the window in each bank.
+
+    data is None where the bank did not take the selector: Table 8-136 has
+    it "Revert to 0 if value not supported", and 00h selects "All zeroes" -
+    a window that decodes as a BER of 0, empty counters and 0 dB, each a
+    plausible reading. Each such bank is appended to `refused`.
 
     8.17: "Page 14h may optionally be Banked. Each Bank of Page 14h refers to
     8 lanes." The DiagnosticsSelector at 14h:128 and the Diagnostics Data it
@@ -813,6 +819,12 @@ def _read_diag_banks(sel: int, length: int = 0, lanes: int = 0):
         # selector's sixty-four bytes decoded as whatever this selector
         # means - BER values read as error counters, and no error anywhere.
         time.sleep(cmis.TIMING_SECONDS['tDDCS'])
+        got = _read_upper(page, cmis.REG_DIAG_SELECTOR[1], 1, bank)[0]
+        if got != sel:
+            if refused is not None:
+                refused.append({'bank': bank, 'selector': sel, 'read': got})
+            yield bank, None
+            continue
         # Table 8-139: selectors 02h-05h and their gated twins 12h-15h are
         # U64 counters, 01h/11h F16 BERs and 06h U16 SNRs - each read at its
         # own size, since the window is updated while a measurement runs.
@@ -4938,10 +4950,15 @@ def api_module_snr():
         # Table 7-8: 0 is SNR's NA value - no valid sample, not 0 dB.
         na_on = bool((_state.get('caps') or {}).get('na_values'))
         host_na, media_na = [], []
-        for _bank, data in _read_diag_banks(0x06):
+        refused = []
+        for _bank, data in _read_diag_banks(0x06, refused=refused):
             for i in range(8):
                 for out, na_out, off in ((host_snr, host_na, 16),
                                          (media_snr, media_na, 48)):
+                    if data is None:
+                        na_out.append(False)
+                        out.append(None)
+                        continue
                     raw = data[off + i*2:off + 2 + i*2]
                     na = na_on and int.from_bytes(raw, 'little') == cmis.NA_SNR
                     na_out.append(na)
@@ -4964,6 +4981,7 @@ def api_module_snr():
             'media_lanes_present': present,
             'supported': {'host': rep['host_side_snr'],
                           'media': rep['media_side_snr']},
+            'selector_refused': refused,
         })
     except Exception as e:
         return _err(str(e), 500)
@@ -4984,7 +5002,7 @@ def _gated_results_supported() -> bool:
     return bool(_diag_caps()['measurement'].get('gating_results'))
 
 
-def _ber_lanes(sel: int, present) -> list:
+def _ber_lanes(sel: int, present, refused=None) -> list:
     """Host and media BER per lane from selector 01h, or 11h for the last
     completed gate - the same layout (Table 8-139)."""
     lanes = []
@@ -4993,9 +5011,14 @@ def _ber_lanes(sel: int, present) -> list:
     na_on = bool((_state.get('caps') or {}).get('na_values'))
     # F16 per lane, written into each bank that is read: the page is Banked
     # and every bank keeps its own selector. Host at 0xC0, media at 0xD0.
-    for _bank, ber_raw in _read_diag_banks(sel, 32):
+    for _bank, ber_raw in _read_diag_banks(sel, 32, refused=refused):
         for i in range(8):
             lane = len(lanes) + 1
+            if ber_raw is None:
+                lanes.append({'lane': lane, 'host_ber': None,
+                              'media_ber': None, 'host_ber_na': False,
+                              'media_ber_na': False})
+                continue
             host = cmis.parse_f16_ber(ber_raw[i*2:(i+1)*2])
             # MediaSideBERLane<i> (Table 8-139); None for a media lane this
             # module does not have (00h:210).
@@ -5029,12 +5052,15 @@ def api_module_ber():
         if not _diag_caps()['reporting']['bit_error_ratio']:
             return _ok({'lanes': [], 'supported': False})
         present = _media_lanes_present()
-        return _ok({'lanes': _ber_lanes(0x01, present), 'supported': True,
+        refused = []
+        return _ok({'lanes': _ber_lanes(0x01, present, refused),
+                    'supported': True,
                     'media_lanes_present': present,
                     'checking': _checkers_running(),
-                    'last_gate': ({'lanes': _ber_lanes(0x11, present)}
+                    'last_gate': ({'lanes': _ber_lanes(0x11, present, refused)}
                                   if _gated_results_supported() else None),
-                    'measurement': _measurement_window()})
+                    'measurement': _measurement_window(),
+                    'selector_refused': refused})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -5570,12 +5596,16 @@ def api_module_counters():
         if not _diag_caps()['reporting']['bits_and_errors']:
             return _ok({'lanes': [], 'supported': False})
         present = _media_lanes_present()
-        return _ok({'lanes': _counter_lanes(0x02, present), 'supported': True,
+        refused = []
+        return _ok({'lanes': _counter_lanes(0x02, present, refused),
+                    'supported': True,
                     'media_lanes_present': present,
                     'checking': _checkers_running(),
-                    'last_gate': ({'lanes': _counter_lanes(0x12, present)}
+                    'last_gate': ({'lanes': _counter_lanes(0x12, present,
+                                                           refused)}
                                   if _gated_results_supported() else None),
-                    'measurement': _measurement_window()})
+                    'measurement': _measurement_window(),
+                    'selector_refused': refused})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -5600,7 +5630,7 @@ def _checkers_running() -> dict:
     return out
 
 
-def _counter_lanes(first_sel: int, present) -> list:
+def _counter_lanes(first_sel: int, present, refused=None) -> list:
     """Errors and total bits per lane from selectors 02h-05h, or 12h-15h
     for the last completed gate - the same layout four selectors apart
     (Table 8-139)."""
@@ -5612,13 +5642,9 @@ def _counter_lanes(first_sel: int, present) -> list:
         (first_sel, 0, 'host'), (first_sel + 1, 4, 'host'),
         (first_sel + 2, 0, 'media'), (first_sel + 3, 4, 'media'),
     ]:
-        for bank, data in _read_diag_banks(sel):
+        for bank, data in _read_diag_banks(sel, refused=refused):
             for li in range(4):
                 off = li * 16
-                error_count = struct.unpack("<Q", data[off:off+8])[0]
-                total_bits_raw = struct.unpack("<Q", data[off+8:off+16])[0]
-                psl = total_bits_raw & 1  # pattern sync loss indicator
-                total_bits = total_bits_raw & ~1
                 lane_idx = bank * 8 + lane_start + li
                 # Find or create lane entry
                 entry = None
@@ -5629,6 +5655,17 @@ def _counter_lanes(first_sel: int, present) -> list:
                 if entry is None:
                     entry = {'lane': lane_idx + 1}
                     lanes.append(entry)
+                if data is None:
+                    entry.update({f'{side}_errors_na': False,
+                                  f'{side}_error_count': None,
+                                  f'{side}_total_bits': None,
+                                  f'{side}_psl': False,
+                                  f'{side}_ber': None})
+                    continue
+                error_count = struct.unpack("<Q", data[off:off+8])[0]
+                total_bits_raw = struct.unpack("<Q", data[off+8:off+16])[0]
+                psl = total_bits_raw & 1  # pattern sync loss indicator
+                total_bits = total_bits_raw & ~1
                 errors_na = na_on and error_count == cmis.NA_ERROR_COUNT
                 entry[f'{side}_errors_na'] = errors_na
                 entry[f'{side}_error_count'] = (None if errors_na

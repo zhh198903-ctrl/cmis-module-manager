@@ -3804,7 +3804,8 @@ async function loadSnr() {
     sideRow('Host', '14h/0xC0+16 sel=0x06', res.data.host_snr_db, sup.host, '4',
             null, res.data.host_snr_na) +
     sideRow('Media', '14h/0xC0+48 sel=0x06', res.data.media_snr_db, sup.media, '5',
-            res.data.media_lanes_present, res.data.media_snr_na);
+            res.data.media_lanes_present, res.data.media_snr_na) +
+    selectorRefusedNote(res.data.selector_refused);
 }
 
 // ---------------------------------------------------------------------------
@@ -4054,6 +4055,21 @@ function checkerOffCell(held, html) {
     ? `<td class="text-muted" title="${esc(CHECKER_OFF_TIP + ' This is the '
       + 'result it held when it stopped.')}">${html} <small>held</small></td>`
     : `<td class="text-muted" title="${esc(CHECKER_OFF_TIP)}">off</td>`;
+}
+
+// Table 8-136: DiagnosticsSelector "Reverts to 0 if value not supported",
+// and 00h selects "All zeroes" - a window that reads as a BER of 0, empty
+// counters or 0 dB. The server reads the selector back and says where it
+// did not stick.
+function selectorRefusedNote(refused) {
+  if (!refused || !refused.length) return '';
+  const what = refused.map(r => `${hex8(r.selector)} in Bank ${r.bank} `
+    + `(read back ${hex8(r.read)})`).join(', ');
+  return `<tr><td colspan="9" class="flag-active" style="font-size:var(--fs-xs)">`
+    + `⚠ The module did not take DiagnosticsSelector ${esc(what)}. `
+    + `Table 8-136: it reverts to 0 when a value is not supported, and 00h `
+    + `selects all zeroes - so those lanes have no reading, not a reading `
+    + `of zero.</td></tr>`;
 }
 
 function checkersOffNote(checking, present) {
@@ -5149,7 +5165,8 @@ async function loadBer() {
   tbody.innerHTML = berRows(res.data.lanes, '', '', res.data.checking)
     + (res.data.last_gate
       ? berRows(res.data.last_gate.lanes, ' \u00b7 last gate', ' sel 11h') : '')
-    + checkersOffNote(res.data.checking, res.data.media_lanes_present);
+    + checkersOffNote(res.data.checking, res.data.media_lanes_present)
+    + selectorRefusedNote(res.data.selector_refused);
 }
 
 // ---------------------------------------------------------------------------
@@ -5221,7 +5238,8 @@ async function loadCounters() {
 
   tbody.innerHTML = counterRows(lanes, '', res.data.checking)
     + (res.data.last_gate ? counterRows(gated, ' \u00b7 last gate') : '')
-    + note + checkersOffNote(res.data.checking, present);
+    + note + checkersOffNote(res.data.checking, present)
+    + selectorRefusedNote(res.data.selector_refused);
 }
 
 // ---------------------------------------------------------------------------

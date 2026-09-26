@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 诊断窗口:选择器没被接受就没有读数
+
+`GET /api/module/ber`、`/counters`、`/snr` 每个 Bank 写完 DiagnosticsSelector(`14h:128`)都会读回。模块不支持的值会退回 0(Table 8-136),00h 是全零窗口——所以没接受的 Bank 在回复的 `selector_refused` 里(`bank` / `selector` / `read`),它的通道值为 `null`,不是 0。
+用户说「BER 全是 0 / SNR 全是 0 dB」:先看 `selector_refused`,再看 `checking`(检测器没开)。
+
 ## CDB 命令完成看 status,不看裸读 Lower 8
 
 CdbCmdCompleteFlag1/2(`Lower 8` bit 6–7,Table 8-9)是闩锁读清的,而 `GET /api/module/status` 每次都读这个字节。

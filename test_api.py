@@ -8353,13 +8353,23 @@ class TestWhichDiagnosticsAModuleActuallyReports(CMISTestCase):
         did not choose."""
         self._connect('mock_dr8')
         self._set_130(0x00)
-        poke(0x14, 0x80, 0x7E)                  # a value no handler writes
+        # Recorded at the bus: the demo now reverts an unsupported selector
+        # itself (Table 8-136), so what 14h:128 holds afterwards no longer
+        # says whether one was written.
+        b = _state['backend']
+        real = b.write_bytes
+        written = []
+
+        def spy(addr, data):
+            if b._current_page == 0x14 and addr <= 0x80 < addr + len(data):
+                written.append(data[0x80 - addr])
+            return real(addr, data)
+        b.write_bytes = spy
         for path in ('/api/module/snr', '/api/module/ber',
                      '/api/module/counters'):
             self._get(path)
-            app_module._set_page(0x14)
             self.assertEqual(
-                _state['backend'].read_bytes(0x80, 1)[0], 0x7E,
+                written, [],
                 '%s wrote a diagnostic selector the module does not support'
                 % path)
 
@@ -18199,7 +18209,7 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
         body = src[start:start + end.start()] if end else src[start:]
         self.assertIn('time.sleep(', body,
                       'the selector write is followed straight by the read')
-        self.assertLess(len(body), 2000,
+        self.assertLess(len(body), 3000,
                         'the slice ran past the function, so it would find '
                         'time.sleep whether this one has it or not')
 
@@ -33223,7 +33233,10 @@ class TestTheLastCompletedGateIsShown(CMISTestCase):
             return bytes(length)
         with mock.patch.object(app_module, '_read_upper_scalars', fake):
             for sel in (0x02, 0x12, 0x15, 0x01, 0x11, 0x06):
-                list(app_module._read_diag_banks(sel))
+                # The selector read back as taken, so the window is read.
+                with mock.patch.object(app_module, '_read_upper',
+                                       lambda *a, s=sel, **k: bytes([s])):
+                    list(app_module._read_diag_banks(sel))
         self.assertEqual(sizes, [8, 8, 8, 2, 2, 2])
 
     def test_a_module_without_gated_results_has_none(self):
@@ -34493,8 +34506,8 @@ class TestTheCheckerStartsAndStopsTheCount(CMISTestCase):
         self.assertIn("berRows(res.data.lanes, '', '', res.data.checking)", js)
         self.assertIn("counterRows(lanes, '', res.data.checking)", js)
         self.assertIn("+ checkersOffNote(res.data.checking, "
-                      "res.data.media_lanes_present);", js)
-        self.assertIn("+ note + checkersOffNote(res.data.checking, present);", js)
+                      "res.data.media_lanes_present)", js)
+        self.assertIn("+ note + checkersOffNote(res.data.checking, present)", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmt(", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmtBer(", js)
         self.assertIn("? checkerOffCell(!!l.host_ber, formatBer(l.host_ber))", js)
@@ -36139,6 +36152,160 @@ class TestACdbCompletionIsNotLostToThePoll(CMISTestCase):
         js = self._js()
         self.assertIn("...(Object.values(s.cdb_complete || {}).some(v => v !== null) ? [", js)
         self.assertIn("['CDB Command Complete', cdbCompleteCell(s), 'Lower', '0x08[7:6]',", js)
+
+
+class TestARefusedSelectorIsNotAReading(CMISTestCase):
+    """Table 8-136: DiagnosticsSelector "Reverts to 0 if value not
+    supported", and selector 00h is "All zeroes" (Table 8-137). The tool
+    wrote the selector, waited tDDCS and decoded the window without looking
+    back at 14h:128 - so a selector the module did not take read as a BER
+    of 0, counters of 0 and 0 dB, each a plausible result. It now reads the
+    selector back in every bank; a bank that did not take it has no
+    reading, and the reply and the page say which. The demos revert every
+    selector their own 13h:129-130 does not report, not only 11h-15h."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _get(self, what):
+        return self.assertOk(self.client.get('/api/module/' + what))['data']
+
+    def _refusing(self, b, only=None):
+        """The module takes no selector (in `only`'s bank, if given)."""
+        from unittest import mock
+        real = type(b)._selectors_supported
+
+        def sup(p13):
+            return {0x00} if only is None or p13 is only else real(p13)
+        return mock.patch.object(type(b), '_selectors_supported',
+                                 staticmethod(sup))
+
+    # ---- the module --------------------------------------------------------------------------
+    def test_the_selectors_a_module_fills(self):
+        from i2c_backends.mock import MockBackend
+        f = MockBackend._selectors_supported
+        self.assertEqual(f({0x81: 0x00, 0x82: 0x00}), {0x00})
+        self.assertEqual(f({0x81: 0x00, 0x82: 0x01}), {0x00, 0x01})
+        self.assertEqual(f({0x81: 0x00, 0x82: 0x02}), {0x00, 0x02, 0x03, 0x04, 0x05})
+        self.assertEqual(f({0x81: 0x00, 0x82: 0x10}), {0x00, 0x06})
+        self.assertEqual(f({0x81: 0x00, 0x82: 0x20}), {0x00, 0x06})
+        self.assertEqual(f({0x81: 0x20, 0x82: 0x33}),
+                         {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                          0x11, 0x12, 0x13, 0x14, 0x15})
+        # a gated twin only of what is reported
+        self.assertEqual(f({0x81: 0x20, 0x82: 0x01}), {0x00, 0x01, 0x11})
+
+    def _select(self, sel):
+        self.assertOk(self.client.post(
+            '/api/register/write', data=json.dumps(
+                {'page': 0x14, 'address': 128, 'data': [sel], 'bank': 0}),
+            content_type='application/json'))
+        return self.assertOk(self.client.post(
+            '/api/register/read', data=json.dumps(
+                {'page': 0x14, 'address': 128, 'length': 1, 'bank': 0}),
+            content_type='application/json'))['data']['data'][0]
+
+    def test_the_demo_reverts_what_it_does_not_report(self):
+        self._connect('mock_sr8')                     # no SNR (13h:130.5-4)
+        self.assertEqual(self._select(0x06), 0x00)
+        self.assertEqual(self._select(0x07), 0x00)    # Reserved
+        self.assertEqual(self._select(0xC0), 0x00)    # Custom, none here
+        self.assertEqual(self._select(0x01), 0x01)
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_a_refused_ber_window_is_no_reading(self):
+        b = self._connect()
+        run_checkers(self.client)
+        self.assertEqual(self._get('ber')['selector_refused'], [])
+        with self._refusing(b):
+            d = self._get('ber')
+        self.assertEqual(len(d['lanes']), 8, 'the refused lanes went missing')
+        self.assertTrue(all(l['host_ber'] is None and l['media_ber'] is None
+                            for l in d['lanes']))
+        self.assertIn({'bank': 0, 'selector': 0x01, 'read': 0x00},
+                      d['selector_refused'])
+        if d['last_gate']:
+            self.assertIn({'bank': 0, 'selector': 0x11, 'read': 0x00},
+                          d['selector_refused'])
+
+    def test_a_refused_counter_window_is_no_reading(self):
+        b = self._connect()
+        run_checkers(self.client)
+        with self._refusing(b):
+            d = self._get('counters')
+        self.assertEqual(len(d['lanes']), 8, 'the refused lanes went missing')
+        for l in d['lanes']:
+            for side in ('host', 'media'):
+                self.assertIsNone(l[side + '_error_count'])
+                self.assertIsNone(l[side + '_total_bits'])
+                self.assertIsNone(l[side + '_ber'])
+                self.assertFalse(l[side + '_psl'])
+        self.assertEqual({r['selector'] for r in d['selector_refused']}
+                         & {2, 3, 4, 5}, {2, 3, 4, 5})
+
+    def test_a_refused_snr_window_is_no_reading(self):
+        b = self._connect()
+        with self._refusing(b):
+            d = self._get('snr')
+        self.assertEqual(len(d['host_snr_db']), 8, 'the refused lanes went missing')
+        self.assertTrue(all(v is None for v in d['host_snr_db']))
+        self.assertFalse(any(d['host_snr_na']))
+        self.assertEqual(d['selector_refused'],
+                         [{'bank': 0, 'selector': 0x06, 'read': 0x00}])
+        self.assertTrue(all(v is not None for v in self._get('snr')['host_snr_db']))
+
+    def test_one_bank_refusing_is_that_banks_lanes(self):
+        b = self._connect('mock_1600g_16lane')
+        run_checkers(self.client, host=[0xFF, 0xFF], media=[0xFF, 0xFF])
+        with self._refusing(b, only=b._registers[(0x13, 1)]):
+            d = self._get('ber')
+        lanes = d['lanes']
+        self.assertEqual(len(lanes), 16)
+        self.assertTrue(all(l['host_ber'] is not None for l in lanes[:8]))
+        self.assertTrue(all(l['host_ber'] is None for l in lanes[8:16]))
+        self.assertEqual({r['bank'] for r in d['selector_refused']}, {1})
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_says_it(self):
+        import shutil
+        import subprocess
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertEqual(js.count('selectorRefusedNote(res.data.selector_refused)'), 3)
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/const hex8 +=[^\n]*\n/)[0]'
+                  r' + s.match(/function selectorRefusedNote\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify([selectorRefusedNote([]),'
+                  ' selectorRefusedNote([{bank: 1, selector: 6, read: 0}])]));");')
+        out = subprocess.run([node, '-e', script, path], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        none, one = json.loads(out.stdout)
+        self.assertEqual(none, '')
+        self.assertIn('0x06 in Bank 1 (read back 0x00)', one)
+        self.assertIn('Table 8-136', one)
+        self.assertIn('no reading, not a reading of zero', one)
+
+    def test_the_manual_says_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s10 = man[man.index('id="s10"'):man.index('id="s11"')]
+        self.assertIn('写完会<b>读回</b> <code>14h:128</code>', s10)
+        demos = s10[s10.index('10.8 状态机模拟'):]
+        self.assertIn('<tr><td><b>DiagnosticsSelector</b></td>', demos)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
