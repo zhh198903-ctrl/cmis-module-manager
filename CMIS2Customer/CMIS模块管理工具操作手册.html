@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.156.0<br>
+      <b>版本</b>　2.157.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.156.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.156.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.157.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.157.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1342,7 +1342,7 @@
      区分开。点<b>Clear flag history</b> 清空这份记录、从当下重新开始计。
      换模块或重新连接也会自动清空。</p>
   <h3>Flag 显示 n/a:模块在这个状态下不报它</h3>
-  <p>规范 Table 6-21 规定每个通道 Flag 在哪些 DataPath 状态下可以置位。通道处于 DPDeactivated、DPInit、DPDeinit 时,Tx LOS、Tx / Rx CDR LOL、各项低侧告警 / 警告和 Rx Output 不会被置位;DPInitialized 下 Tx 输出被主机关掉或强制静音时,Tx 光功率低侧和全部 Tx 偏置 Flag 也不会。这些格子显示灰色 <b>n/a</b>——这一位是 0 不代表通道没问题,只是模块此时不报。Tx Fault、Rx LOS 以及高侧告警在任何状态下都会报,照常显示。告警汇总列里如果有部分 Flag 不适用,绿点旁会标 <b>partial</b>。</p>
+  <p>规范 Table 6-21 规定每个通道 Flag 在哪些 DataPath 状态下可以置位。通道处于 DPDeactivated、DPInit、DPDeinit 时,Tx LOS、Tx / Rx CDR LOL、各项低侧告警 / 警告和 Rx Output 不会被置位;DPInitialized 下 Tx 输出被主机关掉或强制静音时,Tx 光功率低侧和全部 Tx 偏置 Flag 也不会。这些格子显示灰色 <b>n/a</b>——这一位是 0 不代表通道没问题,只是模块此时不报。Tx Failure、Rx LOS 以及高侧告警在任何状态下都会报,照常显示。告警汇总列里如果有部分 Flag 不适用,绿点旁会标 <b>partial</b>。</p>
 
   <h3>DP Changed —— 数据通道弹过的唯一证据</h3>
   <p>Lane Flags 表第一列是 <b>DP Changed</b>（<code>11h:134</code>）。按 CMIS 6.3.3，
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>关断 Tx 输出不是「发送器故障」</h3>
+  <p>规范 Table 8-97:<code>11h:135</code> 的 FailureFlagTx(以前叫 Tx Fault)表示「发送部分内部失效,导致不确定的故障」,闩锁、读清。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>演示模块以前只要主机关掉某一路 Tx 输出,就把这个标志置位,下一次刷新又直接清掉:取消勾选 Tx Enable,Flags 表就显示发送器故障、历史里记一笔、Interrupt 被拉起——等于告诉用户「关输出 = 发送器坏了」。</span>
+  </div>
+  <p>现在:演示模块不模拟发送器失效,关断输出不会再置位这个标志;真有置位时会一直保持到被读取。Flags 表的列名改为规范现在的名字 <b>Tx Failure</b>(悬停说明原名 Tx Fault)。</p>
 
   <h3>Interrupt 一行写明标志在哪一页</h3>
   <p>规范 Table 8-8:<code>Lower 0x04–0x07</code> 是标志汇总,每个 Bank 一个字节,分别表示 Page 11h / 12h / 14h / 2Ch 上「至少有一个标志置位」(Bank 0 的 Page 11h 那一位是必需的)。清除汇总位要去读对应页上的标志本身。</p>
@@ -3779,7 +3787,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td><span class="badge badge-warn">琥珀</span> Init / TxTurnOn / TxTurnOff / Deinit</td><td class="label">过渡态：通道正在上来或下去，<b>不是故障</b></td></tr>
         <tr><td><b>白字</b> Initialized</td><td class="label">稳态，已初始化、只是 Tx 没开</td></tr>
         <tr><td><span class="badge badge-neutral">灰色</span> Deactivated</td><td class="label">该通道已停止</td></tr>
-        <tr><td rowspan="3">Lane Flags<br><span class="label">（Monitoring）</span></td><td><b>■ ALARM</b>（红底）</td><td class="label">该标志位置起：Tx Fault / LOS / CDR LOL 之一</td></tr>
+        <tr><td rowspan="3">Lane Flags<br><span class="label">（Monitoring）</span></td><td><b>■ ALARM</b>（红底）</td><td class="label">该标志位置起：Tx Failure / LOS / CDR LOL 之一</td></tr>
         <tr><td><b>▲ Warn</b>（橙底）</td><td class="label">仅出现在最右的汇总列，表示有 Warning 级阈值越界但无 Alarm</td></tr>
         <tr><td><b>●</b>（绿色小点）</td><td class="label">正常，无标志</td></tr>
         <tr><td>Module Control<br><span class="label">（DataPath）</span></td><td><b>●</b> / <b>○</b></td><td class="label">●=该位为 1（生效），○=该位为 0</td></tr>
@@ -3840,7 +3848,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <table>
       <thead><tr><th>列</th><th>含义</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td>Tx Fault</td><td class="label">发送故障</td><td><code>11h / 0x87</code></td></tr>
+        <tr><td>Tx Failure</td><td class="label">发送器内部失效(规范 FailureFlagTx,原名 Tx Fault);主机关断输出不算</td><td><code>11h / 0x87</code></td></tr>
         <tr><td>Tx LOS</td><td class="label">发送端信号丢失</td><td><code>11h / 0x88</code></td></tr>
         <tr><td>Tx CDR-LOL</td><td class="label">发送 CDR 失锁</td><td><code>11h / 0x89</code></td></tr>
         <tr><td>Tx AEQ Fail</td><td class="label">主机侧输入自适应均衡没能收敛（AdaptiveInputEqFailFlagTx）——故障在<b>进模块的链路上</b>，不是模块内部</td><td><code>11h / 0x8A</code></td></tr>
@@ -4633,7 +4641,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.156.0<br>
+    CMIS Module Manager 操作手册 v2.157.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

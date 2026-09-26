@@ -26970,10 +26970,10 @@ class TestWhichSideEachLaneFlagIsAbout(CMISTestCase):
                          'the media-lane columns do not all say so')
 
     def test_the_two_columns_that_break_the_pattern_say_so(self):
-        """Tx Fault among the Tx Flags and Rx Output among the Rx ones are
-        the ones a reader would get wrong."""
+        """Tx Failure (formerly Tx Fault) among the Tx Flags and Rx Output
+        among the Rx ones are the ones a reader would get wrong."""
         html = self._html()
-        i = html.index('>Tx Fault<')
+        i = html.index('>Tx Failure<')
         self.assertIn('unlike the three Tx Flags beside it',
                       html[html.rindex('<th', 0, i):i])
         j = html.index('>Rx Output<')
@@ -34144,6 +34144,57 @@ class TestTheInterruptSaysWhereItsFlagsAre(CMISTestCase):
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             self.assertIn('+ flagsSummaryNote(s.flags_summary),', f.read())
+
+
+class TestDisablingATxIsNotAFailure(CMISTestCase):
+    """Table 8-97: FailureFlagTx<i> (11h:135, formerly Tx Fault) - "This
+    Flag indicates an internal failure that causes an unspecified
+    malfunction in the Tx facility used by media lane <i>" - RO/COR.
+
+    The demos raised it whenever the host disabled a Tx output, and cleared
+    it by assignment on the next poll: untick Tx Enable and the Flags tab
+    showed a transmitter failure, the history kept it and Interrupt came up.
+    A host control is not a failure, and a latched Flag is not cleared by
+    anything but a read. The column also carried the old name."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_fr4x2', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        self.assertOk(self.client.get('/api/module/flags'))
+
+    def _flags(self):
+        return self.assertOk(self.client.get('/api/module/flags'))['data']['lanes']
+
+    def test_a_disabled_output_raises_no_failure(self):
+        self._connect()
+        self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps({'tx_disable_mask': 0x01}),
+            content_type='application/json'))
+        time.sleep(0.4)
+        lane = self._flags()[0]
+        self.assertFalse(lane['tx_fault'])
+        self.assertNotIn('tx_fault', lane['seen'])
+
+    def test_a_failure_is_latched_until_read(self):
+        self._connect()
+        _state['backend']._registers[0x11][0x87] |= 0x02
+        self.client.get('/api/module/status')        # other polls do not clear it
+        self.client.get('/api/module/monitoring')
+        self.assertTrue(self._flags()[1]['tx_fault'])
+        lane = self._flags()[1]
+        self.assertFalse(lane['tx_fault'], 'RO/COR: the read clears it')
+        self.assertIn('tx_fault', lane['seen'])
+
+    def test_the_column_has_the_current_name(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        self.assertNotIn('>Tx Fault<', html)
+        th = html[html.rindex('<th', 0, html.index('>Tx Failure<')):]
+        self.assertIn('formerly Tx Fault', th[:th.index('</th>')])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

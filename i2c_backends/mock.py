@@ -2543,11 +2543,13 @@ class MockBackend(I2CInterface):
             self._registers[0x11][a] = (tx_val >> 8) & 0xFF
             self._registers[0x11][a + 1] = tx_val & 0xFF
 
-            # Tx Fault flag if disabled
-            if tx_disabled:
-                self._registers[0x11][0x87] |= (1 << lane)
-            else:
-                self._registers[0x11][0x87] &= ~(1 << lane)
+            # 11h:135 FailureFlagTx (Table 8-97, formerly Tx Fault) is "an
+            # internal failure that causes an unspecified malfunction in the Tx
+            # facility". It was raised here whenever the host disabled the
+            # output, and cleared by assignment rather than by a read - so the
+            # demo taught that turning a Tx off is a transmitter failure, and
+            # lit Interrupt for it. The demo models no failure, so nothing
+            # raises it; one written in stays latched until read (_COR_BYTES).
 
             # Tx Bias
             if dp_active:
