@@ -5266,7 +5266,8 @@ class TestDj1600GAlignment(CMISTestCase):
         pages = set(d['supported_pages'])
         self.assertIn(0x0C, pages)
         self.assertIn(0x62, pages)
-        for absent in (0x04, 0x12, 0x0D):
+        self.assertIn(0x0D, pages)          # served since round 113
+        for absent in (0x04, 0x12):
             self.assertNotIn(absent, pages,
                              'page %02Xh advertised but never answered' % absent)
 
@@ -19245,6 +19246,8 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-70': 'Supported Pages Map (Page 0Ch)',
         '8-71': 'Generic FeatureAdvertisement Data Structure',
         '8-72': 'Named Feature Advertisements (Page 0Ch)',
+        '8-75': 'Firmware Load VersionDescriptor Data Structure',
+        '8-76': 'Firmware Management Registers (Page 0Dh)',
         '8-73': 'Named Feature Details Advertisement (Page 0Ch)',
         '8-77': 'Page 10h Overview',
         '8-78': 'Data Path initialization control (Page 10h:128)',
@@ -33721,7 +33724,7 @@ class TestThe54BadgeMarksOnlyWhat54Added(CMISTestCase):
         self.assertEqual(badged, {'CMIS 5.4 Optional Pages',
                                   'Per-Lane Output Power Thresholds',
                                   'Lane Polarity Status', 'Media Lane Switching',
-                                  'Acquisition Counters'})
+                                  'Acquisition Counters', 'Firmware Loads'})
 
     def test_the_manual_dates_them_to_5_3(self):
         manual = self._file('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
@@ -35134,6 +35137,167 @@ class TestAFaultSaysWhy(CMISTestCase):
         header = header[:header.index(chr(10) + '}')]
         self.assertIn("if (s.module_state === 'ModuleFault')", header)
         self.assertIn('${faultCauseText(s)}', header)
+
+
+class TestTheFirmwareBanksAreRead(CMISTestCase):
+    """Page 0Dh (8.12, Tables 8-75 and 8-76, advertised in 01h:173.6) exists
+    "to present firmware status information in registers, without forcing the
+    host to use CDB messaging": which Bank (A, B, the fixed factory Load) is
+    valid, which is committed - run after a reset - and which is running, and
+    each Load's major, minor, build and description. 7.3.1: "Since CMIS 5.4
+    all four version information components are available in registers, on
+    Page 0Dh".
+
+    The tool read Page 0Ch's claim of firmware load management support and
+    never the page that claim is about, and the manual listed firmware load
+    management as not implemented because the tool sends no CDB - which Page
+    0Dh does not need. Now the 5.4 panel reads it, and mock_1600g_dr8 has
+    one."""
+
+    def _connect(self, backend='mock_1600g_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _fw(self):
+        return self.assertOk(self.client.get('/api/module/ext54'))['data'].get(
+            'firmware_loads')
+
+    def _p0d(self):
+        return _state['backend']._registers[0x0D]
+
+    # ---- the decoders ------------------------------------------------------------------------
+    def test_the_status_register(self):
+        import cmis_registers as c
+        s = c.parse_fw_loads_status(0x03)
+        self.assertEqual(s['banks']['A'], {'valid': True, 'committed': True,
+                                           'running': True})
+        self.assertEqual(s['banks']['B'], {'valid': True, 'committed': False,
+                                           'running': False})
+        self.assertFalse(s['factory_running'])
+        s = c.parse_fw_loads_status(0x44)
+        self.assertFalse(s['banks']['A']['valid'])      # 1b is invalid
+        self.assertFalse(s['banks']['B']['valid'])
+        self.assertTrue(s['factory_running'])
+        self.assertTrue(c.parse_fw_loads_status(0x30)['banks']['B']['running'])
+        self.assertFalse(c.parse_fw_loads_status(0x02)['factory_running'])
+
+    def test_the_version_descriptor(self):
+        import cmis_registers as c
+        raw = bytes([3, 7, 0x12, 0x34]) + b'LOAD X'.ljust(30, b' ') + bytes(2)
+        self.assertEqual(c.parse_version_descriptor(raw),
+                         {'major': 3, 'minor': 7, 'build': 0x1234,
+                          'description': 'LOAD X'})
+
+    def test_the_capabilities(self):
+        import cmis_registers as c
+        self.assertEqual(c.parse_fw_capabilities(0x8D),
+                         {'cdb_download': True,
+                          'fixed_load_provides_service': True,
+                          'fixed_bank': True, 'bank_b': False, 'bank_a': True})
+
+    # ---- the reply ---------------------------------------------------------------------------
+    def test_the_banks_are_in_the_reply(self):
+        self._connect()
+        fw = self._fw()
+        self.assertEqual([l['bank'] for l in fw['loads']], ['A', 'B', 'Fixed'])
+        a = fw['loads'][0]
+        self.assertEqual((a['valid'], a['committed'], a['running']),
+                         (True, True, True))
+        self.assertEqual(a['version'], {'major': 2, 'minor': 5, 'build': 1234,
+                                        'description': 'DEMO RUNNING LOAD'})
+        self.assertEqual(fw['running_bank'], 'A')
+        self.assertFalse(fw['active_mismatch'])
+
+    def test_only_supported_banks_are_listed(self):
+        self._connect()
+        self._p0d()[0x80] = 0x01                         # Bank A only
+        self.assertEqual([l['bank'] for l in self._fw()['loads']], ['A'])
+
+    def test_the_factory_load_runs_where_neither_bank_does(self):
+        self._connect()
+        self._p0d()[0x88] = 0x00
+        fw = self._fw()
+        self.assertEqual(fw['running_bank'], 'Fixed')
+        self.assertTrue(fw['active_mismatch'], '0.9 is not the active 2.5')
+
+    def test_no_bank_running_is_said(self):
+        self._connect()
+        self._p0d()[0x88] = 0x02                         # A committed, idle
+        self.assertIsNone(self._fw()['running_bank'])
+
+    def test_a_running_load_that_is_not_the_active_version(self):
+        self._connect()
+        self._p0d()[0x94] = 3
+        fw = self._fw()
+        self.assertTrue(fw['active_mismatch'])
+        self.assertEqual(fw['active_version'], '2.5')
+
+    def test_not_advertised_is_not_read(self):
+        self._connect('mock_dr8')
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertNotIn('firmware_loads', d)
+        self.assertEqual(_state['backend']._page_redirects, [])
+
+    def test_the_demo_advertises_what_it_serves(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/ext54'))['data']
+        self.assertIn(0x0D, d['supported_pages'])
+        self.assertEqual(_state['backend']._page_redirects, [])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function fwLoadRows\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function fwLoadsNote\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_rows(self):
+        rows = self._run("fwLoadRows({loads: [{bank: 'A', valid: true, "
+                         "committed: true, running: true, version: {major: 2, "
+                         "minor: 5, build: 1234, description: '<b>x</b>'}}, "
+                         "{bank: 'B', valid: false, committed: false, "
+                         "running: false, version: {major: 1, minor: 0, "
+                         "build: 1, description: ''}}]})")
+        self.assertIn('<td>2.5</td><td>1234</td>', rows)
+        self.assertIn('&lt;b&gt;x&lt;/b&gt;', rows)
+        self.assertIn('<span class="flag-active">invalid</span>', rows)
+        self.assertIn('<span class="flag-ok">running</span>', rows)
+
+    def test_the_note(self):
+        self.assertEqual(self._run("fwLoadsNote({running_bank: 'A', "
+                                   "active_mismatch: false})"), '')
+        self.assertIn('not the version', self._run(
+            "fwLoadsNote({running_bank: 'Fixed', active_mismatch: true, "
+            "active_version: '2.5'})"))
+        self.assertIn('No Bank reports itself running',
+                      self._run("fwLoadsNote({running_bank: null})"))
+
+    def test_the_card(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn('id="card-fwloads"', html)
+        self.assertIn('<tbody id="tbl-fwloads"></tbody>', html)
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("show('card-fwloads', !!d.firmware_loads);", js)
+        self.assertIn("if (d.firmware_loads) renderFirmwareLoads(d.firmware_loads);", js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

@@ -1160,6 +1160,39 @@ def parse_module_fault_cause(code: int) -> dict:
             'kind': 'reserved'}
 
 
+def parse_fw_capabilities(byte_val: int) -> dict:
+    """0Dh:128 CapabilitiesRegister (Table 8-76)."""
+    return {'cdb_download': bool(byte_val & 0x80),
+            'fixed_load_provides_service': bool(byte_val & 0x08),
+            'fixed_bank': bool(byte_val & 0x04),
+            'bank_b': bool(byte_val & 0x02),
+            'bank_a': bool(byte_val & 0x01)}
+
+
+def parse_fw_loads_status(byte_val: int) -> dict:
+    """0Dh:136 LoadsStatusRegister (Table 8-76): per Bank A and B, validity
+    - 0b is valid, "the unexpected zero-encoding of a positive validity
+    status maintains backwards compatibility with CMIS 4.0" - then committed
+    and running. Its footnote: 00h, 04h, 40h and 44h "indicate that a
+    Factory Load is running"."""
+    banks = {}
+    for name, shift in (('A', 0), ('B', 4)):
+        banks[name] = {'valid': not ((byte_val >> (shift + 2)) & 1),
+                       'committed': bool((byte_val >> (shift + 1)) & 1),
+                       'running': bool((byte_val >> shift) & 1)}
+    return {'banks': banks,
+            'factory_running': byte_val in (0x00, 0x04, 0x40, 0x44)}
+
+
+def parse_version_descriptor(raw: bytes) -> dict:
+    """Table 8-75: MajorVersion, MinorVersion, U16 BuildNumber and an
+    ASCII[32] Description."""
+    return {'major': raw[0], 'minor': raw[1],
+            'build': (raw[2] << 8) | raw[3],
+            'description': bytes(raw[4:36]).decode('ascii', 'replace')
+            .rstrip(' ' + chr(0))}
+
+
 def parse_module_state(byte_val: int) -> str:
     """Decode lower memory byte 0x03: bits[3:1] = ModuleState, bit0 = InterruptDeasserted."""
     state = (byte_val >> 1) & 0x07
@@ -3367,6 +3400,13 @@ def parse_relative_thresholds(raw: bytes) -> dict:
 # ---------------------------------------------------------------------------
 # Presence is advertised in 01h:173-174; none of these may be read blindly.
 REG_SUPPORTED_PAGES_MAP = (0x0C, 0x80, 32)   # 0Ch:128-159 U8[32] page bitmap
+# Page 0Dh (8.12, Tables 8-75 and 8-76): the firmware banks in registers,
+# "without forcing the host to use CDB messaging".
+REG_FW_MGMT_CAPS     = (0x0D, 0x80, 1)    # 0Dh:128 CapabilitiesRegister
+REG_FW_LOADS_STATUS  = (0x0D, 0x88, 1)    # 0Dh:136 LoadsStatusRegister
+REG_FW_LOAD_VERSIONS = {'A': (0x0D, 0x94, 36),      # 148-183 VersionLoadA
+                        'B': (0x0D, 0xB8, 36),      # 184-219 VersionLoadB
+                        'Fixed': (0x0D, 0xDC, 36)}  # 220-255 VersionFixedLoad
 REG_CONSOLIDATED_PM     = (0x0C, 0xA0, 2)    # 0Ch:160-161 FeatureAdvertisement
 # The other named feature in Table 8-72, and the same structure.
 REG_LOAD_MANAGEMENT     = (0x0C, 0xA2, 2)    # 0Ch:162-163

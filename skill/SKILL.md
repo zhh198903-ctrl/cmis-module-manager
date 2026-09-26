@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 固件 Bank 看 Page 0Dh
+
+模块声明 `01h:173.6` 时,`GET /api/module/ext54` 带 `firmware_loads`:`loads[]` 每个 Bank(A / B / Fixed)的 `valid` / `committed` / `running` 和 `version`(major、minor、build、description,Table 8-75),`running_bank`,以及正在运行的版本与 Lower 39-40 不一致时 `active_mismatch: true`。
+用户问「模块现在跑的是哪版固件、复位后跑哪个」看这里;工具不发 CDB,下载 / 提交做不了。
+
 ## ModuleFault 看原因
 
 `GET /api/module/status` 的 `fault_cause`({code, name, kind})来自 `Lower 41` ModuleFaultCause(Table 8-16):`kind` 为 `defined`(1-6)、`custom`(32-63)、`reserved`,`none` 表示 0(没检测到或不支持)。

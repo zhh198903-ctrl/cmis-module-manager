@@ -412,7 +412,7 @@ _DR8_1600G = {
     'default_polarity_rx': 0x00,
     # Bit 7 is Page 0Ch. Bit 6 would claim Page 0Dh (firmware management),
     # which this mock does not serve, so it stays clear.
-    'pages_ext_173':       0b10000000,       # Page 0Ch
+    'pages_ext_173':       0b11000000,       # Pages 0Ch and 0Dh       # Page 0Ch
     'pages_ext_174':       0b11100000,       # Pages 60h, 61h, 62h
     'misc_caps_252':       0b00100000,       # MediaLaneSwitchingSupported
     'module_subtype':      0x01,
@@ -1715,6 +1715,21 @@ class MockBackend(I2CInterface):
                           0xC2: 0xE8, 0xC3: 0x80}).items():
                 p0c[a] = v
             regs[0x0C] = p0c          # filled in below, once every page exists
+
+            # Page 0Dh (8.12, Tables 8-75 and 8-76): Bank A committed and
+            # running the active 2.5 (Lower 39-40), Bank B holding the
+            # inactive 1.0 (01h:128-129), and a fixed factory Load.
+            if p.get('pages_ext_173', 0) & 0x40:
+                p0d = {0x80: 0x87, 0x88: 0x03}
+                for base, (major, minor, build, text) in (
+                        (0x94, (2, 5, 1234, 'DEMO RUNNING LOAD')),
+                        (0xB8, (1, 0, 1100, 'DEMO PREVIOUS LOAD')),
+                        (0xDC, (0, 9, 1, 'DEMO FACTORY LOAD'))):
+                    desc = text.encode('ascii').ljust(32)
+                    for i, b in enumerate(bytes([major, minor, build >> 8,
+                                                 build & 0xFF]) + desc):
+                        p0d[base + i] = b
+                regs[0x0D] = p0d
 
             adv174 = p.get('pages_ext_174', 0x00)
             p60 = {0x80: p.get('default_polarity_tx', 0),
@@ -4050,6 +4065,7 @@ class MockBackend(I2CInterface):
         None: (set(range(26, 37)) | set(range(64, 85))     # controls, masks, custom
                | set(range(118, 128))),                     # passwords, page mapping
         0x00: set(), 0x01: set(), 0x02: set(), 0x04: set(), 0x0C: set(),
+        0x0D: set(range(132, 136)),                          # Table 8-76
         0x11: set(), 0x1C: set(), 0x61: set(), 0x62: set(),
         # 168-199 CurrentLaserFrequency and 222-238 status/Flags are RO.
         0x12: set(range(128, 168)) | set(range(200, 218)) | set(range(239, 247)),

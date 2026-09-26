@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.162.0'
+__version__ = '2.163.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1849,6 +1849,43 @@ def api_module_status():
         return _err(str(e), 500)
 
 
+def _firmware_loads() -> dict:
+    """Page 0Dh (8.12): which firmware Bank is valid, committed and
+    running, and the version of the Load in each - "Since CMIS 5.4 all four
+    version information components are available in registers, on Page 0Dh"
+    (7.3.1). The tool read the Page 0Ch claim of load management support and
+    never the page it points to, so a module's firmware state was reported
+    only as Lower 39-40 and 01h:128-129: two major.minor pairs, no build, no
+    description, and no word on which bank would run after a reset."""
+    fw_caps = cmis.parse_fw_capabilities(_read_upper(*cmis.REG_FW_MGMT_CAPS)[0])
+    status = cmis.parse_fw_loads_status(
+        _read_upper(*cmis.REG_FW_LOADS_STATUS)[0])
+    loads = []
+    for name, key in (('A', 'bank_a'), ('B', 'bank_b'), ('Fixed', 'fixed_bank')):
+        if not fw_caps[key]:
+            continue
+        entry = {'bank': name, 'version': cmis.parse_version_descriptor(
+            _read_upper(*cmis.REG_FW_LOAD_VERSIONS[name]))}
+        if name == 'Fixed':
+            # No status bits of its own: it runs where neither A nor B does.
+            entry.update(valid=None, committed=None,
+                         running=status['factory_running'])
+        else:
+            entry.update(status['banks'][name])
+        loads.append(entry)
+    # Lower 39-40 is the running firmware's major.minor (Table 8-15), so the
+    # running Load here should carry the same numbers.
+    active = (_read_lower(*cmis.REG_FW_ACTIVE_MAJOR[1:])[0],
+              _read_lower(*cmis.REG_FW_ACTIVE_MINOR[1:])[0])
+    running = next((l for l in loads if l['running']), None)
+    return {'capabilities': fw_caps, 'loads': loads,
+            'active_version': '%d.%d' % active,
+            'running_bank': running['bank'] if running else None,
+            'active_mismatch': bool(running) and (
+                running['version']['major'], running['version']['minor'])
+                != active}
+
+
 @app.route('/api/module/ext54', methods=['GET'])
 def api_module_ext54():
     """The optional pages CMIS 5.4 added, for whichever of them exist.
@@ -1900,6 +1937,10 @@ def api_module_ext54():
                     'Firmware load management')
             out['feature_conflicts'] = conflicts
             out['available']['0Ch'] = True
+
+        if caps.get('page_0dh_supported'):
+            out['firmware_loads'] = _firmware_loads()
+            out['available']['0Dh'] = True
 
         if caps.get('page_60h_supported'):
             polarity = []

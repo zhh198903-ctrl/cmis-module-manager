@@ -1511,6 +1511,8 @@ async function loadExt54() {
   show('card-mls', !!d.media_lane_switching);
   show('card-hls', !!d.host_lane_switching);
   show('card-pagemap', true);
+  show('card-fwloads', !!d.firmware_loads);
+  if (d.firmware_loads) renderFirmwareLoads(d.firmware_loads);
 
   const mark = v => v ? '<span class="flag-warn">▲ inverted</span>' : '<span class="flag-ok">●</span>';
   if (d.polarity_status) {
@@ -1661,6 +1663,43 @@ async function loadExt54() {
       conflictLine(d.feature_conflicts),
     ].filter(Boolean).join('<br>');
   }
+}
+
+// Page 0Dh (8.12): the firmware Banks in registers - which is valid, which
+// runs after a reset (committed) and which is running now, with each Load's
+// major.minor, build and description (Table 8-75).
+function fwLoadRows(fl) {
+  const yn = (v, yes, no) => v == null ? '<span class="reg-meta">\u2014</span>'
+    : v ? `<span class="flag-ok">${yes}</span>` : `<span class="reg-meta">${no}</span>`;
+  return (fl.loads || []).map(l => {
+    const v = l.version || {};
+    return `<tr><td>${esc(l.bank)}</td>`
+      + `<td>${l.valid === false ? '<span class="flag-active">invalid</span>'
+                                 : yn(l.valid, 'valid', '')}</td>`
+      + `<td>${yn(l.committed, 'committed', 'no')}</td>`
+      + `<td>${yn(l.running, 'running', 'no')}</td>`
+      + `<td>${v.major}.${v.minor}</td><td>${v.build}</td>`
+      + `<td>${esc(v.description || '')}</td></tr>`;
+  }).join('');
+}
+
+function fwLoadsNote(fl) {
+  if (!fl.running_bank) {
+    return 'No Bank reports itself running (0Dh:136), and the value is not one '
+      + 'Table 8-76 calls a Factory Load running.';
+  }
+  if (fl.active_mismatch) {
+    return `The running Load (Bank ${esc(fl.running_bank)}) is not the version `
+      + `Lower 39\u201340 reports as active (${esc(fl.active_version)}).`;
+  }
+  return '';
+}
+
+function renderFirmwareLoads(fl) {
+  const tb = document.getElementById('tbl-fwloads');
+  if (tb) tb.innerHTML = fwLoadRows(fl);
+  const note = document.getElementById('fwloads-note');
+  if (note) note.innerHTML = fwLoadsNote(fl);
 }
 
 async function resetAcqCounters() {

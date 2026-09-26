@@ -135,6 +135,17 @@
           Bitmap of the pages the module implements. Cards badged 5.4 appear in their own tabs only when the page behind them is advertised; 5.3 modules and 5.4 modules that implement none of these pages show nothing here.
         </p>
       </div>
+
+      <div class="card" id="card-fwloads" style="display:none">
+        <h3><span class="card-title">Firmware Loads<span class="badge-new54" title="Introduced in CMIS 5.4">5.4</span><span class="reg-meta">0Dh / 128–255</span></span></h3>
+        <div class="table-scroll">
+<table>
+          <thead><tr><th>Bank</th><th title="ValidityStatus, 0Dh:136 - runnable and stored undamaged">Valid</th><th title="AdministrativeStatus, 0Dh:136 - the Load run after a reset or power cycle">Committed</th><th title="OperationalStatus, 0Dh:136">Running</th><th>Version</th><th>Build</th><th>Description</th></tr></thead>
+          <tbody id="tbl-fwloads"></tbody>
+        </table>
+</div>
+        <p class="label" id="fwloads-note"></p>
+      </div>
     </div>
 
     <!-- ===== Tab: Monitoring ===== -->
