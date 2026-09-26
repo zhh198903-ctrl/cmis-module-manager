@@ -2410,6 +2410,8 @@ async function _loadMonitoringOnce() {
   const biasUnknown = monRes.data.tx_bias_scale_unknown === true;
   const BIAS_SCALE_TIP = 'TxBiasCurrentScalingFactor (01h:160.4-3) reads 11b, '
     + 'which is reserved: the scale of the bias reading is unknown (8.1.3.8)';
+  const biasUnit = document.getElementById('th-bias-unit');
+  if (biasUnit) biasUnit.textContent = biasUnitText(monRes.data);
   // Absent for a module that predates this field being sent; treat that as
   // assured so an older answer does not grey every reading out.
   const assured = monRes.data.monitors_assured !== false;
@@ -4045,6 +4047,16 @@ const CHECKER_OFF_TIP = 'No pattern checker is running on this lane (13h:160 '
   + 'host, 13h:168 media). Tables 8-128 to 8-130: enabling one clears the count '
   + 'and starts it; disabling it stops the count and holds the result. Enable '
   + 'the checker on the PRBS tab to measure.';
+
+// Table 8-99: LaserBiasTx is "in 2 uA increments, times the multiplier
+// from Table 8-53" (01h:160.4-3). The header said 2 uA on every module, and
+// a x2 or x4 module counts in 4 or 8.
+function biasUnitText(d) {
+  const base = '11h / 0xAA+((n−1)%8)×2, uint16×';
+  if (d.tx_bias_scale_unknown) return base + '2µA × ? (01h:160.4-3 reserved)';
+  const k = d.tx_bias_scale || 1;
+  return base + (k > 1 ? `${2 * k}µA (2µA × ${k}, 01h:160.4-3)` : '2µA');
+}
 
 function checkerOff(checking, side, i) {
   return !!(checking && checking[side] && checking[side][i] === false);

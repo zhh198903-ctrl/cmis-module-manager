@@ -36400,6 +36400,83 @@ class TestAZeroBerNeedsBitsCounted(CMISTestCase):
         self.assertIn('TotalBitsCount 为 0', s10)
 
 
+class TestTheBiasColumnSaysItsUnit(CMISTestCase):
+    """Table 8-99: LaserBiasTx is "in 2 uA increments, times the multiplier
+    from Table 8-53" (01h:160.4-3). The readings have been scaled for a long
+    time, but the Monitoring column's header said uint16x2uA on every module
+    - on the coherent demo, x2, one count is 4 uA. The reply now carries the
+    multiplier and the header is written from it. The manual's 8.1 table
+    also gave lanes 1-8 and addresses without the bank for lanes 9-16."""
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _mon(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def test_the_reply_carries_the_multiplier(self):
+        self._connect('mock_dr8')
+        self.assertEqual(self._mon()['tx_bias_scale'], 1)
+        self._connect('mock_coherent_zr')
+        self.assertEqual(self._mon()['tx_bias_scale'], 2)
+        _state['caps']['monitors']['tx_bias_scale'] = 4
+        self.assertEqual(self._mon()['tx_bias_scale'], 4)
+        _state['caps']['monitors']['tx_bias_scale'] = None
+        d = self._mon()
+        self.assertIsNone(d['tx_bias_scale'])
+        self.assertTrue(d['tx_bias_scale_unknown'])
+
+    def _unit(self, data):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/function biasUnitText\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(biasUnitText(' + data + ')));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_header_is_written_from_it(self):
+        self.assertTrue(self._unit('{tx_bias_scale: 1}').endswith('uint16×2µA'))
+        self.assertTrue(self._unit('{}').endswith('uint16×2µA'))
+        self.assertIn('uint16×4µA (2µA × 2, 01h:160.4-3)', self._unit('{tx_bias_scale: 2}'))
+        self.assertIn('uint16×8µA (2µA × 4, 01h:160.4-3)', self._unit('{tx_bias_scale: 4}'))
+        self.assertIn('× ? (01h:160.4-3 reserved)',
+                      self._unit('{tx_bias_scale: null, tx_bias_scale_unknown: true}'))
+        self.assertTrue(self._unit('{}').startswith('11h / 0xAA+((n−1)%8)×2, '))
+
+    def test_the_page_uses_it(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        with open(os.path.join(here, 'templates', 'index.html'), encoding='utf-8') as f:
+            html = f.read()
+        self.assertIn("if (biasUnit) biasUnit.textContent = biasUnitText(monRes.data);", js)
+        self.assertIn('id="th-bias-unit"', html)
+
+    def test_the_manual_table(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s81 = man[man.index('<h3>8.1 实时数据表</h3>'):]
+        s81 = s81[:s81.index('</table>')]
+        self.assertIn('<code>01h:160.4-3</code>', s81)
+        for addr in ('0x9A', '0xAA', '0xBA'):
+            self.assertIn('<code>11h / %s+((n−1)%%8)×2</code>' % addr, s81)
+        self.assertNotIn('通道编号（1–8）', man)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

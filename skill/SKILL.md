@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## Tx 偏置的刻度
+
+`GET /api/module/monitoring` 的 `tx_bias_ma` 已乘好倍率;回复里的 `tx_bias_scale` 是 `01h:160.4-3` 的倍率(1 / 2 / 4,保留值 11b 时为 `null`,此时 `tx_bias_scale_unknown` 为 true、读数为 `null`)。自己用 `register/read` 读 `11h:170-185` 时,一个计数 = 2 µA × 这个倍率(Table 8-99)。
+
 ## BER 为 0 先看 measured
 
 `GET /api/module/ber` 在模块也报告误码计数(`13h:130.1`)时,每条通道带 `host_measured` / `media_measured`(`last_gate.lanes` 里也有):同一窗口的 TotalBitsCount 是否大于 0。为 `false` 时那个 0 不是测量结果——没结束过门控的 last gate、刚启用的检测器都是这样;为 `null` 表示没有计数可对照。

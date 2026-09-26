@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.174.0<br>
+      <b>版本</b>　2.175.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.174.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.174.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.175.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.175.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1249,10 +1249,10 @@
     <table>
       <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td>Lane</td><td class="label">通道编号（1–8）</td><td>—</td></tr>
-        <tr><td>Tx Power</td><td class="label">发送光功率（µW 和 dBm）</td><td><code>11h / 0x9A+(n−1)×2</code></td></tr>
-        <tr><td>Tx Bias</td><td class="label">发送偏置电流（mA）</td><td><code>11h / 0xAA+(n−1)×2</code></td></tr>
-        <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+(n−1)×2</code></td></tr>
+        <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)</td><td>—</td></tr>
+        <tr><td>Tx Power</td><td class="label">发送光功率（µW 和 dBm）</td><td><code>11h / 0x9A+((n−1)%8)×2</code></td></tr>
+        <tr><td>Tx Bias</td><td class="label">发送偏置电流(mA)。寄存器每个计数是 2 µA 乘以 <code>01h:160.4-3</code> 的倍率(×1 / ×2 / ×4,Table 8-99),列标题写出本模块一个计数是多少 µA</td><td><code>11h / 0xAA+((n−1)%8)×2</code></td></tr>
+        <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+((n−1)%8)×2</code></td></tr>
         <tr><td>DataPath State</td><td class="label">数据通道状态，4 bits/lane（见下表枚举）</td><td><code>11h / 0x80–0x83</code></td></tr>
         <tr><td>Output</td><td class="label">该 lane 的 Tx / Rx 输出是否真的在送有效信号（1 bit/lane）</td><td><code>11h / 0x84 Rx、0x85 Tx</code></td></tr>
         <tr><td>Config Status</td><td class="label">上次 Apply 配置的结果（ConfigSuccess / ConfigRejected / ConfigInProgress 等）</td><td><code>11h / 0xCA–0xCD</code></td></tr>
@@ -1733,6 +1733,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Tx Bias 列标题写出本模块的刻度</h3>
+  <p>规范 Table 8-99:LaserBiasTx 以「2 µA 为单位,再乘以 Table 8-53 的倍率」——倍率在 <code>01h:160.4-3</code>(×1 / ×2 / ×4)。工具换算读数时一直乘了倍率,但 Monitoring 表 Tx Bias 列的标题固定写着 <code>uint16×2µA</code>,在 ×2、×4 的模块上(内置的相干可调谐演示模块就是 ×2)一个计数其实是 4 µA 或 8 µA。</p>
+  <p>现在:列标题按模块写,例如 <code>uint16×4µA (2µA × 2, 01h:160.4-3)</code>;倍率为保留值 11b 时写 <code>× ?</code>。监控接口的回复多了 <code>tx_bias_scale</code>。手册 8.1 节的表格也补上了这一点和第 9 条以后通道的地址写法。</p>
 
   <h3>没数过比特的 BER 不再显示成 0</h3>
   <p>BER 是误码数除以比特数。一个窗口一个比特都没数过时,模块在那里放的也是 0——最常见的是还没结束过门控的 <b>· last gate</b> 行(模块声明支持门控结果时,连上就是一整行 0),以及刚启用的检测器。规范 Table 8-128 说累计时长要从 TotalBitsCount 推出来。</p>
@@ -4040,7 +4044,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <table>
       <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td>Lane</td><td class="label">通道编号（1–8）</td><td>—</td></tr>
+        <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)</td><td>—</td></tr>
         <tr><td>AppSelect</td><td class="label">应用码选择。下拉<b>只列出该模块实际广播的应用</b>（通常 1–8 个），格式为
             <code>App 2 — 0x4F/0x1B 4H/4M</code>，依次是应用码、主机/媒体接口 ID、主机与媒体 lane 数；
             若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
@@ -4813,7 +4817,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.174.0<br>
+    CMIS Module Manager 操作手册 v2.175.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

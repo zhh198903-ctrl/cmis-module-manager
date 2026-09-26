@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.174.0'
+__version__ = '2.175.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2634,6 +2634,10 @@ def api_module_monitoring():
                     'module_state': module_state,
                     'monitors_assured': module_state == 'ModuleReady',
                     'tx_bias_scale_unknown': bias_scale_unknown,
+                    # Table 8-99: "in 2 uA increments, times the multiplier
+                    # from Table 8-53" - so the column says what one count is.
+                    # None where 01h:160.4-3 is the reserved 11b.
+                    'tx_bias_scale': bias_scale,
                     # Which of the three lane monitors this module has at all,
                     # so a missing column reads as "not implemented" rather
                     # than as a poll that came back empty.
