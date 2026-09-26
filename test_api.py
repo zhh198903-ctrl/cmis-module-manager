@@ -2601,10 +2601,11 @@ class TestTxBiasIsScaledTheWayTheModuleSaid(CMISTestCase):
         self.assertLess(lane['tx_bias_ma'], self.X1_CEILING_MA)
 
     def test_the_reserved_code_does_not_quadruple_anything(self):
-        """11b is reserved. Treating it as a multiplier would be inventing one."""
+        """11b is reserved. Treating it as a multiplier would be inventing one
+        - x1 included: 8.1.3.8 makes it unknown."""
         import cmis_registers as c
-        self.assertEqual(c.parse_supported_monitors(bytes([0, 0x18]))
-                         ['tx_bias_scale'], 1)
+        self.assertIsNone(c.parse_supported_monitors(bytes([0, 0x18]))
+                          ['tx_bias_scale'])
         self.assertEqual(c.parse_supported_monitors(bytes([0, 0x10]))
                          ['tx_bias_scale'], 4)
         self.assertEqual(c.parse_supported_monitors(bytes([0, 0x08]))
@@ -33921,6 +33922,126 @@ class TestAGridIsOfferedWhereItIsAdvertised(CMISTestCase):
         bit = (1 << cur) if cur < 8 else {8: 0x40, 9: 0x20}[cur]
         poke(0x04, byte, self._reg(byte) & ~bit)
         self.assertOk(self._post(grid_code=cur, target_power_dbm=0))
+
+
+class TestAReservedValueIsUnknown(CMISTestCase):
+    """8.1.3.8 (CMIS 5.4, M11): a host meeting a reserved value "should
+    interpret this value as unknown, unavailable, or out of the known range".
+
+    Two decoders guessed instead. TxBiasCurrentScalingFactor (01h:160.4-3)
+    11b was read as x1, so every bias reading and threshold was printed in a
+    unit the module never stated - off by up to 4x. AutoCommissioning (Lower
+    2.1-0) 11b under SteppedConfigOnly was read as "neither procedure", so
+    ApplyImmediate was refused as unsupported on a claim the module never
+    made. Both are now unknown, and the page says so."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    # ---- the bias scale ----------------------------------------------------------------------
+    def test_the_reserved_scale_is_unknown(self):
+        import cmis_registers as c
+        scale = lambda code: c.parse_supported_monitors(
+            bytes([0, code << 3]))['tx_bias_scale']
+        self.assertEqual([scale(x) for x in range(4)], [1, 2, 4, None])
+
+    def test_no_bias_reading_is_given(self):
+        self._connect()
+        _state['caps']['monitors']['tx_bias_scale'] = None
+        d = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertTrue(d['tx_bias_scale_unknown'])
+        self.assertEqual({l['tx_bias_ma'] for l in d['lanes']}, {None})
+
+    def test_no_bias_threshold_is_given(self):
+        self._connect()
+        _state['caps']['monitors']['tx_bias_scale'] = None
+        d = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertTrue(d['tx_bias_scale_unknown'])
+        for k in ('high_alarm', 'low_alarm', 'high_warn', 'low_warn'):
+            self.assertIsNone(d['tx_bias_%s_ma' % k])
+        self.assertIsNotNone(d['tx_power_high_alarm_dbm'])
+
+    def test_a_stated_scale_still_reads(self):
+        self._connect()
+        m = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertFalse(m['tx_bias_scale_unknown'])
+        self.assertGreater(m['lanes'][0]['tx_bias_ma'], 0)
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertFalse(t['tx_bias_scale_unknown'])
+        self.assertIsNotNone(t['tx_bias_high_alarm_ma'])
+
+    # ---- AutoCommissioning -------------------------------------------------------------------
+    def test_the_reserved_code_is_unknown(self):
+        import cmis_registers as c
+        cfg = lambda raw: (c.parse_config_capabilities(raw)['regular_reconfig'],
+                           c.parse_config_capabilities(raw)['hot_reconfig'])
+        self.assertEqual([cfg(0x40 | x) for x in range(4)],
+                         [(False, False), (True, False), (False, True),
+                          (None, None)])
+        self.assertEqual(cfg(0x03), (True, True))       # not stepped: legacy
+
+    def test_apply_immediate_is_not_refused_as_unsupported(self):
+        self._connect()
+        _state['caps']['config']['hot_reconfig'] = None
+        rv = self.client.post('/api/module/datapath',
+                              data=json.dumps({'apply_immediate': True}),
+                              content_type='application/json')
+        self.assertNotIn('does not support intervention-free hot',
+                         json.loads(rv.data).get('message', ''))
+        _state['caps']['config']['hot_reconfig'] = False
+        rv = self.client.post('/api/module/datapath',
+                              data=json.dumps({'apply_immediate': True}),
+                              content_type='application/json')
+        self.assertErr(rv, 400)
+
+    def test_the_transient_rule_is_kept(self):
+        """Unknown may mean the procedures exist, so a trigger into a
+        transient state is still refused (6.2.4.3)."""
+        self._connect()
+        _state['caps']['config']['hot_reconfig'] = None
+        _state['backend']._dp_lane_states = [0x2] * 8     # DPInit
+        rv = self.client.post('/api/module/datapath',
+                              data=json.dumps({'apply': True}),
+                              content_type='application/json')
+        self.assertErr(rv, 409)
+        self.assertIn('transient state', json.loads(rv.data)['message'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_says_unknown(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('const biasUnknown = monRes.data.tx_bias_scale_unknown === true;', js)
+        self.assertIn(': biasUnknown', js)
+        self.assertIn('const thr = v => v == null', js)
+        self.assertIn('<td class="ha">${thr(ha)}</td>', js)
+        self.assertIn("return 'Stepped + unknown (AutoCommissioning 11b is reserved)';", js)
+
+    def test_the_summary_says_unknown_not_neither(self):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        expr = ('[reconfigSummary({stepped_config_only: true, hot_reconfig: null,'
+                ' regular_reconfig: null}), reconfigSummary({stepped_config_only:'
+                ' true, hot_reconfig: false, regular_reconfig: false})]')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/function reconfigSummary\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        unknown, neither = json.loads(out.stdout)
+        self.assertIn('unknown', unknown)
+        self.assertIn('neither', neither)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

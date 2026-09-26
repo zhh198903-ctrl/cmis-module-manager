@@ -1741,7 +1741,12 @@ def parse_config_capabilities(raw: int) -> dict:
     """
     stepped = bool((raw >> 6) & 1)
     auto = raw & 0x03
-    if stepped:
+    if stepped and auto == 0b11:
+        # "11: reserved". 8.1.3.8: unknown - not "neither", which is 00b and
+        # is what this used to report, refusing ApplyImmediate on a claim
+        # the module never made.
+        hot = regular = None
+    elif stepped:
         hot = auto == 0b10
         regular = auto == 0b01
     else:
@@ -2634,9 +2639,12 @@ def parse_supported_monitors(data: bytes) -> dict:
         'rx_optical_power': bool(b160 & 0x04),
         'tx_optical_power': bool(b160 & 0x02),
         'tx_bias':         bool(b160 & 0x01),
-        # 11b is reserved; treating it as x1 keeps a malformed advertisement
-        # from silently quadrupling every reading.
-        'tx_bias_scale':   {0: 1, 1: 2, 2: 4}.get(scale_code, 1),
+        # 11b is reserved, and 8.1.3.8 (CMIS 5.4, M11) says a host "should
+        # interpret this value as unknown, unavailable, or out of the known
+        # range". Reading it as x1 printed every bias reading and threshold
+        # in a unit nobody stated - off by up to 4x with nothing to say so.
+        # None: the scale, and so every bias figure, is unknown.
+        'tx_bias_scale':   {0: 1, 1: 2, 2: 4}.get(scale_code),
         'tx_bias_scale_code': scale_code,
     }
 

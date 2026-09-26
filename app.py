@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.154.0'
+__version__ = '2.155.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2253,13 +2253,16 @@ def api_media_lane_switching():
         return _err(str(e), 500)
 
 
+def _round_or_none(v, places=3):
+    return None if v is None else round(v, places)
+
+
 @app.route('/api/module/capabilities', methods=['GET'])
 def api_module_capabilities():
     """The advertisement block, plus which of its fields CMIS 5.4 introduced.
 
     The new-in-5.4 list is served rather than duplicated in the page, so the
-    badge in the UI and the field list in the manual cannot drift apart from
-    what the decoder actually reads.
+    5.4 badge on Module Info is decided by the decoder's list.
     """
     err = _require_connected()
     if err:
@@ -2329,9 +2332,11 @@ def api_module_monitoring():
             cfg_statuses += cmis.parse_config_status(raw)
             cfg_codes += cmis.parse_config_status_codes(raw)
         # 01h:160.4-3 multiplies the 2 uA bias increment, so a module using
-        # x2 or x4 reads half or a quarter of its real bias without it.
-        bias_scale = ((_state.get('caps') or {}).get('monitors')
-                      or {}).get('tx_bias_scale', 1)
+        # x2 or x4 reads half or a quarter of its real bias without it. None
+        # is the reserved 11b: unknown (8.1.3.8), so no bias figure is.
+        _mons = (_state.get('caps') or {}).get('monitors') or {}
+        bias_scale = _mons.get('tx_bias_scale', 1)
+        bias_scale_unknown = 'tx_bias_scale' in _mons and bias_scale is None
         # 11h:132-133 (Table 8-95, RO/Required) report whether an output is
         # really carrying a valid signal, "independent of the state of the
         # DPSM instances associated with those output lanes" (8.14.2). Four
@@ -2384,7 +2389,8 @@ def api_module_monitoring():
         for i in range(_state['lanes']):
             tx_uw = cmis.parse_power_uw(tx_power_raw[i*2:(i+1)*2])
             rx_uw = cmis.parse_power_uw(rx_power_raw[i*2:(i+1)*2])
-            bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2], bias_scale)
+            bias_ma = cmis.parse_tx_bias_ma(tx_bias_raw[i*2:(i+1)*2],
+                                            bias_scale or 1)
             raw_of = lambda block: int.from_bytes(block[i*2:(i+1)*2], 'big')
             lane_na = []
             rx_na = None
@@ -2398,7 +2404,8 @@ def api_module_monitoring():
                     lane_na.append('rx_power')
             has_tx = has_tx_pwr and 'tx_power' not in lane_na
             has_rx = has_rx_pwr and 'rx_power' not in lane_na
-            has_b = has_bias and 'tx_bias' not in lane_na
+            has_b = (has_bias and 'tx_bias' not in lane_na
+                     and not bias_scale_unknown)
             # Table 8-99 calls these three "Media Lane-Specific Monitors", and
             # the rows are host lanes. On a module that carries more host
             # lanes than media lanes - a coherent one takes eight into a
@@ -2482,6 +2489,7 @@ def api_module_monitoring():
         return _ok({'lanes': lanes,
                     'module_state': module_state,
                     'monitors_assured': module_state == 'ModuleReady',
+                    'tx_bias_scale_unknown': bias_scale_unknown,
                     # Which of the three lane monitors this module has at all,
                     # so a missing column reads as "not implemented" rather
                     # than as a poll that came back empty.
@@ -3350,8 +3358,11 @@ def api_datapath_set():
         if apply and apply_now:
             return _err('Choose one Apply trigger: ApplyDPInit re-initialises '
                         'the Data Path, ApplyImmediate commits without it', 400)
-        if apply_now and not (_state.get('caps') or {}).get(
-                'config', {}).get('hot_reconfig', True):
+        # False, not falsy: None is Lower 02h's reserved AutoCommissioning
+        # 11b, unknown (8.1.3.8), and "does not support" would be a claim the
+        # module never made. The page's button draws the same line.
+        if apply_now and (_state.get('caps') or {}).get(
+                'config', {}).get('hot_reconfig', True) is False:
             # "the module ignores any WRITE to ApplyImmediate registers" - a
             # silent no-op is the one outcome the operator cannot diagnose.
             return _err('This module does not support intervention-free hot '
@@ -3369,8 +3380,10 @@ def api_datapath_set():
             # word. Reporting which lanes were applied while the module
             # discarded the write is worse than refusing: the operator moves
             # on believing the Data Path is carrying the new configuration.
+            # None (reserved AutoCommissioning 11b) is unknown, so the rule
+            # for a module that may have the procedures is kept.
             hot = (_state.get('caps') or {}).get('config', {}).get(
-                'hot_reconfig', False)
+                'hot_reconfig', False) is not False
 
             def _named(idxs):
                 return ', '.join('%d (%s)' % (i + 1, dp_states_before[i])
@@ -3732,13 +3745,15 @@ def api_module_thresholds():
         txpwr_hw_uw = cmis.parse_power_uw(rd(0xB4))
         txpwr_lw_uw = cmis.parse_power_uw(rd(0xB6))
 
-        # The thresholds count the same scaled increments as the monitor.
-        bias_scale = ((_state.get('caps') or {}).get('monitors')
-                      or {}).get('tx_bias_scale', 1)
-        txbias_ha = cmis.parse_tx_bias_ma(rd(0xB8), bias_scale)
-        txbias_la = cmis.parse_tx_bias_ma(rd(0xBA), bias_scale)
-        txbias_hw = cmis.parse_tx_bias_ma(rd(0xBC), bias_scale)
-        txbias_lw = cmis.parse_tx_bias_ma(rd(0xBE), bias_scale)
+        # The thresholds count the same scaled increments as the monitor -
+        # and with the scale reserved (8.1.3.8) they are unknown with it.
+        _mons = (_state.get('caps') or {}).get('monitors') or {}
+        bias_scale = _mons.get('tx_bias_scale', 1)
+        bias_scale_unknown = 'tx_bias_scale' in _mons and bias_scale is None
+        txbias_ha, txbias_la, txbias_hw, txbias_lw = (
+            None if bias_scale_unknown
+            else cmis.parse_tx_bias_ma(rd(a), bias_scale)
+            for a in (0xB8, 0xBA, 0xBC, 0xBE))
 
         rxpwr_ha_uw = cmis.parse_power_uw(rd(0xC0))
         rxpwr_la_uw = cmis.parse_power_uw(rd(0xC2))
@@ -3770,10 +3785,11 @@ def api_module_thresholds():
             'tx_power_low_alarm_dbm':  round(cmis.uw_to_dbm(txpwr_la_uw), 2),
             'tx_power_high_warn_dbm':  round(cmis.uw_to_dbm(txpwr_hw_uw), 2),
             'tx_power_low_warn_dbm':   round(cmis.uw_to_dbm(txpwr_lw_uw), 2),
-            'tx_bias_high_alarm_ma':   round(txbias_ha, 3),
-            'tx_bias_low_alarm_ma':    round(txbias_la, 3),
-            'tx_bias_high_warn_ma':    round(txbias_hw, 3),
-            'tx_bias_low_warn_ma':     round(txbias_lw, 3),
+            'tx_bias_high_alarm_ma':   _round_or_none(txbias_ha),
+            'tx_bias_low_alarm_ma':    _round_or_none(txbias_la),
+            'tx_bias_high_warn_ma':    _round_or_none(txbias_hw),
+            'tx_bias_low_warn_ma':     _round_or_none(txbias_lw),
+            'tx_bias_scale_unknown':   bias_scale_unknown,
             'rx_power_high_alarm_dbm': round(cmis.uw_to_dbm(rxpwr_ha_uw), 2),
             'rx_power_low_alarm_dbm':  round(cmis.uw_to_dbm(rxpwr_la_uw), 2),
             'rx_power_high_warn_dbm':  round(cmis.uw_to_dbm(rxpwr_hw_uw), 2),

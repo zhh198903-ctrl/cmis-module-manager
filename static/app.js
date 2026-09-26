@@ -1335,6 +1335,10 @@ function linkLengthSummary(list) {
 // which of the two Apply triggers the module actually honours.
 function reconfigSummary(cc) {
   if (!cc) return '—';
+  // Lower 02h[1:0] = 11b under SteppedConfigOnly is reserved: unknown
+  // (8.1.3.8), which is not "neither".
+  if (cc.hot_reconfig === null || cc.regular_reconfig === null)
+    return 'Stepped + unknown (AutoCommissioning 11b is reserved)';
   const parts = [];
   if (cc.regular_reconfig) parts.push('regular (ApplyDPInit)');
   if (cc.hot_reconfig) parts.push('hot (ApplyImmediate)');
@@ -2205,6 +2209,11 @@ async function _loadMonitoringOnce() {
   if (dotEl) dotEl.style.display = allActivated ? 'inline-block' : 'none';
 
   const laneMap = monRes.data.media_lane_map || [];
+  // 01h:160.4-3 = 11b is reserved: the bias scale, and so every bias
+  // figure, is unknown (8.1.3.8) rather than x1.
+  const biasUnknown = monRes.data.tx_bias_scale_unknown === true;
+  const BIAS_SCALE_TIP = 'TxBiasCurrentScalingFactor (01h:160.4-3) reads 11b, '
+    + 'which is reserved: the scale of the bias reading is unknown (8.1.3.8)';
   // Absent for a module that predates this field being sent; treat that as
   // assured so an older answer does not grey every reading out.
   const assured = monRes.data.monitors_assured !== false;
@@ -2290,7 +2299,10 @@ async function _loadMonitoringOnce() {
         : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small>`}</td>
       <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${
         lane.tx_bias_ma == null ? (absentLane ? noLane : laneNa.includes('tx_bias')
-                                   ? naCell('no valid sample') : noMon('01h:160.0'))
+                                   ? naCell('no valid sample')
+                                   : biasUnknown
+                                   ? `<span class="flag-none" title="${esc(BIAS_SCALE_TIP)}">unknown<br><small>scale 11b</small></span>`
+                                   : noMon('01h:160.0'))
                                 : `${lane.tx_bias_ma.toFixed(3)} mA`}</td>
       <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${rxDbm == null
         ? (absentLane ? noLane : laneNa.includes('rx_power')
@@ -4057,14 +4069,22 @@ async function loadThresholds() {
                t.high_alarm, t.low_alarm, t.high_warn, t.low_warn]);
   }
 
+  // A threshold the server could not state - the Tx bias ones when
+  // 01h:160.4-3 is the reserved 11b - is unknown, not a number to print.
+  const thr = v => v == null
+    ? `<span class="flag-none" title="${esc(d.tx_bias_scale_unknown
+        ? 'TxBiasCurrentScalingFactor (01h:160.4-3) is the reserved 11b: '
+          + 'the scale of these thresholds is unknown (8.1.3.8)'
+        : 'Not stated by the module')}">unknown</span>`
+    : v;
   tbody.innerHTML = rows.map(([label, reg, ha, la, hw, lw]) =>
     `<tr>
       <td style="color:var(--text-muted)">${label}</td>
       <td class="td-addr">${reg}</td>
-      <td class="ha">${ha}</td>
-      <td class="la">${la}</td>
-      <td class="hw">${hw}</td>
-      <td class="lw">${lw}</td>
+      <td class="ha">${thr(ha)}</td>
+      <td class="la">${thr(la)}</td>
+      <td class="hw">${thr(hw)}</td>
+      <td class="lw">${thr(lw)}</td>
     </tr>`
   ).join('');
 }

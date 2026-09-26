@@ -568,6 +568,11 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## 保留值 = 未知(8.1.3.8)
+
+`01h:160.4-3` 偏置倍率 11b:`GET /api/module/monitoring` 和 `/api/module/thresholds` 带 `tx_bias_scale_unknown: true`,偏置读数和门限为 `null`(不是 ×1)。
+`Lower 02h[1:0]` AutoCommissioning 11b(SteppedConfigOnly=1):`caps.config.hot_reconfig` / `regular_reconfig` 为 `null`,ApplyImmediate 不因「不支持」被拒。
+
 ## 栅格看 04h:128-129 的声明位
 
 Table 8-68:`04h:128` 第 n 位 = 栅格码 n,`04h:129.6` = 150 GHz,`04h:129.5` = 300 GHz;`04h:130-169` 的范围字节对每个栅格都必需,不代表支持。
