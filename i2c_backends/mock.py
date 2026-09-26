@@ -1499,6 +1499,10 @@ class MockBackend(I2CInterface):
         # DPConfigLane: AppSel=1
         for i in range(8): p11[0xCE + i] = default_sel[i] << 4
         self._recompute_dpidx(p11)
+        # The default Staged Control Set is the Active one, DPIDX included:
+        # an untouched Apply commissions what is already running.
+        for i in range(8):
+            p10[0x91 + i] = p11[0xCE + i]
         # 240-255 (Table 8-107): which wavelength and which fibre each media
         # lane is. Zero means "unknown or undefined", which is the right
         # answer for a parallel module and was the only answer any profile
@@ -3793,7 +3797,17 @@ class MockBackend(I2CInterface):
                         # which may hold perfectly good Data Paths ahead of it.
                         groups.append((run[k:], 0x4, code))
                         break
-        return groups
+        # 6.2.3.2.2: "The DPIDX field in a DPConfigLane<i> register
+        # identifies a specific Data Path by its DPIDX", its lowest lane less
+        # one. A lane naming another Data Path is not in this one, so these
+        # lanes are not an instance of the Application - 4h. The mock grouped
+        # by width alone and never looked, so a host staging zero on every
+        # lane passed here and would be refused by a module that reads it.
+        raw = [self._registers[0x10].get(0x91 + i, 0x10) for i in range(8)]
+        return [(lanes, 0x4 if code == 0x1 and appsel and any(
+                     (raw[lane] >> 1) & 0x07 != lanes[0] for lane in lanes)
+                 else code, appsel)
+                for lanes, code, appsel in groups]
 
     def _validate_staged_appsel(self, mask, subset_ok=False):
         """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).

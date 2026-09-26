@@ -1369,6 +1369,19 @@ def pack_appselect(values: list) -> bytes:
     return bytes((v & 0x0F) << 4 for v in values[:8] + [0] * (8 - len(values)))
 
 
+def pack_dpconfig(app_sels: list, dpidx: list, explicit: list = None) -> bytes:
+    """Eight DPConfigLane bytes (Table 8-102): AppSelCode in bits 7-4,
+    DPIDX - the Data Path's lowest lane within its Bank, less one - in 3-1,
+    ExplicitControl in bit 0."""
+    explicit = list(explicit or [])
+    out = bytearray(8)
+    for i in range(min(8, len(app_sels))):
+        out[i] = (((app_sels[i] & 0x0F) << 4)
+                  | ((dpidx[i] & 0x07) << 1 if i < len(dpidx) else 0)
+                  | (explicit[i] & 1 if i < len(explicit) else 0))
+    return bytes(out)
+
+
 def unpack_prbs_patterns(data: bytes) -> list:
     """4 bytes, 4 bits/lane (2 lanes/byte). Lane 1 = low nibble of byte 0."""
     patterns = []

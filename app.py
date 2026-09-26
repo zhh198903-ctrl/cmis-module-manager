@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.164.0'
+__version__ = '2.165.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2868,10 +2868,9 @@ def api_datapath_get():
             'rx_polarity_flip_mask_banks': rx_pol_masks,
             'app_select': app_select,
             'active_app_select': active_app_select,
-            # The module's own grouping, by the lowest lane of each Data Path.
-            # The tool infers one from Application widths because it writes
-            # DPIDX zero into the staged set; this is what the module reports
-            # about the set it is actually running.
+            # The module's own grouping, by the lowest lane of each Data Path:
+            # what the module reports about the set it is actually running,
+            # beside the one the tool derives from Application widths.
             # Lane numbers, the same way datapath_groups above reports
             # them: two bases in one payload is a trap for the reader.
             'active_datapath_groups': [[i + 1 for i in g]
@@ -3237,15 +3236,15 @@ def _datapath_groups(app_select: list, host_lanes_by_app: dict) -> list:
     """Split lanes into Data Paths using each Application's host lane width.
 
     CMIS requires Apply to be triggered on all lanes of a Data Path at once -
-    a Data Path, not the module. The tool writes DataPathID 0 for every lane,
-    so the grouping has to come from the Application descriptor instead: an
-    Application using H host lanes occupies aligned runs of H lanes. On a
-    module carrying two 400G Data Paths that is lanes 1-4 and 5-8, and
-    applying to all eight takes down the one nobody touched.
+    a Data Path, not the module. For the staged set the grouping comes from
+    the Application descriptor: an Application using H host lanes occupies
+    aligned runs of H lanes. On a module carrying two 400G Data Paths that is
+    lanes 1-4 and 5-8, and applying to all eight takes down the one nobody
+    touched. The DPIDX the tool stages is derived from it.
 
-    This is the staged set, where those zeros are the tool's own. What the
-    module is actually running it states itself, at 11h:206-213 bits 3-1
-    (Table 8-102), and _groups_from_dpidx reads that rather than deriving it.
+    What the module is actually running it states itself, at 11h:206-213
+    bits 3-1 (Table 8-102), and _groups_from_dpidx reads that rather than
+    deriving it.
     """
     groups, i = [], 0
     while i < len(app_select):
@@ -3389,9 +3388,10 @@ def api_datapath_set():
 
         # What is staged right now, and how wide each Application is - both
         # are needed to work out which Data Paths this write actually touches.
-        prev_app_select = []
+        prev_app_select, prev_explicit = [], []
         for _b, raw in _read_banks(*cmis.REG_APP_SELECT):
             prev_app_select += cmis.unpack_appselect(raw)
+            prev_explicit += [b & 1 for b in raw]
 
         # Defaulting this to AppSel 1 meant a request that only flipped a
         # polarity silently reconfigured the Application on every lane.
@@ -3562,6 +3562,21 @@ def api_datapath_set():
                       _read_banks(0x10, cmis.REG_TX_SQUELCH_DIS[1], 2)]
             takes_down = _tx_takes_down(tx_disable, forced, dp_deinit)
 
+        # 6.2.3.2.2: "The DPIDX field in a DPConfigLane<i> register
+        # identifies a specific Data Path by its DPIDX" - its lowest lane, less
+        # one, within the Bank. Zero on every lane told the module that lanes
+        # 5-8 of two 4-lane Data Paths belonged to the one starting at lane 1,
+        # an invalid set of lanes for that Application (Table 8-101, 4h); and
+        # since every DataPath write rewrites these bytes, a polarity change
+        # was enough to spoil a staged set the module had right. The same
+        # grouping the Apply below uses decides it; pack_dpconfig keeps the
+        # three low bits, which is the lane within its Bank. ExplicitControl
+        # is not this tool's to change, so what is staged stays.
+        dpidx = [0] * len(app_select)
+        for group in _datapath_groups(app_select, host_lanes_by_app):
+            if app_select[group[0]]:
+                for lane in group:
+                    dpidx[lane] = group[0]
         for bank in range(banks):
             _set_page(0x10, bank)
             # The Staged Control Set goes down before DPDeinit, not after.
@@ -3578,7 +3593,9 @@ def api_datapath_set():
                                           bytes([rx_pol[bank]]))
             _bus_write(
                 cmis.REG_APP_SELECT[1],
-                cmis.pack_appselect(app_select[bank * 8:bank * 8 + 8]))
+                cmis.pack_dpconfig(app_select[bank * 8:bank * 8 + 8],
+                                   dpidx[bank * 8:bank * 8 + 8],
+                                   prev_explicit[bank * 8:bank * 8 + 8]))
             _bus_write(cmis.REG_DP_DEINIT[1],
                                           bytes([dp_deinit[bank]]))
 

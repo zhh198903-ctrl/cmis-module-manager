@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.164.0<br>
+      <b>版本</b>　2.165.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.164.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.164.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.165.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.165.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1727,6 +1727,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>暂存的 DPIDX 按数据通路写</h3>
+  <p>规范 6.2.3.2.2:数据通路的 DPID 是它占用的最低主机通道号,DPIDX = DPID − 1;「DPConfigLane<i> 里的 DPIDX 字段按 DPIDX 指明这条通道属于哪个数据通路」(Table 8-102 的 bit 3-1)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前往暂存控制集(<code>10h:145–152</code>)里<b>每条通道都写 DPIDX 0</b>。一个 800G 模块拆成 2×400G(通道 1–4、5–8 各一个 4 通道数据通路)时,这等于告诉模块通道 5–8 也属于从通道 1 开始的那个数据通路——这不是该 Application 能占用的通道组合,真实模块会回 <b>ConfigRejectedInvalidDataPath</b>。而且 DataPath 页每次写入都会重写这几个字节,光改一下极性,就可能把模块原本正确的暂存配置改坏。演示模块只按 Application 宽度分组、从不看 DPIDX,所以一直没暴露。</span>
+  </div>
+  <p>现在:工具按 Application 的主机通道宽度把通道分成数据通路,每条通道写入所在数据通路的 DPIDX(Bank 内计,未使用的通道写 0),ExplicitControl 位保留模块里原有的值。演示模块在 Apply 时检查 DPIDX,指向别的数据通路的通道会得到 ConfigRejectedInvalidDataPath;它默认的暂存控制集也与活动控制集一致。</p>
 
   <h3>环回设置被模块拒绝时会说出来</h3>
   <p>规范 8.16.12:「模块可以拒绝它不支持的环回设置(相关寄存器位不变)」。工具在写入前已经按 <code>13h:128</code> 的声明拦下不支持的环回类型、主机侧和媒体侧同时环回、模块没有的媒体通道;但模块还可能因为别的原因拒绝。</p>
@@ -3983,7 +3991,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
             若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
             <code>App n — not advertised</code> 用于保留现值。
             寄存器本身：DPConfigLane，每 lane 1 字节，bits[7:4]=AppSelCode（0 表示"无应用"，不是 App 0），
-            bits[3:1]=<b>DPIDX</b>（CMIS 5.4 起由 DataPathID 更名，强调它是索引而非编号），bit[0]=ExplicitControl</td><td><code>10h / 0x91+(n−1)</code></td></tr>
+            bits[3:1]=<b>DPIDX</b>（CMIS 5.4 起由 DataPathID 更名，强调它是索引而非编号），bit[0]=ExplicitControl。
+            工具写入时按 Application 的主机通道宽度把通道分成数据通路,每条通道的 DPIDX 写成<b>它所在数据通路的最低通道号减 1</b>(Bank 内计);
+            ExplicitControl 保留模块里原有的值</td><td><code>10h / 0x91+(n−1)</code></td></tr>
         <tr><td>TX Enable</td><td class="label">勾选 = 发送使能；取消 = 禁用（OutputDisableTx 取反）。运行中的数据通道任一路取消，整条通道退到 Initialized（Eq. 6-12）</td><td><code>10h / 0x82[n−1]</code></td></tr>
         <tr><td>TX Pol Flip</td><td class="label">TX 侧输入极性翻转（InputPolarityFlipTx）</td><td><code>10h / 0x81[n−1]</code></td></tr>
         <tr><td>RX Pol Flip</td><td class="label">RX 侧输出极性翻转（OutputPolarityFlipRx）</td><td><code>10h / 0x89[n−1]</code></td></tr>
@@ -4711,7 +4721,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.164.0<br>
+    CMIS Module Manager 操作手册 v2.165.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

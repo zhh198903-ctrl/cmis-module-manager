@@ -35403,6 +35403,120 @@ class TestALoopbackTheModuleRefusesIsSaid(CMISTestCase):
                          [True, ['success']])
 
 
+class TestTheDataPathIndexIsStaged(CMISTestCase):
+    """6.2.3.2.2: "The Data Path ID (DPID) of a Data Path is the lowest lane
+    number of all host lanes in that Data Path", DPIDX = DPID - 1, and "The
+    DPIDX field in a DPConfigLane<i> register identifies a specific Data Path
+    by its DPIDX" (Table 8-102, bits 3-1).
+
+    The tool staged DPIDX 0 on every lane (10h:145-152). For two 4-lane Data
+    Paths on one module - the 2x400G breakout of an 800G one - that told the
+    module lanes 5-8 belonged to the Data Path starting at lane 1: not a set
+    of lanes that Application can occupy, ConfigRejectedInvalidDataPath (4h).
+    And every DataPath write rewrote those bytes, so a polarity change was
+    enough to spoil a staged set the module had right. The demos grouped by
+    Application width and never read DPIDX, so nothing showed it. Now the
+    tool stages each lane's Data Path by its first lane and keeps the staged
+    ExplicitControl bit, and the demos refuse a DPIDX that names the wrong
+    Data Path."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))
+
+    def _staged(self):
+        return [_state['backend']._registers[0x10][0x91 + i] for i in range(8)]
+
+    def _config(self):
+        return [l['config_status'] for l in self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']]
+
+    def test_the_packer(self):
+        import cmis_registers as c
+        self.assertEqual(c.pack_dpconfig([2] * 8, [0] * 4 + [4] * 4,
+                                         [1, 0, 0, 0, 0, 0, 0, 0]),
+                         bytes([0x21, 0x20, 0x20, 0x20, 0x28, 0x28, 0x28, 0x28]))
+        self.assertEqual(c.pack_dpconfig([1, 0], [0, 0]),
+                         bytes([0x10] + [0] * 7))
+
+    def test_a_breakout_stages_each_data_path_by_its_first_lane(self):
+        self._connect()
+        self._post(dp_deinit_mask=0xFF)
+        time.sleep(0.4)
+        self._post(app_select=[2] * 8, apply=True)
+        self.assertEqual(self._staged(), [0x20] * 4 + [0x28] * 4)
+        time.sleep(0.4)
+        self.assertEqual(set(self._config()), {'ConfigSuccess'})
+        self._post(dp_deinit_mask=0x00)
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['active_datapath_groups'],
+                         [[1, 2, 3, 4], [5, 6, 7, 8]])
+
+    def test_the_demo_refuses_a_dpidx_naming_another_data_path(self):
+        """What the tool used to stage: 2 on every lane, DPIDX 0 throughout.
+        Lanes 1-4 are a Data Path starting at lane 1; lanes 5-8 claim it
+        too."""
+        self._connect()
+        self._post(dp_deinit_mask=0xFF)
+        time.sleep(0.4)
+        for addr, data in ((145, [0x20] * 8), (143, [0xFF])):
+            self.assertOk(self.client.post(
+                '/api/register/write',
+                data=json.dumps({'page': 0x10, 'address': addr, 'data': data}),
+                content_type='application/json'))
+        deadline = time.time() + 3.0
+        config = self._config()
+        while 'ConfigInProgress' in config and time.time() < deadline:
+            time.sleep(0.1)
+            config = self._config()
+        self.assertEqual(config[:4], ['ConfigSuccess'] * 4)
+        self.assertEqual(config[4:], ['ConfigRejectedInvalidDataPath'] * 4)
+
+    def test_a_polarity_change_keeps_the_staged_set(self):
+        self._connect('mock_fr4x2')                    # two 4-lane ports
+        before = self._staged()
+        self.assertEqual(before[4:], [0x28] * 4)
+        self._post(tx_polarity_flip_mask=0x01)
+        self.assertEqual(self._staged(), before)
+
+    def test_explicit_control_is_left_as_staged(self):
+        self._connect()
+        _state['backend']._registers[0x10][0x91] |= 0x01
+        self._post(tx_polarity_flip_mask=0x02)
+        self.assertEqual(self._staged()[0] & 0x01, 1)
+        self.assertEqual(self._staged()[1] & 0x01, 0)
+
+    def test_an_unused_lane_stages_nothing(self):
+        self._connect()
+        self._post(dp_deinit_mask=0xFF)
+        time.sleep(0.4)
+        self._post(app_select=[2] * 4 + [0] * 4)
+        self.assertEqual(self._staged(), [0x20] * 4 + [0x00] * 4)
+
+    def test_a_later_bank_counts_within_itself(self):
+        """DPIDX is three bits: lanes 13-16 are Data Path index 4 of Bank 1,
+        not 12."""
+        self._connect('mock_1600g_16lane')
+        self._post(dp_deinit_mask=[0xFF, 0xFF])
+        time.sleep(0.4)
+        self._post(app_select=[2] * 16)
+        bank1 = _state['backend']._registers[(0x10, 1)]
+        self.assertEqual([bank1[0x91 + i] for i in range(8)],
+                         [0x20] * 4 + [0x28] * 4)
+
+    def test_the_default_staged_set_is_the_active_one(self):
+        self._connect('mock_fr4x2')
+        active = [_state['backend']._registers[0x11][0xCE + i] for i in range(8)]
+        self.assertEqual(self._staged(), active)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
