@@ -35596,6 +35596,75 @@ class TestTheStagedDataPathIsDescribed(CMISTestCase):
         self.assertIn('note: dpconfigNote(lane),', js)
 
 
+class TestLaneFieldsAreNamedPerBank(CMISTestCase):
+    """Pages 10h, 12h, 13h and 15h are banked: "Bank b refers to lanes
+    8b+1..8b+8", so on a 16-lane module lane 9 is Bank 1's Lane1, at the
+    same byte and bit as lane 1 (8.2.12). The tooltips quoted the in-Bank
+    byte and bit but named the field by the absolute lane - "...Lane9", a
+    field no Bank has - and those on the squelch, loopback and PRBS tables
+    named no Bank at all, so the byte and bit read as Bank 0's. The column
+    headers gave formulas like 11h / 0x9A+(n-1)x2 that land on 0xAA, the Tx
+    bias registers, for lane 9."""
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _run(self, lanes, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const AppState={lanes:%d};' % lanes
+                  + r'eval(s.match(/function laneField\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_helper(self):
+        self.assertEqual(self._run(16, "laneField('DPDeinitLane', 8)"),
+                         'DPDeinitLane1 (Bank 1)')
+        self.assertEqual(self._run(16, "laneField('X', 15)"), 'X8 (Bank 1)')
+        self.assertEqual(self._run(16, "laneField('X', 0)"), 'X1 (Bank 0)')
+        self.assertEqual(self._run(8, "laneField('X', 3)"), 'X4')
+
+    def test_every_table_uses_the_in_bank_lane(self):
+        js = self._js()
+        for site in ("field: laneField(meta.field, i),",
+                     "field: laneField(`${meta.field}Lane`, i),",
+                     "field: laneField(`${side}Side${role}${suffix}Lane`, i),",
+                     "field: laneField(`${side}Side${role}PatternSelectLane`, i),",
+                     "field: `OutputDisableTx${(i % 8) + 1}${bankNote}`",
+                     "field: `DPDeinitLane${(i % 8) + 1}${bankNote}`",
+                     "`TuningInProgressTx${k + 1} / WavelengthUnlockedTx${k + 1}${bankTag}`",
+                     "regTipRange(`ChannelNumberTx${k + 1}${bankTag}`"):
+            self.assertIn(site, js)
+        for old in ('${lane.lane}${bankNote}', '${l.lane}${bankTag}',
+                    "field: `${meta.field}${i + 1}`",
+                    'Lane${i + 1}`, page: 0x13'):
+            self.assertNotIn(old, js)
+
+    def test_the_column_formulas_count_within_the_bank(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        for formula in ('11h / 0x9A+((n−1)%8)×2', '11h / 0xAA+((n−1)%8)×2',
+                        '11h / 0xBA+((n−1)%8)×2', '10h / 0x91+(n−1)%8',
+                        '15h / 0xE0+2((n−1)%8)', '15h / 0xF0+2((n−1)%8)'):
+            self.assertIn(formula, html)
+        self.assertNotIn('+(n−1)×2', html)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

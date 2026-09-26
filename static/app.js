@@ -61,6 +61,15 @@ const pageName = p => (p === null || p === undefined)
  * @param {number} [o.bit]   bit index within the byte, when the control is one bit
  * @param {string} [o.note]  extra line, e.g. decoded meaning or units
  */
+// A lane-indexed register field the way the specification names it. Page
+// 10h, 12h and 13h are banked: lanes 9-16 are Bank 1's Lane1-8 (8.2.12).
+// "...Lane9" named a field no Bank has, and with no Bank in the tooltip the
+// byte and bit it quoted read as Bank 0's.
+function laneField(name, i) {
+  return `${name}${(i % 8) + 1}`
+    + (AppState.lanes > 8 ? ` (Bank ${Math.floor(i / 8)})` : '');
+}
+
 function regTip(o) {
   const lines = [o.field,
     `${pageName(o.page)} · byte ${hex8(o.addr)} hex = ${o.addr} dec`];
@@ -2758,7 +2767,7 @@ async function loadDatapath() {
     const inBank = (banks, one) => (banks || [one])[Math.floor(i / 8)];
     const bankNote = (d.lanes || []).length > 8 ? ` (Bank ${Math.floor(i / 8)})` : '';
     const tipTx = regTip({
-      field: `OutputDisableTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x82,
+      field: `OutputDisableTx${(i % 8) + 1}${bankNote}`, page: 0x10, addr: 0x82,
       value: inBank(d.tx_disable_mask_banks, d.tx_disable_mask), bit: i % 8,
       note: (lane.tx_enable ? 'Checked = Tx output enabled (disable bit clear)'
                             : 'Unchecked = Tx output disabled (disable bit set)')
@@ -2766,17 +2775,17 @@ async function loadDatapath() {
         + 'path to DPInitialized (Eq. 6-12)',
     });
     const tipTxPol = regTip({
-      field: `InputPolarityFlipTx${lane.lane}${bankNote}`, page: 0x10, addr: 0x81,
+      field: `InputPolarityFlipTx${(i % 8) + 1}${bankNote}`, page: 0x10, addr: 0x81,
       value: inBank(d.tx_polarity_flip_mask_banks, d.tx_polarity_flip_mask), bit: i % 8,
       note: lane.tx_polarity_flip ? 'Host-side input polarity flipped' : 'No input polarity flip',
     });
     const tipRxPol = regTip({
-      field: `OutputPolarityFlipRx${lane.lane}${bankNote}`, page: 0x10, addr: 0x89,
+      field: `OutputPolarityFlipRx${(i % 8) + 1}${bankNote}`, page: 0x10, addr: 0x89,
       value: inBank(d.rx_polarity_flip_mask_banks, d.rx_polarity_flip_mask), bit: i % 8,
       note: lane.rx_polarity_flip ? 'Host-side output polarity flipped' : 'No output polarity flip',
     });
     const tipDeinit = regTip({
-      field: `DPDeinitLane${lane.lane}${bankNote}`, page: 0x10, addr: 0x80,
+      field: `DPDeinitLane${(i % 8) + 1}${bankNote}`, page: 0x10, addr: 0x80,
       value: inBank(d.dp_deinit_mask_banks, d.dp_deinit_mask), bit: i % 8,
       note: lane.dp_deinit ? 'Data Path held de-initialised' : 'Data Path released for operation',
     });
@@ -4286,7 +4295,7 @@ function _populateBitmaskRow(prefix, mask, meta) {
       const bankMask = masks[Math.floor(i / 8)] || 0;
       const bit = i % 8;
       const tip = regTip({
-        field: `${meta.field}${i + 1}`,
+        field: laneField(meta.field, i),
         page: meta.page, addr: meta.addr, value: bankMask, bit,
         note: ((bankMask >> bit) & 1) ? meta.onNote : meta.offNote,
       });
@@ -4454,7 +4463,7 @@ function _populateLoopbackRow(prefix, mask, meta, caps, capName) {
     cb.checked = !!((bankMask >> bit) & 1);
     if (meta && supported) {
       const tip = regTip({
-        field: `${meta.field}Lane${i + 1}`,
+        field: laneField(`${meta.field}Lane`, i),
         page: 0x13, addr: meta.addr, value: bankMask, bit,
         note: ((bankMask >> bit) & 1) ? 'Loopback engaged on this lane' : 'Normal non-loopback operation',
       }) + (perLane ? '' : '\nThis module has no per-lane loopback on the '
@@ -4596,7 +4605,7 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
     + ' its FEC (13h:131.' + (loc.bits || '') + '), so ' + fecName
     + ' has one legal value.');
   const tip = (suffix, off, mask, i, note) => esc(regTip({
-    field: `${side}Side${role}${suffix}Lane${i + 1}`, page: 0x13, addr: base + off,
+    field: laneField(`${side}Side${role}${suffix}Lane`, i), page: 0x13, addr: base + off,
     value: mask, bit: i % 8, note,
   }));
   // Masks repeat per bank of eight lanes; the per-bank arrays are used when
@@ -4684,7 +4693,7 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
     // (Lane 1, 3, 5, 7) occupy bits 3-0, even lanes bits 7-4.
     const patAddr = base + 4 + (bit >> 1);
     const patTip = esc(regTip({
-      field: `${side}Side${role}PatternSelectLane${i + 1}`, page: 0x13, addr: patAddr,
+      field: laneField(`${side}Side${role}PatternSelectLane`, i), page: 0x13, addr: patAddr,
       note: `Bits ${(i % 2) ? '7-4' : '3-0'} = ${pattern} (${PRBS_PATTERNS[pattern] || '?'})`,
     }));
     const tEn  = tip('Enable', 0, enM(b), i,
@@ -5322,7 +5331,7 @@ async function loadLaser() {
       + 'tab first.') : '';
     const lockAttr = locked ? ' disabled' : '';
     const tipGrid = esc(regTip({
-      field: `GridSpacingTx${l.lane}${bankTag}`, page: 0x12, addr: 0x80 + k,
+      field: `GridSpacingTx${k + 1}${bankTag}`, page: 0x12, addr: 0x80 + k,
       note: `Bits 7-4 = ${l.grid_code} (${l.grid}); bit 0 FineTuningEnableTx = `
           + `${l.fine_tuning_enabled ? 1 : 0} (bits 3-1 reserved)`,
     }));
@@ -5332,7 +5341,7 @@ async function loadLaser() {
     const chFreq = l.channel_frequency_thz != null
       ? `, which the ${l.grid} grid puts at ${l.channel_frequency_thz} THz (Table 8-68)`
       : (mult > 1 ? `, which is not a channel of the ${l.grid} grid` : '');
-    const tipCh = esc(regTipRange(`ChannelNumberTx${l.lane}${bankTag}`, 0x12, 0x88 + k * 2, 2,
+    const tipCh = esc(regTipRange(`ChannelNumberTx${k + 1}${bankTag}`, 0x12, 0x88 + k * 2, 2,
       `S16 channel number, current ${l.channel}${chFreq}`
       + (mult > 1 ? `. On this grid n must be a multiple of ${mult}.` : '')));
     // 04h:190-191: the laser tunes in these steps, whatever the register's
@@ -5342,19 +5351,19 @@ async function loadLaser() {
     // that exists only where FineTuningSupported says so. Without it the box
     // wrote a register the module does not have.
     const noFine = !d.fine_tuning_supported;
-    const tipFt = esc(regTipRange(`FineTuningOffsetTx${l.lane}${bankTag}`, 0x12, 0x98 + k * 2, 2,
+    const tipFt = esc(regTipRange(`FineTuningOffsetTx${k + 1}${bankTag}`, 0x12, 0x98 + k * 2, 2,
       noFine
         ? 'This module does not advertise fine tuning (04h:129.7 clear); the '
           + 'fine-tuning controls are advertised, not required (Table 8-109)'
         : `S16 in units of 0.001 GHz, current ${l.fine_offset_ghz} GHz`
           + (ftStep > 0.001 ? `. This laser tunes in ${ftStep} GHz steps (04h:190-191).` : '')));
-    const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${l.lane}${bankTag}`, 0x12, 0xA8 + k * 4, 4,
+    const tipFreq = esc(regTipRange(`CurrentLaserFrequencyTx${k + 1}${bankTag}`, 0x12, 0xA8 + k * 4, 4,
       `U32 in units of 0.001 GHz, current ${l.frequency_na ? 'NA (Table 7-8)'
         : l.frequency_thz.toFixed(6) + ' THz'} (read-only)`));
-    const tipPwr = esc(regTipRange(`TargetOutputPowerTx${l.lane}${bankTag}`, 0x12, 0xC8 + k * 2, 2,
+    const tipPwr = esc(regTipRange(`TargetOutputPowerTx${k + 1}${bankTag}`, 0x12, 0xC8 + k * 2, 2,
       `S16 in units of 0.01 dBm, current ${l.target_power_dbm} dBm`));
     const tipStat = esc(regTip({
-      field: `TuningInProgressTx${l.lane} / WavelengthUnlockedTx${l.lane}${bankTag}`,
+      field: `TuningInProgressTx${k + 1} / WavelengthUnlockedTx${k + 1}${bankTag}`,
       page: 0x12, addr: 0xDE + k,
       note: `Bit 1 TuningInProgressTx = ${l.tuning_in_progress ? 1 : 0}; `
           + `bit 0 WavelengthUnlockedTx = ${l.wavelength_locked ? 0 : 1} (bits 7-2 reserved)`,

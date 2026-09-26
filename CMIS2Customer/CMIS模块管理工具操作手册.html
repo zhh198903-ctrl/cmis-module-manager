@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.166.0<br>
+      <b>版本</b>　2.167.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.166.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.166.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.167.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.167.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1727,6 +1727,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>16 通道模块上,第 9 条以后的寄存器提示按 Bank 标注</h3>
+  <p>Page 10h / 12h / 13h / 15h 是按 Bank 分的:Bank b 对应通道 8b+1 到 8b+8,所以 16 通道模块上的第 9 条通道是 <b>Bank 1 的 Lane1</b>,字节和位都与第 1 条通道相同。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>各表格的悬停说明以前给出的是 Bank 内的字节和位,字段名却按绝对通道号写(「…Lane9」,没有哪个 Bank 有这个字段);Squelch、Loopback、PRBS 表里的说明还<b>根本不写 Bank</b>,读起来就是 Bank 0 的寄存器。几张表的列头公式(例如 <code>11h / 0x9A+(n−1)×2</code>)对第 9 条通道算出来是 <code>0xAA</code>——那是 Tx 偏置的寄存器。</span>
+  </div>
+  <p>现在:字段名一律写成 Bank 内的通道号并注明 Bank(例如 <code>DPDeinitLane1 (Bank 1)</code>),列头公式写成 <code>((n−1)%8)</code>,即通道在所属 Bank 内的序号。</p>
 
   <h3>AppSelect 悬停说明写出暂存的 DPIDX</h3>
   <p>DataPath 表 AppSelect 列的悬停说明以前写的是「DataPathID bits 3-1」——这是 CMIS 5.4 已改名为 <b>DPIDX</b> 的字段,而且没写里面存的是多少;16 通道模块上第 9 条通道还被标成 <code>10h:0x99</code> / <code>11h:0xD6</code>,那是自适应均衡的寄存器,DPConfigLane 按 Bank 计,Bank 1 的第 1 条通道仍在 <code>0x91</code> / <code>0xCE</code>。</p>
@@ -4725,7 +4733,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.166.0<br>
+    CMIS Module Manager 操作手册 v2.167.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

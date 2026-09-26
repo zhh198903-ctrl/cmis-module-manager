@@ -182,9 +182,9 @@
                    "Rx output host lane" and OutputStatusTx to the "Tx output
                    media lane". A row number alone does not say which. -->
               <th title="Row n. Which side of the module lane n means differs by column - see each heading.">Lane</th>
-              <th title="OpticalPowerTx, Table 8-99 Media Lane-Specific Monitors.">Tx Power<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x9A+(n−1)×2, uint16×0.1µW</span></th>
-              <th title="LaserBiasTx, Table 8-99 Media Lane-Specific Monitors.">Tx Bias<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xAA+(n−1)×2, uint16×2µA</span></th>
-              <th title="OpticalPowerRx, Table 8-99 Media Lane-Specific Monitors.">Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xBA+(n−1)×2, uint16×0.1µW</span></th>
+              <th title="OpticalPowerTx, Table 8-99 Media Lane-Specific Monitors.">Tx Power<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0x9A+((n−1)%8)×2, uint16×0.1µW</span></th>
+              <th title="LaserBiasTx, Table 8-99 Media Lane-Specific Monitors.">Tx Bias<span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xAA+((n−1)%8)×2, uint16×2µA</span></th>
+              <th title="OpticalPowerRx, Table 8-99 Media Lane-Specific Monitors.">Rx Power<span id="th-rx-power-type" class="reg-meta-strong"></span><span class="reg-meta-strong">media lane</span><span class="reg-meta">11h / 0xBA+((n−1)%8)×2, uint16×0.1µW</span></th>
               <th title="DPStateHostLane, Table 8-93 Lane-associated Data Path States.">DataPath State<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0x80–0x83, 4bit/lane</span></th>
               <th title="Table 8-95: OutputStatusRx (11h:132) is per host lane, OutputStatusTx (11h:133) is per media lane. The two dots in this cell are about different lanes of the module.">Output<span class="reg-meta-strong">Rx host · Tx media</span><span class="reg-meta">11h / 0x84 Rx, 0x85 Tx, 1bit/lane</span></th>
               <th title="ConfigStatusLane, Table 8-100: status &quot;for the Data Path of host lane &lt;i&gt;&quot;.">Config Status<span class="reg-meta-strong">host lane</span><span class="reg-meta">11h / 0xCA–0xCD, 4bit/lane</span></th>
@@ -370,7 +370,7 @@
           <thead>
             <tr>
               <th>Lane</th>
-              <th>AppSelect<span class="reg-meta">10h / 0x91+(n−1), bits [7:4]</span></th>
+              <th>AppSelect<span class="reg-meta">10h / 0x91+(n−1)%8, bits [7:4]</span></th>
               <th title="OutputDisableTx, Table 8-79: &quot;media lane &lt;i&gt;&quot; - in a table whose rows are host lanes. A box for a media lane the module does not have (00h:210) is greyed.">TX Enable<span class="reg-meta-strong">media lane</span><span class="reg-meta">10h / 0x82[n−1] (inv.)</span></th>
               <th>TX Pol Flip<span class="reg-meta">10h / 0x81[n−1]</span></th>
               <th>RX Pol Flip<span class="reg-meta">10h / 0x89[n−1]</span></th>
@@ -421,8 +421,8 @@
           <table><thead>
             <tr>
               <th>Lane</th>
-              <th>Rx Latency<span class="reg-meta">15h / 0xE0+2(n−1) · ns</span></th>
-              <th>Tx Latency<span class="reg-meta">15h / 0xF0+2(n−1) · ns</span></th>
+              <th>Rx Latency<span class="reg-meta">15h / 0xE0+2((n−1)%8) · ns</span></th>
+              <th>Tx Latency<span class="reg-meta">15h / 0xF0+2((n−1)%8) · ns</span></th>
             </tr>
           </thead><tbody id="tbl-latency"></tbody></table>
         </div>
