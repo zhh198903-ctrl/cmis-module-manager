@@ -2773,6 +2773,26 @@ class MockBackend(I2CInterface):
         lower = self._registers[None]
         lower[0x03] = (lower.get(0x03, 0) & ~0x01) | (
             0 if self._interrupt_pending() else 1)
+        self._set_flags_summary()
+
+    def _set_flags_summary(self) -> None:
+        """Lower 4-7 (Table 8-8): per Bank 0-3, whether any Flag is set on
+        Page 11h, 12h, 14h or 2Ch. Bank 0 Page 11h is RO Rqd, and the mock
+        never kept any of it - Lower 4-7 read zero with Flags standing."""
+        lower = self._registers[None]
+        blocks = {page: (first, count) for page, first, _mp, _mf, count
+                  in cmis.FLAG_MASK_BLOCKS if page is not None}
+        for bank in range(4):
+            byte_val = 0
+            for bit, page, _shown in cmis.FLAGS_SUMMARY_PAGES:
+                regs = (self._registers.get(page) if bank == 0
+                        else self._registers.get((page, bank)))
+                if regs is None or page not in blocks:
+                    continue
+                first, count = blocks[page]
+                if any(regs.get(first + i, 0) for i in range(count)):
+                    byte_val |= 1 << bit
+            lower[0x04 + bank] = byte_val
 
     # ------------------------------------------------------------------
     def _intercept_write(self, register, data):

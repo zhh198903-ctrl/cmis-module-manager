@@ -568,6 +568,11 @@ Eq. 6-6:LowPwrS 是 DPDeinitS 的一项,所以低功耗请求会让所有数据�
 `max_seconds` 是 DPTxTurnOff(01h:168,有通道开着 Tx 时)+ DPDeinit(01h:144)+ ModulePwrDn(01h:167)之和,任何一段没声明就是 `null`。
 用户说「点了低功耗,模块半天还在 ModuleReady」时,先看数据通道是不是还在往下走,别急着判模块没响应。
 
+## Interrupt 的来源看 flags_summary
+
+`Lower 4-7`(Table 8-8)每 Bank 一字节,bit0-3 = Page 11h/12h/14h/2Ch 有标志置位。`GET /api/module/status` 带 `flags_summary`
+(`bank` / `page` / `shown`);`shown: false` 的是 Page 2Ch(VDM),本工具不显示——Interrupt 置起而各页都没标志时先看这里。
+
 ## 保留值 = 未知(8.1.3.8)
 
 `01h:160.4-3` 偏置倍率 11b:`GET /api/module/monitoring` 和 `/api/module/thresholds` 带 `tx_bias_scale_unknown: true`,偏置读数和门限为 `null`(不是 ×1)。

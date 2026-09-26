@@ -19187,6 +19187,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-6': 'Global Status Information (Lower Memory)',
         '8-7': 'Module State Encodings',
         '8-3': 'Access Types',
+        '8-8': 'Lane-Level Flags Summary (Lower Memory)',
         '8-9': 'Module Flags (not for static memory modules) (Lower Memory)',
         '8-10': 'Module-Level Monitor Values (not for static memory modules) (Lower Memory)',
         '8-11': 'Module Global Controls (not for static memory modules ) (Lower Memory)',
@@ -34042,6 +34043,107 @@ class TestAReservedValueIsUnknown(CMISTestCase):
         unknown, neither = json.loads(out.stdout)
         self.assertIn('unknown', unknown)
         self.assertIn('neither', neither)
+
+
+class TestTheInterruptSaysWhereItsFlagsAre(CMISTestCase):
+    """Table 8-8, Lower 4-7: per Bank 0-3, "at least one Flag is set" on
+    Page 11h, 12h, 14h and 2Ch - RO, and Rqd for Bank 0 Page 11h. "To clear a
+    summarized Flag, the Flag itself must be read from the relevant Page on
+    the appropriate Bank."
+
+    The tool never read it, and the demos never kept it. Module Info says
+    whether Interrupt is asserted but not from where - and Page 2Ch holds the
+    VDM Flags, which no tab shows, so an Interrupt raised there had nothing
+    on screen to explain it. Now the status reply carries the summary, the
+    Interrupt row names the pages, and the demos maintain Lower 4-7."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        self.client.get('/api/module/flags')          # start from cleared
+        if backend in ('mock_dr8', 'mock_coherent_zr'):
+            self.client.get('/api/module/prbs')
+
+    def _summary(self):
+        return self.assertOk(self.client.get('/api/module/status'))[
+            'data']['flags_summary']
+
+    def test_the_decoder(self):
+        import cmis_registers as c
+        got = c.parse_flags_summary(bytes([0x01, 0x02, 0x04, 0x08]))
+        self.assertEqual([(e['bank'], e['page'], e['shown']) for e in got],
+                         [(0, '11h', True), (1, '12h', True),
+                          (2, '14h', True), (3, '2Ch', False)])
+        self.assertEqual(c.parse_flags_summary(bytes([0xF0, 0, 0, 0])), [])
+
+    def test_a_lane_flag_is_summarised_until_it_is_read(self):
+        self._connect()
+        self.assertEqual(self._summary(), [])
+        _state['backend']._registers[0x11][0x86] |= 0x01    # DPStateChanged
+        self.assertEqual(self._summary(),
+                         [{'bank': 0, 'page': '11h', 'shown': True}])
+        self.client.get('/api/module/flags')
+        self.assertEqual(self._summary(), [])
+
+    def test_a_later_bank_is_its_own_byte(self):
+        self._connect('mock_1600g_16lane')
+        _state['backend']._registers[(0x11, 1)][0x86] = 0x01
+        self.assertEqual(self._summary(),
+                         [{'bank': 1, 'page': '11h', 'shown': True}])
+
+    def test_a_tuning_flag_is_page_12h(self):
+        self._connect('mock_coherent_zr')
+        self.client.get('/api/module/laser')
+        _state['backend']._registers[0x12][0xE7] = 0x04
+        self.assertIn({'bank': 0, 'page': '12h', 'shown': True},
+                      self._summary())
+
+    def test_a_diagnostics_flag_is_page_14h(self):
+        self._connect()
+        _state['backend']._registers[0x14][0x8A] = 0x01     # checker LOL
+        self.assertIn({'bank': 0, 'page': '14h', 'shown': True},
+                      self._summary())
+
+    def test_the_vdm_page_is_named_and_marked_unshown(self):
+        self._connect()
+        b = _state['backend']
+        b._set_flags_summary = lambda: None
+        b._registers[None][0x04] = 0x08
+        self.assertEqual(self._summary(),
+                         [{'bank': 0, 'page': '2Ch', 'shown': False}])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function flagsSummaryNote\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_interrupt_row_names_the_pages(self):
+        self.assertEqual(self._run('flagsSummaryNote([])'), '')
+        note = self._run("flagsSummaryNote([{bank: 0, page: '11h', shown: true},"
+                         " {bank: 1, page: '2Ch', shown: false}])")
+        self.assertIn('Page 11h', note)
+        self.assertIn('Page 2Ch bank 1', note)
+        self.assertIn('not shown by this tool', note)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            self.assertIn('+ flagsSummaryNote(s.flags_summary),', f.read())
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

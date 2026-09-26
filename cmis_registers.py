@@ -2566,6 +2566,28 @@ FLAG_MASK_BLOCKS = (
 )
 
 
+# Table 8-8, Lower 4-7: one byte per Bank 0-3, bits 0-3 saying "at least one
+# Flag is set" on Page 11h, 12h, 14h and 2Ch of that Bank. (bit, page, whether
+# this tool has a panel that shows that page's Flags.) Page 2Ch holds the VDM
+# Flags, which this tool does not read - so a Flag there asserts Interrupt
+# with nothing on any tab to say why, and the summary is the only pointer.
+FLAGS_SUMMARY_PAGES = ((0, 0x11, True), (1, 0x12, True), (2, 0x14, True),
+                       (3, 0x2C, False))
+
+
+def parse_flags_summary(raw: bytes) -> list:
+    """Lower 4-7 (Table 8-8), RO: [{'bank', 'page', 'shown'}] per bit set.
+    Plain status, not a Flag - "To clear a summarized Flag, the Flag itself
+    must be read from the relevant Page on the appropriate Bank"."""
+    out = []
+    for bank, byte_val in enumerate(raw[:4]):
+        for bit, page, shown in FLAGS_SUMMARY_PAGES:
+            if (byte_val >> bit) & 1:
+                out.append({'bank': bank, 'page': '%02Xh' % page,
+                            'shown': shown})
+    return out
+
+
 # Table 8-9, Lower 8 bits 1-3: the firmware Flags, RO/COR like the rest of
 # the byte. ModuleStateChangedFlag (bit 0) has its own place in the status
 # reply; CdbCmdCompleteFlag1/2 (bits 6-7) are left out because this tool

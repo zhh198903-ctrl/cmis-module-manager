@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.155.0'
+__version__ = '2.156.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1633,6 +1633,9 @@ def api_module_status():
         state_raw = _read_lower(0x03, 1)             # CORRECT: byte 3, bits[3:1]
         temp_raw  = _read_lower(0x0E, 2)
         volt_raw  = _read_lower(0x10, 2)
+        # Table 8-8: which Page and Bank hold a set Flag - RO, read before the
+        # COR Flag block below so it describes the same moment.
+        summary_raw = _read_lower(*cmis.REG_FLAGS_SUMMARY[1:])
         mod_flags_raw = _read_lower(0x08, 6)         # Module-Level Flags 0x08-0x0D
         # The Masks for exactly those bytes, Lower 31-36 (Table 8-12). A
         # Flag whose Mask is set is one the module will not raise the
@@ -1754,6 +1757,9 @@ def api_module_status():
             'aux': aux_monitors,
             'module_state_changed': state_changed,
             'firmware_flags': firmware_flags,
+            # Where the Flags behind an asserted Interrupt are. Read before
+            # this poll's other reads clear any of them.
+            'flags_summary': cmis.parse_flags_summary(summary_raw),
             'firmware_flag_masks': firmware_masks,
             'alarm_active': any_alarm,
             'seen': sorted(module_seen),

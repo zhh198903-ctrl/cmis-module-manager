@@ -935,9 +935,10 @@ async function loadInfo() {
        + 'for them - which is why Flags can stand while Interrupt is '
        + 'deasserted.'],
     ] : []),
-    ['Interrupt',       s.interrupt_asserted
+    ['Interrupt',       (s.interrupt_asserted
         ? '<span class="text-danger">Asserted</span>'
-        : '<span class="text-success">Not asserted</span>',
+        : '<span class="text-success">Not asserted</span>')
+        + flagsSummaryNote(s.flags_summary),
      'Lower', '0x03[0]',
      'InterruptDeasserted (Table 8-6) — the module\'s own request for the host\'s attention, reported with its sense inverted. CMIS asserts it "as long as any Flag is set with its associated Mask cleared", so a Flag showing here with no Interrupt is one whose Mask is set'],
     ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
@@ -1057,6 +1058,19 @@ function rebuildLaneColumns() {
         td.id = prefix.startsWith('lb-') ? `${prefix}-${i}` : `${prefix}-td-${i}`;
       }
     });
+}
+
+// Lower 4-7 (Table 8-8): where the set Flags are, by Page and Bank. Page 2Ch
+// holds the VDM Flags, which no tab here shows - so an Interrupt raised from
+// there had nothing on screen to explain it.
+function flagsSummaryNote(summary) {
+  const list = summary || [];
+  if (!list.length) return '';
+  const where = list.map(e => `Page ${e.page}${e.bank ? ` bank ${e.bank}` : ''}`
+    + (e.shown ? '' : ' (VDM \u2014 not shown by this tool)'));
+  return `<br><small class="text-muted" title="FlagsSummary (Lower 4\u20137, `
+    + `Table 8-8): at least one Flag is set there">Flags set on: `
+    + `${esc(where.join(', '))}</small>`;
 }
 
 // Lower 8 bits 1-3 (Table 8-9), latched and clear-on-read like the state
