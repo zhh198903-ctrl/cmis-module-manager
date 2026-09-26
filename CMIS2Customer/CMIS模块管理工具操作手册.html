@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.170.0<br>
+      <b>版本</b>　2.171.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.170.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.170.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.171.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.171.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1732,6 +1732,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>激光调谐:TuningComplete 在数据通道起来之后才报</h3>
+  <p>Table 6-21 规定 TuningCompleteFlag 在 DPDeactivated、DPInit、DPDeinit 下是 N/A,模块在这些状态下不得置位(6.3.4.2);而换栅格或信道只能在 DPDeactivated 下进行(7.5.2)。所以在停下的数据通道上换信道后,Tuning Flags 列的 <b>Tuned</b> 要等数据通道回到 DPInitialized 才出现。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前演示模块在写入信道的瞬间就置 TuningComplete,不管数据通道停没停。另外,点 Apply 后工具会读这组标志找拒绝原因——这次读取会把它们清掉,而工具只记下了拒绝类的标志:TuningComplete 哪里都没说,Apply 之前已经闩锁的<b>波长失锁</b>标志也被清掉、没有记下。</span>
+  </div>
+  <p>现在:Apply 的读取按刷新时的规则记下除 TuningComplete 外的所有标志,波长失锁会留在 Tuning Flags 列的历史里;接口回复里的 <code>completed</code> 列出报了 TuningComplete 的通道,页面提示 <b>lane N reports TuningComplete</b>,还没报时提示在停下的数据通道上要等它起来。</p>
+  <p>同一轮:PRBS Generator 卡片下方补了 LOL 图例(PatternGeneratorLOL,<code>14h/0x88·0x89</code>),Checker 卡片的图例补全了 ●<sup>!</sup>、– 和 gate done;第 10 章按页面现状更新——10.5 原来说「BER 读取无需 PRBS 使能」,BER 实际来自 PRBS 检测器(规范 8.17)。</p>
 
   <h3>0 µW 不是 −40 dBm</h3>
   <p>光功率寄存器以 0.1 µW 为单位(Table 8-99、8-65),能表达的最小功率是 −40 dBm;读数为 0 就是<b>没有光</b>,没有对应的 dBm 值(−∞)。</p>
@@ -4209,8 +4218,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <h2 class="section-title">10. Diagnostics — 诊断工具</h2>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span><b>v2.0.3 起</b>切换到本标签页会一次性加载全部卡片（Loopback、PRBS、BER、SNR、
-    Counters、Laser Tuning）。此前只有前两张会自动加载，其余需手动点各自的 ↻，
+    <span><b>v2.0.3 起</b>切换到本标签页会一次性加载全部卡片（Loopback、PRBS、BER、Counters、
+    SNR、Laser Tuning，以及模块支持时的 Acquisition Counters，见 12.2）。此前只有前两张会自动加载，其余需手动点各自的 ↻，
     容易出现"半页是实时数据、半页是空的或复位前的旧值"。各卡片的 ↻ 按钮仍可单独刷新。</span>
   </div>
 
@@ -4236,13 +4245,15 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p>每个 PRBS 块为 8 字节：Enable（使能位图）/ Invert（数据反转位图）/ ByteSwap（PAM4 MSB/LSB 交换位图）/ PreFEC（FEC 编码前注入）/ Pattern×4（4 字节, 4 bits/lane）。</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>分区</th><th>En</th><th>Invert</th><th>ByteSwap</th><th>PreFEC</th><th>Pattern</th></tr></thead>
+      <thead><tr><th>分区</th><th>En</th><th>Invert</th><th>ByteSwap</th><th>PreFEC</th><th>Pattern</th><th>LOL 地址</th></tr></thead>
       <tbody>
-        <tr><td>Host-Side Generator</td><td><code>13h/0x90</code></td><td><code>0x91</code></td><td><code>0x92</code></td><td><code>0x93</code></td><td><code>0x94–0x97</code></td></tr>
-        <tr><td>Media-Side Generator</td><td><code>13h/0x98</code></td><td><code>0x99</code></td><td><code>0x9A</code></td><td><code>0x9B</code></td><td><code>0x9C–0x9F</code></td></tr>
+        <tr><td>Host-Side Generator</td><td><code>13h/0x90</code></td><td><code>0x91</code></td><td><code>0x92</code></td><td><code>0x93</code></td><td><code>0x94–0x97</code></td><td><code>14h/0x88</code></td></tr>
+        <tr><td>Media-Side Generator</td><td><code>13h/0x98</code></td><td><code>0x99</code></td><td><code>0x9A</code></td><td><code>0x9B</code></td><td><code>0x9C–0x9F</code></td><td><code>14h/0x89</code></td></tr>
       </tbody>
     </table>
   </div>
+  <p>发生器表的 <b>LOL</b> 列是 PatternGeneratorLOLFlag(Table 8-138):发生器没能产生有效码型。
+     它和检测器的 LOL 是两个不同的标志,各在自己的卡片上;符号含义见 10.3 的表。</p>
   <p>支持码型：PRBS7 / PRBS9 / PRBS13 / PRBS15 / PRBS23 / PRBS31 及其 Q 变体、SSPRQ，
      以及 <b>Custom</b>（厂商自定义）和 <b>User Pattern</b>（主机自定义，见上文
      <code>13h:224–255</code>）——下拉框里出现哪些，完全按模块自己声明的来。</p>
@@ -4266,7 +4277,21 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p><b>PostFEC</b> 这一列同样由 <code>13h:131</code> 决定，
      规则与 10.2 的 PreFEC 一致。</p>
   <p>多 Bank 模块上若 <code>13h:177.7</code>(StartStopIsGlobal)生效,卡片顶部会提示:在一个 Bank 里启用或停用检测器,等于在每个 Bank 的同一位置都这样做(Table 8-127)。</p>
-  <p>每 lane 对应 LOL 列显示 Pattern Checker Loss of Lock 状态：<span class="badge badge-ok">● 锁定</span> / <span class="badge badge-danger">LOL 失锁</span></p>
+  <p>LOL 列(发生器和检测器两张卡片都有)的每一格是下面几种之一。这些标志都是闩锁、读后清除的(Table 8-138),所以工具把读到过的记下来:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>显示</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge badge-ok">●</span></td><td class="label">引擎在运行,本次读取标志未置位</td></tr>
+        <tr><td><span class="badge badge-danger">LOL</span></td><td class="label">本次读取标志置位:检测器失锁 / 发生器没能产生有效码型</td></tr>
+        <tr><td><span class="badge badge-warn">●<sup>!</sup></span></td><td class="label">现在正常,但自上次清除标志历史以来出过一次——长时间跑码型时,中途短暂失锁正是要找的东西</td></tr>
+        <tr><td><b>–</b></td><td class="label">该通道的引擎没有运行,没有锁定可言</td></tr>
+        <tr><td><b>n/a</b></td><td class="label">模块没有这条媒体通道(<code>00h:210</code>),这一位不代表任何东西</td></tr>
+        <tr><td><b>masked</b></td><td class="label">跟在 LOL 或 ●<sup>!</sup> 后面:Page 13h 上对应的 Mask 置位(Table 8-133,出厂默认全部置位):标志照常置位,但不会触发 Interrupt</td></tr>
+        <tr><td><b>gate done</b></td><td class="label">仅检测器:该通道的一次门控测量已结束(<code>14h:134</code> / <code>14h:135</code>),结果在 BER 和计数器表的 <b>· last gate</b> 行</td></tr>
+      </tbody>
+    </table>
+  </div>
   <p>媒体侧发生器和检测器按<b>媒体通道</b>运行。模块没有的媒体通道(<code>00h:210</code>),整行置灰,LOL 列显示 <b>n/a</b>。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -4310,6 +4335,15 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <h3>10.4 BER Results（误码率）</h3>
   <p>向 <code>14h/0x80</code> 写入 Selector = <code>0x01</code> 选择 BER F16 诊断。Host BER 在 <code>14h/0xC0</code>，Media BER 在 <code>14h/0xD0</code>，每通道 2 字节。</p>
   <p>F16 解码公式（CMIS 5.4 十进制浮点）：<code>BER = mantissa × 10^(exp − 24)</code>，其中 bits[15:11]=exp, bits[10:0]=mantissa。</p>
+  <p><b>这个 BER 是 PRBS 检测器数出来的。</b>规范 8.17 说明这些误码与 BER 监测基于码型发生器和检测器的侵入式测量,
+     用于停业务测试;不是业务流量上的 FEC 估计。所以:</p>
+  <ul>
+    <li>检测器没在运行的通道显示 <b>off</b>;运行过又停下的,显示它停下时保留的结果并标 <b>held</b>
+        (Table 8-128–8-130:启用检测器即清零并开始计数,停用即停止并保留)。一个检测器都没开时,表格下方会说明。</li>
+    <li>模块声明支持门控结果(<code>13h:129.5</code>)时,另有两行 <b>· last gate</b>,读的是 Selector <code>11h</code>——
+        上一个完整门控周期的结果,在下一个周期结束前不变。</li>
+    <li>支持 NA 值的模块报告 0.5 表示没有有效样本,显示 <b>no valid sample</b>,不是「每两位错一位」。</li>
+  </ul>
   <div class="table-wrap">
     <table>
       <thead><tr><th>信号质量</th><th>典型 pre-FEC BER</th></tr></thead>
@@ -4335,7 +4369,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p>典型 400G/800G 链路 SNR 范围：PAM4 DSP 输出约 <b>15–22 dB</b>，越高越好。低于 13 dB 通常意味着链路劣化。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>BER / SNR 读取无需 PRBS 使能，直接反映当前链路质量。若同时开启 PRBS 发生/检测，结果对应 PRBS 码流质量。</span>
+    <span><b>SNR 不需要 PRBS</b>,它是接收端对当前输入信号的实时测量(Table 8-139:real time status)。
+    <b>BER 和误码计数需要</b>:它们来自 PRBS 检测器,检测器不运行就没有数(见 10.4)。
+    早先这里写的是「BER / SNR 读取无需 PRBS 使能」,对 BER 不成立。</span>
   </div>
 
   <h3>10.6 Error / Bit Counters（误码/比特计数器）</h3>
@@ -4353,6 +4389,10 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <p>每通道 16 字节（8 字节 ErrorCount + 8 字节 TotalBitsCount）。TotalBitsCount 最低位为 <b>PSL</b>（Pattern Sync Loss）指示位：0=同步正常，1=曾经失锁。</p>
   <p>GUI 同时计算并显示 <code>BER(calc) = ErrorCount / TotalBitsCount</code> 方便直读。</p>
+  <p>和 10.4 一样,计数来自 PRBS 检测器:没在运行的通道显示 <b>off</b>,停下的显示保留的计数并标 <b>held</b>;
+     模块声明支持门控结果时,下方另有六行 <b>· last gate</b>(Selector <code>12h–15h</code>)。
+     ErrorCount 为 U64 最大值是 NA 值(Table 7-8),显示 <b>no valid sample</b>,
+     基于它的 BER(calc) 显示 <b>no valid error count</b>。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span><b>v2.0.3 起显示失锁提示</b>：某 lane 的 PSL 位为 1 时，该列会置灰、BER 显示为红色
@@ -4379,6 +4419,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     每条通道单独用 <code>12h:128–135 的 bit1</code> 使能；<b>一旦某通道启用，Page 02h 的
     模块级绝对功率门限对它不再适用</b>，不要再拿 Module Thresholds 卡片的值去判断该通道。</span>
   </div>
+  <p>表格的 <b>Status</b> 列依次判断:调谐中显示 <b>Tuning...</b>;数据通道处于 DPDeactivated / DPDeinit 时显示 <b>n/a</b>——Table 6-21 规定模块在这两个状态下不报告波长失锁,激光器也不一定开着;否则显示 <b>Locked</b> / <b>Unlocked</b>。<b>Tuning Flags</b> 列在没有标志时显示 <b>—</b>,TuningComplete 置位时显示 <b>Tuned</b>。在停下的数据通道上换栅格或信道,<b>Tuned</b> 要等数据通道重新起来才出现:TuningCompleteFlag 在 DPDeactivated、DPInit、DPDeinit 下是 N/A(Table 6-21),模块不得置位。</p>
   <p>适用于 C-band / L-band 可调谐激光器模块（Media Interface Technology = 0x10/0x11）。</p>
   <p><b>Page 04h</b>（只读能力广告）：支持的 Grid 列表、通道范围、Fine Tuning 分辨率/范围、可编程输出功率范围。</p>
   <p><b>Page 12h</b>（读写控制）：</p>
@@ -4386,12 +4427,13 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <table>
       <thead><tr><th>字段</th><th>Access</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td>Grid Spacing</td><td>RW</td><td class="label">Grid 选择 + Fine Tuning 使能</td><td><code>12h / 0x80+lane</code></td></tr>
+        <tr><td>Grid Spacing</td><td>RW</td><td class="label">bits 7–4 Grid 选择;bit 1 相对功率门限使能;bit 0 Fine Tuning 使能</td><td><code>12h / 0x80+lane</code></td></tr>
         <tr><td>Channel Number</td><td>RW</td><td class="label">S16 通道偏移 n，频率 = 193.1 + n × step (THz)</td><td><code>12h / 0x88+lane×2</code></td></tr>
         <tr><td>Fine Offset</td><td>RW</td><td class="label">S16，单位 0.001 GHz (1 MHz)</td><td><code>12h / 0x98+lane×2</code></td></tr>
         <tr><td>Current Frequency</td><td>RO</td><td class="label">U32，单位 0.001 GHz → THz = val / 10^6</td><td><code>12h / 0xA8+lane×4</code></td></tr>
         <tr><td>Target Power</td><td>RW</td><td class="label">S16，单位 0.01 dBm</td><td><code>12h / 0xC8+lane×2</code></td></tr>
         <tr><td>Tuning Status</td><td>RO</td><td class="label">bit 1=TuningInProgress, bit 0=WavelengthUnlocked</td><td><code>12h / 0xDE+lane</code></td></tr>
+        <tr><td>Tuning Flags</td><td>RO/COR</td><td class="label">bit 5 目标功率超范围、bit 4 微调超范围、bit 3 调谐未被接受、bit 2 通道号无效、bit 1 波长失锁、bit 0 TuningComplete;闩锁、读后清除</td><td><code>12h / 0xE7+lane</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -4413,7 +4455,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td><b>Apply DataPath</b></td><td class="label">Config Status 先变为 ConfigInProgress，DP State 经历 Init → TxTurnOn → Activated（约 0.5s）;暂存的 DPIDX 必须指向该通道所在数据通路,否则 ConfigRejectedInvalidDataPath</td></tr>
         <tr><td><b>PRBS Checker Enable</b></td><td class="label">该通道的误码计数清零并开始累积(关闭时停止并保留结果);锁定前在该通道置 LOL,闩锁到被读取为止</td></tr>
         <tr><td><b>13h:177.7 置 1</b></td><td class="label">检测器使能和 ResetErrorInformation 的改动带到所有 Bank(门控 + 全局定时器时不带)</td></tr>
-        <tr><td><b>Laser Tune</b></td><td class="label">写入 Grid/Channel 后，Current Frequency 实时更新，Status 显示 Locked</td></tr>
+        <tr><td><b>Laser Tune</b></td><td class="label">被接受的请求:Current Frequency 更新;数据通道在运行时立即置 TuningComplete,在停下的数据通道上(换栅格/信道只能在这时)等它回到 DPInitialized 才置位(Table 6-21)。超出范围或未声明的栅格:置 InvalidChannelNumber / TuningNotAccepted 等标志,频率不变</td></tr>
       </tbody>
     </table>
   </div>
@@ -4747,7 +4789,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.170.0<br>
+    CMIS Module Manager 操作手册 v2.171.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

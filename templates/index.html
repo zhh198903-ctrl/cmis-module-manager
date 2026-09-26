@@ -602,6 +602,10 @@
                  placeholder="AA 55 AA 55 …" style="width:340px">
           <div class="caps-note" id="user-pattern-note"></div>
         </div>
+        <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
+          LOL = Pattern Generator LOL (14h/0x88·0x89, Table 8-138): the generator failed to generate a valid pattern.
+          ● running · ●<sup>!</sup> failed since the flag history was cleared · – not running.
+        </p>
       </div>
 
       <!-- PRBS Checker card -->
@@ -631,7 +635,10 @@
           </div>
         </div>
         <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
-          LOL = Pattern Checker Loss of Lock (14h/0x8A·0x8B). Inv inverts pattern. Swap = MSB/LSB swap for PAM4.
+          LOL = Pattern Checker Loss of Lock (14h/0x8A·0x8B, Table 8-138).
+          ● locked · ●<sup>!</sup> lost lock since the flag history was cleared · – not running ·
+          gate done = a gated measurement ended on the lane (14h:134·135).
+          Inv inverts pattern. Swap = MSB/LSB swap for PAM4.
         </p>
       </div>
 
@@ -720,17 +727,18 @@
               <th>Frequency<span class="reg-meta">12h/0xA8 · THz dec, RO</span></th>
               <th>Power<span class="reg-meta">12h/0xC8 · dBm dec</span></th>
               <th>Supervision<span class="reg-meta">12h/0x80[1] · offsets 12h/0xD8</span></th>
-              <th>Status</th>
+              <th>Status<span class="reg-meta">12h/0xDE · RO</span></th>
               <th>Tuning Flags<span class="reg-meta">12h / 0xE7 · latched</span></th>
             </tr>
           </thead>
           <tbody id="tbl-laser">
-            <tr><td colspan="7" class="placeholder-text">Click ↻ Refresh to read laser tuning.</td></tr>
+            <tr><td colspan="9" class="placeholder-text">Click ↻ Refresh to read laser tuning.</td></tr>
           </tbody>
         </table>
 </div>
         <p id="laser-dp-note" style="font-size:var(--fs-xs);color:var(--muted);margin-top:8px">
           Grid and channel can be changed only while the lane's Data Path is in DPDeactivated (7.5.2) — take it down with DP Deinit on the DataPath tab first; they are locked here until then. Fine tuning and target power can be changed at any time except while the Data Path is in a transient state.
+          A retune on a stopped Data Path says <b>Tuned</b> once the path is back up: Table 6-21 does not let the module raise TuningCompleteFlag while it is down.
         </p>
       </div>
 

@@ -26022,7 +26022,7 @@ class TestTheWaitsThatWereGuesses(CMISTestCase):
     def test_the_tuning_wait_is_the_whole_of_ton_flag(self):
         src = self._src()
         body = src[src.index('# Writing is not tuning.'):]
-        body = body[:body.index('refused = {}')]
+        body = body[:body.index('refused, completed = {}, []')]
         self.assertIn("time.sleep(cmis.TIMING_SECONDS['ton_flag'])", body,
                       'the tuning Flag wait is a literal again')
         self.assertNotIn('time.sleep(0.05)', body)
@@ -26069,11 +26069,11 @@ class TestTheWaitsThatWereGuesses(CMISTestCase):
         body = body[:body.index('document.addEventListener')]
         self.assertIn('res.data.refused', body,
                       'the panel never looks at what the module answered')
-        self.assertIn("toast('Laser tuning applied', 'success')", body,
+        self.assertIn("toast(`Laser tuning applied", body,
                       'the success path is gone entirely')
         # The success toast has to be the else branch, not the default.
         self.assertLess(body.index('lanesRefused.length'),
-                        body.index("toast('Laser tuning applied'"),
+                        body.index("toast(`Laser tuning applied"),
                         '"applied" is still said before the refusal is read')
 
     def test_the_refusal_toast_names_the_lane_and_the_reason(self):
@@ -35835,6 +35835,202 @@ class TestTheManualListsEveryRuntimeRow(CMISTestCase):
         for row in self.ROWS:
             self.assertIn('<tr><td>%s</td>' % row, s7, row)
         self.assertIn('ModuleFaultCause', s7)
+
+
+class TestTuningCompletesWhenTheLaserIsUp(CMISTestCase):
+    """Table 6-21 makes TuningCompleteFlagTx N/A in DPDeactivated, DPInit and
+    DPDeinit, and 6.3.4.2 says "the module shall not set that Flag" there -
+    while 7.5.2 allows a new grid or channel only in DPDeactivated. The demo
+    raised the Flag the moment the channel was written, on a path that was
+    down. It now waits for the Data Path to reach DPInitialized.
+
+    The Apply read the Flag byte for refusals and kept only those: the
+    TuningComplete it cleared was said nowhere, and a WavelengthUnlocked
+    latched before the Apply was cleared and forgotten - the GET keeps every
+    Flag but TuningComplete in the history, and the Apply now does too. The
+    reply names the lanes that reported TuningComplete, and the page says
+    so, or says why it has not come yet."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lane(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']['lanes'][0]
+
+    def _tune(self, **f):
+        f.setdefault('lane', 1)
+        return self.assertOk(self.client.post(
+            '/api/module/laser', data=json.dumps({'lanes': [f]}),
+            content_type='application/json'))['data']
+
+    def _up(self):
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'dp_deinit_mask': 0, 'apply': True}),
+            content_type='application/json'))
+        settled(self.client)
+
+    # ---- the module --------------------------------------------------------------------------
+    def test_a_retune_on_a_stopped_path_raises_no_complete(self):
+        self._connect()
+        deactivated(self.client)
+        lane = self._lane()
+        reply = self._tune(channel=lane['channel'] + 1)
+        self.assertEqual(reply['refused'], {})
+        self.assertEqual(reply['completed'], [])
+        after = self._lane()
+        self.assertEqual(after['datapath_state'], 'Deactivated')
+        self.assertFalse(after['tuning_flags']['tuning_complete'])
+        self.assertFalse(_state['backend']._registers[0x12].get(0xE7, 0) & 0x01)
+
+    def test_it_completes_once_the_path_is_up(self):
+        self._connect()
+        deactivated(self.client)
+        self._tune(channel=self._lane()['channel'] + 1)
+        self._lane()
+        self._up()
+        lane = self._lane()
+        self.assertNotIn(lane['datapath_state'], ('Deactivated', 'Init', 'Deinit'))
+        self.assertTrue(lane['tuning_flags']['tuning_complete'])
+        self.assertTrue(lane['tuning_flag_summary'])
+        again = self._lane()
+        self.assertFalse(again['tuning_flags']['tuning_complete'],
+                         'a clear-on-read Flag came back without a new tuning')
+
+    def test_a_refused_retune_never_completes(self):
+        self._connect()
+        deactivated(self.client)
+        b = _state['backend']
+        lo, hi = self._lane()['channel_range']
+        b._registers[0x12][0x88] = ((hi + 1) >> 8) & 0xFF
+        b._registers[0x12][0x89] = (hi + 1) & 0xFF
+        b._judge_tuning({'channel': True, 'fine': False, 'power': False})
+        self.assertTrue(b._registers[0x12][0xE7] & 0x04)      # InvalidChannel
+        self._up()
+        self.assertFalse(self._lane()['tuning_flags']['tuning_complete'])
+
+    def test_a_running_path_completes_at_once(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        lo, hi = d['power_range_dbm']
+        now = d['lanes'][0]['target_power_dbm']
+        reply = self._tune(target_power_dbm=lo if now != lo else hi)
+        self.assertEqual(reply['completed'], [1])
+
+    def test_which_lane_carries_the_laser(self):
+        self._connect()
+        b = _state['backend']
+        self.assertFalse(b._laser_is_down(0))
+        # 8H/1M: one Data Path, one media lane; nothing carries lane 2
+        self.assertTrue(b._laser_is_down(1))
+        self.assertFalse(b._laser_is_down(8))
+        # Table 6-21's three states, and one it allows
+        for state, down in ((0x1, True), (0x2, True), (0x3, True), (0x7, False)):
+            b._dp_lane_states[0] = state
+            self.assertEqual(b._laser_is_down(0), down, hex(state))
+        # 4H/1M twice: the second Data Path takes the next media lane
+        # (7.9.1) - lane 2 is absent here, but the rule is the rule.
+        for i in range(8):
+            b._registers[0x11][0xCE + i] = 0x20
+        b._dp_lane_states[:] = [0x1] * 4 + [0x4] * 4
+        self.assertEqual((b._laser_is_down(0), b._laser_is_down(1)), (True, False))
+        b._dp_lane_states[:] = [0x4] * 4 + [0x1] * 4
+        self.assertEqual((b._laser_is_down(0), b._laser_is_down(1)), (False, True))
+
+    # ---- the Apply ---------------------------------------------------------------------------
+    def test_an_unlock_the_apply_clears_is_kept(self):
+        self._connect()
+        d = self.assertOk(self.client.get('/api/module/laser'))['data']
+        lo, hi = d['power_range_dbm']
+        now = d['lanes'][0]['target_power_dbm']
+        poke(0x12, 0xE7, 0x02)                        # WavelengthUnlockedFlagTx1
+        _state['flag_history_since'] = None
+        reply = self._tune(target_power_dbm=lo if now != lo else hi)
+        self.assertEqual(reply['refused'], {}, 'an unlock is not a refusal')
+        self.assertIsNotNone(_state['flag_history_since'],
+                             'the Apply collected a Flag and started no history')
+        self.assertIn('wavelength_unlocked', self._lane()['tuning_flags_seen'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _read(self, *parts):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+        with open(path, encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def test_the_page_says_it(self):
+        js = self._read('static', 'app.js')
+        body = js[js.index('async function applyLaser'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('} else if ((res.data.completed || []).length) {', body)
+        self.assertIn("res.data.completed.join(', ')", body)
+        self.assertIn('reports TuningComplete', body)
+        self.assertIn('once the path is back up (Table 6-21)', body)
+        html = self._read('templates', 'index.html')
+        self.assertIn('says <b>Tuned</b> once the path is back up', html)
+        self.assertIn('<th>Status<span class="reg-meta">12h/0xDE · RO</span></th>', html)
+        self.assertIn('<td colspan="9" class="placeholder-text">Click ↻ Refresh '
+                      'to read laser tuning.', html)
+
+
+class TestTheDiagnosticsChapterMatchesThePage(CMISTestCase):
+    """Chapter 10 of the manual had fallen behind the Diagnostics tab. It
+    said BER could be read without PRBS - 8.17 bases it on the pattern
+    checker, and the page has said "off" for a lane with none since round
+    108. The LOL column had two states in the manual and seven on the page,
+    the generator's LOL had no address in the manual and no legend on the
+    page, the BER and counter tables had no word of "held", the last gate
+    rows or the NA cells, the laser table had no Flags row, and the demo's
+    tuning "showed Locked" on a path that has to be down to retune."""
+
+    def _s10(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        return man[man.index('id="s10"'):man.index('id="s11"')]
+
+    def test_the_stale_claims_are_gone(self):
+        s10 = self._s10()
+        self.assertNotIn('BER / SNR 读取无需 PRBS 使能，直接反映当前链路质量', s10)
+        self.assertNotIn('Status 显示 Locked', s10)
+        self.assertNotIn('● 锁定</span> / <span class="badge badge-danger">LOL 失锁', s10)
+
+    def test_what_the_page_shows_is_described(self):
+        s10 = self._s10()
+        for fact in ('<code>14h/0x88</code>', '<code>14h/0x89</code>',
+                     'PatternGeneratorLOLFlag', '●<sup>!</sup>', 'gate done',
+                     'masked', '<b>held</b>', '· last gate', 'no valid sample',
+                     'no valid error count', '<code>12h / 0xE7+lane</code>',
+                     '<b>Tuned</b>', '<b>Tuning...</b>', 'Acquisition Counters',
+                     '<b>SNR 不需要 PRBS</b>'):
+            self.assertIn(fact, s10, fact)
+
+    def test_the_symbols_are_the_pages(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        i = js.index('function _renderPrbsTable')
+        body = js[i:js.index('\n}\n', i)]
+        for glyph in ('>LOL</span>', '&#9679;<sup>!</sup>', '&ndash;',
+                      '>n/a</td>', 'masked</span>', '>gate done</span>'):
+            self.assertIn(glyph, body, glyph)
+        self.assertIn("'<span class=\"flag-ok\">Tuned</span>'", js)
+
+    def test_the_generator_card_has_a_legend(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'templates', 'index.html')
+        with open(path, encoding='utf-8') as f:
+            html = f.read()
+        gen = html[html.index('<!-- PRBS Generator card -->'):
+                   html.index('<!-- PRBS Checker card -->')]
+        self.assertIn('LOL = Pattern Generator LOL (14h/0x88·0x89, Table 8-138)', gen)
+        chk = html[html.index('<!-- PRBS Checker card -->'):
+                   html.index('<!-- BER Results card -->')]
+        self.assertIn('gate done = a gated measurement ended on the lane (14h:134·135)', chk)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

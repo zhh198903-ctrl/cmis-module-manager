@@ -4715,8 +4715,6 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
         : `<span class="flag-ok"${off ? ` title="${esc(PRBS_MASK_TIP)}"` : ''}`
           + '>●</span>'}${gateNote}</td>`;
     }
-    // Lane i's 4-bit pattern selector sits in the low or high nibble of
-    // pattern byte base+4+(i>>1).
     // Lane i's 4-bit PatternSelect sits in byte base+4+(i>>1); odd lanes
     // (Lane 1, 3, 5, 7) occupy bits 3-0, even lanes bits 7-4.
     const patAddr = base + 4 + (bit >> 1);
@@ -5467,8 +5465,17 @@ async function applyLaser() {
         + refused[lane].map(k => (TUNING_FLAG_LABELS[k] || [k])[0]).join(', ')
       ).join('; ');
       toast(`Module refused the tuning request — ${detail}`, 'error', 12000);
+    } else if ((res.data.completed || []).length) {
+      // TuningCompleteFlag is clear-on-read and the server's read took it,
+      // so this is the only place it can still be seen.
+      toast(`Laser tuning applied — lane ${res.data.completed.join(', ')} `
+        + 'reports TuningComplete', 'success');
     } else {
-      toast('Laser tuning applied', 'success');
+      // Table 6-21: not set in DPDeactivated, DPInit or DPDeinit - where a
+      // new grid or channel has to be written (7.5.2).
+      toast('Laser tuning written — no TuningComplete yet; on a stopped '
+        + 'Data Path it comes once the path is back up (Table 6-21)',
+        'info', 8000);
     }
     setTimeout(loadLaser, 300);
   } else {

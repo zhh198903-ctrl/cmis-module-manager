@@ -965,6 +965,9 @@ class MockBackend(I2CInterface):
         self._page_redirects = []         # PageSelects that named a missing page
         self._tuning_accepted = [True] * max(
             8, self.PROFILE.get('lanes', 8))
+        # A tuning answered while its Data Path was down, whose
+        # TuningCompleteFlagTx waits for the path to come up (Table 6-21).
+        self._tuning_pending = [False] * max(8, self.PROFILE.get('lanes', 8))
         self._dp_lane_states = [0x4] * 8  # all Activated
         self._rx_output_valid = 0xFF     # 11h:132, to spot changes
         self._rx_output_valid_banks = {}  # the same, banks 1 and up
@@ -2762,6 +2765,11 @@ class MockBackend(I2CInterface):
         if p['tunable'] and 0x12 in self._registers:
             for lane_base, p12 in self._banked_page_dicts(0x12):
                 for lane in range(8):
+                    if (self._tuning_pending[lane_base + lane]
+                            and not self._laser_is_down(lane_base + lane)):
+                        self._tuning_pending[lane_base + lane] = False
+                        p12[0xE7 + lane] = p12.get(0xE7 + lane, 0) | 0x01
+                        p12[0xE6] = p12.get(0xE6, 0) | (1 << lane)
                     grid_byte = p12.get(0x80 + lane, 0x50)
                     grid_code = (grid_byte >> 4) & 0x0F
                     # Table 8-68, by grid code: (THz per n, offset to n).
@@ -3256,7 +3264,14 @@ class MockBackend(I2CInterface):
                 if not (pwr_lo <= target <= pwr_hi):
                     flags |= 1 << 5          # TargetOutputPowerOORFlagTx
 
-            if flags == 0:
+            # Table 6-21: TuningCompleteFlagTx is N/A in DPDeactivated, DPInit
+            # and DPDeinit, and 6.3.4.2 says the module "shall not set" a
+            # Flag there - yet DPDeactivated is the only state a grid or
+            # channel may change in (7.5.2). The laser is tuned on the way
+            # up, so the Flag waits for the Data Path to reach DPInitialized.
+            down = self._laser_is_down(lane_base + lane)
+            self._tuning_pending[lane_base + lane] = flags == 0 and down
+            if flags == 0 and not down:
                 flags |= 1 << 0              # TuningCompleteFlagTx
             self._tuning_accepted[lane_base + lane] = (flags & ~1) == 0
 
@@ -3310,6 +3325,26 @@ class MockBackend(I2CInterface):
             # 6.3.3: reached a steady state through a real change.
             p11b[0x86] = p11b.get(0x86, 0) | bit
         self._bank_deinit_taken[bank] = taken
+
+    def _laser_is_down(self, media_lane: int) -> bool:
+        """Whether the Data Path carrying this media lane (0-based) is in
+        DPDeactivated, DPInit or DPDeinit, or no Data Path carries it. 7.9.1:
+        Data Paths in host lane order take consecutive media lanes. Bank 0
+        only - a later bank's Data Paths have only the states the profile
+        built, and all of them are up."""
+        if media_lane >= 8:
+            return False
+        p11 = self._registers[0x11]
+        sels = [(p11.get(0xCE + i, 0x10) >> 4) & 0x0F for i in range(8)]
+        apps = self._profile['app_descriptors']
+        first = 0
+        for g in self._dp_groups(sels):
+            sel = sels[g[0]]
+            n = (apps[sel - 1][2] & 0x0F) if 1 <= sel <= len(apps) else 0
+            if first <= media_lane < first + n:
+                return self._dp_lane_states[g[0]] in (0x1, 0x2, 0x3)
+            first += n
+        return True
 
     def _dp_groups(self, sels):
         """The host lanes of each Data Path eight AppSel codes describe, as

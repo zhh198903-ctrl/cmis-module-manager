@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.170.0'
+__version__ = '2.171.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5506,25 +5506,34 @@ def api_laser_set():
         # was refused, so it has to be the full one.
         time.sleep(cmis.TIMING_SECONDS['ton_flag'])
         raw = _read_banked(*cmis.REG_TUNING_FLAGS_TX[:2], 1)
-        refused = {}
+        refused, completed = {}, []
         for i in range(_state['lanes']):
             answered = cmis.parse_tuning_flags(raw[i])
             bad = sorted(n for n, v in answered.items()
                          if v and n not in ('tuning_complete', 'wavelength_unlocked'))
             # This read clears the Flags, so the history is what the next GET
-            # will still have to show.
+            # will still have to show - an unlock as much as a refusal, by the
+            # GET's own rule. Keeping only the refusals lost an unlock latched
+            # before the Apply to the read the Apply made.
             seen = _state['flag_history'].setdefault('tuning_%d' % (i + 1), set())
-            seen.update(bad)
+            seen.update(n for n, v in answered.items()
+                        if v and n != 'tuning_complete')
             if bad:
                 refused[i + 1] = bad
-        if refused and _state['flag_history_since'] is None:
+            # An event rather than a fault, so no history - and this read is
+            # the one that clears it, so the reply is the only place left to
+            # say it.
+            if answered['tuning_complete']:
+                completed.append(i + 1)
+        # Collected from here on, as the GET counts it.
+        if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
         # An empty `refused` is a claim about a Flag that was not up yet as
         # much as about one that never came, so the reply carries what it
         # waited: Table 10-6 allows the module the whole of ton_flag, and
         # anything less would have been a guess reported as an answer.
         return _ok({'message': 'Laser tuning parameters written', 'lanes': written,
-                    'refused': refused,
+                    'refused': refused, 'completed': completed,
                     'flag_wait_ms': round(
                         cmis.TIMING_SECONDS['ton_flag'] * 1000)})
     except Exception as e:
