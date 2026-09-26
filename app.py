@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.165.0'
+__version__ = '2.166.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2648,9 +2648,10 @@ def api_datapath_get():
         except Exception:
             tx_pol_masks = rx_pol_masks = [0] * len(dp_deinit_masks)
 
-        app_select = []
+        app_select, staged_dpconfig = [], []
         for _bank, raw in _read_banks(*cmis.REG_APP_SELECT):
             app_select += cmis.unpack_appselect(raw)
+            staged_dpconfig += cmis.unpack_dpconfig(raw)
 
         # Page 10h is what was asked for; 11h is what the module is running.
         # A rejected Apply leaves the two disagreeing, and showing only the
@@ -2694,6 +2695,12 @@ def api_datapath_get():
                 'tx_enable': not bool((tx_disable_masks[b] >> bit) & 1),
                 'dp_deinit': bool((dp_deinit_masks[b] >> bit) & 1),
                 'app_select': app_select[i] if i < len(app_select) else 0,
+                # 10h:145-152 bits 3-1 and bit 0 (Table 8-102), staged.
+                'staged_dpidx': (staged_dpconfig[i]['dpidx']
+                                 if i < len(staged_dpconfig) else None),
+                'staged_explicit_control': (
+                    staged_dpconfig[i]['explicit_control']
+                    if i < len(staged_dpconfig) else False),
                 'active_app_select': (active_app_select[i]
                                       if i < len(active_app_select) else 0),
                 # 11h:206-213 bits 3-1 and bit 0 (Table 8-102).

@@ -1319,8 +1319,9 @@ def parse_lane_flags(byte_val: int) -> list:
 
 
 def unpack_appselect(data: bytes) -> list:
-    """8 bytes, 1 byte per lane (DPConfigLane, Table 8-71):
-    bits[7:4]=AppSelCode, bits[3:1]=DataPathID, bit[0]=ExplicitControl.
+    """8 bytes, 1 byte per lane (DPConfigLane, Table 8-102): the AppSelCode
+    in bits 7-4 only. bits 3-1 are DPIDX and bit 0 ExplicitControl - see
+    unpack_dpconfig.
     """
     return [(data[i] >> 4) & 0x0F if i < len(data) else 0 for i in range(8)]
 
@@ -1337,8 +1338,7 @@ def unpack_dpconfig(data: bytes) -> list:
       0   ExplicitControl 0b: this lane's SI settings are Application
                           dependent; 1b: they are host defined
 
-    unpack_appselect keeps only the first, which is all the staged set needs -
-    the tool writes zeros into the other two. The Active Control Set is the
+    unpack_appselect keeps only the first. The Active Control Set is the
     module's own answer, and there DPIDX says which lanes form a Data Path
     without anybody having to work it out from Application widths, and
     ExplicitControl says per lane whether the staged signal integrity values
@@ -1358,15 +1358,6 @@ def unpack_dpconfig(data: bytes) -> list:
             'explicit_control': bool(b & 0x01),
         })
     return out
-
-
-def pack_appselect(values: list) -> bytes:
-    """Pack 8 AppSelCodes into 8 DPConfigLane bytes.
-
-    DataPathID (bits[3:1]) and ExplicitControl (bit[0]) are left at 0, i.e.
-    one Data Path starting at lane 1 using Application-dependent SI settings.
-    """
-    return bytes((v & 0x0F) << 4 for v in values[:8] + [0] * (8 - len(values)))
 
 
 def pack_dpconfig(app_sels: list, dpidx: list, explicit: list = None) -> bytes:

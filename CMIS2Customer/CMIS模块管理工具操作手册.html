@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.165.0<br>
+      <b>版本</b>　2.166.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.165.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.165.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.166.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.166.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1727,6 +1727,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>AppSelect 悬停说明写出暂存的 DPIDX</h3>
+  <p>DataPath 表 AppSelect 列的悬停说明以前写的是「DataPathID bits 3-1」——这是 CMIS 5.4 已改名为 <b>DPIDX</b> 的字段,而且没写里面存的是多少;16 通道模块上第 9 条通道还被标成 <code>10h:0x99</code> / <code>11h:0xD6</code>,那是自适应均衡的寄存器,DPConfigLane 按 Bank 计,Bank 1 的第 1 条通道仍在 <code>0x91</code> / <code>0xCE</code>。</p>
+  <p>现在:悬停说明写出暂存的 AppSelCode、DPIDX(以及这个数据通路从第几条通道开始)和 ExplicitControl,地址按所在 Bank 标注。接口 <code>/api/module/datapath</code> 每条通道新增 <code>staged_dpidx</code>、<code>staged_explicit_control</code>。</p>
 
   <h3>暂存的 DPIDX 按数据通路写</h3>
   <p>规范 6.2.3.2.2:数据通路的 DPID 是它占用的最低主机通道号,DPIDX = DPID − 1;「DPConfigLane<i> 里的 DPIDX 字段按 DPIDX 指明这条通道属于哪个数据通路」(Table 8-102 的 bit 3-1)。</p>
@@ -4721,7 +4725,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.165.0<br>
+    CMIS Module Manager 操作手册 v2.166.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

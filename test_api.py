@@ -6658,9 +6658,9 @@ class TestCmisRegisters(unittest.TestCase):
         self.assertEqual(lanes, [1, 1, 1, 1, 1, 1, 1, 1])
 
     def test_pack_unpack_appselect_roundtrip(self):
-        from cmis_registers import pack_appselect, unpack_appselect
+        from cmis_registers import pack_dpconfig, unpack_appselect
         original = [1, 2, 3, 4, 5, 6, 7, 8]
-        packed = pack_appselect(original)
+        packed = pack_dpconfig(original, [0] * 8)
         # pack only stores 4 bits per lane (nibble), so values must be 0-15
         unpacked = unpack_appselect(packed)
         self.assertEqual(unpacked, [v & 0x0F for v in original])
@@ -6680,15 +6680,15 @@ class TestCmisRegisters(unittest.TestCase):
         self.assertEqual(cmis_revision_str(0x53), '5.3')
 
     def test_pack_appselect_length(self):
-        from cmis_registers import pack_appselect
+        from cmis_registers import pack_dpconfig
         # Always 8 bytes (one per lane, zero-padded)
-        result = pack_appselect([1] * 8)
+        result = pack_dpconfig([1] * 3, [0] * 3)
         self.assertEqual(len(result), 8)
 
     def test_pack_appselect_nibble_boundary(self):
         """Values > 15 should be masked to nibble."""
-        from cmis_registers import pack_appselect, unpack_appselect
-        packed = pack_appselect([0xFF] * 8)
+        from cmis_registers import pack_dpconfig, unpack_appselect
+        packed = pack_dpconfig([0xFF] * 8, [0] * 8)
         unpacked = unpack_appselect(packed)
         # 0xFF & 0x0F = 0xF = 15
         self.assertTrue(all(v == 15 for v in unpacked))
@@ -9981,9 +9981,9 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
       the contents ... were determined by the module according to the
       selected Application."
 
-    pack_appselect writes ExplicitControl clear on every lane - its own
-    docstring says "Application-dependent SI settings" - so on every Apply
-    this tool makes, the module picks these itself. The Signal Integrity
+    The tool wrote ExplicitControl clear on every lane (round 115 made it
+    keep what is staged) - so on every Apply it made, the module picked
+    these itself. The Signal Integrity
     table showed the staged numbers and told the reader "Apply on the
     DataPath table commits this set as well", which is true only in the case
     the tool never uses. 11h:214-234 was never read, and the mock never
@@ -10045,12 +10045,9 @@ class TestWhichSignalIntegritySettingsAreInForce(CMISTestCase):
             '/api/module/datapath'))['data']['signal_integrity_active']
         self.assertNotEqual(before['rx_output_amplitude'],
                             [2] * 8, 'this test needs them to start apart')
-        # DPConfigLane bit 0 is ExplicitControl. It has to be set behind the
-        # API and applied the same way: every datapath POST rebuilds these
-        # bytes through pack_appselect, which writes the bit clear, so there
-        # is no way to reach this branch through the tool at all - which is
-        # why the footnote it justified was wrong for every Apply the tool
-        # makes, not merely for the default.
+        # DPConfigLane bit 0 is ExplicitControl. The tool has no control for
+        # it (it keeps what is staged), so it is set behind the API and
+        # applied the same way.
         for lane in range(8):
             poke(0x10, 145 + lane, 0x11)
         poke(0x10, 0x8F, 0xFF)                # ApplyDPInit, all lanes
@@ -35515,6 +35512,88 @@ class TestTheDataPathIndexIsStaged(CMISTestCase):
         self._connect('mock_fr4x2')
         active = [_state['backend']._registers[0x11][0xCE + i] for i in range(8)]
         self.assertEqual(self._staged(), active)
+
+
+class TestTheStagedDataPathIsDescribed(CMISTestCase):
+    """The AppSelect tooltip on the DataPath table named "DataPathID bits
+    3-1" - the field CMIS 5.4 renamed DPIDX - and said nothing of what was
+    staged in it; round 115 made the tool write it, and the page could not
+    show what. It also addressed lane 9 as 10h:0x99 and its Active Control
+    Set as 11h:0xD6: DPConfigLane is one byte per lane of its Bank, so Bank
+    1's lane 1 is at 0x91 and 0xCE again, and 0x99 / 0xD6 are
+    AdaptiveInputEqEnableTx. pack_appselect, which wrote DPIDX 0, stayed in
+    cmis_registers for anyone to reach for again.
+
+    Now the datapath reply carries each lane's staged DPIDX and
+    ExplicitControl, the tooltip says which lane the Data Path starts on, the
+    addresses are the Bank's, and pack_appselect is gone."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _lanes(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))[
+            'data']['lanes']
+
+    def test_the_reply_carries_the_staged_fields(self):
+        self._connect()
+        lanes = self._lanes()
+        self.assertEqual([l['staged_dpidx'] for l in lanes], [0] * 4 + [4] * 4)
+        self.assertEqual({l['staged_explicit_control'] for l in lanes}, {False})
+        _state['backend']._registers[0x10][0x96] |= 0x01      # lane 6
+        self.assertTrue(self._lanes()[5]['staged_explicit_control'])
+
+    def test_the_writer_that_staged_zeros_is_gone(self):
+        import cmis_registers as c
+        self.assertFalse(hasattr(c, 'pack_appselect'))
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'app.py')
+        with open(path, encoding='utf-8') as f:
+            self.assertIsNone(re.search(r'(?<!un)pack_appselect', f.read()))
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/function dpconfigNote\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_tooltip_says_where_the_data_path_starts(self):
+        note = self._run("dpconfigNote({lane: 13, app_select: 2, "
+                         "staged_dpidx: 4, staged_explicit_control: true})")
+        self.assertIn('DPIDX = 4, the Data Path starting at lane 13', note)
+        self.assertIn('ExplicitControl = 1', note)
+        self.assertNotIn('DataPathID', note)
+        self.assertIn('ignored, the lane is unused', self._run(
+            "dpconfigNote({lane: 3, app_select: 0, staged_dpidx: 0})"))
+        self.assertIn('not read', self._run(
+            "dpconfigNote({lane: 3, app_select: 1, staged_dpidx: null})"))
+
+    def test_the_addresses_are_the_banks(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('addr: 0x91 + i % 8,', js)
+        self.assertIn("hex8(0x91 + i % 8) + bankOf", js)
+        self.assertIn("hex8(0xCE + i % 8) + bankOf", js)
+        self.assertNotIn('hex8(0x91 + i)', js)
+        self.assertNotIn('DataPathID bits 3-1', js)
+        self.assertIn('note: dpconfigNote(lane),', js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

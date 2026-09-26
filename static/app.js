@@ -83,6 +83,20 @@ function regTip(o) {
  * afterwards, not what we asked for. Re-reading also refreshes the register
  * tooltips, which quote the current byte.
  */
+// 10h:145-152 DPConfigLane (Table 8-102): AppSelCode 7-4, DPIDX 3-1 - the
+// Data Path's first lane in its Bank, less one; CMIS 5.4's name for what was
+// DataPathID - and ExplicitControl 0. The tooltip named the old field and
+// said nothing of the values staged in it.
+function dpconfigNote(lane) {
+  const k = (lane.lane - 1) % 8, first = lane.lane - 1 - k;
+  const idx = lane.staged_dpidx;
+  const dp = !lane.app_select ? 'ignored, the lane is unused'
+    : idx == null ? 'not read'
+    : `${idx}, the Data Path starting at lane ${first + idx + 1}`;
+  return `AppSelCode = ${lane.app_select} (bits 7-4); DPIDX = ${dp} (bits 3-1); `
+    + `ExplicitControl = ${lane.staged_explicit_control ? 1 : 0} (bit 0)`;
+}
+
 async function applyAndReload(label, path, body, reload) {
   const res = await apiPost(path, body);
   if (res.status !== 'ok') {
@@ -2649,10 +2663,12 @@ async function loadDatapath() {
     }
     const appOpts = opts.join('');
 
-    // DPConfigLane is one byte per lane; the rest are one bit per lane.
+    // DPConfigLane is one byte per lane of its Bank; the rest are one bit
+    // per lane. Lane 9 is Bank 1's 0x91 - 0x91 + 8 is AdaptiveInputEqEnableTx.
+    const bankOf = (d.lanes || []).length > 8 ? ` (Bank ${Math.floor(i / 8)})` : '';
     const tipApp = regTip({
-      field: `DPConfigLane${lane.lane}`, page: 0x10, addr: 0x91 + i,
-      note: `AppSelCode = ${lane.app_select} (bits 7-4); DataPathID bits 3-1, ExplicitControl bit 0`,
+      field: `DPConfigLane${(i % 8) + 1}${bankOf}`, page: 0x10, addr: 0x91 + i % 8,
+      note: dpconfigNote(lane),
     });
     // The dropdown shows the Staged Control Set - what was asked for. When the
     // module refuses an Apply it keeps running the previous Application, and
@@ -2714,8 +2730,9 @@ async function loadDatapath() {
       : '';
     const stale = active !== lane.app_select
       ? `<div class="appsel-mismatch" title="${esc(
-          'Staged (Page 10h:' + hex8(0x91 + i) + ') asks for ' + appName(lane.app_select)
-          + ', but the Active Control Set (Page 11h:' + hex8(0xCE + i)
+          'Staged (Page 10h:' + hex8(0x91 + i % 8) + bankOf + ') asks for '
+          + appName(lane.app_select)
+          + ', but the Active Control Set (Page 11h:' + hex8(0xCE + i % 8) + bankOf
           + ') says the module is running ' + appName(active)
           + '. The module did not accept the staged configuration.')}">`
         + `running ${appName(active)}</div>`
@@ -3062,9 +3079,9 @@ function renderSignalIntegrity(d) {
 
   const si = d.signal_integrity || {};
   // Tables 8-104/8-105. The staged half above is the request; this is the
-  // module's answer, and with ExplicitControl clear - which is what Apply
-  // writes - the two are not the same thing: those settings "were determined
-  // by the module according to the selected Application".
+  // module's answer, and with ExplicitControl clear the two are not the same
+  // thing: those settings "were determined by the module according to the
+  // selected Application".
   const siLive = d.signal_integrity_active || {};
   const adv = d.si_advertised || {};
   // Which lanes stage a recall from a buffer this module never advertised.
@@ -3281,9 +3298,9 @@ function renderSignalIntegrity(d) {
                + ' / post max ' + adv.rx_output_eq_post_cursor_max);
     if (Array.isArray(adv.rx_output_levels) && adv.rx_output_levels.length)
       max.push('amplitude codes ' + adv.rx_output_levels.join(', '));
-    // "Apply commits this set as well" holds only with ExplicitControl set,
-    // and this tool writes it clear - so Apply stages these values and the
-    // module then provisions its own from the Application.
+    // "Apply commits this set as well" holds only with ExplicitControl set;
+    // the tool leaves that bit as staged, so on the other lanes Apply stages
+    // these values and the module provisions its own from the Application.
     // What the module reports, not what this tool writes. 11h:206-213
     // bit 0 (Table 8-102) is RO and Required and says, per lane, whether
     // the settings in force are host defined. Asserting it from the
