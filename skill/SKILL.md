@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## BER 为 0 先看 measured
+
+`GET /api/module/ber` 在模块也报告误码计数(`13h:130.1`)时,每条通道带 `host_measured` / `media_measured`(`last_gate.lanes` 里也有):同一窗口的 TotalBitsCount 是否大于 0。为 `false` 时那个 0 不是测量结果——没结束过门控的 last gate、刚启用的检测器都是这样;为 `null` 表示没有计数可对照。
+
 ## 诊断窗口:选择器没被接受就没有读数
 
 `GET /api/module/ber`、`/counters`、`/snr` 每个 Bank 写完 DiagnosticsSelector(`14h:128`)都会读回。模块不支持的值会退回 0(Table 8-136),00h 是全零窗口——所以没接受的 Bank 在回复的 `selector_refused` 里(`bank` / `selector` / `read`),它的通道值为 `null`,不是 0。

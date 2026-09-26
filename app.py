@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.173.0'
+__version__ = '2.174.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5036,6 +5036,17 @@ def _ber_lanes(sel: int, present, refused=None) -> list:
     return lanes[:_state['lanes']]
 
 
+def _mark_measured(ber_lanes, counter_lanes) -> None:
+    """Set host_measured / media_measured on each BER lane: whether the
+    matching TotalBitsCount is above zero, None where it was not read."""
+    bits = {c['lane']: c for c in counter_lanes}
+    for lane in ber_lanes:
+        c = bits.get(lane['lane'], {})
+        for side in ('host', 'media'):
+            total = c.get(side + '_total_bits')
+            lane[side + '_measured'] = None if total is None else total > 0
+
+
 @app.route('/api/module/ber', methods=['GET'])
 def api_module_ber():
     err = _require_connected()
@@ -5053,12 +5064,23 @@ def api_module_ber():
             return _ok({'lanes': [], 'supported': False})
         present = _media_lanes_present()
         refused = []
-        return _ok({'lanes': _ber_lanes(0x01, present, refused),
+        lanes = _ber_lanes(0x01, present, refused)
+        gate = (_ber_lanes(0x11, present, refused)
+                if _gated_results_supported() else None)
+        # A BER is a ratio, and 0 is also what a window that counted nothing
+        # holds - a last gate before any gate has ended, a checker enabled a
+        # moment ago. Table 8-128: accumulation "can be derived from the
+        # total bit counters", so where the module reports those (13h:130.1)
+        # they say which zero is a measurement.
+        if _diag_caps()['reporting']['bits_and_errors']:
+            _mark_measured(lanes, _counter_lanes(0x02, present, refused))
+            if gate is not None:
+                _mark_measured(gate, _counter_lanes(0x12, present, refused))
+        return _ok({'lanes': lanes,
                     'supported': True,
                     'media_lanes_present': present,
                     'checking': _checkers_running(),
-                    'last_gate': ({'lanes': _ber_lanes(0x11, present, refused)}
-                                  if _gated_results_supported() else None),
+                    'last_gate': {'lanes': gate} if gate is not None else None,
                     'measurement': _measurement_window(),
                     'selector_refused': refused})
     except Exception as e:

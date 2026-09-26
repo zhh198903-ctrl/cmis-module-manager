@@ -18018,8 +18018,9 @@ class TestTheDiagnosticsWindowIsSelectedInEveryBankRead(CMISTestCase):
 
     # The last window each endpoint selects: the BER and counters read the
     # last completed gate (11h, 12h-15h) after the running figures, where
-    # 13h:129.5 offers it - as this module does.
-    SELECTORS = {'/api/module/snr': 0x06, '/api/module/ber': 0x11}
+    # 13h:129.5 offers it - as this module does. The BER reply then reads the
+    # counters too, for their TotalBitsCount, so it ends on 15h.
+    SELECTORS = {'/api/module/snr': 0x06, '/api/module/ber': 0x15}
 
     def _connect(self, backend='mock_zr16'):
         self.assertOk(self.client.post(
@@ -29765,6 +29766,10 @@ class TestAMonitorIsReadAtItsOwnSize(CMISTestCase):
 
     def test_the_ber_and_snr_are_read_two_bytes_at_a_time(self):
         self._connect('mock_dr8')
+        # Without 13h:130.1 the BER reply reads no counters (U64, 8 bytes
+        # each) for their TotalBitsCount, so every window read here is a BER
+        # or an SNR.
+        poke(0x13, 0x82, 0x31)
         seen = self._trace()
         self.assertOk(self.client.get('/api/module/ber'))
         self.assertOk(self.client.get('/api/module/snr'))
@@ -30523,7 +30528,8 @@ class TestDiagnosticsSayWhenTheyHaveNoSample(CMISTestCase):
         js = self._js()
         for fn, needle in (
                 ('async function loadSnr', "(na || [])[i] ? `<td>${naCell("),
-                ('async function loadBer', 'berCell(l.host_ber, l.host_ber_na)'),
+                ('async function loadBer',
+                 'berCell(l.host_ber, l.host_ber_na, l.host_measured)'),
                 ('async function loadCounters', "l[`${side}_errors_na`]"),
                 ('async function loadCounters',
                  "l[`${side}_errors_na`] ? cell(l, false, "
@@ -34510,8 +34516,8 @@ class TestTheCheckerStartsAndStopsTheCount(CMISTestCase):
         self.assertIn("+ note + checkersOffNote(res.data.checking, present)", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmt(", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmtBer(", js)
-        self.assertIn("? checkerOffCell(!!l.host_ber, formatBer(l.host_ber))", js)
-        self.assertIn("? checkerOffCell(!!l.media_ber, formatBer(l.media_ber))", js)
+        self.assertIn("? checkerOffCell(held(l, 'host'), formatBer(l.host_ber))", js)
+        self.assertIn("? checkerOffCell(held(l, 'media'), formatBer(l.media_ber))", js)
         # a stopped engine's LOL cell is a dash, not a green "locked" dot
         self.assertIn("        : !en\n        ? `<span class=\"flag-none\"",
                       js.replace('\r\n', '\n'))
@@ -36306,6 +36312,92 @@ class TestARefusedSelectorIsNotAReading(CMISTestCase):
         self.assertIn('写完会<b>读回</b> <code>14h:128</code>', s10)
         demos = s10[s10.index('10.8 状态机模拟'):]
         self.assertIn('<tr><td><b>DiagnosticsSelector</b></td>', demos)
+
+
+class TestAZeroBerNeedsBitsCounted(CMISTestCase):
+    """A BER is a ratio, and 0 is also what a window that has counted
+    nothing holds: the last gate before any gate has ended (the rows showed
+    a row of 0s on every module that reports gated results), a checker
+    enabled a moment ago. Table 8-128: accumulation "can be derived from the
+    total bit counters". Where the module reports those (13h:130.1), the
+    BER reply marks each lane measured or not, and the page shows an
+    unmeasured one as a dash. The same mark tells a stopped checker that
+    counted a clean run - BER 0, held - from one that never ran; the page
+    called that clean run "off"."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _ber(self):
+        return self.assertOk(self.client.get('/api/module/ber'))['data']
+
+    def test_the_mark(self):
+        lanes = [{'lane': 1}, {'lane': 2}, {'lane': 3}]
+        app_module._mark_measured(lanes, [
+            {'lane': 1, 'host_total_bits': 0, 'media_total_bits': 64},
+            {'lane': 2, 'host_total_bits': None, 'media_total_bits': 2}])
+        self.assertEqual(lanes, [
+            {'lane': 1, 'host_measured': False, 'media_measured': True},
+            {'lane': 2, 'host_measured': None, 'media_measured': True},
+            {'lane': 3, 'host_measured': None, 'media_measured': None}])
+
+    def test_nothing_counted_is_not_measured(self):
+        self._connect()
+        d = self._ber()
+        self.assertIsNotNone(d['last_gate'], 'mock_dr8 reports gated results')
+        for l in d['lanes'] + d['last_gate']['lanes']:
+            self.assertIs(l['host_measured'], False)
+            self.assertIs(l['media_measured'], False)
+        self.assertEqual(d['last_gate']['lanes'][0]['host_ber'], 0,
+                         'the window holds a 0 - which is the point')
+
+    def test_a_running_checker_is_measured(self):
+        self._connect()
+        run_checkers(self.client, wait=0.2)
+        d = self._ber()
+        self.assertTrue(all(l['host_measured'] and l['media_measured']
+                            for l in d['lanes']))
+        self.assertTrue(all(l['host_measured'] is False
+                            for l in d['last_gate']['lanes']),
+                        'ungated: no gate has ended')
+
+    def test_without_counters_there_is_no_mark(self):
+        self._connect()
+        poke(0x13, 0x82, 0x31)                   # 13h:130.1 clear
+        d = self._ber()
+        self.assertTrue(all(l.get('host_measured') is None for l in d['lanes']))
+        self.assertEqual(d['selector_refused'], [],
+                         'the counter selectors were written anyway')
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_page_uses_it(self):
+        js = self._js()
+        i = js.index('async function loadBer')
+        body = js[i:js.index('\n}\n', i)]
+        self.assertIn("measured === false ? BER_NOT_COUNTED : formatBer(v)", body)
+        self.assertIn("berCell(l.host_ber, l.host_ber_na, l.host_measured)", body)
+        self.assertIn("berCell(l.media_ber, l.media_ber_na, l.media_measured)", body)
+        self.assertIn("l[side + '_measured'] != null", body)
+        self.assertIn("checkerOffCell(held(l, 'host'), formatBer(l.host_ber))", body)
+        self.assertIn("checkerOffCell(held(l, 'media'), formatBer(l.media_ber))", body)
+        self.assertIn('TotalBitsCount is 0', js)
+
+    def test_the_manual_says_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s10 = man[man.index('id="s10"'):man.index('id="s11"')]
+        self.assertIn('TotalBitsCount 为 0', s10)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

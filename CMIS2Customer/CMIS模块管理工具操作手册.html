@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.173.0<br>
+      <b>版本</b>　2.174.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.173.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.173.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.174.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.174.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>没数过比特的 BER 不再显示成 0</h3>
+  <p>BER 是误码数除以比特数。一个窗口一个比特都没数过时,模块在那里放的也是 0——最常见的是还没结束过门控的 <b>· last gate</b> 行(模块声明支持门控结果时,连上就是一整行 0),以及刚启用的检测器。规范 Table 8-128 说累计时长要从 TotalBitsCount 推出来。</p>
+  <p>现在:模块同时报告误码计数(<code>13h:130.1</code>)时,BER 卡片会对照同一窗口的计数器(Selector <code>02h–05h</code> / <code>12h–15h</code>),TotalBitsCount 为 0 的通道显示 <b>—</b>(悬停有说明),接口里每条通道多了 <code>host_measured</code> / <code>media_measured</code>。同一个依据也修正了另一处:检测器停下时数过比特但零误码的通道,以前因为 BER 是 0 被显示成 <b>off</b>,现在显示 <b>0 held</b>。</p>
 
   <h3>诊断选择器没被接受时,不再显示成 0</h3>
   <p>BER、误码计数、SNR 都是先写 Page 14h 的 DiagnosticsSelector(<code>14h:128</code>),等 tDDCS,再读结果窗口。规范 Table 8-136 规定:模块不支持的值会<b>退回 0</b>,而 Selector 00h 的内容是全零(Table 8-137)。</p>
@@ -4379,7 +4383,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     上表没有 <code>0</code> 这一档是有意的：真实的可达下限取决于该次统计门累积了多少比特，
     模块并不告诉你这个数。<b>请不要把 <code>0</code> 当作实测值写进测试报告</b>——
     需要给出量化结果时，应根据码率与统计时长自行算出置信下限。
-    鼠标悬停在 <code>0</code> 上也有同样的说明。显示 <code>—</code> 表示该 lane 没有有效读数。</span>
+    鼠标悬停在 <code>0</code> 上也有同样的说明。显示 <code>—</code> 表示该 lane 没有有效读数。<br>
+    模块同时报告误码计数(<code>13h:130.1</code>)时,工具会对照同一窗口的计数:TotalBitsCount 为 0 的通道——还没结束过门控的 <b>· last gate</b>、刚启用的检测器——BER 显示 <code>—</code>,因为一个比特都没数过,这个 0 不是测量结果。反过来,检测器停下时数过比特、零误码的通道显示 <b>0 held</b>,不再显示成 off。</span>
   </div>
 
   <h3>10.5 SNR Results（信噪比）</h3>
@@ -4808,7 +4813,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.173.0<br>
+    CMIS Module Manager 操作手册 v2.174.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

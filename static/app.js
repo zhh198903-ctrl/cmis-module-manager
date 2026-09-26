@@ -4082,6 +4082,11 @@ function checkersOffNote(checking, present) {
     + `on the PRBS tab clears that lane's count and starts it (Table 8-128).</td></tr>`;
 }
 
+const BER_NOT_COUNTED = '<span class="text-muted" title="No bits counted in '
+  + 'this window - TotalBitsCount is 0 in the matching counters (Selectors '
+  + '02h-05h, or 12h-15h for the last gate) - so the BER it holds is no '
+  + 'measurement">—</span>';
+
 function formatBer(ber) {
   if (ber == null || !isFinite(ber)) return '—';
   if (ber === 0) {
@@ -5148,17 +5153,23 @@ async function loadBer() {
   _renderMeasurementWindow('ber-window', res.data);
   // Table 7-8: 0.5 is the BER's NA value, reported as such where the module
   // advertises NA values - not a link failing every other bit.
-  const berCell = (v, na) => `<td>${na ? naCell('no valid sample') : formatBer(v)}</td>`;
+  // A BER of 0 is also what a window that counted nothing holds; the
+  // server marks which from the counters' TotalBitsCount (*_measured).
+  const berCell = (v, na, measured) => `<td>${na ? naCell('no valid sample')
+    : measured === false ? BER_NOT_COUNTED : formatBer(v)}</td>`;
+  // Held when the stopped checker counted anything - a clean run holds a 0.
+  const held = (l, side) => l[side + '_measured'] != null
+    ? l[side + '_measured'] : !!l[side + '_ber'];
   // Only the running rows: the last gate is a result either way.
   const berRows = (lanes, label, sel, checking) => {
     const hostCells = lanes.map((l, i) => checkerOff(checking, 'host', i)
-      ? checkerOffCell(!!l.host_ber, formatBer(l.host_ber))
-      : berCell(l.host_ber, l.host_ber_na)).join('');
+      ? checkerOffCell(held(l, 'host'), formatBer(l.host_ber))
+      : berCell(l.host_ber, l.host_ber_na, l.host_measured)).join('');
     const mediaCells = lanes.map((l, i) =>
       mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
         : checkerOff(checking, 'media', i)
-          ? checkerOffCell(!!l.media_ber, formatBer(l.media_ber))
-        : berCell(l.media_ber, l.media_ber_na)).join('');
+          ? checkerOffCell(held(l, 'media'), formatBer(l.media_ber))
+        : berCell(l.media_ber, l.media_ber_na, l.media_measured)).join('');
     return `<tr><td style="color:var(--text-muted)">Host${label}<span class="reg-badge">14h/0xC0${sel}</span></td>${hostCells}</tr>` +
       `<tr><td style="color:var(--text-muted)">Media${label}<span class="reg-badge">14h/0xD0${sel}</span></td>${mediaCells}</tr>`;
   };
