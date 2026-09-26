@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.167.0'
+__version__ = '2.168.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2539,10 +2539,11 @@ def api_module_monitoring():
                 'lane': i + 1,
                 'media_lane_present': media,
                 'tx_power_uw': round(tx_uw, 2) if has_tx and media else None,
-                'tx_power_dbm': (round(cmis.uw_to_dbm(tx_uw), 2)
+                # None at 0 uW, which has no dBm value; the uW says why.
+                'tx_power_dbm': (_round_or_none(cmis.uw_to_dbm(tx_uw), 2)
                                  if has_tx and media else None),
                 'rx_power_uw': round(rx_uw, 2) if has_rx and media else None,
-                'rx_power_dbm': (round(cmis.uw_to_dbm(rx_uw), 2)
+                'rx_power_dbm': (_round_or_none(cmis.uw_to_dbm(rx_uw), 2)
                                  if has_rx and media else None),
                 'tx_bias_ma': round(bias_ma, 3) if has_b and media else None,
                 # Which readings were the module's NA, and for Rx power why.
@@ -3926,19 +3927,30 @@ def api_module_thresholds():
             'vcc_low_alarm':   round(vcc_la, 4),
             'vcc_high_warn':   round(vcc_hw, 4),
             'vcc_low_warn':    round(vcc_lw, 4),
-            'tx_power_high_alarm_dbm': round(cmis.uw_to_dbm(txpwr_ha_uw), 2),
-            'tx_power_low_alarm_dbm':  round(cmis.uw_to_dbm(txpwr_la_uw), 2),
-            'tx_power_high_warn_dbm':  round(cmis.uw_to_dbm(txpwr_hw_uw), 2),
-            'tx_power_low_warn_dbm':   round(cmis.uw_to_dbm(txpwr_lw_uw), 2),
+            # None where the threshold is 0 uW, which has no dBm value; the
+            # uW beside each says so, and that a 0 uW low threshold is one no
+            # reading can cross.
+            'tx_power_high_alarm_dbm': _round_or_none(cmis.uw_to_dbm(txpwr_ha_uw), 2),
+            'tx_power_low_alarm_dbm':  _round_or_none(cmis.uw_to_dbm(txpwr_la_uw), 2),
+            'tx_power_high_warn_dbm':  _round_or_none(cmis.uw_to_dbm(txpwr_hw_uw), 2),
+            'tx_power_low_warn_dbm':   _round_or_none(cmis.uw_to_dbm(txpwr_lw_uw), 2),
+            'tx_power_high_alarm_uw': round(txpwr_ha_uw, 1),
+            'tx_power_low_alarm_uw':  round(txpwr_la_uw, 1),
+            'tx_power_high_warn_uw':  round(txpwr_hw_uw, 1),
+            'tx_power_low_warn_uw':   round(txpwr_lw_uw, 1),
             'tx_bias_high_alarm_ma':   _round_or_none(txbias_ha),
             'tx_bias_low_alarm_ma':    _round_or_none(txbias_la),
             'tx_bias_high_warn_ma':    _round_or_none(txbias_hw),
             'tx_bias_low_warn_ma':     _round_or_none(txbias_lw),
             'tx_bias_scale_unknown':   bias_scale_unknown,
-            'rx_power_high_alarm_dbm': round(cmis.uw_to_dbm(rxpwr_ha_uw), 2),
-            'rx_power_low_alarm_dbm':  round(cmis.uw_to_dbm(rxpwr_la_uw), 2),
-            'rx_power_high_warn_dbm':  round(cmis.uw_to_dbm(rxpwr_hw_uw), 2),
-            'rx_power_low_warn_dbm':   round(cmis.uw_to_dbm(rxpwr_lw_uw), 2),
+            'rx_power_high_alarm_dbm': _round_or_none(cmis.uw_to_dbm(rxpwr_ha_uw), 2),
+            'rx_power_low_alarm_dbm':  _round_or_none(cmis.uw_to_dbm(rxpwr_la_uw), 2),
+            'rx_power_high_warn_dbm':  _round_or_none(cmis.uw_to_dbm(rxpwr_hw_uw), 2),
+            'rx_power_low_warn_dbm':   _round_or_none(cmis.uw_to_dbm(rxpwr_lw_uw), 2),
+            'rx_power_high_alarm_uw': round(rxpwr_ha_uw, 1),
+            'rx_power_low_alarm_uw':  round(rxpwr_la_uw, 1),
+            'rx_power_high_warn_uw':  round(rxpwr_hw_uw, 1),
+            'rx_power_low_warn_uw':   round(rxpwr_lw_uw, 1),
         })
     except Exception as e:
         return _err(str(e), 500)

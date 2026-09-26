@@ -1109,9 +1109,17 @@ def parse_power_uw(raw: bytes) -> float:
     return struct.unpack(">H", raw[:2])[0] * 0.1
 
 
-def uw_to_dbm(uw: float) -> float:
+def uw_to_dbm(uw: float):
+    """Power in dBm, or None for 0 uW - which has no dBm value.
+
+    The registers count in 0.1 uW (Table 8-99, Table 8-65), so the smallest
+    power they express is -40 dBm and a zero is no power at all. This used to
+    return -40.0 for zero: a dark receiver read as a -40 dBm measurement, and
+    a 0 uW low threshold - one no reading can ever cross - as an alarm set at
+    -40 dBm.
+    """
     if uw <= 0:
-        return -40.0
+        return None
     return 10.0 * math.log10(uw / 1000.0)
 
 

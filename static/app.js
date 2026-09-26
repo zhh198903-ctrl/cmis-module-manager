@@ -2084,14 +2084,30 @@ async function _waitForNewVersion(expected) {
 // that applies to a lane (8.32). Colouring every lane by the module-wide
 // numbers is a judgement the module did not make: a lane can sit outside its
 // own alarm threshold and still be painted as healthy.
+// 0 uW has no dBm value; the server sends none and the uW beside it. As a
+// threshold it is -Infinity: a low limit no reading can cross, a high limit
+// every reading does.
+function powerDbm(dbm, uw) {
+  return (typeof dbm === 'number' && Number.isFinite(dbm)) ? dbm
+    : uw === 0 ? -Infinity : null;
+}
+
+function dbmText(dbm) {
+  return dbm === -Infinity ? '\u2212\u221e dBm' : `${dbm.toFixed(2)} dBm`;
+}
+
 function _powerLimits(lane) {
   const t = _moduleThresholds;
   const num = (v, fb) => (typeof v === 'number' && Number.isFinite(v)) ? v : fb;
+  const lim = (key, fb) => {
+    const v = powerDbm(t[key + '_dbm'], t[key + '_uw']);
+    return v === null ? fb : v;
+  };
   const base = t ? {
-    TX_LOW:  num(t.tx_power_low_alarm_dbm,  ALARM_FALLBACK.TX_LOW),
-    TX_HIGH: num(t.tx_power_high_alarm_dbm, ALARM_FALLBACK.TX_HIGH),
-    RX_LOW:  num(t.rx_power_low_alarm_dbm,  ALARM_FALLBACK.RX_LOW),
-    RX_HIGH: num(t.rx_power_high_alarm_dbm, ALARM_FALLBACK.RX_HIGH),
+    TX_LOW:  lim('tx_power_low_alarm',  ALARM_FALLBACK.TX_LOW),
+    TX_HIGH: lim('tx_power_high_alarm', ALARM_FALLBACK.TX_HIGH),
+    RX_LOW:  lim('rx_power_low_alarm',  ALARM_FALLBACK.RX_LOW),
+    RX_HIGH: lim('rx_power_high_alarm', ALARM_FALLBACK.RX_HIGH),
   } : { ...ALARM_FALLBACK };
   // Rx has no per-lane page, so only the Tx pair can be replaced.
   if (lane && lane.tx_threshold_source === '62h') {
@@ -2374,13 +2390,13 @@ async function _loadMonitoringOnce() {
     + (monRes.data.module_state || 'a state other than ModuleReady')
     + ', and CMIS requires monitoring accuracy only in ModuleReady.';
   tbody.innerHTML = lanes.map(lane => {
-    const txDbm = lane.tx_power_dbm;
-    const rxDbm = lane.rx_power_dbm;
+    const txDbm = powerDbm(lane.tx_power_dbm, lane.tx_power_uw);
+    const rxDbm = powerDbm(lane.rx_power_dbm, lane.rx_power_uw);
     const lim = _powerLimits(lane);
     // 6.3.3 again, one level down: the Flags of a lane's own monitors are
     // assured only while its Data Path is in DPInitialized or DPActivated.
     // A lane taken down still publishes a power - this tool's own DPDeinit
-    // leaves every affected lane reading -40 dBm - and colouring that by
+    // leaves every affected lane reading 0 uW - and colouring that by
     // threshold announced a fault on a lane that had simply been switched
     // off. Both conditions have to hold: the module in ModuleReady, and this
     // lane's Data Path up.
@@ -2421,7 +2437,7 @@ async function _loadMonitoringOnce() {
         + 'DPInitialized and DPActivated.'
       : unassuredTip;
     const txTip = `${_TX_SRC_NOTE[lim.TX_SRC]}: `
-                + `${lim.TX_LOW.toFixed(2)} to ${lim.TX_HIGH.toFixed(2)} dBm`
+                + `${dbmText(lim.TX_LOW).replace(' dBm', '')} to ${dbmText(lim.TX_HIGH)}`
                 + (laneAssured ? '' : laneTip);
     // Figure 6-5: four of the seven states are transients. Colouring by name
     // caught two of them and dropped the rest into the same style as a lane
@@ -2448,7 +2464,7 @@ async function _loadMonitoringOnce() {
       <td class="${txCls}" title="${esc(txTip)}">${txDbm == null
         ? (absentLane ? noLane : laneNa.includes('tx_power')
            ? naCell('no valid sample') : noMon('01h:160.1'))
-        : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${txDbm.toFixed(2)} dBm</small>`}</td>
+        : `${lane.tx_power_uw.toFixed(1)} µW<br><small>${dbmText(txDbm)}</small>`}</td>
       <td class="${laneAssured ? '' : 'unassured'}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${
         lane.tx_bias_ma == null ? (absentLane ? noLane : laneNa.includes('tx_bias')
                                    ? naCell('no valid sample')
@@ -2459,7 +2475,7 @@ async function _loadMonitoringOnce() {
       <td class="${rxCls}"${laneAssured ? '' : ` title="${esc(laneTip.trim())}"`}>${rxDbm == null
         ? (absentLane ? noLane : laneNa.includes('rx_power')
            ? naCell(lane.rx_power_na || 'no valid sample') : noMon('01h:160.2'))
-        : `${lane.rx_power_uw.toFixed(1)} µW<br><small>${rxDbm.toFixed(2)} dBm</small>`}</td>
+        : `${lane.rx_power_uw.toFixed(1)} µW<br><small>${dbmText(rxDbm)}</small>`}</td>
       <td class="${lane.state_overrun ? 'state-overrun' : stateClass}"
           title="${esc(dpStateNote(lane))}">${lane.datapath_state}${
         lane.state_overrun ? '<sup>!</sup>' : ''}</td>
@@ -4229,9 +4245,9 @@ async function loadThresholds() {
   const rows = [
     ['Temperature (°C)', '02h / 0x80–0x87', d.temp_high_alarm, d.temp_low_alarm, d.temp_high_warn, d.temp_low_warn],
     ['Vcc (V)',          '02h / 0x88–0x8F', d.vcc_high_alarm,  d.vcc_low_alarm,  d.vcc_high_warn,  d.vcc_low_warn],
-    ['Tx Power (dBm)',   '02h / 0xB0–0xB7', d.tx_power_high_alarm_dbm, d.tx_power_low_alarm_dbm, d.tx_power_high_warn_dbm, d.tx_power_low_warn_dbm],
+    ['Tx Power (dBm)',   '02h / 0xB0–0xB7', ...['high_alarm', 'low_alarm', 'high_warn', 'low_warn'].map(k => pwrThr(d, 'tx_power_' + k))],
     ['Tx Bias (mA)',     '02h / 0xB8–0xBF', d.tx_bias_high_alarm_ma,   d.tx_bias_low_alarm_ma,   d.tx_bias_high_warn_ma,   d.tx_bias_low_warn_ma],
-    ['Rx Power (dBm)',   '02h / 0xC0–0xC7', d.rx_power_high_alarm_dbm, d.rx_power_low_alarm_dbm, d.rx_power_high_warn_dbm, d.rx_power_low_warn_dbm],
+    ['Rx Power (dBm)',   '02h / 0xC0–0xC7', ...['high_alarm', 'low_alarm', 'high_warn', 'low_warn'].map(k => pwrThr(d, 'rx_power_' + k))],
   ];
 
   // 02h:144-175 (Table 8-64). The Aux readings were on screen in Module Info
@@ -4272,6 +4288,18 @@ async function loadThresholds() {
       <td class="lw">${thr(lw)}</td>
     </tr>`
   ).join('');
+}
+
+// A power threshold cell: 0 uW has no dBm value, and as a low limit it is one
+// no reading can cross - it was printed as -40.00, an alarm level it is not.
+function pwrThr(d, key) {
+  const dbm = d[key + '_dbm'];
+  if (typeof dbm === 'number') return dbm;
+  if (d[key + '_uw'] !== 0) return dbm;
+  return `<span title="${esc('0 \u00b5W (Table 8-65 counts in 0.1 \u00b5W): '
+    + (key.includes('low') ? 'no reading is below it, so it never trips'
+                           : 'every reading is above it'))}">\u2212\u221e`
+    + ` <small>0 \u00b5W</small></span>`;
 }
 
 // ---------------------------------------------------------------------------

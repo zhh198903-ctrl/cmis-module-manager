@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 0 µW 没有 dBm
+
+`/api/module/monitoring` 的 `tx_power_dbm` / `rx_power_dbm` 在读数为 0 µW 时是 `null`(看 `*_uw` 为 0.0);`/api/module/thresholds` 的功率阈值同理,另带 `*_uw`。0 µW 的低阈值永远不会触发,别当成 −40 dBm 的告警线。
+
 ## 暂存 DPIDX 由工具按数据通路写
 
 `POST /api/module/datapath` 写 `10h:145-152` 时,每条通道的 DPIDX(bit 3-1)写成它所在数据通路的最低通道号减 1(按 Application 宽度分组,Bank 内计),ExplicitControl 保留原值(6.2.3.2.2、Table 8-102)。

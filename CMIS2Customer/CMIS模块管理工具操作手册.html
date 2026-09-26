@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.167.0<br>
+      <b>版本</b>　2.168.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.167.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.167.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.168.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.168.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1727,6 +1727,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>0 µW 不是 −40 dBm</h3>
+  <p>光功率寄存器以 0.1 µW 为单位(Table 8-99、8-65),能表达的最小功率是 −40 dBm;读数为 0 就是<b>没有光</b>,没有对应的 dBm 值(−∞)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前把 0 µW 换算成 −40.00 dBm:没有光的接收端、或者被 DPDeinit 关掉的通道,都显示成一个 −40 dBm 的「读数」;阈值页里为 0 µW 的低告警阈值(任何读数都不可能低于它)也显示成「−40 dBm 告警」,并据此给通道上色。</span>
+  </div>
+  <p>现在:0 µW 显示为 <b>0.0 µW / −∞ dBm</b>;阈值为 0 µW 时显示 <b>−∞ 0 µW</b>,悬停说明低阈值永远不会触发(高阈值则任何读数都超过)。监控表按这个语义上色。接口里对应的 <code>*_dbm</code> 为 <code>null</code>,阈值接口另给出每个功率阈值的 <code>*_uw</code>。</p>
 
   <h3>16 通道模块上,第 9 条以后的寄存器提示按 Bank 标注</h3>
   <p>Page 10h / 12h / 13h / 15h 是按 Bank 分的:Bank b 对应通道 8b+1 到 8b+8,所以 16 通道模块上的第 9 条通道是 <b>Bank 1 的 Lane1</b>,字节和位都与第 1 条通道相同。</p>
@@ -4733,7 +4741,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.167.0<br>
+    CMIS Module Manager 操作手册 v2.168.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

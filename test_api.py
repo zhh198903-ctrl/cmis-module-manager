@@ -277,9 +277,9 @@ class TestMonitoringPresentation(CMISTestCase):
         # asserting its old spelling proved nothing about the colouring.
         body = js[js.index('function _powerLimits('):]
         body = body[:body.index(chr(10) + '}')]
-        self.assertRegex(body, r'num\(t\.tx_power_low_alarm_dbm',
+        self.assertRegex(body, r"lim\('tx_power_low_alarm',",
                          'the module-wide low alarm is not consulted')
-        self.assertRegex(body, r'num\(t\.rx_power_high_alarm_dbm',
+        self.assertRegex(body, r"lim\('rx_power_high_alarm',",
                          'the module-wide high alarm is not consulted')
         self.assertRegex(js, r'const lim = _powerLimits\(',
                          'the monitoring row computes no limits at all')
@@ -6608,12 +6608,13 @@ class TestCmisRegisters(unittest.TestCase):
         self.assertAlmostEqual(parse_power_uw(raw), 500.0, places=3)
 
     def test_uw_to_dbm_zero(self):
+        """0 uW has no dBm value (round 118) - not -40."""
         from cmis_registers import uw_to_dbm
-        self.assertEqual(uw_to_dbm(0), -40.0)
+        self.assertIsNone(uw_to_dbm(0))
 
     def test_uw_to_dbm_negative(self):
         from cmis_registers import uw_to_dbm
-        self.assertEqual(uw_to_dbm(-1), -40.0)
+        self.assertIsNone(uw_to_dbm(-1))
 
     def test_uw_to_dbm_1000uw_is_0dbm(self):
         from cmis_registers import uw_to_dbm
@@ -19295,6 +19296,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-136': 'Diagnostics Selection Register (Page 14h)',
         '8-137': 'Diagnostics Selector Options',
         '8-131': 'Loopback Controls (Page 13h)',
+        '8-65': 'Lane-Related Monitor Thresholds (Page 02h)',
         '8-132': 'Host Scratchpad Area (Page 13h)',
         '8-133': 'Diagnostics Masks (Page 13h)',
         '8-134': 'User Pattern (Page 13h)',
@@ -35663,6 +35665,112 @@ class TestLaneFieldsAreNamedPerBank(CMISTestCase):
                         '15h / 0xE0+2((n−1)%8)', '15h / 0xF0+2((n−1)%8)'):
             self.assertIn(formula, html)
         self.assertNotIn('+(n−1)×2', html)
+
+
+class TestNoPowerIsNotMinusFortyDbm(CMISTestCase):
+    """The optical power registers count in 0.1 uW (Tables 8-99, 8-65), so
+    the smallest power they express is -40 dBm and zero is no power at all -
+    there is no dBm for it. uw_to_dbm returned -40.0 for zero: a dark
+    receiver, or a lane this tool's own DPDeinit had switched off, read as a
+    -40.00 dBm measurement; and a 0 uW low threshold - one no reading can
+    ever cross - was printed as an alarm set at -40 dBm and coloured lanes by
+    it. Now zero has no dBm: the replies send none beside the uW, the page
+    shows -inf, and a 0 uW low threshold never trips."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def test_the_conversion(self):
+        import cmis_registers as c
+        self.assertIsNone(c.uw_to_dbm(0))
+        self.assertAlmostEqual(c.uw_to_dbm(0.1), -40.0)
+        self.assertAlmostEqual(c.uw_to_dbm(1000.0), 0.0)
+
+    def test_a_dark_receiver_has_no_dbm(self):
+        self._connect()
+        b = _state['backend']
+        # a copy: _profile is the class's PROFILE, shared by every instance
+        b._profile = dict(b._profile, rx_power_uw_nom=0)
+        lane = self.assertOk(self.client.get('/api/module/monitoring'))[
+            'data']['lanes'][0]
+        self.assertEqual(lane['rx_power_uw'], 0.0)
+        self.assertIsNone(lane['rx_power_dbm'])
+
+    def test_a_zero_threshold_has_no_dbm_and_says_so(self):
+        self._connect()
+        poke(0x02, 0xB2, 0x00)                     # Tx power low alarm MSB
+        poke(0x02, 0xB3, 0x00)
+        t = self.assertOk(self.client.get('/api/module/thresholds'))['data']
+        self.assertIsNone(t['tx_power_low_alarm_dbm'])
+        self.assertEqual(t['tx_power_low_alarm_uw'], 0.0)
+        self.assertIsNotNone(t['tx_power_high_alarm_dbm'])
+        self.assertGreater(t['rx_power_low_alarm_uw'], 0)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr, thresholds='null'):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const ALARM_FALLBACK={TX_LOW:-10,TX_HIGH:3,RX_LOW:-10,RX_HIGH:3};'
+                  'const _moduleThresholds=' + thresholds + ';'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function powerDbm\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function dbmText\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function _powerLimits\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function pwrThr\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_dark_reading_is_minus_infinity(self):
+        self.assertEqual(self._run("dbmText(powerDbm(null, 0))"), '−∞ dBm')
+        self.assertEqual(self._run("dbmText(powerDbm(-3.5, 447))"), '-3.50 dBm')
+        self.assertIsNone(self._run("powerDbm(null, undefined)"))
+
+    def test_a_zero_low_threshold_never_trips(self):
+        t = ("{tx_power_low_alarm_dbm: null, tx_power_low_alarm_uw: 0,"
+             " tx_power_high_alarm_dbm: 5, tx_power_high_alarm_uw: 3162,"
+             " rx_power_low_alarm_dbm: -20, rx_power_low_alarm_uw: 10,"
+             " rx_power_high_alarm_dbm: null, rx_power_high_alarm_uw: 0}")
+        lim = self._run("(l => [l.TX_LOW === -Infinity, l.TX_HIGH, l.RX_LOW,"
+                        " l.RX_HIGH === -Infinity])(_powerLimits(null))", t)
+        self.assertEqual(lim, [True, 5, -20, True])
+        # A dark lane is not below a 0 uW low limit
+        self.assertFalse(self._run("-Infinity < _powerLimits(null).TX_LOW", t))
+        # and one the module never stated falls back as before
+        self.assertEqual(self._run(
+            "_powerLimits(null).TX_LOW",
+            "{tx_power_low_alarm_dbm: null, tx_power_low_alarm_uw: 5}"), -10)
+
+    def test_the_thresholds_table_says_zero(self):
+        cell = self._run("pwrThr({tx_power_low_alarm_dbm: null, "
+                         "tx_power_low_alarm_uw: 0}, 'tx_power_low_alarm')")
+        self.assertIn('−∞', cell)
+        self.assertIn('0 µW', cell)
+        self.assertIn('never trips', cell)
+        self.assertEqual(self._run("pwrThr({tx_power_low_alarm_dbm: -8.01, "
+                                   "tx_power_low_alarm_uw: 158}, "
+                                   "'tx_power_low_alarm')"), -8.01)
+
+    def test_the_page_uses_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn('const rxDbm = powerDbm(lane.rx_power_dbm, lane.rx_power_uw);', js)
+        self.assertIn("µW<br><small>${dbmText(rxDbm)}</small>", js)
+        self.assertIn("map(k => pwrThr(d, 'rx_power_' + k))", js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
