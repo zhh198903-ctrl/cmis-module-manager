@@ -611,6 +611,13 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 「重启过」看 Host Scratchpad,不看 ModuleStateChangedFlag
+
+Table 6-9:ModuleStateChangedFlag(`Lower 0x08[0]`)在进入 ModuleLowPwr / ModuleReady / ModuleFault 时置位,切低功耗再回来也会置,不代表重启。
+8.16.13:模块每次固件重启(含自恢复重启)清零 Host Scratchpad(`13h:184-191`,`01h:251.7-6` 声明)。工具在它全 0 时写入以 `CMIS` 开头的标记,`GET /api/module/status` 每次读回:
+`seen` 里的 `module_restarted` 才是重启;`restart_watch` 为 `armed`(在监视)、`foreign`(里面是别的主机的数据,不动它)、`unsupported` / `unknown`(无法判断)、`unreadable`。
+用户问「模块是不是自己重启了」:看 `module_restarted`,不是 `module_state_changed`。
+
 ## 关掉一路 Tx:整条数据通道到 Initialized
 
 Eq. 6-12:DPDeactivateS 含 DPTxDisableT 和 DPTxForceSquelchT,对数据通道的所有媒体通道取或。

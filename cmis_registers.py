@@ -748,6 +748,8 @@ REG_HOST_PRBS_GEN    = (0x13, 0x90, 8)   # 144-151
 REG_MEDIA_PRBS_GEN   = (0x13, 0x98, 8)   # 152-159
 REG_HOST_PRBS_CHK    = (0x13, 0xA0, 8)   # 160-167
 REG_MEDIA_PRBS_CHK   = (0x13, 0xA8, 8)   # 168-175
+# 184-191 HostScratchPad0-7 (Table 8-132), RW, advertised in 01h:251.7-6.
+REG_HOST_SCRATCHPAD  = (0x13, 0xB8, 8)
 # 128-142 are the diagnostic capability advertisements: which loopbacks the
 # module has, how it can gate a measurement, and which patterns each generator
 # and checker actually supports. Offering the rest is offering nothing.

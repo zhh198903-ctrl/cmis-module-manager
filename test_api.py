@@ -19294,6 +19294,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-136': 'Diagnostics Selection Register (Page 14h)',
         '8-137': 'Diagnostics Selector Options',
         '8-131': 'Loopback Controls (Page 13h)',
+        '8-132': 'Host Scratchpad Area (Page 13h)',
         '8-133': 'Diagnostics Masks (Page 13h)',
         '8-134': 'User Pattern (Page 13h)',
         '8-135': 'Page 14h Overview',
@@ -19309,6 +19310,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-188': 'Host Lane Polarity Inversion Indication (Page 60h)',
         # Chapter 10 - timings rather than registers, so they name no
         # page and the cross-page check skips them.
+        '6-9': 'ModuleStateChangedFlag behaviors',
         '6-13': 'LowPwrExS transition signal truth table',
         '6-18': 'Data Path state behaviors and Exit Conditions',
         '6-19': 'Data Path State Changed Flag behaviors',
@@ -34693,6 +34695,213 @@ class TestAStartOrStopReachesEveryBank(CMISTestCase):
                       '_prbsStartStopGlobal\n            && !(lolSeen && '
                       'lolSeen[i] === null)', js)
         self.assertIn("onchange=\"mirrorCheckerEnable('${tbodyId}', ${i})\"", js)
+
+
+class TestARestartIsToldByTheScratchpad(CMISTestCase):
+    """8.16.13: "The module clears the Scratchpad area on each Firmware
+    restart, including auto-recovery reboots"; Table 8-132 (13h:184-191,
+    advertised in 01h:251.7-6): "It can therefore also be used by the host to
+    detect a module-initiated recovery reboot."
+
+    Module Info's "Module Restarts" row was ModuleStateChangedFlag, which
+    Table 6-9 sets on entering ModuleLowPwr, ModuleReady or ModuleFault - so
+    pressing Low Power and back said "Restarted since last clear", and the
+    register made for the question was never read. The demos advertised the
+    area and kept it across a reset, and flagged every state change,
+    ModulePwrUp and the pass-through ModuleLowPwr of a reset included.
+
+    Now the row is two: the state change as what it is, and a restart told by
+    a mark the tool keeps in the scratchpad - written only where the area is
+    empty, so another host's data is left alone."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def _control(self, **body):
+        self.assertOk(self.client.post(
+            '/api/module/control', data=json.dumps(body),
+            content_type='application/json'))
+
+    def _pad(self):
+        p13 = _state['backend']._registers[0x13]
+        return bytes(p13.get(a, 0) for a in range(0xB8, 0xC0))
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_a_mark_is_left_where_the_area_is_empty(self):
+        self._connect()
+        self.assertEqual(self._pad(), bytes(8))
+        d = self._status()
+        self.assertEqual(d['restart_watch'], 'armed')
+        self.assertNotIn('module_restarted', d['seen'],
+                         'leaving the first mark is not a restart')
+        self.assertEqual(self._pad()[:4], b'CMIS')
+        self.assertEqual(self._status()['restart_watch'], 'armed')
+
+    def test_a_power_mode_change_is_not_a_restart(self):
+        self._connect()
+        self._status()
+        self.client.post('/api/module/flags/clear')
+        self._control(action='low_power')
+        self._status()
+        self._control(action='high_power')
+        time.sleep(0.2)
+        seen = self._status()['seen']
+        self.assertIn('module_state_changed', seen)
+        self.assertNotIn('module_restarted', seen)
+
+    def test_a_reset_is_a_restart(self):
+        self._connect()
+        self._status()
+        self.client.post('/api/module/flags/clear')
+        self._control(software_reset=True)
+        deadline = time.time() + 3.0
+        seen = []
+        while time.time() < deadline and 'module_restarted' not in seen:
+            time.sleep(0.1)
+            rv = json.loads(self.client.get('/api/module/status').data)
+            if rv['status'] == 'ok':            # not while it initialises
+                seen = rv['data']['seen']
+        self.assertIn('module_restarted', seen)
+        self.assertEqual(self._pad()[:4], b'CMIS', 're-armed')
+        self.client.post('/api/module/flags/clear')
+        self.assertNotIn('module_restarted', self._status()['seen'],
+                         'one restart is reported once')
+
+    def test_another_hosts_data_is_left_alone(self):
+        self._connect()
+        theirs = bytes(range(1, 9))
+        for i, v in enumerate(theirs):
+            _state['backend']._registers[0x13][0xB8 + i] = v
+        self.assertEqual(self._status()['restart_watch'], 'foreign')
+        self.assertEqual(self._pad(), theirs)
+
+    def test_a_mark_left_before_a_reconnect_is_this_tools(self):
+        self._connect()
+        self._status()
+        mark = self._pad()
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        # the same demo instance is not kept across a connect, so put the
+        # mark back the way a real module would still hold it
+        for i, v in enumerate(mark):
+            _state['backend']._registers[0x13][0xB8 + i] = v
+        d = self._status()
+        self.assertEqual(d['restart_watch'], 'armed')
+        self.assertNotIn('module_restarted', d['seen'])
+        self.assertEqual(self._pad(), mark)
+
+    def test_a_cleared_mark_is_a_restart_even_across_a_quiet_poll(self):
+        self._connect()
+        self._status()
+        for a in range(0xB8, 0xC0):
+            _state['backend']._registers[0x13][a] = 0
+        self.assertIn('module_restarted', self._status()['seen'])
+
+    def test_not_advertised_is_not_detectable(self):
+        self._connect('mock_fr4x2')             # 01h:251.7-6 = 01b
+        self.assertEqual(self._status()['restart_watch'], 'unsupported')
+        self.assertEqual(self._pad(), bytes(8), 'nothing written')
+
+    def test_an_unknown_advertisement_is_not_written_to(self):
+        self._connect()
+        _state['caps']['features']['scratch_pad'] = 'unknown'
+        self.assertEqual(self._status()['restart_watch'], 'unknown')
+        self.assertEqual(self._pad(), bytes(8))
+
+    def test_no_page_13h_no_scratchpad(self):
+        self._connect()
+        _state['caps']['diagnostic_pages_supported'] = False
+        self.assertEqual(self._status()['restart_watch'], 'unsupported')
+        self.assertEqual(self._pad(), bytes(8))
+
+    # ---- the demo ----------------------------------------------------------------------------
+    def test_the_demo_clears_the_area_on_a_reset(self):
+        self._connect()
+        self._status()
+        self.assertNotEqual(self._pad(), bytes(8))
+        b = _state['backend']
+        b.write_bytes(0x1A, bytes([0x08]))
+        self.assertEqual(self._pad(), bytes(8))
+
+    def test_the_demo_flags_what_table_6_9_says(self):
+        self._connect()
+        b = _state['backend']
+        lower = b._registers[None]
+
+        def enter(reset_ago=None, low_power=False):
+            lower[0x08] = 0
+            b._reset_time = 0 if reset_ago is None else time.time() - reset_ago
+            b._lp_request_time = time.time() if low_power else 0
+            b._update_state_machine()
+            return b._module_state, bool(lower.get(0x08, 0) & 1)
+
+        self.assertEqual(enter(low_power=True), (0b001, True))   # LowPwr: yes
+        self.assertEqual(enter(), (0b011, True))                  # Ready: yes
+        self.assertEqual(enter(reset_ago=0.1), (0b001, False),
+                         'the LowPwr a reset passes through is left at once')
+        self.assertEqual(enter(reset_ago=0.5), (0b010, False))   # PwrUp: no
+        self.assertEqual(enter(reset_ago=1.0), (0b011, True))
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function moduleStateChangeCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/const RESTART_WATCH_NOTES = [\s\S]*?\r?\n};\r?\n/)[0]'
+                  r' + s.match(/function moduleRestartCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_state_change_is_called_one(self):
+        cell = self._run("moduleStateChangeCell({seen: ['module_state_changed']})")
+        self.assertIn('State changed since last clear', cell)
+        self.assertNotIn('Restart', cell)
+
+    def test_a_restart_is_called_one(self):
+        self.assertIn('Restarted since last clear', self._run(
+            "moduleRestartCell({seen: ['module_restarted'], restart_watch: 'armed'})"))
+        self.assertNotIn('Restarted', self._run(
+            "moduleRestartCell({seen: ['module_state_changed'], restart_watch: 'armed'})"))
+        for state, words in (('unsupported', 'no Host Scratchpad'),
+                             ('unknown', '01h:251.7-6 = 00b'),
+                             ('foreign', 'another host'),
+                             ('unreadable', 'could not be read')):
+            self.assertIn(words, self._run(
+                "moduleRestartCell({seen: [], restart_watch: '%s'})" % state))
+        self.assertIn('None', self._run(
+            "moduleRestartCell({seen: [], restart_watch: 'armed'})"))
+
+    def test_the_rows_and_the_header_use_them(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("['Module State Changes', moduleStateChangeCell(s), 'Lower', '0x08[0]'", js)
+        self.assertIn("['Module Restarts', moduleRestartCell(s), '13h', '0xB8-0xBF'", js)
+        header = js[js.index('function renderHealthIndicator('):]
+        header = header[:header.index(chr(10) + '}')]
+        self.assertLess(header.index("includes('module_restarted')"),
+                        header.index("includes('module_state_changed')"))
+        self.assertIn('a reset or a power-mode change (Table 6-9)', header)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

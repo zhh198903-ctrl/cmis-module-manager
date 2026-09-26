@@ -941,7 +941,8 @@ async function loadInfo() {
         + flagsSummaryNote(s.flags_summary),
      'Lower', '0x03[0]',
      'InterruptDeasserted (Table 8-6) — the module\'s own request for the host\'s attention, reported with its sense inverted. CMIS asserts it "as long as any Flag is set with its associated Mask cleared", so a Flag showing here with no Interrupt is one whose Mask is set'],
-    ['Module Restarts', moduleRestartCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (CMIS 6.3.2) — latched, cleared by the read that reports it'],
+    ['Module State Changes', moduleStateChangeCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (Table 6-9) — set on entering ModuleLowPwr, ModuleReady or ModuleFault: a reset, but equally a power-mode change. Latched, cleared by the read that reports it'],
+    ['Module Restarts', moduleRestartCell(s), '13h', '0xB8-0xBF', 'Host Scratchpad (8.16.13, Table 8-132) — the module clears it on every firmware restart, including recovery reboots. The tool keeps a mark there and reports a restart when it is gone'],
     ['Firmware Faults', firmwareFlagCell(s), 'Lower', '0x08[3:1]', 'ModuleFirmwareErrorFlag, DataPathFirmwareErrorFlag and AbnormalFwIndicationFlag (Table 8-9) — latched, cleared by the read that reports them'],
   ];
 
@@ -1098,13 +1099,33 @@ function firmwareFlagCell(s) {
 }
 
 // ModuleStateChangedFlag is latched and clear-on-read, so the poll that
-// notices a restart is also the one that erases it. What is worth showing is
-// the history, not the single frame it was true in.
-function moduleRestartCell(s) {
+// notices a change is also the one that erases it. What is worth showing is
+// the history, not the single frame it was true in. Table 6-9 sets it on
+// entering ModuleLowPwr, ModuleReady or ModuleFault - it said "Restarted",
+// and pressing Low Power and back is not a restart.
+function moduleStateChangeCell(s) {
   const seen = (s.seen || []).includes('module_state_changed');
   if (s.module_state_changed) return '<span class="text-warning">Changing state now</span>';
-  if (seen) return '<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">Restarted since last clear</span>';
+  if (seen) return '<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">State changed since last clear</span>';
   return '<span class="text-success">None</span>';
+}
+
+// 8.16.13: the module clears the Host Scratchpad on every firmware restart,
+// and the tool keeps a mark there (_restart_watch). Where it cannot, say why
+// rather than "None", which would read as "did not restart".
+const RESTART_WATCH_NOTES = {
+  unsupported: 'Not detectable \u2014 this module has no Host Scratchpad (01h:251.7-6)',
+  unknown: 'Not detectable \u2014 the module does not say whether it has a Host Scratchpad (01h:251.7-6 = 00b)',
+  foreign: 'Not watched \u2014 the Host Scratchpad (13h:184-191) holds another host\u2019s data, left as it is',
+  unreadable: 'Not watched \u2014 the Host Scratchpad could not be read',
+};
+
+function moduleRestartCell(s) {
+  if ((s.seen || []).includes('module_restarted'))
+    return '<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">Restarted since last clear</span>';
+  const note = RESTART_WATCH_NOTES[s.restart_watch];
+  return note ? `<span class="text-muted">${esc(note)}</span>`
+              : '<span class="text-success">None</span>';
 }
 
 // Table 8-45. An active optical cable zeroes this whole table and reports its
@@ -1721,8 +1742,10 @@ function renderHealthIndicator(s, flags) {
   const chips = [];
   if (s.alarm_active)
     chips.push(['danger', '⚠', '', 'A monitored value is outside its alarm threshold right now']);
-  if ((s.seen || []).includes('module_state_changed'))
-    chips.push(['warning', '↺', '', 'The module entered a new Module State since the last Clear flag history - a reset or a power event']);
+  if ((s.seen || []).includes('module_restarted'))
+    chips.push(['warning', '↺', '', 'The module restarted since the last Clear flag history - its Host Scratchpad (13h:184-191) was cleared']);
+  else if ((s.seen || []).includes('module_state_changed'))
+    chips.push(['warning', '↺', '', 'The module entered a new Module State since the last Clear flag history - a reset or a power-mode change (Table 6-9)']);
   // Table 8-9: the module's own firmware, or a DSP's, reported a failure.
   const fwFault = ['module_firmware_error', 'datapath_firmware_error']
     .some(k => (s.firmware_flags || {})[k] || (s.seen || []).includes(k));

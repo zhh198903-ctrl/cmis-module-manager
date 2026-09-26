@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.159.0<br>
+      <b>版本</b>　2.160.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.159.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.159.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.160.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.160.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>「模块状态变化」不再叫「重启」</h3>
+  <p>规范 Table 6-9:ModuleStateChangedFlag 只在进入 ModuleLowPwr、ModuleReady、ModuleFault 时置位;如果新状态的退出条件在进入时就已满足(例如复位后没有被要求保持低功耗),这一次不置位。真正判断模块是否重启,规范 8.16.13 给的是 Host Scratchpad:模块每次固件重启都会把它清零。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>Module Info 以前把 ModuleStateChangedFlag 显示成「Module Restarts / Restarted since last clear」:在页面上切一次低功耗再切回来,就报告模块重启过——其实什么都没重启。而规范专门用来回答这个问题的寄存器,工具从来没读过。演示模块声明支持 Host Scratchpad,复位时却不清零;每一次状态变化(包括 ModulePwrUp)都置 ModuleStateChangedFlag。</span>
+  </div>
+  <p>现在:原来那一行改名为 <b>Module State Changes</b>,显示「State changed since last clear」;新增 <b>Module Restarts</b> 一行,由 Host Scratchpad 判断(说明见「Module State Changes 与 Module Restarts」一节)。顶栏 ↺ 悬停会说明是重启还是状态变化。演示模块复位时清零 Host Scratchpad,并按 Table 6-9 置位 ModuleStateChangedFlag。</p>
 
   <h3>13h:177.7 置 1 时,各 Bank 的检测器一起启停</h3>
   <p>规范 Table 8-127:<code>13h:177.7</code> StartStopIsGlobal 置 1 时,在一个 Bank 上改启停控制——<code>160</code> / <code>168</code> 的检测器使能、<code>177.5</code> ResetErrorInformation——「如同在所有 Bank 上做了同样的改动」。以哪个 Bank 的这一位为准,看写的是哪个 Bank。门控测量并且只有全局定时器(<code>13h:129.3</code> = 0)时这一位被忽略(Table 8-129)。</p>
@@ -3706,8 +3714,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
             <td>当前有监控值超出告警阀值</td>
             <td class="label">Lower 0x09（实时状态，不是历史）</td></tr>
         <tr><td><b style="color:#f9e2af">↺</b></td>
-            <td>模块重启过（自上次 Clear 起）</td>
-            <td class="label">Lower 0x08[0] ModuleStateChangedFlag</td></tr>
+            <td>模块重启过，或进入过新的 Module State（自上次 Clear 起），悬停说明是哪一种</td>
+            <td class="label">13h:184–191 Host Scratchpad / Lower 0x08[0] ModuleStateChangedFlag</td></tr>
         <tr><td><b style="color:#f9e2af">↯&thinsp;N</b></td>
             <td>有 N 条数据通道弹过（自上次 Clear 起）</td>
             <td class="label">11h:134 DPStateChangedFlag</td></tr>
@@ -3750,20 +3758,25 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <b>Connect</b> 即可继续，不需要刷新页面。</span>
   </div>
 
-  <h3>Module Restarts —— 模块自己重启过的记录</h3>
-  <p>上面讲的是单条通道。模块整体也有一个对应的标志：
-     <b>ModuleStateChangedFlag</b>（<code>Lower 0x08[0]</code>，CMIS 6.3.2）。
-     模块每次进入新的 Module State 都会置位——复位、掉电又上电、
-     固件切换都算。</p>
+  <h3>Module State Changes 与 Module Restarts —— 模块整体的两条记录</h3>
+  <p>上面讲的是单条通道。模块整体有两条对应的记录,在 Module Info 里各占一行:</p>
+  <ul>
+    <li><b>Module State Changes</b>:<b>ModuleStateChangedFlag</b>(<code>Lower 0x08[0]</code>)。规范 Table 6-9:进入 ModuleLowPwr、ModuleReady 或 ModuleFault 时置位——复位会点亮它,切一次低功耗再回来<b>同样</b>会点亮它。</li>
+    <li><b>Module Restarts</b>:规范 8.16.13 的 <b>Host Scratchpad</b>(<code>13h:184–191</code>,<code>01h:251.7-6</code> 声明)。模块每次固件重启(包括自恢复重启)都会把它清零,规范明说主机可以用它发现模块自己重启过。工具连接后在这里留一个标记,每次刷新读回;标记没了,就是重启过。</li>
+  </ul>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
-    <span>它同样是闩锁、读清的。一个模块在两次刷新之间重启完成，
+    <span>这两种标志都是闩锁的。一个模块在两次刷新之间重启完成，
     前后两帧看到的都是 <b>ModuleReady</b>，温度电压也正常——
     <b>没有任何一栏会告诉你它刚刚重启过</b>。
-    现在 Module Info 里的 <b>Module Restarts</b> 一行会保留
-    <span class="flag-was">●<sup>!</sup></span> <i>Restarted since last clear</i>，
-    顶部摘要栏同时出现 <b>↺ Restarted</b>。
+    所以两行都保留 <span class="flag-was">●<sup>!</sup></span> 历史
+    (<i>State changed since last clear</i> / <i>Restarted since last clear</i>)，
+    顶部摘要栏同时出现 <b>↺</b>。
     与 Lane Flags 的历史共用同一个 <b>Clear flag history</b> 按钮。</span>
+  </div>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span>Host Scratchpad 是给主机存东西用的,工具只在它<b>全为 0</b>(没人在用)时才写入标记;里面已有别的主机软件的数据时原样不动,这一行显示「Not watched」。模块没有声明支持 Host Scratchpad、或不是分页内存模块时显示「Not detectable」——这时只能看上面那一行。</span>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -4663,7 +4676,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.159.0<br>
+    CMIS Module Manager 操作手册 v2.160.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

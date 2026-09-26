@@ -1941,8 +1941,16 @@ class MockBackend(I2CInterface):
         # It is a Flag, so it latches until read - a module that reset and came
         # back between two polls is otherwise indistinguishable from one that
         # never moved.
+        # Table 6-9: flagged on entering ModuleLowPwr, ModuleReady or
+        # ModuleFault - not ModulePwrUp or ModulePwrDn - and "suppressed when
+        # the new state is exited immediately because its exit conditions are
+        # already fulfilled on entry", as the ModuleLowPwr on the way up from
+        # a reset is. Every change was flagged here.
         if self._module_state != self._last_module_state:
-            self._registers[None][0x08] =                 self._registers[None].get(0x08, 0) | 0x01
+            if self._module_state in (0b011, 0b101) or (
+                    self._module_state == 0b001 and not self._reset_time):
+                self._registers[None][0x08] = (
+                    self._registers[None].get(0x08, 0) | 0x01)
             self._banks_follow_module_state(self._module_state == 0b011)
             self._last_module_state = self._module_state
         # Bit 0 is InterruptDeasserted and is set at the end of the refresh,
@@ -2829,6 +2837,13 @@ class MockBackend(I2CInterface):
                     # cache is required to be invalidated here at all. With
                     # the mock following the module, a missed invalidation
                     # reads Page 00h and shows it.
+                    # 8.16.13: "The module clears the Scratchpad area on
+                    # each Firmware restart" - the host's way to tell one
+                    # happened. The demos advertised the area (01h:251.7-6)
+                    # and kept it across a reset.
+                    for _lb, regs in self._banked_page_dicts(0x13):
+                        for a in range(0xB8, 0xC0):
+                            regs[a] = 0x00
                     self._current_page = 0x00
                     self._current_bank = 0x00
                     self._prev_selected = None

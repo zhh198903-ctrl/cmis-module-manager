@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.159.0'
+__version__ = '2.160.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -88,6 +88,9 @@ _state = {
     # long it has been in one is the only way to tell a slow commissioning
     # from a module that has stopped.
     'dp_state_since': {},
+    # What this tool left in the Host Scratchpad (13h:184-191) to tell a
+    # module restart by; see _restart_watch.
+    'scratch_mark': None,
 }
 
 
@@ -1463,6 +1466,7 @@ def api_connect():
     # between the demo profiles works.
     _state['flag_history'] = {}
     _state['flag_history_since'] = None
+    _state['scratch_mark'] = None
     _state['bus'] = bus
     _state['address'] = address
     _invalidate_page()
@@ -1491,6 +1495,7 @@ def api_disconnect():
     _state['caps'] = {}
     _state['flag_history'] = {}
     _state['flag_history_since'] = None
+    _state['scratch_mark'] = None
     _invalidate_page()
     _forget_verified_pages()
     return _ok({'message': 'Disconnected'})
@@ -1621,6 +1626,54 @@ def api_module_info():
         return _err(str(e), 500)
 
 
+# Marks this tool leaves in the Host Scratchpad start with this, so one left
+# before a reconnect is known for its own and not taken for another host's.
+_SCRATCH_TAG = b'CMIS'
+
+
+def _restart_watch() -> dict:
+    """Whether the module restarted, from the Host Scratchpad (13h:184-191).
+
+    8.16.13: "The module clears the Scratchpad area on each Firmware restart,
+    including auto-recovery reboots" - Table 8-132: "It can therefore also be
+    used by the host to detect a module-initiated recovery reboot." The tool
+    keeps a mark there and reads it back each poll: gone means restarted.
+
+    The Module Info row that said "Restarted" was ModuleStateChangedFlag,
+    which Table 6-9 sets on entering ModuleLowPwr, ModuleReady or
+    ModuleFault - so pressing Low Power and back reported a restart that
+    never happened, and nothing read the register made for the question.
+
+    The area belongs to the host, and this tool may not be the only one: a
+    mark is written only where the area reads zero, and data that is not
+    this tool's is left alone ('foreign').
+    """
+    caps = _state.get('caps') or {}
+    adv = (caps.get('features') or {}).get('scratch_pad')
+    if caps.get('flat_memory') or not caps.get('diagnostic_pages_supported',
+                                                  True):
+        return {'state': 'unsupported', 'restarted': False}
+    if adv != 'supported':
+        return {'state': 'unknown' if adv == 'unknown' else 'unsupported',
+                'restarted': False}
+    raw = bytes(_read_upper(*cmis.REG_HOST_SCRATCHPAD))
+    mark = _state.get('scratch_mark')
+    if mark is not None and raw == mark:
+        return {'state': 'armed', 'restarted': False}
+    if any(raw):
+        if raw[:len(_SCRATCH_TAG)] == _SCRATCH_TAG:
+            _state['scratch_mark'] = raw
+            return {'state': 'armed', 'restarted': False}
+        _state['scratch_mark'] = None
+        return {'state': 'foreign', 'restarted': False}
+    restarted = mark is not None
+    mark = _SCRATCH_TAG + os.urandom(4)
+    _set_page(0x13, 0)
+    _bus_write(cmis.REG_HOST_SCRATCHPAD[1], mark)
+    _state['scratch_mark'] = mark
+    return {'state': 'armed', 'restarted': restarted}
+
+
 @app.route('/api/module/status', methods=['GET'])
 def api_module_status():
     err = _require_connected()
@@ -1725,6 +1778,12 @@ def api_module_status():
         for name, value in firmware_flags.items():
             if value:
                 module_seen.add(name)
+        try:
+            watch = _restart_watch()
+        except Exception:
+            watch = {'state': 'unreadable', 'restarted': False}
+        if watch['restarted']:
+            module_seen.add('module_restarted')
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
 
@@ -1756,6 +1815,9 @@ def api_module_status():
             'aux3_raw': struct.unpack(">h", aux3_raw[:2])[0] if len(aux3_raw) >= 2 else 0,
             'aux': aux_monitors,
             'module_state_changed': state_changed,
+            # How a restart is told: 'armed' (Host Scratchpad marked),
+            # 'foreign', 'unsupported', 'unknown' or 'unreadable'.
+            'restart_watch': watch['state'],
             'firmware_flags': firmware_flags,
             # Where the Flags behind an asserted Interrupt are. Read before
             # this poll's other reads clear any of them.
