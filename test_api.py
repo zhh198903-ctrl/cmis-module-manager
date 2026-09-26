@@ -34904,6 +34904,114 @@ class TestARestartIsToldByTheScratchpad(CMISTestCase):
         self.assertIn('a reset or a power-mode change (Table 6-9)', header)
 
 
+class TestAWarningIsNotAnAlarm(CMISTestCase):
+    """Lower 9-11 (Table 8-9): each module monitor - temperature, Vcc, Aux1-3,
+    Custom - has a high and low alarm Flag and a high and low warning Flag,
+    all latched and cleared by the read that reports them.
+
+    `alarm_active` was any of the four, so a temperature warning lit Module
+    Info's red "Alarms: Active", the status bar's "Alarm Active" and a header
+    chip saying a value was outside its alarm threshold. And the row showed
+    only this poll: a Flag that fired between polls went into the history and
+    the row said None. Now alarms and warnings are told apart, and the row -
+    "Module Flags" - names each one and keeps what it has seen."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        self.client.get('/api/module/status')           # start from cleared
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def test_a_warning_alone_is_not_an_alarm(self):
+        self._connect()
+        poke(0, 0x09, 0x04)                             # TempMonHighWarningFlag
+        d = self._status()
+        self.assertTrue(d['temp_high_warn'])
+        self.assertFalse(d['alarm_active'])
+        self.assertTrue(d['warning_active'])
+
+    def test_an_alarm_is_still_an_alarm(self):
+        self._connect()
+        poke(0, 0x09, 0x20)                             # VccMonLowAlarmFlag
+        d = self._status()
+        self.assertTrue(d['alarm_active'])
+        self.assertFalse(d['warning_active'])
+
+    def test_an_aux_warning_is_a_warning(self):
+        self._connect('mock_coherent')                  # has an Aux1 monitor
+        poke(0, 0x0A, 0x08)                             # Aux1MonLowWarningFlag
+        d = self._status()
+        self.assertEqual((d['alarm_active'], d['warning_active']), (False, True))
+
+    def test_nothing_set_is_neither(self):
+        self._connect()
+        d = self._status()
+        self.assertEqual((d['alarm_active'], d['warning_active']), (False, False))
+
+    def test_a_flag_that_fired_is_kept(self):
+        self._connect()
+        poke(0, 0x09, 0x04)
+        self._status()
+        d = self._status()
+        self.assertFalse(d['temp_high_warn'], 'latched, and read once')
+        self.assertIn('temp_high_warn', d['seen'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/const MODULE_MONITOR_NAMES = [\s\S]*?};\r?\n/)[0]'
+                  r' + s.match(/const MODULE_FLAG_LEVELS = [\s\S]*?};\r?\n/)[0]'
+                  r' + s.match(/function moduleFlagsCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_row_names_a_warning_as_one(self):
+        cell = self._run("moduleFlagsCell({temp_high_warn: true})")
+        self.assertIn('<span class="text-warning">Temperature high warning</span>', cell)
+        self.assertNotIn('text-danger', cell)
+
+    def test_the_row_names_an_alarm_as_one(self):
+        cell = self._run("moduleFlagsCell({vcc_low_alarm: true, custom_high_warn: true})")
+        self.assertIn('<span class="text-danger">Vcc low alarm</span>', cell)
+        self.assertIn('Custom high warning', cell)
+
+    def test_the_row_keeps_what_it_has_seen(self):
+        cell = self._run("moduleFlagsCell({seen: ['aux3_low_warn', "
+                         "'module_state_changed']})")
+        self.assertIn('flag-was', cell)
+        self.assertIn('Aux3 low warning since last clear', cell)
+        self.assertNotIn('module_state', cell)
+        self.assertIn('None', self._run("moduleFlagsCell({seen: []})"))
+
+    def test_the_page_uses_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("['Module Flags',    moduleFlagsCell(s), 'Lower', '0x09–0x0B'", js)
+        self.assertNotIn("['Alarms',", js)
+        header = js[js.index('function renderHealthIndicator('):]
+        header = header[:header.index(chr(10) + '}')]
+        self.assertIn("else if (s.warning_active)", header)
+        self.assertIn(": s.warning_active ? `&ensp;|&ensp;<span class=\"text-warning\">▲ Warning</span>`", js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

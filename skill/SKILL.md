@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 模块级告警和警告分开看
+
+`GET /api/module/status` 的 `alarm_active` 只算 `Lower 0x09-0x0B`(Table 8-9)里的**告警**标志,`warning_active` 只算**警告**;逐项在 `temp_high_alarm` / `vcc_low_warn` / `aux1_high_warn` … 里,两次刷新之间出现过的在 `seen` 里。
+页面 Module Info 的 Module Flags 一行逐项列出(告警红、警告黄,历史标 ●!)。用户说「状态栏报 Alarm」时先看是哪一项,别把警告当告警。
+
 ## 「重启过」看 Host Scratchpad,不看 ModuleStateChangedFlag
 
 Table 6-9:ModuleStateChangedFlag(`Lower 0x08[0]`)在进入 ModuleLowPwr / ModuleReady / ModuleFault 时置位,切低功耗再回来也会置,不代表重启。

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.160.0<br>
+      <b>版本</b>　2.161.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.160.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.160.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.161.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.161.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1170,7 +1170,7 @@
       <tbody>
         <tr><td>Temperature</td><td class="label">模块内部温度，signed16 ÷ 256 (°C)</td><td><code>Lower / 0x0E–0x0F</code></td></tr>
         <tr><td>Supply Voltage</td><td class="label">供电电压，uint16 × 100 µV</td><td><code>Lower / 0x10–0x11</code></td></tr>
-        <tr><td>Alarms</td><td class="label">告警摘要（按 0x09–0x0B 的六个模块级监控——温度 / 电压 / Aux1–3 / 自定义——的阈值标志综合判定）</td><td><code>Lower / 0x08–0x0D</code></td></tr>
+        <tr><td>Module Flags</td><td class="label">六个模块级监控(温度 / 电压 / Aux1–3 / 自定义)的告警和警告标志,逐项列出:告警红色、警告黄色;两次刷新之间出现过的保留 ●! 记录</td><td><code>Lower / 0x09–0x0B</code></td></tr>
         <tr><td>Interrupt</td><td class="label">模块<b>有没有在向主机请求中断</b>（IntL 线）。规范里叫 InterruptDeasserted，<b>取值是反的</b>：1 表示没在请求</td><td><code>Lower / 0x03[0]</code></td></tr>
       </tbody>
     </table>
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>警告不是告警</h3>
+  <p>规范 Table 8-9:<code>Lower 0x09–0x0B</code> 里每个模块级监控(温度、电压、Aux1–3、自定义)都有高 / 低<b>告警</b>和高 / 低<b>警告</b>四个标志,闩锁、读清。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前把四个一起算作「告警」:温度只是过了警告阈值,Module Info 就显示红色「Alarms: Active」,状态栏显示「⚠ Alarm Active」,顶栏图标说有值超出了告警阈值。而且这一行只看这一次刷新:两次刷新之间出现过的标志已经记进历史,这一行却显示 None。</span>
+  </div>
+  <p>现在:这一行改名为 <b>Module Flags</b>,逐项列出是哪个监控的哪一级——告警红色、警告黄色——两次刷新之间出现过的保留 <span class="flag-was">●<sup>!</sup></span> 「since last clear」,点 Clear flag history 清掉。只有告警才显示「⚠ Alarm Active」;只有警告时显示黄色「▲ Warning」,顶栏图标也分开。接口 <code>/api/module/status</code> 新增 <code>warning_active</code>,<code>alarm_active</code> 只算告警。</p>
 
   <h3>「模块状态变化」不再叫「重启」</h3>
   <p>规范 Table 6-9:ModuleStateChangedFlag 只在进入 ModuleLowPwr、ModuleReady、ModuleFault 时置位;如果新状态的退出条件在进入时就已满足(例如复位后没有被要求保持低功耗),这一次不置位。真正判断模块是否重启,规范 8.16.13 给的是 Host Scratchpad:模块每次固件重启都会把它清零。</p>
@@ -3711,8 +3719,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <thead><tr><th>图标</th><th>含义</th><th>来源</th></tr></thead>
       <tbody>
         <tr><td><b style="color:#f38ba8">⚠</b></td>
-            <td>当前有监控值超出告警阀值</td>
-            <td class="label">Lower 0x09（实时状态，不是历史）</td></tr>
+            <td>模块级监控(温度 / 电压 / Aux)这次刷新报了告警;只报警告时显示黄色 <b>▲</b></td>
+            <td class="label">Lower 0x09–0x0B(这次刷新读到的标志，不是历史)</td></tr>
         <tr><td><b style="color:#f9e2af">↺</b></td>
             <td>模块重启过，或进入过新的 Module State（自上次 Clear 起），悬停说明是哪一种</td>
             <td class="label">13h:184–191 Host Scratchpad / Lower 0x08[0] ModuleStateChangedFlag</td></tr>
@@ -4676,7 +4684,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.160.0<br>
+    CMIS Module Manager 操作手册 v2.161.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

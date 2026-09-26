@@ -917,7 +917,7 @@ async function loadInfo() {
     ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
     ['Temperature',     moduleMonitorCell(s.temperature_c, 2, '°C', (s.monitors_present || {}).temperature, (s.na || {}).temperature, '01h:159.0'), 'Lower', '0x0E–0x0F',   'Module Temperature (s16/256); NA value -32768 (Table 7-8)'],
     ['Supply Voltage',  moduleMonitorCell(s.voltage_v, 4, 'V', (s.monitors_present || {}).vcc, (s.na || {}).vcc, '01h:159.1'), 'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV); NA value 0 (Table 7-8)'],
-    ['Alarms',          s.alarm_active ? '<span class="text-danger">Active</span>' : '<span class="text-success">None</span>', 'Lower', '0x08–0x0D', 'Module-Level Flags'],
+    ['Module Flags',    moduleFlagsCell(s), 'Lower', '0x09–0x0B', 'Alarm and warning Flags of the module monitors - temperature, Vcc, Aux1-3, Custom (Table 8-9). Latched, cleared by the read that reports them'],
     // The API has computed this from Lower 0x03 since the beginning and
     // nothing displayed it. CMIS defines the line in one sentence - it is
     // "asserted as long as any Flag is set with its associated Mask
@@ -1095,6 +1095,33 @@ function firmwareFlagCell(s) {
     if (seen.includes(k)) return `<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">${FIRMWARE_FLAG_NAMES[k]} since last clear</span>${masked}`;
     return '';
   }).filter(Boolean);
+  return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
+}
+
+// Lower 9-11 (Table 8-9): each module monitor's alarm and warning Flags,
+// latched and cleared by the read. The row was "Alarms: Active" for any of
+// them - a warning included - and one that fired between polls, kept in the
+// history, was never shown: the row said None.
+const MODULE_MONITOR_NAMES = {temp: 'Temperature', vcc: 'Vcc', aux1: 'Aux1',
+                              aux2: 'Aux2', aux3: 'Aux3', custom: 'Custom'};
+const MODULE_FLAG_LEVELS = {high_alarm: 'high alarm', low_alarm: 'low alarm',
+                            high_warn: 'high warning', low_warn: 'low warning'};
+
+function moduleFlagsCell(s) {
+  const seen = s.seen || [];
+  const parts = [];
+  for (const [mon, monName] of Object.entries(MODULE_MONITOR_NAMES)) {
+    for (const [lvl, lvlName] of Object.entries(MODULE_FLAG_LEVELS)) {
+      const k = `${mon}_${lvl}`, name = esc(`${monName} ${lvlName}`);
+      if (s[k] === true) {
+        parts.push(`<span class="${lvl.endsWith('_alarm') ? 'text-danger'
+          : 'text-warning'}">${name}</span>`);
+      } else if (seen.includes(k)) {
+        parts.push('<span class="flag-was">●<sup>!</sup></span> '
+          + `<span class="text-warning">${name} since last clear</span>`);
+      }
+    }
+  }
   return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
 }
 
@@ -1740,8 +1767,11 @@ function renderHealthIndicator(s, flags) {
   const bounced = (flags && flags.lanes || []).filter(
     l => (l.seen || []).includes('dp_state_changed')).length;
   const chips = [];
+  // Module monitors only (Lower 9-11); the lanes have their own table.
   if (s.alarm_active)
-    chips.push(['danger', '⚠', '', 'A monitored value is outside its alarm threshold right now']);
+    chips.push(['danger', '⚠', '', 'A module monitor (temperature, Vcc, Aux) reported an alarm on this poll - its latched alarm Flag was set (Lower 9-11)']);
+  else if (s.warning_active)
+    chips.push(['warning', '▲', '', 'A module monitor (temperature, Vcc, Aux) reported a warning on this poll - past a warning threshold, not an alarm one (Lower 9-11)']);
   if ((s.seen || []).includes('module_restarted'))
     chips.push(['warning', '↺', '', 'The module restarted since the last Clear flag history - its Host Scratchpad (13h:184-191) was cleared']);
   else if ((s.seen || []).includes('module_state_changed'))
@@ -2200,7 +2230,8 @@ async function _loadMonitoringOnce() {
         ? `<span class="${vClass}" title="${esc(vWhy)}">Voltage: ${s.voltage_v?.toFixed(4)} V</span>`
           + (vMin != null ? `<span class="reg-meta"> min ${vMin} V</span>` : '')
         : absent('Voltage', '01h:159.1')) +
-      (s.alarm_active ? `&ensp;|&ensp;<span class="text-danger">⚠ Alarm Active</span>` : '');
+      (s.alarm_active ? `&ensp;|&ensp;<span class="text-danger">⚠ Alarm Active</span>`
+        : s.warning_active ? `&ensp;|&ensp;<span class="text-warning">▲ Warning</span>` : '');
   }
 
   renderHealthIndicator(s, flagsRes.status === 'ok' ? flagsRes.data : null);

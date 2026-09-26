@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.160.0'
+__version__ = '2.161.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1765,7 +1765,13 @@ def api_module_status():
         # A state change is an event, not a fault. Folding it in here lit the
         # alarm indicator every time somebody reset the module on purpose, and
         # an indicator that cries wolf is one people stop reading.
-        any_alarm = any(v is True for v in temp_alarms.values())
+        # Table 8-9 gives each monitor an alarm pair and a warning pair, and
+        # a warning is not an alarm: counting both made a temperature warning
+        # light the red "Alarm Active".
+        any_alarm = any(v is True for k, v in temp_alarms.items()
+                        if k.endswith('_alarm'))
+        any_warning = any(v is True for k, v in temp_alarms.items()
+                          if k.endswith('_warn'))
 
         # Module-level Flags are latched and clear-on-read like the lane ones,
         # so the read that reports them is the read that destroys them.
@@ -1824,6 +1830,7 @@ def api_module_status():
             'flags_summary': cmis.parse_flags_summary(summary_raw),
             'firmware_flag_masks': firmware_masks,
             'alarm_active': any_alarm,
+            'warning_active': any_warning,
             'seen': sorted(module_seen),
             # What this module says it is allowed to run in. The summary
             # coloured temperature by 60 and 70 written into the page, which
