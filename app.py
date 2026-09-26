@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.163.0'
+__version__ = '2.164.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4152,10 +4152,37 @@ def api_loopback_set():
         if bad:
             return bad
 
+        written = []
         for b in range(banks):
             _set_page(0x13, b)
-            _bus_write(cmis.REG_MEDIA_OUT_LB[1], bytes([media_out[b], media_in[b],
-                                                       host_out[b], host_in[b]]))
+            block = bytes([media_out[b], media_in[b], host_out[b], host_in[b]])
+            _bus_write(cmis.REG_MEDIA_OUT_LB[1], block)
+            written.append(block)
+        # 8.16.12: "The module may reject unsupported host-written loopback
+        # settings (no change in affected register bits)". The checks above
+        # cover what 13h:128 advertises; a module may refuse more than that,
+        # and the reply said "written" whatever it did.
+        names = ('media_side_output', 'media_side_input',
+                 'host_side_output', 'host_side_input')
+        rejected = []
+        for (b, raw), block in zip(_read_banks(cmis.REG_MEDIA_OUT_LB[0],
+                                               cmis.REG_MEDIA_OUT_LB[1], 4),
+                                   written):
+            for i, name in enumerate(names):
+                if raw[i] != block[i]:
+                    rejected.append({'bank': b, 'control': name,
+                                     'written': block[i], 'read': raw[i]})
+        if rejected:
+            return jsonify({
+                'status': 'error', 'rejected': rejected,
+                'message': 'The module did not take this loopback setting - '
+                           'section 8.16.12 lets it reject one by leaving the '
+                           'register unchanged: ' + ', '.join(
+                               '%s%s wrote %02Xh, reads %02Xh' % (
+                                   r['control'].replace('_', ' '),
+                                   ' bank %d' % r['bank'] if banks > 1 else '',
+                                   r['written'], r['read'])
+                               for r in rejected)}), 409
         out = {'message': 'Loopback configuration written'}
         if widened:
             out['message'] = ('Loopback configuration written; %s applied to '

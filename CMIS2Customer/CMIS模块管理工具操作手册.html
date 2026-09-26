@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.163.0<br>
+      <b>版本</b>　2.164.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.163.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.163.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.164.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.164.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1727,6 +1727,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>环回设置被模块拒绝时会说出来</h3>
+  <p>规范 8.16.12:「模块可以拒绝它不支持的环回设置(相关寄存器位不变)」。工具在写入前已经按 <code>13h:128</code> 的声明拦下不支持的环回类型、主机侧和媒体侧同时环回、模块没有的媒体通道;但模块还可能因为别的原因拒绝。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前写完就回「Loopback configuration written」,不管模块收没收;页面上的勾选框也保持勾着,显示一个其实并不存在的环回。</span>
+  </div>
+  <p>现在:写入后逐个 Bank 读回。模块没收下的设置会报错(409),写明哪一项写的是多少、读回是多少;页面随即重新读取,勾选框显示模块实际的状态。写入前的输入错误照旧保留你改过的勾选。</p>
 
   <h3>固件 Bank 状态(Page 0Dh)</h3>
   <p>规范 8.12:Page 0Dh 用来「在寄存器里给出固件状态信息,不强迫主机使用 CDB 消息」——哪个 Bank(A、B、固定的出厂 Load)有效、哪个已提交(复位或上电后运行它)、哪个正在运行,以及每个 Load 的主 / 次版本、Build 号和描述(Table 8-75、8-76)。规范 7.3.1:「从 CMIS 5.4 起,版本信息的全部四项都能在 Page 0Dh 的寄存器里读到」。</p>
@@ -4703,7 +4711,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.163.0<br>
+    CMIS Module Manager 操作手册 v2.164.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

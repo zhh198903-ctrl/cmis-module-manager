@@ -985,6 +985,9 @@ class MockBackend(I2CInterface):
         # per absolute lane, so a 16 lane module has 16 on each side.
         self._counter_lanes = max(8, self.PROFILE.get('lanes', 8))
         self._counts = {}
+        # A module refusing every loopback write, as 8.16.12 allows one to
+        # refuse an unsupported setting - for exercising the host's read-back.
+        self._reject_loopback = False
         # {first lane of a bank: its measurement gate} - see _advance_gate.
         self._gates = {}
         self._last_counter_time = 0.0
@@ -2963,6 +2966,14 @@ class MockBackend(I2CInterface):
                 for lane_base, p12 in judged:
                     self._judge_tuning(touched, p12, lane_base)
         elif self._current_page == 0x13:
+            if self._reject_loopback:
+                # 8.16.12: "no change in affected register bits".
+                held = self._page13_of(self._current_bank * 8)
+                data = bytearray(data)
+                for i, addr in enumerate(range(register, register + len(data))):
+                    if 0xB4 <= addr <= 0xB7:
+                        data[i] = held.get(addr, 0)
+                data = bytes(data)
             # Table 8-131: "If the Per-lane ... Loopback Supported field=1,
             # loopback control is per lane. Otherwise, if any loopback enable
             # bit is set to 1, all ... lanes are in ... loopback." So a module

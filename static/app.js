@@ -87,6 +87,9 @@ async function applyAndReload(label, path, body, reload) {
   const res = await apiPost(path, body);
   if (res.status !== 'ok') {
     toast(`Apply failed: ${res.message}`, 'error');
+    // Written but refused by the module: what is on screen is the request,
+    // not the module, so read back what it actually holds.
+    if (res.rejected) await reload();
     return res;
   }
   await reload();

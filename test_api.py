@@ -35300,6 +35300,109 @@ class TestTheFirmwareBanksAreRead(CMISTestCase):
         self.assertIn("if (d.firmware_loads) renderFirmwareLoads(d.firmware_loads);", js)
 
 
+class TestALoopbackTheModuleRefusesIsSaid(CMISTestCase):
+    """8.16.12: "The module may reject unsupported host-written loopback
+    settings (no change in affected register bits)." The tool refuses what
+    13h:128 advertises against - unsupported types, host and media together,
+    absent media lanes - but a module may refuse more, and the loopback
+    write said "Loopback configuration written" whatever the module did. The
+    page then kept the ticked boxes, showing a loopback that was not there.
+
+    Now the write is read back: a setting the module did not take is a 409
+    naming what was written and what reads back, and the page reloads so the
+    boxes show what the module holds."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/loopback', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _lb(self):
+        return self.assertOk(self.client.get('/api/module/loopback'))['data']
+
+    def test_a_taken_setting_is_written(self):
+        self._connect()
+        self.assertOk(self._post(media_side_output=0x01))
+        self.assertEqual(_state['backend']._registers[0x13][0xB4], 0x01)
+
+    def test_a_refused_setting_is_reported(self):
+        self._connect()
+        _state['backend']._reject_loopback = True
+        rv = self._post(media_side_output=0x01)
+        self.assertEqual(rv.status_code, 409)
+        body = json.loads(rv.data)
+        self.assertEqual(body['status'], 'error')
+        self.assertEqual(body['rejected'], [{'bank': 0,
+                                             'control': 'media_side_output',
+                                             'written': 1, 'read': 0}])
+        self.assertIn('8.16.12', body['message'])
+        self.assertIn('media side output wrote 01h, reads 00h', body['message'])
+
+    def test_a_widened_setting_is_not_a_refusal(self):
+        """Without per-lane loopback one lane means every lane (Table 8-131);
+        the tool writes what the module will do, and reads that back."""
+        self._connect()
+        _state['backend']._registers[0x13][0x80] &= ~0x30
+        rv = self._post(host_side_input=0x01)
+        self.assertOk(rv)
+        self.assertIn('widened_to_all_lanes', json.loads(rv.data)['data'])
+
+    def test_each_bank_is_named(self):
+        self._connect('mock_1600g_16lane')
+        _state['backend']._reject_loopback = True
+        rv = self._post(media_side_input=[0x01, 0x02])
+        self.assertEqual(rv.status_code, 409)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('media side input bank 0 wrote 01h', msg)
+        self.assertIn('media side input bank 1 wrote 02h', msg)
+
+    def test_the_demo_refuses_without_changing_anything(self):
+        self._connect()
+        b = _state['backend']
+        self.assertOk(self._post(host_side_output=0x04))
+        b._reject_loopback = True
+        self._post(host_side_output=0x00)
+        self.assertEqual(b._registers[0x13][0xB6], 0x04)
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _page(self, reply):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'let reloaded=false; const toasts=[];'
+                  'const apiPost=async()=>(' + reply + ');'
+                  'const toast=(m,k)=>toasts.push(k);'
+                  r'eval(s.match(/async function applyAndReload\([\s\S]*?\r?\n}\r?\n/)[0]);'
+                  'applyAndReload("Loopback","/x",{},async()=>{reloaded=true;})'
+                  '.then(()=>process.stdout.write(JSON.stringify([reloaded,toasts])));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_refusal_reloads_the_panel(self):
+        self.assertEqual(self._page("{status: 'error', message: 'x', "
+                                    "rejected: [{bank: 0}]}"),
+                         [True, ['error']])
+
+    def test_a_request_error_keeps_the_edits(self):
+        self.assertEqual(self._page("{status: 'error', message: 'bad'}"),
+                         [False, ['error']])
+        self.assertEqual(self._page("{status: 'ok', data: {}}"),
+                         [True, ['success']])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

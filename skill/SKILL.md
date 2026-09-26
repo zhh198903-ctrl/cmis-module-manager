@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 环回写入会读回
+
+`POST /api/module/loopback` 写完逐个 Bank 读回(8.16.12:模块可以拒绝不支持的环回设置,寄存器不变)。没收下时回 409,`rejected[]` 里是 `bank` / `control` / `written` / `read`。
+用户说「勾了环回但没生效」:这就是模块拒绝了;先看 `13h:128` 的能力声明,再看模块手册。
+
 ## 固件 Bank 看 Page 0Dh
 
 模块声明 `01h:173.6` 时,`GET /api/module/ext54` 带 `firmware_loads`:`loads[]` 每个 Bank(A / B / Fixed)的 `valid` / `committed` / `running` 和 `version`(major、minor、build、description,Table 8-75),`running_bank`,以及正在运行的版本与 Lower 39-40 不一致时 `active_mismatch: true`。
