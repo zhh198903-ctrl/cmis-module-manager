@@ -2845,9 +2845,18 @@ class MockBackend(I2CInterface):
                     self._lp_request_time = 0
                     self._power_up_data_paths()
         elif self._current_page == 0x13 and register <= 0xB1 < register + len(data):
-            self._gate_control(self._current_bank * 8,
-                               self._page13_of(self._current_bank * 8).get(0xB1, 0),
-                               data[0xB1 - register])
+            p13 = self._page13_of(self._current_bank * 8)
+            old, new = p13.get(0xB1, 0), data[0xB1 - register]
+            self._gate_control(self._current_bank * 8, old, new)
+            # ResetErrorInformation is a start/stop control (Table 8-127).
+            if (old ^ new) & 0x20 and self._start_stop_is_global(
+                    {**p13, 0xB1: new}):
+                for lane_base, other in self._banked_page_dicts(0x13):
+                    if other is p13:
+                        continue
+                    was = other.get(0xB1, 0)
+                    other[0xB1] = (was & ~0x20) | (new & 0x20)
+                    self._gate_control(lane_base, was, other[0xB1])
         elif self._current_page == 0x10:
             # Writes may span several control bytes, so match on the range
             span = range(register, register + len(data))
@@ -3414,6 +3423,35 @@ class MockBackend(I2CInterface):
                 self._checkers_changed(lane_base,
                                        'host' if engine == 'hc' else 'media',
                                        started, stopped)
+
+    def _start_stop_is_global(self, p13: dict) -> bool:
+        """13h:177.7 StartStopIsGlobal in the Bank written (Table 8-127) -
+        ignored while gating on the single global timer (Table 8-129: "Since
+        13h:129.3=0 the control 13h:177.7 is ignored")."""
+        b177, caps = p13.get(0xB1, 0), p13.get(0x81, 0)
+        if not b177 & 0x80:
+            return False
+        gated = (b177 >> 1) & 0x07 and (caps >> 6) & 0x03
+        return not (gated and not caps & 0x08)
+
+    def _start_stop_elsewhere(self, p13: dict, before: dict) -> None:
+        """Table 8-127: with StartStopIsGlobal set, a checker enable change
+        (13h:160, 13h:168) "acts on all Banks as if the same control value
+        change had occurred in all supported Banks". The mock kept it to the
+        Bank written, so a module told to start lane 1 everywhere started
+        lane 1 alone - and the page, which says lanes 1, 9 and 17 move
+        together, could not be checked against anything."""
+        if not self._start_stop_is_global(p13):
+            return
+        for _lane_base, other in self._banked_page_dicts(0x13):
+            if other is p13:
+                continue
+            was = {a: other.get(a, 0) for a in self._ENGINE_ENABLES}
+            for addr in (0xA0, 0xA8):
+                changed = before[addr] ^ p13.get(addr, 0)
+                other[addr] = (was[addr] & ~changed) | (p13.get(addr, 0)
+                                                         & changed)
+            self._engines_changed(other, was)
 
     def _checkers_changed(self, lane_base: int, side: str, started: int,
                           stopped: int) -> None:
@@ -4075,6 +4113,8 @@ class MockBackend(I2CInterface):
                                                   register + i) else b)
             for p13, before in engines:
                 self._engines_changed(p13, before)
+            if len(engines) == 1:           # under broadcast every Bank has it
+                self._start_stop_elsewhere(*engines[0])
             if self._current_page == 0x10 and (0x82 in span or 0x84 in span):
                 # The Tx transient starts at the write that asked for it,
                 # not at whichever read happens to come next.

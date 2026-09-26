@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.158.0<br>
+      <b>版本</b>　2.159.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -828,8 +828,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.158.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.158.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.159.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.159.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1725,6 +1725,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>13h:177.7 置 1 时,各 Bank 的检测器一起启停</h3>
+  <p>规范 Table 8-127:<code>13h:177.7</code> StartStopIsGlobal 置 1 时,在一个 Bank 上改启停控制——<code>160</code> / <code>168</code> 的检测器使能、<code>177.5</code> ResetErrorInformation——「如同在所有 Bank 上做了同样的改动」。以哪个 Bank 的这一位为准,看写的是哪个 Bank。门控测量并且只有全局定时器(<code>13h:129.3</code> = 0)时这一位被忽略(Table 8-129)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>页面早就提示「lanes 1, 9, 17 一起启停」,可 PRBS 的写入仍然给每个 Bank 各写各的使能。在这一位生效的模块上,只勾 lane 1:写 Bank 0 时 lane 9 也跟着启动;接着写 Bank 1 的 0,这本身也是一次改动,又把两条一起停掉——结果一条都没在跑,回复却是「已写入」。演示模块也只改被写的那个 Bank,看不出这个问题。工具判断这一位时也只看 Bank 0。</span>
+  </div>
+  <p>现在:这一位生效时,PRBS Checker 表里勾一个 Bank 的通道,其它 Bank 同一位置的勾选框会跟着一起变;各 Bank 使能不一致的请求会被拒绝(400),并指出是哪两条通道。模块没有的媒体通道不算不一致。工具读每个 Bank 的 <code>13h:177.7</code>,任一 Bank 置位就按「作用于所有 Bank」处理。发生器的使能不是启停控制,不受影响。演示模块把检测器使能和 177.5 的改动带到所有 Bank,只带改动的那几位;门控 + 全局定时器时不带。</p>
 
   <h3>误码计数由检测器的启用开始、停止</h3>
   <p>规范 Table 8-128 ~ 8-130:检测器的使能位(<code>13h:160</code> 主机侧、<code>13h:168</code> 媒体侧)就是误码计数的开关。启用原本关闭的检测器时,这些通道的计数清零后开始累积,门控定时器也从 0 开始;关闭检测器时计数停止,结果仍可通过选择器 01h–05h(以及支持时的 11h–15h)读到。模块声明测量期间不更新(<code>13h:129.4</code> = 0)时,检测器在跑时数字不动,关掉或门控到时才出结果。</p>
@@ -4655,7 +4663,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.158.0<br>
+    CMIS Module Manager 操作手册 v2.159.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

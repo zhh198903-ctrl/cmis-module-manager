@@ -4568,7 +4568,10 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
       <td>L${i+1}</td>
       <td title="${(perLaneEnable || i === 0) ? tEn : follows('enable', base)}"
           class="${(perLaneEnable || i === 0) ? '' : 'control-unavailable'}"><input
-          type="checkbox" id="${tbodyId}-en-${i}"
+          type="checkbox" id="${tbodyId}-en-${i}"${isChecker && _prbsStartStopGlobal
+            && !(lolSeen && lolSeen[i] === null)
+            ? ` data-start-stop="${tbodyId}" onchange="mirrorCheckerEnable('${tbodyId}', ${i})"`
+            : ''}
           title="${(perLaneEnable || i === 0) ? tEn : follows('enable', base)}"
           ${(perLaneEnable || i === 0) ? '' : 'disabled'} ${en  ? 'checked' : ''}></td>
       <td title="${canInvert ? tInv : off('DataInvert', base + 1)}"
@@ -4594,6 +4597,23 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
       ${lolCell}
     </tr>`;
   }).join('');
+}
+
+// 13h:177.7 StartStopIsGlobal (Table 8-127): a checker enable changed in one
+// Bank changes in every Bank, and the server refuses masks that differ. So
+// a box ticked for lane 1 ticks lanes 9 and 17 with it, where the operator
+// can see it, rather than being sent as a request the module cannot hold.
+let _prbsStartStopGlobal = false;
+
+function mirrorCheckerEnable(tbodyId, i) {
+  const src = document.getElementById(`${tbodyId}-en-${i}`);
+  if (!src) return;
+  for (let j = i % 8; j < AppState.lanes; j += 8) {
+    const box = document.getElementById(`${tbodyId}-en-${j}`);
+    if (box && box !== src && box.dataset.startStop === tbodyId) {
+      box.checked = src.checked;
+    }
+  }
 }
 
 function _readPrbsSection(tbodyId) {
@@ -4679,6 +4699,7 @@ async function loadPrbs() {
   PRBS_PATTERNS = d.pattern_names || {};
   const pc = d.pattern_controls || {};
   const pl = d.pattern_locations || {};
+  _prbsStartStopGlobal = d.start_stop_scope === 'all_banks';
   _renderPrbsTable('tbl-prbs-host-gen',  d.host_gen,  d.host_gen_lol_mask, 0x90, 'Host',
                    d.host_gen_lol_seen, (d.pattern_capabilities || {}).host_gen, false,
                    pc.host_gen, pl.host_gen, d.host_gen_lol_mask_banks,

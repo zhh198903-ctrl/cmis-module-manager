@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.158.0'
+__version__ = '2.159.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -4200,7 +4200,7 @@ def _measurement_window() -> dict:
         'controls_banks': per_bank,
         'banks_that_differ': [b for b, c in enumerate(per_bank)
                               if b and window(c) != window(controls)],
-        'start_stop_scope': _start_stop_scope(caps, controls),
+        'start_stop_scope': _start_stop_anywhere(caps, per_bank),
     }
 
 
@@ -4224,6 +4224,47 @@ def _start_stop_scope(caps: dict, controls: dict):
     if gated and caps.get('per_lane_gating_timers') is False:
         return 'ignored'
     return 'all_banks'
+
+
+def _start_stop_anywhere(caps: dict, controls_banks: list):
+    """_start_stop_scope over every Bank's 13h:177. The bit that counts is
+    the one in the Bank written, and the PRBS write goes to every Bank in
+    turn - so 177.7 set in any of them carries that Bank's change to the
+    rest. Bank 0's alone decided it."""
+    scopes = [_start_stop_scope(caps, c) for c in controls_banks]
+    if 'all_banks' in scopes:
+        return 'all_banks'
+    return scopes[0] if scopes else None
+
+
+def _refuse_start_stop_divergence(key: str, masks: list):
+    """Table 8-127, StartStopIsGlobal: a checker enable change "acts on all
+    Banks as if the same control value change had occurred in all supported
+    Banks". Per-Bank masks that differ cannot be written: each Bank's write
+    carries its change to the others. Ticking lane 1 alone started lane 9
+    with it, then Bank 1's write of 0 was a change too and stopped both -
+    and the reply said the configuration was written.
+
+    A media lane the module does not have (00h:210, first Bank) is left out:
+    the module has nothing there to start."""
+    care = 0xFF
+    if key.startswith('media'):
+        present = _media_lanes_present()
+        care = sum(1 << i for i in range(min(8, len(present))) if present[i])
+    vals = [m & care for m in masks]
+    for bank, val in enumerate(vals):
+        diff = val ^ vals[0]
+        if not diff:
+            continue
+        bit = (diff & -diff).bit_length() - 1
+        on = 'on' if (vals[0] >> bit) & 1 else 'off'
+        return _err(
+            '13h:177.7 StartStopIsGlobal is set (Table 8-127): enabling or '
+            'disabling a %s side checker in one Bank does the same in every '
+            'Bank. Lane %d is %s and lane %d is not - send the same enable '
+            'for every Bank, or clear 13h:177.7 first'
+            % (key.split('_')[0], bit + 1, on, bank * 8 + bit + 1), 400)
+    return None
 
 
 def _user_pattern() -> dict:
@@ -4335,9 +4376,9 @@ def api_prbs_get():
             # The checker enables below are start/stop controls in the sense
             # of Table 8-127, so 177.7 decides whether ticking one in this
             # Bank starts the same lane in every other.
-            start_stop_scope = _start_stop_scope(
+            start_stop_scope = _start_stop_anywhere(
                 _diag_caps()['measurement'],
-                cmis.parse_measurement_controls(clk[1]))
+                [cmis.parse_measurement_controls(c[1]) for c in clk_banks])
         except Exception:
             _z = [0] * banks
             host_lol_banks = media_lol_banks = list(_z)
@@ -4533,6 +4574,11 @@ def api_prbs_set():
         # answered 400 - and a caller who reads an error reasonably concludes
         # that nothing moved.
         plan = []
+        # 13h:177.7 in any Bank: a checker enable written there reaches all.
+        global_start_stop = banks > 1 and _start_stop_anywhere(
+            caps['measurement'],
+            [cmis.parse_measurement_controls(raw[1])
+             for _b, raw in _read_banks(*cmis.REG_CLOCK_MEAS)]) == 'all_banks'
         for key, base_addr in [
             ('host_gen',  0x90),
             ('media_gen', 0x98),
@@ -4622,6 +4668,10 @@ def api_prbs_set():
                 if refused:
                     return refused
             en  = enabled
+            if global_start_stop and key.endswith('_chk'):
+                bad = _refuse_start_stop_divergence(key, en)
+                if bad:
+                    return bad
             inv = _keep(section, 'invert_mask',
                         current['invert_mask_banks'], banks)
             sw  = _keep(section, 'byte_swap_mask',

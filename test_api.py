@@ -34497,6 +34497,204 @@ class TestTheCheckerStartsAndStopsTheCount(CMISTestCase):
                       js.replace('\r\n', '\n'))
 
 
+class TestAStartOrStopReachesEveryBank(CMISTestCase):
+    """13h:177.7 StartStopIsGlobal (Table 8-127): set, a start/stop control -
+    the checker enables at 13h:160 and 168, ResetErrorInformation at 177.5 -
+    written in one Bank "acts on all Banks as if the same control value
+    change had occurred in all supported Banks". Table 8-129 exempts gating
+    on the single global timer: "the control 13h:177.7 is ignored".
+
+    The page already said lanes 1, 9 and 17 move together (round 90), but
+    the PRBS write sent each Bank its own mask in turn. On a module with the
+    bit in effect, ticking lane 1 alone started lane 9 with it - then Bank
+    1's write of 0 was a change as well and stopped both, and the reply said
+    the configuration was written. The demos kept every change to the Bank
+    written, so none of it could be seen. Now the demos carry the change to
+    every Bank, the tool refuses masks that differ, reads the bit in every
+    Bank rather than Bank 0's, and the page ticks the other Banks' box with
+    the one clicked."""
+
+    def _module(self, b177=0x80, banks=(0, 1, 2), per_lane_timers=True):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_24lane', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        for lane_base, regs in _state['backend']._banked_page_dicts(0x13):
+            regs[0xB1] = b177 if lane_base // 8 in banks else 0x00
+            regs[0x81] = (regs[0x81] & ~0x08) | (0x08 if per_lane_timers else 0)
+        app_module._invalidate_page()
+
+    def _raw(self, addr, value, bank):
+        self.assertOk(self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0x13, 'address': addr, 'data': [value],
+                             'bank': bank}),
+            content_type='application/json'))
+
+    def _enables(self, addr=0xA0):
+        return [d.get(addr, 0) for _b, d
+                in _state['backend']._banked_page_dicts(0x13)]
+
+    def _post(self, **sections):
+        return self.client.post(
+            '/api/module/prbs',
+            data=json.dumps({k: {'enable_mask': v} for k, v in sections.items()}),
+            content_type='application/json')
+
+    # ---- the demo ----------------------------------------------------------------------------
+    def test_a_checker_started_in_one_bank_starts_in_every_bank(self):
+        self._module()
+        self._raw(160, 0x02, bank=1)
+        self.assertEqual(self._enables(), [0x02] * 3)
+        # started, not just stored: each Bank's checker is locking
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['host_chk_lol_mask_banks'], [0x02] * 3)
+        time.sleep(0.05)
+        self.client.get('/api/module/counters')
+        self.assertEqual(sorted(l for s, l in _state['backend']._counts
+                                if s == 'host'), [1, 9, 17])
+
+    def test_a_stop_reaches_every_bank_too(self):
+        self._module()
+        self._raw(168, 0x03, bank=0)
+        self._raw(168, 0x01, bank=2)
+        self.assertEqual(self._enables(0xA8), [0x01] * 3)
+
+    def test_only_the_bits_that_changed_travel(self):
+        """"The same control value change" - not the whole byte."""
+        self._module(b177=0x00)
+        for bank, value in enumerate((0x01, 0x02, 0x04)):
+            self._raw(160, value, bank)
+        for lane_base, regs in _state['backend']._banked_page_dicts(0x13):
+            regs[0xB1] = 0x80
+        self._raw(160, 0x09, bank=0)
+        self.assertEqual(self._enables(), [0x09, 0x0A, 0x0C])
+
+    def test_a_reset_reaches_every_bank(self):
+        self._module()
+        self._raw(160, 0xFF, bank=0)
+        time.sleep(0.05)
+        self._raw(177, 0xA0, bank=0)
+        self.assertEqual([d[0xB1] for _b, d
+                          in _state['backend']._banked_page_dicts(0x13)],
+                         [0xA0] * 3)
+        self.assertTrue(all(_state['backend']._gates[b]['frozen']
+                            for b in (0, 8, 16)))
+
+    def test_the_single_global_timer_ignores_it(self):
+        self._module(b177=0x88, per_lane_timers=False)
+        self._raw(160, 0x02, bank=1)
+        self.assertEqual(self._enables(), [0x00, 0x02, 0x00])
+        self.assertOk(self._post(host_chk=[0x01, 0x00, 0x00]))
+
+    def test_clear_it_stays_in_its_bank(self):
+        self._module(b177=0x00)
+        self._raw(160, 0x02, bank=1)
+        self.assertEqual(self._enables(), [0x00, 0x02, 0x00])
+
+    def test_only_the_bank_written_decides(self):
+        self._module(banks=(2,))
+        self._raw(160, 0x02, bank=1)
+        self.assertEqual(self._enables(), [0x00, 0x02, 0x00])
+        self._raw(160, 0x04, bank=2)
+        self.assertEqual(self._enables(), [0x04, 0x06, 0x04])
+
+    # ---- the tool ----------------------------------------------------------------------------
+    def test_masks_that_differ_are_refused(self):
+        self._module()
+        rv = self._post(host_chk=[0x01, 0x00, 0x00])
+        self.assertErr(rv, 400)
+        msg = json.loads(rv.data)['message']
+        self.assertIn('13h:177.7', msg)
+        self.assertIn('Lane 1 is on and lane 9 is not', msg)
+        self.assertEqual(self._enables(), [0x00] * 3, 'nothing is written')
+        rv = self._post(host_chk=[0x06, 0x00, 0x00])
+        self.assertIn('Lane 2 is on and lane 10 is not',
+                      json.loads(rv.data)['message'], 'the first lane named')
+
+    def test_the_same_mask_everywhere_is_written(self):
+        self._module()
+        self.assertOk(self._post(host_chk=[0x05] * 3, media_chk=0x00))
+        self.assertEqual(self._enables(), [0x05] * 3)
+
+    def test_generators_are_not_start_stop_controls(self):
+        self._module()
+        self.assertOk(self._post(host_gen=[0x01, 0x00, 0x00]))
+
+    def test_any_bank_with_the_bit_decides_for_the_tool(self):
+        """The bit counts in the Bank written, and the tool writes every
+        Bank - Bank 0's clear bit used to speak for all of them."""
+        self._module(banks=(1,))
+        self.assertErr(self._post(host_chk=[0x01, 0x00, 0x00]), 400)
+        d = self.assertOk(self.client.get('/api/module/prbs'))['data']
+        self.assertEqual(d['start_stop_scope'], 'all_banks')
+        m = self.assertOk(self.client.get('/api/module/ber'))['data']
+        self.assertEqual(m['measurement']['start_stop_scope'], 'all_banks')
+
+    def test_a_missing_media_lane_is_no_difference(self):
+        """Media lane 2 absent (00h:210): nothing there to start, so its bit
+        in Bank 0 does not have to match lane 10's."""
+        from unittest import mock
+        self._module()
+        present = [True, False] + [True] * 22
+        with mock.patch.object(app_module, '_media_lanes_present',
+                               lambda: list(present)):
+            self.assertOk(self._post(media_chk=[0x01, 0x03, 0x03]))
+            # lane 2's bit left as the module has it; lane 3 differs
+            rv = self._post(media_chk=[0x03, 0x07, 0x07])
+            self.assertErr(rv, 400)
+            self.assertIn('Lane 3 is off and lane 11 is not',
+                          json.loads(rv.data)['message'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _run(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const boxes={};const AppState={lanes:24};'
+                  'const document={getElementById:id=>boxes[id]};'
+                  'for(let i=0;i<24;i++)boxes["t-en-"+i]={checked:false,'
+                  'dataset:i===10?{}:{startStop:"t"}};'
+                  r'eval(s.match(/function mirrorCheckerEnable\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_box_ticked_in_one_bank_ticks_the_others(self):
+        got = self._run("(boxes['t-en-2'].checked = true, "
+                        "mirrorCheckerEnable('t', 2), "
+                        "Object.keys(boxes).filter(k => boxes[k].checked))")
+        self.assertEqual(sorted(got), ['t-en-18', 't-en-2'],
+                         'lane 11 is left alone - it is not marked')
+        got = self._run("(boxes['t-en-1'].checked = true, "
+                        "mirrorCheckerEnable('t', 1), "
+                        "Object.keys(boxes).filter(k => boxes[k].checked))")
+        self.assertEqual(sorted(got), ['t-en-1', 't-en-17', 't-en-9'])
+
+    def test_the_table_marks_the_boxes_that_move_together(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read().replace('\r\n', '\n')
+        load = js[js.index('async function loadPrbs'):]
+        self.assertLess(
+            load.index("_prbsStartStopGlobal = d.start_stop_scope === 'all_banks';"),
+            load.index("_renderPrbsTable('tbl-prbs-host-gen'"),
+            'set after the tables are drawn, the first draw uses the old value')
+        self.assertIn('type="checkbox" id="${tbodyId}-en-${i}"${isChecker && '
+                      '_prbsStartStopGlobal\n            && !(lolSeen && '
+                      'lolSeen[i] === null)', js)
+        self.assertIn("onchange=\"mirrorCheckerEnable('${tbodyId}', ${i})\"", js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
