@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.195.0<br>
+      <b>版本</b>　2.196.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.195.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.195.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.196.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.196.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1123,7 +1123,7 @@
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）。Flat 模块上 Monitoring、DataPath Config、Diagnostics 三个标签页的内容大多不适用，页面顶部会用一行说明原因（DataPath Config 仍显示 Supported Applications）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
         <tr><td>MCI Max Speed</td><td class="label">模块支持的管理总线最高速率（本工具只走 I2C，按 I2C 一列解：0=400 kHz、1=1 MHz、2=3.4 MHz）。3–15 是保留值，工具直接显示编号而不自己编一个速率出来</td><td><code>Lower / 0x02[5:2]</code></td></tr>
-        <tr><td>Media Type</td><td class="label">MMF / SMF / Passive Copper / Active Cable / BASE-T</td><td><code>Lower / 0x55</code></td></tr>
+        <tr><td>Media Type</td><td class="label">介质类型,名称照 Table 8-20 原文:Optical Interfaces: MMF / Optical Interfaces: SMF / Passive and Linear Active Copper Cables(CMIS 5.3 起也包括线性有源铜缆)/ Active Cables / BASE-T;它决定 Supported Applications 的媒体接口编码查 SFF-8024 哪张表</td><td><code>Lower / 0x55</code></td></tr>
         <tr><td>Module State</td><td class="label">当前状态机（见下表）;处于 ModuleFault 时同时显示故障原因(ModuleFaultCause,Table 8-16),原因为 0 时写明未报告</td><td><code>Lower / 0x03[3:1] · 0x29</code></td></tr>
         <tr><td>Vendor Name</td><td class="label">厂商名称，16 字节 ASCII</td><td><code>00h / 0x81–0x90</code></td></tr>
         <tr><td>Vendor OUI</td><td class="label">IEEE 厂商 OUI，3 字节十六进制</td><td><code>00h / 0x91–0x93</code></td></tr>
@@ -1784,6 +1784,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Media Type 按 Table 8-20 原文命名:03h 包括线性有源铜缆</h3>
+  <p>规范 Table 8-20 把介质类型 <code>03h</code> 叫作 <b>Passive and Linear Active Copper Cables</b>(CMIS 5.3 起把无源铜缆的相关数据扩展到了线性有源铜缆),工具显示的是「Passive Copper」——等于说线性有源铜缆是无源的。其它几项也是简写。现在 Module Info 的 Media Type 按原文显示(Optical Interfaces: MMF / SMF、Active Cables、BASE-T)。Rx 输出均衡类型的 <code>00b</code> 也补上了原文的「or no information」。</p>
 
   <h3>Media Interface 按 Table 8-41 原文命名</h3>
   <p>Module Info 的 Media Interface 行(<code>00h:212</code>)注明按 Table 8-41 解码,但显示的是简写:「Copper unequalized」原文是 <b>Copper cable, passive, unequalized</b>,「1310 nm DFB」原文是 <b>1310 nm DFB laser</b>,「Other」原文是 <b>Others</b>——两个无源铜缆编码的简写把「passive」丢了。现在 21 个编码全部照 Table 8-41 原文显示(0Fh 带上原文的「deprecated, do not use for new designs」)。</p>
@@ -5057,7 +5060,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.195.0<br>
+    CMIS Module Manager 操作手册 v2.196.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

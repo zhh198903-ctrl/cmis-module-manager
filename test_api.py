@@ -19947,9 +19947,10 @@ class TestUnknownIsSaidOnlyWhereTheToolDoesNotKnow(CMISTestCase):
     which this tool does not carry, and saying Unknown there is true."""
 
     # Table 8-20, verified against OIF-CMIS-05.4.
-    NAMED_MEDIA_TYPES = {0x00: 'Undefined', 0x01: 'MMF', 0x02: 'SMF',
-                         0x03: 'Passive Copper', 0x04: 'Active Cable',
-                         0x05: 'BASE-T'}
+    NAMED_MEDIA_TYPES = {0x00: 'Undefined', 0x01: 'Optical Interfaces: MMF',
+                         0x02: 'Optical Interfaces: SMF',
+                         0x03: 'Passive and Linear Active Copper Cables',
+                         0x04: 'Active Cables', 0x05: 'BASE-T'}
 
     def test_the_named_media_types_are_untouched(self):
         """The ranges must not swallow the five the table names."""
@@ -20543,7 +20544,7 @@ class TestAFlatModuleHasNoPageToRead(CMISTestCase):
         page a flat module does have."""
         self._connect('mock_flat_dac')
         d = self.assertOk(self.client.get('/api/module/info'))['data']
-        self.assertEqual(d['media_type'], 'Passive Copper')
+        self.assertEqual(d['media_type'], 'Passive and Linear Active Copper Cables')
         self.assertTrue(d['vendor_pn'].strip())
         self.assertIn('media_lane_unsupported_mask', self._caps())
 
@@ -39283,6 +39284,38 @@ class TestTheMediaTechnologyNamesAreTable841s(CMISTestCase):
             content_type='application/json'))
         d = self.assertOk(self.client.get('/api/module/info'))['data']
         self.assertEqual(d['media_if_tech'], '1310 nm DFB laser')
+
+
+class TestTheMediaTypeNamesAreTable820s(CMISTestCase):
+    """Table 8-20 names Media Type 03h "Passive and Linear Active Copper
+    Cables" - CMIS 5.3 widened it (E41: "extend scope of passive copper
+    related data to linear active copper") - and the tool called it
+    "Passive Copper", which says a linear active cable is passive. The other
+    names were short forms of the table's too. RxOutputEqType 00b carries
+    "or no information" as well (Table 8-50), which the tool dropped."""
+
+    def test_the_media_types_have_the_tables_words(self):
+        import cmis_registers as c
+        self.assertEqual(c.MEDIA_TYPES, {
+            0x00: 'Undefined', 0x01: 'Optical Interfaces: MMF',
+            0x02: 'Optical Interfaces: SMF',
+            0x03: 'Passive and Linear Active Copper Cables',
+            0x04: 'Active Cables', 0x05: 'BASE-T'})
+
+    def test_rx_output_eq_type_00b_may_mean_no_information(self):
+        import cmis_registers as c
+        self.assertEqual(
+            c.RX_OUTPUT_EQ_TYPES[0],
+            'Peak-to-peak amplitude constant, or not implemented, or no '
+            'information')
+
+    def test_the_module_info_reply(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual(d['media_type'], 'Optical Interfaces: SMF')
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

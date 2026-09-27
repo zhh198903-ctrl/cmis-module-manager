@@ -1211,13 +1211,15 @@ MEDIA_IF_TECH = {
     0x14: "Copper cable with near end linear active equalizers",
 }
 
-# Table 8-21 — Media Type (Lower memory byte 85)
+# Table 8-20, the encodings of the Media Type at Lower 85 (Table 8-21), in
+# its own words. 03h has covered linear active copper cables since CMIS 5.3;
+# "Passive Copper" said a linear active cable was passive.
 MEDIA_TYPES = {
     0x00: "Undefined",
-    0x01: "MMF",
-    0x02: "SMF",
-    0x03: "Passive Copper",
-    0x04: "Active Cable",
+    0x01: "Optical Interfaces: MMF",
+    0x02: "Optical Interfaces: SMF",
+    0x03: "Passive and Linear Active Copper Cables",
+    0x04: "Active Cables",
     0x05: "BASE-T",
 }
 
@@ -2106,7 +2108,7 @@ AUX_OBSERVABLE_NAMES = {
 
 
 RX_OUTPUT_EQ_TYPES = {
-    0: 'Peak-to-peak amplitude constant, or not implemented',
+    0: 'Peak-to-peak amplitude constant, or not implemented, or no information',
     1: 'Steady-state amplitude constant',
     2: 'Average of peak-to-peak and steady-state amplitude constant',
     3: 'Reserved',
