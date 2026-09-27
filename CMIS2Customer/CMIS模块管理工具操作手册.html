@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.207.0<br>
+      <b>版本</b>　2.208.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.207.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.207.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.208.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.208.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>手册附录「会中断业务的按钮」补全并更正</h3>
+  <p>附录里这张表此前只列了 Reset Module、Enter/Exit LowPwr、Write、DataPath Apply 和 Loopback Apply,其中 DataPath Apply 一行仍写着「重启全部 8 条 lane」(上一版已更正正文,这里漏改);还写着「只有 Reset Module 有确认对话框」——媒体通道切换的 Commit 也会先弹确认框。</p>
+  <p>现在表里补上了同样会影响业务的 Output Controls Apply(强制静默、关闭接收输出)、媒体通道切换 Commit、PRBS Apply(发生器用测试码型取代业务数据)和 Laser Tuning Apply,DataPath Apply 一行按实际行为改写,确认框一句改为「只有 Reset Module 和媒体通道切换的 Commit 有确认对话框」。只改文档,工具行为不变。</p>
 
   <h3>DataPath 页:只改极性或 Tx 关断时,Apply 不再重启数据通道</h3>
   <p>规范 Table 8-77:<code>10h:129–142</code> 是「独立于数据通道状态机和控制集」的通道控制,极性翻转、Tx 关断写下去就生效,不需要 Apply。页面上改这两项只能通过 DataPath 表的 Apply 按钮,而这个按钮总会请求 Apply;工具把「暂存配置没有变化」一律理解为「重新投运」,于是<b>只翻一条通道的极性,也会重启模块上所有数据通道</b>——在 2×400G 的模块上,两个 400G 端口一起断流。手册从 v2.10.1 起就写着「不会这样」,实际一直是这样。</p>
@@ -5081,7 +5085,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <h3>会中断业务的按钮</h3>
-  <p>以下按钮会影响模块的实际工作状态。<b>只有 Reset Module 有确认对话框</b>，其余点下去立即生效。</p>
+  <p>以下按钮会影响模块的实际工作状态。<b>只有 Reset Module 和媒体通道切换的 Commit 有确认对话框</b>，其余点下去立即生效。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>按钮</th><th>位置</th><th>影响范围</th><th>确认框</th></tr></thead>
@@ -5090,8 +5094,12 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td><b>Enter LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">模块进入低功耗，<b>关闭发射</b>，TxPower 掉到 0</td><td class="label">无</td></tr>
         <tr><td><b>Exit LowPwr</b></td><td class="label">DataPath / 9.1</td><td class="label">请求退出低功耗，恢复到高功耗状态；被 DP Deinit 按住的数据通道保持 Deactivated</td><td class="label">无</td></tr>
         <tr><td><b>Write</b></td><td class="label">Raw Registers / 11.2</td><td class="label">任意寄存器写入，后果取决于你写了什么</td><td class="label">无</td></tr>
-        <tr><td><b>Apply</b>（DataPath 配置表）</td><td class="label">DataPath / 9.3</td><td class="label">重启<b>全部 8 条</b> lane 的数据通道</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（DataPath 配置表）</td><td class="label">DataPath / 9.3</td><td class="label">重启暂存配置有改动的数据通路；什么都没改时重启<b>全部</b>数据通路；只改极性或 TX Enable 时不重启，但 TX Enable 取消会直接关掉该路发射</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（Output Controls）</td><td class="label">DataPath / 9.4</td><td class="label">Tx Squelch Force、Rx Output Disable 写下去就关掉对应通道的输出</td><td class="label">无</td></tr>
+        <tr><td><b>Commit</b>（Media Lane Switching）</td><td class="label">DataPath / 12.4</td><td class="label">目标改变的通道断流，直到新的切换生效</td><td>有</td></tr>
         <tr><td><b>Apply</b>（Loopback）</td><td class="label">Diagnostics / 10.1</td><td class="label">环回会中断正常收发</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（PRBS）</td><td class="label">Diagnostics / 10.2</td><td class="label">打开的 Generator 用测试码型<b>取代</b>该通道的业务数据</td><td class="label">无</td></tr>
+        <tr><td><b>Apply</b>（Laser Tuning）</td><td class="label">Diagnostics / 10.7</td><td class="label">改栅格或信道要先把数据通路停下（否则拒绝）；改目标功率会改变发射光功率</td><td class="label">无</td></tr>
       </tbody>
     </table>
   </div>
@@ -5125,7 +5133,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.207.0<br>
+    CMIS Module Manager 操作手册 v2.208.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

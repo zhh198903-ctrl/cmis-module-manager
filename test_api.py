@@ -7183,6 +7183,26 @@ class TestManualMatchesBehaviour(CMISTestCase):
         appendix = self._manual().split('13. 附录', 1)[1]
         for button in ('Reset Module', 'Enter LowPwr', 'Exit LowPwr', 'Write'):
             self.assertIn(button, appendix, f'{button} is missing')
+        # The rest of what drops traffic: an output forced off, a switch
+        # committed, a generator replacing the data, a laser retuned.
+        table = appendix.split('会中断业务的按钮', 1)[1].split('</table>', 1)[0]
+        for card in ('Output Controls', 'Media Lane Switching', 'PRBS',
+                     'Laser Tuning', 'Loopback', 'DataPath 配置表'):
+            self.assertIn(card, table, f'{card} is missing')
+
+    def test_the_appendix_names_every_confirm_dialog(self):
+        """app.js asks before two module actions - Reset and the media lane
+        Commit - and the table said only Reset did."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("confirm('Software-reset the module?", js)
+        self.assertIn("confirm('Commit the media lane redirection?", js)
+        appendix = self._manual().split('13. 附录', 1)[1]
+        self.assertIn('只有 Reset Module 和媒体通道切换的 Commit 有确认对话框',
+                      appendix)
+        self.assertNotIn('重启<b>全部 8 条</b> lane', appendix)
 
     def test_a_missing_digest_reads_differently_from_a_bad_one(self):
         """"We checked and it was wrong" and "there was nothing to check
