@@ -39,8 +39,10 @@ REG_FAULT_CAUSE      = (None, 0x29, 1)   # Lower 41: ModuleFaultCause (Table 8-1
 # Lower 31-36 (Table 8-12), the Masks for the module-level Flags at 8-13.
 REG_MODULE_FLAG_MASKS = (None, 0x1F, 6)
 REG_CMIS_SM_SUPPORT  = (None, 0x38, 2)   # 56 CmisSmSupport, 57 FunctionType
-REG_MODULE_SUBTYPE   = (None, 0x3C, 1)   # Lower 60: [3:0] SFF8024ModuleSubtype
-REG_HEATSINK_FIBER   = (None, 0x3D, 1)   # Lower 61: [7:4] HeatsinkType (5.4), [1:0] FiberFaceType
+# Lower 60-62 (Table 8-18), all RO and Required: [3:0] SFF8024ModuleSubtype,
+# then [7:4] HeatsinkType (5.4) and [1:0] FiberFaceType, then
+# LowPowerRestrictions (Table 8-19).
+REG_EXT_MODULE_INFO  = (None, 0x3C, 3)
 REG_MEDIA_TYPE       = (None, 0x55, 1)   # Lower 85: Media Type Encoding (Table 8-20)
 # Application Descriptors (AppSel 1..8) — 4 bytes per descriptor
 REG_APP_DESC_BASE    = (None, 0x56, 4 * 8)  # 86..117 (8 descriptors × 4 bytes)
@@ -3345,14 +3347,42 @@ def parse_state_machines(byte_56: int, byte_57: int) -> dict:
 def parse_extended_module_info(subtype_byte: int, heatsink_byte: int) -> dict:
     """Lower 60-61 (Table 8-18). HeatsinkType is the 5.4 addition.
 
-    The code meanings live in SFF-8024, not in CMIS, so the raw value is
-    reported rather than guessed at; zero is the spec's "not specified".
+    The code meanings live in SFF-8024, not in CMIS; zero is the spec's "not
+    specified".
     """
     return {
         'module_subtype':   subtype_byte & 0x0F,
         'heatsink_type':    (heatsink_byte >> 4) & 0x0F,
         'fiber_face_type':  heatsink_byte & 0x03,
     }
+
+
+# Table 8-19, bits 3-0, each "not generally supported in ModuleLowPwr state".
+LOW_POWER_RESTRICTIONS = (
+    (3, 'cdb_query', 'CDB queries'),
+    (2, 'cdb_fw_query', 'CDB firmware queries'),
+    (1, 'cdb_cmds', 'CDB commands that change module state'),
+    (0, 'cdb_fw_cmds', 'CDB commands that change firmware state'),
+)
+
+
+def parse_low_power_restrictions(byte_62: int) -> dict:
+    """Lower 62, LowPowerRestrictions (Table 8-19), added in CMIS 5.3.
+
+    The encoding is inverted on purpose - a set bit is a restriction - and
+    bit 7 says whether the rest means anything: "0b: Advertisements in this
+    byte are uncertain (legacy modules only)". A module that clears it has
+    not said it is unrestricted, so no restriction is listed and none is
+    denied.
+    """
+    valid = bool(byte_62 & 0x80)
+    out = {'valid': valid, 'restricted': []}
+    for bit, key, label in LOW_POWER_RESTRICTIONS:
+        on = bool((byte_62 >> bit) & 1) if valid else None
+        out[key] = on
+        if on:
+            out['restricted'].append(label)
+    return out
 
 
 # Table 8-62 codes every field in this byte the same way, and 00b is not
@@ -3573,8 +3603,10 @@ def max_read_bytes(byte_251: int) -> int:
 
 def parse_misc_caps(byte_252: int) -> dict:
     """01h:252 (Table 8-62). Bit 5 is the 5.4 media lane switching
-    advertisement, bit 7 the host lane switching one (Page 1Dh)."""
+    advertisement, bit 7 the host lane switching one (Page 1Dh), bit 6 the
+    CMIS-LT link training pages 50h-53h."""
     return {'media_lane_switching_supported': bool((byte_252 >> 5) & 1),
+            'link_training_supported': bool((byte_252 >> 6) & 1),
             'host_lane_switching_supported': bool((byte_252 >> 7) & 1)}
 
 
@@ -4447,6 +4479,31 @@ HEATSINK_TYPES = {
     2: 'IHS — Integrated Heatsink, Open Top',
     3: 'IHS — Integrated Heatsink, Closed Top',
 }
+
+# Table 4-11, one column per form factor, chosen by the Identifier. Only the
+# CMIS identifiers of those form factors: 0Dh/11h (SFF-8636) and 1Ah (SFP-DD
+# MIS) are not read as CMIS at all. Code 0 is the same in every column.
+TRANSCEIVER_SUBTYPES = {
+    0x1E: {1: 'Type 1', 2: 'Type 2', 3: 'Type 2A', 4: 'Type 2B'},   # QSFP+
+    0x18: {1: 'Type 1', 2: 'Type 2', 3: 'Type 2A', 4: 'Type 2B',
+           5: 'Type 2C'},                                          # QSFP-DD
+    0x1F: {1: 'Type 1', 2: 'Type 2'},                              # SFP-DD
+    0x19: {1: 'Type 1', 2: 'Type 2', 3: 'Type 3'},                 # OSFP
+    0x21: {1: 'Type 1', 2: 'Type 2'},                              # OSFP-XD
+}
+
+
+def module_subtype_name(identifier: int, code: int) -> str:
+    """Lower 60.3-0 by SFF-8024 Table 4-11. The same code is a different
+    variant on each form factor, and an identifier the table has no column
+    for has no named subtypes - its code is shown, not guessed at."""
+    if code == 0:
+        return 'Unknown or unspecified'
+    column = TRANSCEIVER_SUBTYPES.get(identifier)
+    if column is None:
+        return 'Code %d (no Table 4-11 column for this identifier)' % code
+    return column.get(code, 'Reserved (%d)' % code)
+
 
 # Table 4-12.
 FIBER_FACE_TYPES = {

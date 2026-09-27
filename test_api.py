@@ -19356,6 +19356,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-25': 'Password Change Entry (Lower Memory)',
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-196': 'Media Lane Switching (Page 6Dh)',
+        '8-19': 'LowPowerRestrictions Byte',
     }
 
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
@@ -19363,10 +19364,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     # copper, active cable and BASE-T media interface codes (4-8 to 4-10,
     # checked against Rev 4.14) and the Identifier Values (4-1, Rev 4.14 page
     # 17), and the Host Electrical Interface IDs (4-5, whose GID 0 rows
-    # 70h-73h are PCIe 4.0 to 7.0); the launch power and receive sensitivity
+    # 70h-73h are PCIe 4.0 to 7.0), and the Transceiver Subtype codes (4-11,
+    # one column per form factor); the launch power and receive sensitivity
     # windows the coherent and 1.6T profiles are built from are IEEE 802.3
     # clause 180 and 185.
-    VERIFIED_OTHER = frozenset(['4-1', '4-3', '4-5', '4-8', '4-9', '4-10', '4-12',
+    VERIFIED_OTHER = frozenset(['4-1', '4-3', '4-5', '4-8', '4-9', '4-10', '4-11', '4-12',
                                 '4-13', '180-7', '180-8', '185-5', '185-6'])
 
     # test_api.py is scanned too. It was left out at first, and a citation
@@ -38306,9 +38308,10 @@ class TestEveryModuleInfoRowIsInTheManual(CMISTestCase):
         i = js.index('function propagationRow(')
         labels |= set(re.findall(r"\[\[\s*'([A-Z][^'\n]*)',",
                                  js[i:js.index('\n}\n', i)]))
-        i = js.index('const PAGE_GROUP_BITS = [')
-        labels |= set(re.findall(r"\['[a-z_0-9]+', '([^']+)',",
-                                 js[i:js.index('];', i)]))
+        for table in ('const PAGE_GROUP_BITS = [', 'const MISC_FEATURE_ROWS = ['):
+            i = js.index(table)
+            labels |= set(re.findall(r"\['[a-z_0-9]+', '([^']+)',",
+                                     js[i:js.index('];', i)]))
         return labels
 
     def _manual_labels(self):
@@ -38340,6 +38343,234 @@ class TestEveryModuleInfoRowIsInTheManual(CMISTestCase):
         for old in ('Connector Type', 'Media Interface Tech',
                     'Host / Media Interface ID'):
             self.assertNotIn(old, manual)
+
+
+class TestTheRestOfTable818IsShown(CMISTestCase):
+    """Lower 56-63 (Table 8-18) are all RO and Required. The tool showed 56,
+    57 and the heatsink half of 61; the module subtype (60) and the fiber
+    face (61.1-0) were read at connect and dropped, and LowPowerRestrictions
+    (62, Table 8-19) was never read. On a flat module none of 60-62 was
+    read, although they are Lower Memory like 56-57.
+
+    Table 8-62 on Page 01h had the same gap: the four 01h:251 advertisements
+    (one of which already sets how this tool reads) and 252.6, link
+    training, reached no row."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _caps(self):
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _poke_and_rediscover(self, addr, value):
+        app_module._state['backend'].poke_bytes(addr, bytes([value]))
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+        return self._caps()
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    def _cells(self, calls):
+        """Evaluate the page's own cell functions on the given inputs."""
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'eval(pick(/const esc = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/const NO_PAGE_01H =[\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function lowPowerRestrictionsCell\\([\\s\\S]*?\\r?\\n}\\r?\\n/)'
+            '+pick(/function miscFeatureCell\\([\\s\\S]*?\\r?\\n}\\r?\\n/));'
+            'const calls=' + json.dumps(calls) + ';'
+            'process.stdout.write(JSON.stringify(calls.map(([f,a])=>'
+            '(f==="lpr"?lowPowerRestrictionsCell(a[0]):miscFeatureCell(a[0],a[1]))'
+            '.replace(/<[^>]*>/g,""))));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    # ---- the decode ----------------------------------------------------------
+
+    def test_the_restriction_bits_are_table_8_19s(self):
+        import cmis_registers as c
+        p = c.parse_low_power_restrictions
+        self.assertEqual(p(0x88)['restricted'], ['CDB queries'])
+        self.assertEqual(p(0x84)['restricted'], ['CDB firmware queries'])
+        self.assertEqual(p(0x82)['restricted'],
+                         ['CDB commands that change module state'])
+        self.assertEqual(p(0x81)['restricted'],
+                         ['CDB commands that change firmware state'])
+        self.assertEqual(len(p(0x8F)['restricted']), 4)
+        self.assertEqual(p(0x80)['restricted'], [])
+        self.assertEqual({k: p(0x80)[k] for k in
+                          ('cdb_query', 'cdb_fw_query', 'cdb_cmds', 'cdb_fw_cmds')},
+                         dict.fromkeys(('cdb_query', 'cdb_fw_query', 'cdb_cmds',
+                                        'cdb_fw_cmds'), False))
+        self.assertEqual(p(0xF0)['restricted'], [], 'bits 6-4 are Reserved')
+
+    def test_a_byte_with_bit_7_clear_says_nothing(self):
+        """"0b: Advertisements in this byte are uncertain (legacy modules
+        only)" - neither a restriction nor the absence of one."""
+        import cmis_registers as c
+        for byte in (0x00, 0x0F, 0x01):
+            r = c.parse_low_power_restrictions(byte)
+            self.assertIs(r['valid'], False)
+            self.assertEqual(r['restricted'], [])
+            self.assertIsNone(r['cdb_fw_cmds'])
+        self.assertIs(c.parse_low_power_restrictions(0x80)['valid'], True)
+
+    def test_the_subtype_column_is_chosen_by_the_identifier(self):
+        """SFF-8024 Table 4-11: code 3 is Type 2A on QSFP+ and QSFP-DD, Type
+        3 on OSFP, and Reserved on SFP-DD and OSFP-XD."""
+        import cmis_registers as c
+        n = c.module_subtype_name
+        self.assertEqual([n(i, 3) for i in (0x1E, 0x18, 0x19, 0x1F, 0x21)],
+                         ['Type 2A', 'Type 2A', 'Type 3', 'Reserved (3)',
+                          'Reserved (3)'])
+        self.assertEqual(n(0x18, 5), 'Type 2C')
+        self.assertEqual(n(0x1E, 5), 'Reserved (5)')
+        self.assertEqual(n(0x1E, 4), 'Type 2B')
+        self.assertEqual(n(0x19, 4), 'Reserved (4)')
+        for ident in (0x1E, 0x18, 0x19, 0x1F, 0x21):
+            self.assertEqual(n(ident, 1), 'Type 1')
+            self.assertEqual(n(ident, 2), 'Type 2')
+            self.assertEqual(n(ident, 0), 'Unknown or unspecified')
+            self.assertEqual(n(ident, 15), 'Reserved (15)')
+        self.assertEqual(set(c.TRANSCEIVER_SUBTYPES),
+                         {0x1E, 0x18, 0x19, 0x1F, 0x21})
+
+    def test_an_identifier_without_a_column_gets_its_code(self):
+        import cmis_registers as c
+        for ident in (0x20, 0x22, 0x23, 0x1A, 0x0D):
+            self.assertEqual(c.module_subtype_name(ident, 1),
+                             'Code 1 (no Table 4-11 column for this identifier)')
+            self.assertEqual(c.module_subtype_name(ident, 0),
+                             'Unknown or unspecified')
+
+    def test_link_training_is_bit_6(self):
+        import cmis_registers as c
+        self.assertIs(c.parse_misc_caps(0x40)['link_training_supported'], True)
+        self.assertIs(c.parse_misc_caps(0xA0)['link_training_supported'], False)
+
+    # ---- discovery -----------------------------------------------------------
+
+    def test_the_demo_modules_advertise_their_restrictions(self):
+        self._connect('mock_coherent')
+        r = self._caps()['low_power_restrictions']
+        self.assertIs(r['valid'], True)
+        self.assertEqual(r['restricted'],
+                         ['CDB commands that change firmware state'])
+        self._connect('mock_dr8')
+        r = self._caps()['low_power_restrictions']
+        self.assertEqual((r['valid'], r['restricted']), (True, []))
+
+    def test_the_subtype_and_fiber_face_reach_the_capabilities(self):
+        self._connect('mock_1600g_dr8')
+        caps = self._caps()
+        self.assertEqual(caps['module_subtype_name'], 'Type 1')
+        self.assertEqual(caps['heatsink_type_name'],
+                         'IHS — Integrated Heatsink, Closed Top')
+        self.assertEqual(caps['fiber_face_name'], 'Unknown or unspecified')
+        caps = self._poke_and_rediscover(0x3D, 0x32)
+        self.assertEqual(caps['fiber_face_name'], 'APC (Angled Physical Contact)')
+        self.assertEqual(caps['heatsink_type'], 3, 'the other half of 61')
+        caps = self._poke_and_rediscover(0x3C, 0x03)
+        self.assertEqual(caps['module_subtype_name'], 'Type 2A', 'QSFP+ (1Eh)')
+        caps = self._poke_and_rediscover(0x00, 0x19)
+        self.assertEqual(caps['module_subtype_name'], 'Type 3', 'OSFP (19h)')
+
+    def test_a_legacy_byte_is_not_read_as_unrestricted(self):
+        self._connect('mock_dr8')
+        r = self._poke_and_rediscover(0x3E, 0x0F)['low_power_restrictions']
+        self.assertEqual((r['valid'], r['restricted']), (False, []))
+
+    def test_a_flat_module_has_them_too(self):
+        """Lower Memory: the passive cable answers 60-62 like 56-57."""
+        self._connect('mock_flat_dac')
+        caps = self._caps()
+        self.assertEqual(caps['module_subtype_name'], 'Unknown or unspecified')
+        self.assertEqual(caps['heatsink_type_name'], 'Unknown or unspecified')
+        self.assertEqual(caps['fiber_face_name'], 'Unknown or unspecified')
+        self.assertIs(caps['low_power_restrictions']['valid'], True)
+
+    def test_the_mock_serves_byte_62(self):
+        self._connect('mock_coherent')
+        self.assertEqual(app_module._read_lower(0x3E, 1)[0], 0x81)
+        self._connect('mock_dr8')
+        self.assertEqual(app_module._read_lower(0x3E, 1)[0], 0x80)
+
+    # ---- the page ------------------------------------------------------------
+
+    def test_the_rows_are_on_the_page(self):
+        js = self._js()
+        for needle in ("['Module Subtype', esc(c.module_subtype_name",
+                       "lowPowerRestrictionsCell(c.low_power_restrictions),\n"
+                       "     'Lower', '0x3E',",
+                       "['Fiber Face',      esc(c.fiber_face_name",
+                       "c.link_training_supported ? 'Supported' : 'Not supported',\n"
+                       "     '01h', '0xFC[6]',",
+                       "label, miscFeatureCell(c, key), '01h', '0xFB[' + bits + ']', note]"):
+            self.assertIn(needle, js)
+        i = js.index('const MISC_FEATURE_ROWS = [')
+        rows = re.findall(r"\['([a-z_]+)', '([^']+)', '(\d:\d)'",
+                          js[i:js.index('];', i)])
+        self.assertEqual([(k, b) for k, _l, b in rows],
+                         [('scratch_pad', '7:6'), ('password_entry', '5:4'),
+                          ('password_entry_result', '3:2'),
+                          ('full_page_read', '1:0')])
+
+    def test_the_cells_say_what_the_codes_mean(self):
+        caps = {'features': {'scratch_pad_code': 2, 'password_entry_code': 1,
+                             'password_entry_result_code': 0,
+                             'full_page_read_code': 3},
+                'max_read': 8}
+        got = self._cells([
+            ['misc', [caps, 'scratch_pad']],
+            ['misc', [caps, 'password_entry']],
+            ['misc', [caps, 'password_entry_result']],
+            ['misc', [caps, 'full_page_read']],
+            ['misc', [{'flat_memory': True}, 'scratch_pad']],
+            ['misc', [{}, 'scratch_pad']],
+            ['lpr', [{'valid': False, 'restricted': []}]],
+            ['lpr', [{'valid': True, 'restricted': []}]],
+            ['lpr', [{'valid': True, 'restricted': ['CDB queries',
+                                                    'CDB firmware queries']}]],
+            ['lpr', [None]],
+        ])
+        self.assertEqual(got[0], 'Supported')
+        self.assertEqual(got[1], 'Not supported')
+        self.assertEqual(got[2], 'Unknown not stated - CMIS 5.2 or earlier')
+        self.assertEqual(got[3], 'Reserved (11b) reads of up to 8 bytes')
+        self.assertIn('no Page 01h', got[4])
+        self.assertEqual(got[5], '\u2014')
+        self.assertTrue(got[6].startswith('Not stated'), got[6])
+        self.assertTrue(got[7].startswith('None'), got[7])
+        self.assertEqual(got[8], 'CDB queries, CDB firmware queries not '
+                                 'generally supported in ModuleLowPwr')
+        self.assertEqual(got[9], '\u2014')
+
+    def test_the_full_page_read_row_says_how_this_tool_reads(self):
+        self._connect('mock_dr8')
+        caps = self._caps()
+        self.assertEqual(caps['features']['full_page_read_code'], 2)
+        got = self._cells([['misc', [caps, 'full_page_read']]])
+        self.assertEqual(got[0], 'Supported reads of up to 128 bytes')
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

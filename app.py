@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.189.0'
+__version__ = '2.190.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1189,6 +1189,17 @@ def _discover_capabilities() -> dict:
         # matters, and it returns early below.
         caps.update(cmis.parse_state_machines(
             *_read_lower(*cmis.REG_CMIS_SM_SUPPORT[1:])))
+        # Lower 60-62, the rest of Table 8-18 and as Required: they were read
+        # only on a paged module, and only two of the three bytes.
+        sub, hs, lpr = _read_lower(*cmis.REG_EXT_MODULE_INFO[1:])
+        caps.update(cmis.parse_extended_module_info(sub, hs))
+        caps['heatsink_type_name'] = cmis.HEATSINK_TYPES.get(
+            caps['heatsink_type'], f"Reserved (0x{caps['heatsink_type']:X})")
+        caps['fiber_face_name'] = cmis.FIBER_FACE_TYPES.get(
+            caps['fiber_face_type'], f"Reserved (0x{caps['fiber_face_type']:X})")
+        caps['module_subtype_name'] = cmis.module_subtype_name(
+            _read_lower(0x00, 1)[0], caps['module_subtype'])
+        caps['low_power_restrictions'] = cmis.parse_low_power_restrictions(lpr)
         caps['config'] = cmis.parse_config_capabilities(
             _read_lower(*cmis.REG_MEMORY_MODEL[1:])[0])
         caps['flat_memory'] = caps['config'].get('memory_model') == 'Flat'
@@ -1283,14 +1294,6 @@ def _discover_capabilities() -> dict:
             cmis.parse_default_polarity(
                 _read_upper(*cmis.REG_DEFAULT_POLARITY)),
             caps.get('max_lanes', 8), caps.get('page_60h_supported', False))
-        sub = _read_lower(*cmis.REG_MODULE_SUBTYPE[1:])[0]
-        hs = _read_lower(0x3D, 1)[0]
-        ext = cmis.parse_extended_module_info(sub, hs)
-        ext['heatsink_type_name'] = cmis.HEATSINK_TYPES.get(
-            ext['heatsink_type'], f"Reserved (0x{ext['heatsink_type']:X})")
-        ext['fiber_face_name'] = cmis.FIBER_FACE_TYPES.get(
-            ext['fiber_face_type'], f"Reserved (0x{ext['fiber_face_type']:X})")
-        caps.update(ext)
         # 11h:240-255 (Table 8-107) is an advertisement rather than live
         # state, so it is read once here with the rest rather than on every
         # monitoring poll. The width comes from caps and not from

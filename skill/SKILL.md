@@ -770,6 +770,10 @@ capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码
 
 `GET /api/module/info` 的 `module_type` 按 SFF-8024 Rev 4.14 Table 4-1 命名(1Eh 是「QSFP+ or later with CMIS」,不是 QSFP-DD;QSFP-DD 是 18h)。`other_management` 非空时(02h/03h SFF-8472、0Dh/11h SFF-8636、1Ah SFP-DD MIS),这不是 CMIS 模块,其余字段都是按 CMIS 解读的别的内存映射(CMIS 8.2.1)。
 
+## Lower 60-62 与 01h:251-252
+
+capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifier 选列;没有列的标识给出 `Code N (no Table 4-11 column ...)`)、`fiber_face_name`(Lower 61.1-0)、`low_power_restrictions`(Lower 62,Table 8-19:`valid` 为 false 时其余字段是 `null`,不要当成「无限制」;`restricted` 列出在 ModuleLowPwr 下受限的 CDB 组)。平坦内存模块也有这几项。`features` 是 01h:251 的四项(`*_code` 0 = 未声明,CMIS 5.2 及更早),`link_training_supported` 是 01h:252.6(CMIS-LT,Pages 50h-53h)。
+
 ## 线缆组件和平坦内存模块
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。

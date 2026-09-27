@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.189.0<br>
+      <b>版本</b>　2.190.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.189.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.189.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.190.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.190.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1155,6 +1155,8 @@
         <tr><td>Cable Propagation Delay</td><td class="label">不可分离有源光缆的传播时延(Table 8-50),10 ns 为单位,0 表示未给出(显示 Not specified)。线缆组件总有这一行;可拆卸光模块只在报了非 0 值时出现,并标 ▲。这是光在线缆里走的时延,DataPath 页的数据通道时延(Page 15h)是经过模块内部的时延,单位相同但不是一回事。平坦内存线缆显示 "no Page 01h"</td><td><code>01h / 0x94–0x95</code></td></tr>
         <tr><td>State Machines</td><td class="label">模块运行哪几个状态机(CmisSmSupport,Table 8-18):模块状态机 MSM、数据通道状态机 DPSM、网络通道状态机 NPSM。编码 0 表示「未声明」(CMIS 5.3 之前的模块),不是「没有」——这时按 Memory Model 判断;5 及以上是保留值</td><td><code>Lower / 0x38</code></td></tr>
         <tr><td>Module Function</td><td class="label">模块功能类型(ModuleFunctionType,Table 8-18):Transmission Module(传输模块)或 ELSFP Resource Module;2–127 显示 Reserved,128 以上显示 Custom</td><td><code>Lower / 0x39</code></td></tr>
+        <tr><td>Module Subtype</td><td class="label">封装形式的变体(SFF8024ModuleSubtype,Table 8-18),按 SFF-8024 Table 4-11 命名。这张表每种封装一列,由 Identifier 选列:同一个编码在 QSFP-DD、OSFP 等上是不同的变体(如 3 在 QSFP-DD 上是 Type 2A,在 OSFP 上是 Type 3);表里没有列的标识只显示编码。0 为 Unknown or unspecified</td><td><code>Lower / 0x3C[3:0]</code></td></tr>
+        <tr><td>LowPwr Restrictions</td><td class="label">哪些管理功能在 ModuleReady 下支持、进入 ModuleLowPwr 后受低功耗功率限制而不完全可用(LowPowerRestrictions,Table 8-19,CMIS 5.3 新增)。置 1 表示<b>受限</b>,四组都是 CDB:查询类、固件查询类、会改变模块状态的命令、会改变固件状态的命令;都没受限显示 None。bit 7 为 0 表示这个字节不可信(5.3 之前的模块),显示 Not stated。本工具自己不发 CDB 命令,这一行是给在 Raw Registers 里手动操作 CDB 的人看的</td><td><code>Lower / 0x3E</code></td></tr>
         <tr><td>Tx CDR</td><td class="label">有没有 Tx CDR、主机能否旁路它(Table 8-54):Present · host can bypass it / Present · always in circuit / No CDR。声明了旁路控制却没有 CDR 时照实写明——单看旁路位会以为能控制</td><td><code>01h / 0xA1[1:0]</code></td></tr>
         <tr><td>Rx CDR</td><td class="label">同上,Rx 侧(Table 8-54)</td><td><code>01h / 0xA2[1:0]</code></td></tr>
         <tr><td>CDR Bypass Saves</td><td class="label">每个 CDR、每条通道旁路后<b>至少</b>省下的功耗(CDRPowerSavedPerLane,Table 8-50,0.01 W 为单位),以及所有可旁路的 CDR 全部旁路时的合计;模块报 0 时显示 Not stated</td><td><code>01h / 0x98</code></td></tr>
@@ -1183,10 +1185,16 @@
         <tr><td>Rx LOS Timing</td><td class="label">Rx LOS 按封装规范的快速模式时限还是常规时限上报(RxLOSIsFast,Table 8-50):Fast mode / Regular</td><td><code>01h / 0x97[2]</code></td></tr>
         <tr><td>Tx Disable Timing</td><td class="label">模块响应 Tx 输出关断有多快(TxDisableIsFast,Table 8-50):Fast mode / Regular</td><td><code>01h / 0x97[1]</code></td></tr>
         <tr><td>Heatsink Type</td><td class="label">散热器类型,按 SFF-8024 Table 4-13 命名(SFF8024HeatsinkType)</td><td><code>Lower / 0x3D[7:4]</code></td></tr>
+        <tr><td>Fiber Face</td><td class="label">光连接器的端面接触类型(SFF8024FiberFaceType,Table 8-18,编码见 SFF-8024 Table 4-12):PC/UPC 或 APC,假定所有光接口相同。0 同时表示「不适用」,例如没有光连接器的模块</td><td><code>Lower / 0x3D[1:0]</code></td></tr>
         <tr><td>Module Lanes</td><td class="label">模块<b>物理</b>通道总数和 Bank 数(BanksSupported);11b 转到 <code>01h:174</code>,最多 256 通道</td><td><code>01h / 0x8E[1:0]</code></td></tr>
         <tr><td>Default Polarity</td><td class="label">出厂默认的 Tx 输入 / Rx 输出极性(Table 8-57),列出反相的通道,全部正常时显示 All regular。超过 8 通道的模块上,这 8 位按每 8 条一组套用,除非 Page 60h 给出了逐通道的值(8.4.13)</td><td><code>01h / 0xAB–0xAC</code></td></tr>
         <tr><td>Media Lane Switching</td><td class="label">是否支持媒体侧通道切换(MediaLaneSwitchingSupported,Table 8-62)</td><td><code>01h / 0xFC[5]</code></td></tr>
         <tr><td>Host Lane Switching</td><td class="label">是否支持主机侧通道切换(HostLaneSwitchingSupported,Table 8-62):把主机电通道接到别的标称通道(7.8),CMIS 5.3 新增</td><td><code>01h / 0xFC[7]</code></td></tr>
+        <tr><td>Link Training (Pages 50h-53h)</td><td class="label">是否支持 CMIS-LT 补充规范定义的链路训练功能,位于 Page 50h–53h(LinkTrainingSupported,Table 8-62)。本工具不操作这些页</td><td><code>01h / 0xFC[6]</code></td></tr>
+        <tr><td>Host Scratchpad</td><td class="label">是否有 Host Scratchpad(<code>13h:184-191</code>,ScratchPadSupported,Table 8-62)。本工具靠它判断模块是否重启过(见 Module Restarts)。四个 01h:251 广告的取值相同:Supported / Not supported / Unknown(未声明,CMIS 5.2 及更早)/ Reserved;平坦内存模块显示 "no Page 01h"</td><td><code>01h / 0xFB[7:6]</code></td></tr>
+        <tr><td>Password Entry</td><td class="label">是否支持密码输入 / 修改寄存器 Lower 118–125(PasswordEntrySupported,Table 8-62,规范 8.2.14)</td><td><code>01h / 0xFB[5:4]</code></td></tr>
+        <tr><td>Password Result</td><td class="label">密码输入或修改的结果是否会报在 PasswordCmdResult(Lower 42)(PasswordEntryResultSupported,Table 8-62)</td><td><code>01h / 0xFB[3:2]</code></td></tr>
+        <tr><td>Full Page Read</td><td class="label">一次 READ 能否读满 128 字节(FullPageReadSupported,Table 8-62);不支持时最多 8 字节(规范 5.2.2.1)。后面注明本工具按多大的块读</td><td><code>01h / 0xFB[1:0]</code></td></tr>
         <tr><td>Extra Pages</td><td class="label">模块声明了哪些附加页:0Ch / 0Dh / 60h / 61h / 62h(Table 8-58);都没有时显示 none advertised</td><td><code>01h / 0xAD–0xAE</code></td></tr>
         <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
@@ -1776,6 +1784,17 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Module Info:补上 Table 8-18 和 01h:251 的其余广告</h3>
+  <p>规范 Table 8-18(Lower 56–63)里的字段都是必需的(Rqd)。工具此前只显示了 56、57 和 61 的散热器类型:模块子类型(Lower 60)和光纤端面(61 的低两位)连接时读了却没有显示,LowPowerRestrictions(Lower 62,Table 8-19,CMIS 5.3 新增)根本没读;平坦内存模块上 60–62 一个都没读,尽管它们和 56–57 一样在 Lower Memory。Page 01h 的 Table 8-62 也有同样的缺口:<code>01h:251</code> 的四项广告(其中「整页读取」本来就决定着工具按多大的块读)和 <code>01h:252.6</code> 链路训练都没有对应的行。</p>
+  <p>现在 Module Info 多出这些行:</p>
+  <ul>
+    <li><b>Module Subtype</b>:按 SFF-8024 Table 4-11 命名,由 Identifier 选列——同一个编码 3 在 QSFP-DD 上是 Type 2A,在 OSFP 上是 Type 3;表里没有列的标识只显示编码</li>
+    <li><b>LowPwr Restrictions</b>:进入 ModuleLowPwr 后不完全可用的 CDB 功能组;bit 7 为 0(5.3 之前的模块)显示 Not stated,不当作「没有限制」</li>
+    <li><b>Fiber Face</b>:PC/UPC 或 APC(SFF-8024 Table 4-12)</li>
+    <li><b>Link Training (Pages 50h-53h)</b>、<b>Host Scratchpad</b>、<b>Password Entry</b>、<b>Password Result</b>、<b>Full Page Read</b>:未声明(00b,CMIS 5.2 及更早)显示 Unknown,不当作「不支持」;Full Page Read 注明工具按多大的块读</li>
+  </ul>
+  <p>演示模块:相干模块声明在 ModuleLowPwr 下不支持会改变固件状态的 CDB 命令,其余模块没有限制。第 7 章字段表同步补上这八行。</p>
 
   <h3>PCIe 线缆的衰减按 PCIe 频点标注;PCIe 接口编码带上代次</h3>
   <p>规范 Table 8-35 下的注释:模块声明自己是 PCIe 应用时,<code>00h:204-208</code> 这五个衰减值对应 2.5、4.0、8.0、16.0、32.0 GHz,而不是 5、7、12.9、25.8、53.125 GHz。工具此前不分模块一律按后一组频点标注——PCIe 线缆在 32 GHz 的损耗会被写成 53.125 GHz 的损耗。</p>
@@ -4993,7 +5012,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.189.0<br>
+    CMIS Module Manager 操作手册 v2.190.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

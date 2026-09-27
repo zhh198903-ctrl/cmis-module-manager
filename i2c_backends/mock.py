@@ -95,6 +95,9 @@ def _raw_to_dbm_centi(raw):
 # coherent lite from a ZR module. The tunable C-band profile this one used to
 # be still exists below as _ZR_800G.
 _COHERENT_800G = {
+    # Lower 62 (Table 8-19): valid, and firmware-changing CDB commands are
+    # not available in ModuleLowPwr.
+    'low_power_restrictions': 0x81,
     # A coherent module with a programmable test pattern: Pattern ID 15 plus
     # the full 32 bytes Table 8-134 reserves for it.
     'pattern_caps_high': 0x9F,           # IDs 8-12 and 15
@@ -1183,6 +1186,10 @@ class MockBackend(I2CInterface):
         lower[0x39] = p.get('module_function_type', 0x00)   # 57
         lower[0x3C] = p.get('module_subtype', 0x00)          # 60
         lower[0x3D] = p.get('heatsink_fiber', 0x00)          # 61 (5.4 heatsink type)
+        # 62, LowPowerRestrictions (Table 8-19, CMIS 5.3): bit 7 says the
+        # byte is valid, and a module built before 5.3 leaves it clear.
+        lower[0x3E] = p.get('low_power_restrictions',
+                            0x80 if p.get('cmis_rev', 0x53) >= 0x53 else 0x00)
         regs[0x00] = p00
 
         # ==== Page 01h — Advertising ====

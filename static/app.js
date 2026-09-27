@@ -848,6 +848,22 @@ async function loadInfo() {
      'Lower', '0x39',
      'ModuleFunctionType (Table 8-18) - a transmission module or an ELSFP '
      + 'Resource Module.'],
+    // Lower 60-62 are the rest of Table 8-18, all Required. Two of them were
+    // read at connect and dropped; the third was never read.
+    ['Module Subtype', esc(c.module_subtype_name || '\u2014'),
+     'Lower', '0x3C[3:0]',
+     'SFF8024ModuleSubtype (Table 8-18) - the variant of the form factor the '
+     + 'Identifier names, from SFF-8024 Table 4-11. The table has one column '
+     + 'per form factor, so the same code is a different variant on each, '
+     + 'and an identifier with no column has no named subtypes.'],
+    ['LowPwr Restrictions', lowPowerRestrictionsCell(c.low_power_restrictions),
+     'Lower', '0x3E',
+     'LowPowerRestrictions (Table 8-19) - management functions this module '
+     + 'supports in ModuleReady but not fully in ModuleLowPwr, because of '
+     + 'the Low Power mode power limit. A set bit is a restriction. Bit 7 '
+     + 'clear means the byte is uncertain, as on a module built before '
+     + 'CMIS 5.3. For a command with result feedback the specification '
+     + 'also lets a host simply try it.'],
     ...(c.si ? [
       // 161.0-1 and 162.0-1. The Flags panel has reported Tx CDR loss of
       // lock since it was written; whether that CDR is in circuit is this
@@ -1004,10 +1020,25 @@ async function loadInfo() {
        + 'Output Disable'],
     ] : []),
     ['Heatsink Type',   esc(c.heatsink_type_name || '—'), 'Lower', '0x3D[7:4]', 'SFF8024HeatsinkType (SFF-8024 Table 4-13)', 'heatsink_type'],
+    ['Fiber Face',      esc(c.fiber_face_name || '\u2014'), 'Lower', '0x3D[1:0]',
+     'SFF8024FiberFaceType (Table 8-18, codes in SFF-8024 Table 4-12) - the '
+     + 'physical contact at the optical connectors, assumed the same for all '
+     + 'of them. 0 also means not applicable, as on a module with no optical '
+     + 'connector.'],
     ['Module Lanes',    `${c.max_lanes || 8}  (${c.banks_supported || 1} bank${(c.banks_supported||1) > 1 ? 's' : ''})`, '01h', '0x8E[1:0]', 'BanksSupported; 11b escapes to 01h:174 for up to 256 lanes', (c.max_lanes || 8) > 32 && 'max_lanes'],
     ['Default Polarity', polaritySummary(c.default_polarity, c.default_polarity_scope), '01h', '0xAB–0xAC', 'DefaultInputPolarityTx / DefaultOutputPolarityRx (Table 8-57). Section 8.4.13: on a module wider than eight lanes these bits apply in each group of eight, unless Page 60h carries per-lane values instead', 'default_polarity'],
     ['Media Lane Switching', c.media_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[5]', 'MediaLaneSwitchingSupported (Table 8-62)', 'media_lane_switching_supported'],
     ['Host Lane Switching', c.host_lane_switching_supported ? 'Supported' : 'Not supported', '01h', '0xFC[7]', 'HostLaneSwitchingSupported (Table 8-62): the module can connect electrical host lanes to other nominal lanes (section 7.8) - added in CMIS 5.3', 'host_lane_switching_supported'],
+    ['Link Training (Pages 50h-53h)',
+     c.link_training_supported ? 'Supported' : 'Not supported',
+     '01h', '0xFC[6]',
+     'LinkTrainingSupported (Table 8-62) - the functionality specified in '
+     + 'CMIS-LT, on Pages 50h-53h. This tool does not drive it.'],
+    // 01h:251 (Table 8-62): four two-bit advertisements, read at connect.
+    // One of them already decides how this tool reads (full page read) and
+    // another whether it can tell a restart (scratchpad); none was shown.
+    ...MISC_FEATURE_ROWS.map(([key, label, bits, note]) => [
+      label, miscFeatureCell(c, key), '01h', '0xFB[' + bits + ']', note]),
     ['Extra Pages',     extraPagesSummary(c), '01h', '0xAD–0xAE', 'Pages 0Ch/0Dh/60h/61h/62h advertisement (Table 8-58)', 'page_0ch_supported'],
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
@@ -1622,6 +1653,54 @@ function linkLengthCell(d) {
 // with detachable media connectors the FarEndConfiguration byte is cleared".
 // Code 0 is named "Undefined. Module with detachable media", which on a
 // cable was the one thing the row got wrong.
+// Table 8-19. The restrictions are all CDB groups; this tool sends no CDB
+// command of its own, so the row is for whoever does.
+function lowPowerRestrictionsCell(r) {
+  if (!r) return '\u2014';
+  if (!r.valid) {
+    return 'Not stated <span class="reg-meta">bit 7 clear: the byte is '
+      + 'uncertain (a module built before CMIS 5.3)</span>';
+  }
+  return r.restricted.length
+    ? esc(r.restricted.join(', ')) + ' <span class="reg-meta">not generally '
+      + 'supported in ModuleLowPwr</span>'
+    : 'None <span class="reg-meta">no CDB group is restricted in '
+      + 'ModuleLowPwr</span>';
+}
+
+// 01h:251, Table 8-62. 00b is not "no": it is a module built before CMIS 5.3,
+// which had no way to say.
+const MISC_FEATURE_ROWS = [
+  ['scratch_pad', 'Host Scratchpad', '7:6',
+   'ScratchPadSupported (Table 8-62) - the Host Scratchpad Area '
+   + '13h:184-191, which this tool uses to tell whether the module has '
+   + 'restarted (Module Restarts).'],
+  ['password_entry', 'Password Entry', '5:4',
+   'PasswordEntrySupported (Table 8-62) - the password entry and change '
+   + 'registers, Lower 118-125 (8.2.14).'],
+  ['password_entry_result', 'Password Result', '3:2',
+   'PasswordEntryResultSupported (Table 8-62) - whether PasswordCmdResult, '
+   + 'Lower 42, reports the outcome of a password entry or change.'],
+  ['full_page_read', 'Full Page Read', '1:0',
+   'FullPageReadSupported (Table 8-62) - a READ may return up to 128 bytes; '
+   + 'without it at most 8 (5.2.2.1). This tool reads in pieces of that '
+   + 'size.'],
+];
+
+function miscFeatureCell(c, key) {
+  if (!c.features) return c.flat_memory ? NO_PAGE_01H : '\u2014';
+  const code = c.features[key + '_code'];
+  const text = code === 2 ? 'Supported'
+             : code === 1 ? 'Not supported'
+             : code === 0 ? 'Unknown <span class="reg-meta">not stated - '
+                            + 'CMIS 5.2 or earlier</span>'
+             : 'Reserved (11b)';
+  return key === 'full_page_read'
+    ? text + ' <span class="reg-meta">reads of up to ' + esc(String(c.max_read))
+      + ' bytes</span>'
+    : text;
+}
+
 function farEndCell(c) {
   const f = c.far_end;
   if (f.code === 0 && c.cable_assembly) {
