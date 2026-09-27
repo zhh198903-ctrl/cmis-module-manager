@@ -791,6 +791,8 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 
 `GET /api/module/info` 的 `host_lanes` / `media_lanes` 是一个通道组内最多同时在用的通道数:每个 Application 的 HostLaneAssignmentOptions 里每个起点算一个实例,互不重叠的相加(附录 C-1:2 通道、起点 55h = 四个并行实例)。`lanes_detail` 用「·」分隔各 Application(它们是二选一),多起点的标 `×n`。
 
+模块声明了 Page 16h(`01h:142.7`)时,`GET /api/module/applications` 每个应用带 `np_application`(`16h:248-249`,Table 8-158)。NP 应用的描述符是部分的(7.6.4):每个起点是一条 Host Path,几条共用一条 Network Path,所以媒体通道按 MediaLaneAssignmentOptions 的每个起点只算一次,明细写成 `AppSel#3 (NP): 1H ×8 → 1M ×2`。NP 应用的主机通道只会到 DPInitialized、不会到 DPActivated(7.6.2),这是规范行为;Network Path 在 Page 16h 配置,工具没有这个面板——用户问「选了 NP 应用,通道一直是 Initialized」时这样解释。没有 Page 16h 的模块全是 DP 应用,`np_application` 都是 false。
+
 ## 线缆组件和平坦内存模块
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。

@@ -3014,7 +3014,8 @@ async function loadDatapath() {
       ? _advertisedApps.map(a =>
           `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
           + `App ${a.app_sel} — ${a.media_if_name || hex8(a.media_if_id)} `
-          + `${esc(laneCountPair(a))}${esc(startsOn(a.app_sel))}</option>`)
+          + `${esc(laneCountPair(a))}${esc(startsOn(a.app_sel))}`
+          + `${a.np_application ? ' · NP Application (Host Path)' : ''}</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
     opts.unshift(`<option value="0" ${lane.app_select === 0 ? 'selected' : ''}>`
@@ -4098,7 +4099,7 @@ async function loadApplications() {
       + `${hex8(a.host_lane_assign_mask)} hex = ${a.host_lane_assign_mask} dec\n`
       + 'Bit n set = this Application may start on host lane n+1';
     return `<tr>
-      <td title="AppSelCode ${a.app_sel} (dec), 1-15">${a.app_sel}</td>
+      <td title="AppSelCode ${a.app_sel} (dec), 1-15">${a.app_sel}${npBadge(a)}</td>
       <td title="Host Interface ID ${hostHex} hex = ${a.host_if_id} dec (SFF-8024)">${hostHex}<br><small style="color:var(--text-muted)">${esc(a.host_if_name || '')}</small></td>
       <td title="Media Interface ID ${mediaHex} hex = ${a.media_if_id} dec (SFF-8024)">${mediaHex}<br><small style="color:var(--text-muted)">${esc(a.media_if_name || '')}</small></td>
       <td title="Host lane count (Table 8-22)">${esc(laneCountText(a, 'host'))}</td>
@@ -4107,6 +4108,22 @@ async function loadApplications() {
       ${mediaAssignCell(a)}
     </tr>`;
   }).join('');
+}
+
+// 16h:248-249 (Table 8-158). A uniplex NP Application's descriptor looks
+// exactly like a DP Application's (8.19.5.3), and a multiplexing one is
+// partial - its media side is the whole Network Path, shared by every Host
+// Path that starts on one of its host lanes.
+const NP_APP_TIP = 'a Network Path Application (7.6.3). Each start is a '
+  + 'Host Path, and the Host Paths share the Network Path the media side '
+  + 'describes. A Host Path reaches DPInitialized, never DPActivated '
+  + '(7.6.2); the Network Path is set up on Page 16h (8.19), which has no '
+  + 'panel here.';
+
+function npBadge(a) {
+  if (!a.np_application) return '';
+  return ` <span class="flag-warn" title="ExtAppDescriptor${a.app_sel} `
+    + `(16h:248-249, Table 8-158): ${esc(NP_APP_TIP)}">NP</span>`;
 }
 
 // ---------------------------------------------------------------------------

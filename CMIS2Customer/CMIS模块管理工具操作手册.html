@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.200.0<br>
+      <b>版本</b>　2.201.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.200.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.200.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.201.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.201.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1196,7 +1196,7 @@
         <tr><td>Password Result</td><td class="label">密码输入或修改的结果是否会报在 PasswordCmdResult(Lower 42)(PasswordEntryResultSupported,Table 8-62)</td><td><code>01h / 0xFB[3:2]</code></td></tr>
         <tr><td>Full Page Read</td><td class="label">一次 READ 能否读满 128 字节(FullPageReadSupported,Table 8-62);不支持时最多 8 字节(规范 5.2.2.1)。后面注明本工具按多大的块读</td><td><code>01h / 0xFB[1:0]</code></td></tr>
         <tr><td>Extra Pages</td><td class="label">模块声明了哪些附加页:0Ch / 0Dh / 60h / 61h / 62h(Table 8-58);都没有时显示 none advertised</td><td><code>01h / 0xAD–0xAE</code></td></tr>
-        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4。一个应用若可以从多条通道起始(HostLaneAssignmentOptions 有多个位),<b>每个起点算一个实例</b>:只广告 4×100G-DR(2 条通道,起点 1、3、5、7)的模块是 8 条主机通道、4 条媒体通道。括号里的明细用「·」分隔各应用(它们是二选一,不是相加),多起点的应用标出实例数,如 <code>2H/1M ×4</code></td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4。一个应用若可以从多条通道起始(HostLaneAssignmentOptions 有多个位),<b>每个起点算一个实例</b>:只广告 4×100G-DR(2 条通道,起点 1、3、5、7)的模块是 8 条主机通道、4 条媒体通道。括号里的明细用「·」分隔各应用(它们是二选一,不是相加),多起点的应用标出实例数,如 <code>2H/1M ×4</code>。NP 应用(<code>16h:248–249</code>)的起点是 Host Path,共用网络通路:媒体通道按网络通路(MediaLaneAssignmentOptions 的每个起点)只算一次,明细写成 <code>AppSel#3 (NP): 1H ×8 → 1M ×2</code></td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
         <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行。平坦内存模块没有 Page 01h，显示 "no Page 01h on a flat memory module"</td><td><code>01h / 0x80–0x81</code></td></tr>
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Network Path 应用(NP)单独标出,通道数按网络通路计算</h3>
+  <p>规范 8.19.5.3:支持 Network Path 应用的模块,要在 <code>16h:248–249</code>(Table 8-158,ExtAppDescriptor)里逐个声明每个 AppSel 是 DP 应用还是 NP 应用;<code>01h:142.7</code> 声明模块有 Page 16h。7.6.4:NP 应用的描述符是「部分」的——每个起点是一条 <b>Host Path</b>,若干条 Host Path 复用同一条 <b>Network Path</b>(媒体侧)。工具此前从不读这两个字节,把 NP 应用当成普通数据通道;而主机 / 媒体通道数把每个起点都算成一条自带媒体通道的数据通道,所以 NP 应用没有被更宽的 DP 应用盖住时,媒体通道数会多算:附录 H 表 H-6 的模块去掉两个 400G 应用后,显示 8 / 6,实际是 8 / 5。</p>
+  <p>现在:模块声明了 Page 16h 时,工具读取 <code>16h:248–249</code>。Supported Applications 表的 AppSel 旁标出 <b>NP</b>(悬停说明:Host Path 只到 DPInitialized,不会到 DPActivated,7.6.2;Network Path 在 Page 16h 配置,本工具没有这个面板);DataPath 下拉框的这一项注明 <code>NP Application (Host Path)</code>。Module Info 的 Host Lanes / Media Lanes 里,NP 应用的媒体通道<b>按网络通路算一次</b>:MediaLaneAssignmentOptions 每个起点是一条网络通路,按顺序由相邻的若干条 Host Path 共用(8.19.5.5);同一混合复用的几个描述符(同一个 MediaInterfaceID、同一媒体起点)也只算一次。括号里的明细写成 <code>AppSel#3 (NP): 1H ×8 → 1M ×2</code>:8 条 Host Path,进 2 条网络通路。接口回复里每个应用多了 <code>np_application</code>。附录 H 的表 H-1、H-5、H-6 已写成回归测试。内置演示模块都没有 NP 应用,显示不变。</p>
 
   <h3>停下再换应用:DP Deinit 与 Apply 按规范顺序写入,被拒绝的通道保持停下;过渡状态中的 Apply 一律拒绝</h3>
   <p>规范 6.2.4:「<b>支持免中断重配置流程时</b>……模块会悄悄忽略在过渡状态(DPInit、DPDeinit、DPTxTurnOn、DPTxTurnOff)中收到的请求」,附录 E 的图 E-19 也这样标注——两种流程(常规 ApplyDPInit、热 ApplyImmediate)<b>任一</b>支持即适用。工具此前只看模块是否支持<b>热</b>重配置,所以只支持常规流程的模块(<code>Lower 02h</code>:SteppedConfigOnly = 1、AutoCommissioning = 01b,演示模块 DR8 就是)在过渡状态里点 Apply,会被发出去、被模块丢掉,工具却回报成功。演示模块也没有丢弃这种触发,所以一直没被发现。</p>
@@ -4256,7 +4260,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <table>
       <thead><tr><th>列</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>AppSel</td><td class="label">应用码序号(1–15),写入 DataPath 配置表时使用</td></tr>
+        <tr><td>AppSel</td><td class="label">应用码序号(1–15),写入 DataPath 配置表时使用。模块声明了 Page 16h(<code>01h:142.7</code>)时,<code>16h:248–249</code>(Table 8-158)里标为 NP 应用的,旁边显示 <b>NP</b>:它的每个起点是一条 Host Path,几条 Host Path 共用一条 Network Path;Host Path 只到 DPInitialized,Network Path 在 Page 16h 配置,本工具没有这个面板</td></tr>
         <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M、0x71 = PCIe 5.0)。<b>CMIS 本身不定义这些编码</b>,只存编号并指向 SFF-8024(本工具按 Rev 4.14 解名称)。比编码表更新的编号显示 <code>Unknown (0x..)</code>(<code>00h</code> 是 SFF-8024 定义的 <code>Undefined</code>,不算未知),不留空;<code>0xBE</code> 显示 <code>See NAD (0xBE)</code>(真实编号在 Normalized Application Descriptor 里)</td></tr>
         <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID,按 Media Type(Lower 85)查 SFF-8024 的对应表:MMF(4-6)、SMF(4-7)、无源 / 线性有源铜缆(4-8)、有源线缆(4-9)、BASE-T(4-10)</td></tr>
         <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
@@ -4274,6 +4278,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)</td><td>—</td></tr>
         <tr><td>AppSelect</td><td class="label">应用码选择。下拉<b>只列出该模块实际广播的应用</b>（通常 1–8 个），格式为
             <code>App 2 — 0x4F/0x1B 4H/4M</code>，依次是应用码、主机/媒体接口 ID、主机与媒体 lane 数；
+            NP 应用(见 9.2)的那一项末尾注明 <code>NP Application (Host Path)</code>。
             若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
             <code>App n — not advertised</code> 用于保留现值。
             寄存器本身：DPConfigLane，每 lane 1 字节，bits[7:4]=AppSelCode（0 表示"无应用"，不是 App 0），
@@ -5080,7 +5085,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.200.0<br>
+    CMIS Module Manager 操作手册 v2.201.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

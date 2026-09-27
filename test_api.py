@@ -19237,6 +19237,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     # each table in the specification, copied verbatim.
     VERIFIED_CMIS = {
         '6-3': 'Configuration Commands (Intervention-Free Reconfiguration Procedures Supported)',
+        '8-158': 'NP Extended Application Advertisement (Page 16h)',
         '6-4': 'Configuration Commands (Intervention-Free Reconfigurations Not Supported)',
         '6-5': 'Tx Input Eq control relationship to AdaptiveInputEqEnableTx',
         '8-4': 'Lower Memory Overview',
@@ -39918,6 +39919,219 @@ class TestTheStepwiseProcedureRunsInItsOrder(CMISTestCase):
         note = note[:note.index('\n}\n')]
         self.assertIn('res.data.kept_deinit', note)
         self.assertIn('DP Deinit stays set', note)
+
+
+class TestNetworkPathApplicationsAreToldApart(CMISTestCase):
+    """8.19.5.3: "a module supporting NP Applications advertises for each
+    Application Descriptor (identified by its AppSel code) if the advertised
+    application is a DP Application or a NP Application" - ExtAppDescriptor<i>
+    in 16h:248-249 (Table 8-158), required wherever Page 16h is (01h:142.7).
+    7.6.4: an NP Application's descriptor is partial - each start is a Host
+    Path, and the Host Paths share one Network Path.
+
+    The tool never read those two bytes. It listed NP Applications as Data
+    Paths, and since the lane capacity counts every start as a Data Path
+    with media lanes of its own, a module whose NP Applications were not
+    outnumbered by a wide DP one showed a media lane per Host Path: Appendix
+    H-6 without its 400G Applications read 8 host / 6 media lanes for a
+    module with five.
+
+    The fixtures are Appendix H's own tables (OIF-CMIS-05.4 pages 443-446)."""
+
+    # ---- the register -----------------------------------------------------
+
+    def test_the_bits_are_the_appsel_codes(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_NP_EXT_APP, (0x16, 248, 2))
+        # H-1: 249 = xxx1 1100b, "AppSel 1 is DP, 2, 3, 4 is NP"
+        self.assertEqual(c.parse_np_applications(bytes([0x00, 0x1C])), [2, 3, 4])
+        # H-5: 249 = xxx0 1110b, "AppSel 1,2,3 is NP, 4 is DP"
+        self.assertEqual(c.parse_np_applications(bytes([0x00, 0x0E])), [1, 2, 3])
+        # 248 holds ExtAppDescriptor15 in bit 7 down to 8 in bit 0
+        self.assertEqual(c.parse_np_applications(bytes([0x81, 0x00])), [8, 15])
+        # 249 bit 0 is not an AppSel code (there is no AppSel 0)
+        self.assertEqual(c.parse_np_applications(bytes([0x00, 0x01])), [])
+        self.assertEqual(c.parse_np_applications(b''), [])
+
+    # ---- the lane capacity ------------------------------------------------
+
+    def _apps(self, descs, media, np_sels):
+        import cmis_registers as c
+        raw = b''.join(bytes(d) for d in descs) + bytes([0xFF, 0, 0, 0])
+        raw += bytes(32 - len(raw))
+        apps = c.parse_application_descriptors(raw, 0x02, b'', bytes(media),
+                                               False)
+        for a in apps:
+            a['np_application'] = a['app_sel'] in np_sels
+        return apps
+
+    def _capacity(self, descs, media, np_sels):
+        apps = self._apps(descs, media, np_sels)
+        host, media_n = app_module._compute_module_capacity(apps)
+        return host, media_n, app_module._format_lanes_detail(apps, host,
+                                                              media_n)
+
+    # Table H-6: 400ZR NP beside 400G-DR4 or 4x100G-DR1
+    H6 = [(0x11, 0x3E, 0x41, 0x01), (0x0F, 0x3E, 0x21, 0x05),
+          (0x0D, 0x3E, 0x11, 0x0F), (0x11, 0x1C, 0x44, 0x10),
+          (0x0D, 0x14, 0x11, 0xF0)]
+    H6_MEDIA = [0x01, 0x01, 0x01, 0x02, 0x1E]
+
+    def test_table_h6(self):
+        host, media, detail = self._capacity(self.H6, self.H6_MEDIA, {1, 2, 3})
+        self.assertEqual((host, media), (8, 5))
+        self.assertIn('AppSel#2 (NP): 2H ×2 → 1M', detail)
+        self.assertIn('AppSel#3 (NP): 1H ×4 → 1M', detail)
+        self.assertIn('AppSel#5: 1H/1M ×4', detail)
+
+    def test_table_h6_without_its_400g_applications(self):
+        """The case that went wrong: two 200G and four 100G Host Paths into
+        one 400ZR media lane, beside four 100G-DR1 Data Paths."""
+        descs = [self.H6[i] for i in (1, 2, 4)]
+        media = [self.H6_MEDIA[i] for i in (1, 2, 4)]
+        self.assertEqual(self._capacity(descs, media, {1, 2})[:2], (8, 5))
+        # Read as Data Paths, which is what the tool did:
+        self.assertEqual(self._capacity(descs, media, set())[:2], (8, 6))
+
+    # Table H-5: two parallel 400ZR, NP or DP
+    H5 = [(0x11, 0x3E, 0x41, 0x11), (0x0F, 0x3E, 0x21, 0x55),
+          (0x0D, 0x3E, 0x11, 0xFF), (0x11, 0x3E, 0x41, 0x11)]
+    H5_MEDIA = [0x03, 0x03, 0x03, 0x03]
+
+    def test_table_h5(self):
+        host, media, detail = self._capacity(self.H5, self.H5_MEDIA, {1, 2, 3})
+        self.assertEqual((host, media), (8, 2))
+        self.assertIn('AppSel#3 (NP): 1H ×8 → 1M ×2', detail)
+        self.assertIn('AppSel#4: 4H/1M ×2', detail)
+
+    def test_parallel_network_paths_take_consecutive_host_paths(self):
+        """8.19.5.5: the nth NP is fed by the nth group of host lanes. Eight
+        100GAUI-1 Host Paths are two Network Paths, not eight."""
+        only = [self.H5[2]], [self.H5_MEDIA[2]]
+        self.assertEqual(self._capacity(*only, {1})[:2], (8, 2))
+        self.assertEqual(self._capacity(*only, set())[:2], (8, 8))
+        two = [self.H5[1]], [self.H5_MEDIA[1]]
+        self.assertEqual(self._capacity(*two, {1})[:2], (8, 2))
+
+    def test_the_first_host_paths_feed_the_first_network_path(self):
+        """A 400G Data Path on lanes 5-8 leaves the 100GAUI-1 Host Paths on
+        lanes 1-4 - all four of them the first Network Path's."""
+        descs = [self.H5[2], (0x11, 0x1C, 0x44, 0x10)]
+        self.assertEqual(self._capacity(descs, [0x03, 0x04], {1})[:2], (8, 5))
+
+    # Table H-1: homogeneous multiplex into one 400ZR
+    H1 = [(0x11, 0x3E, 0x81, 0x01), (0x0F, 0x3E, 0x41, 0x11),
+          (0x0D, 0x3E, 0x21, 0x55), (0x11, 0x3E, 0x81, 0x01)]
+    H1_MEDIA = [0x01, 0x01, 0x01, 0x01]
+
+    def test_table_h1(self):
+        self.assertEqual(self._capacity(self.H1, self.H1_MEDIA, {2, 3, 4})[:2],
+                         (8, 1))
+
+    def test_host_paths_of_a_mixed_multiplex_share_one_network_path(self):
+        """8.19.5.4: descriptors of one mixed multiplex name the same
+        MediaInterfaceID and media lane. A 200G and two 100G Host Paths are
+        still one 400ZR."""
+        descs = [(0x0F, 0x3E, 0x41, 0x01), (0x0D, 0x3E, 0x21, 0x50)]
+        self.assertEqual(self._capacity(descs, [0x01, 0x01], {1, 2})[:2],
+                         (8, 1))
+
+    def test_a_single_np_application_still_says_what_it_is(self):
+        host, media, detail = self._capacity([self.H1[2]], [0x01], {1})
+        self.assertEqual(detail, 'AppSel#1 (NP): 2H ×4 → 1M')
+
+    # ---- the module ---------------------------------------------------------
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _advertise(self, backend, b249, b248=0):
+        backend._registers[0x01][0x8E] |= 0x80          # 142.7: Page 16h
+        backend._registers.setdefault(0x16, {}).update({0xF8: b248, 0xF9: b249})
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+
+    def _apps_now(self):
+        return self.assertOk(self.client.get(
+            '/api/module/applications'))['data']['applications']
+
+    def test_each_descriptor_says_whether_it_is_np(self):
+        backend = self._connect()
+        self._advertise(backend, 0x02)
+        apps = self._apps_now()
+        self.assertEqual(len(apps), 2)
+        self.assertEqual([a['np_application'] for a in apps], [True, False])
+
+    def test_module_info_breaks_it_down_as_host_paths(self):
+        backend = self._connect()
+        self._advertise(backend, 0x02)
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertIn('AppSel#1 (NP):', d['lanes_detail'])
+
+    def test_without_page_16h_every_descriptor_is_a_data_path(self):
+        """And Page 16h is not read: 01h:142.7 is the only thing that says
+        it exists."""
+        backend = self._connect()
+        backend._registers.setdefault(0x16, {})[0xF9] = 0x02
+        seen = []
+        orig = app_module._set_page
+
+        def spy(page, bank=0):
+            seen.append(page)
+            return orig(page, bank)
+        app_module._set_page = spy
+        try:
+            apps = self._apps_now()
+            self.assertOk(self.client.get('/api/module/info'))
+        finally:
+            app_module._set_page = orig
+        self.assertEqual(len(apps), 2)
+        self.assertEqual([a['np_application'] for a in apps], [False, False])
+        self.assertNotIn(0x16, seen)
+
+    def test_every_demo_module_has_only_data_paths(self):
+        for name in ('mock_dr8', 'mock_coherent', 'mock_coherent_zr',
+                     'mock_fr4x2', 'mock_1600g_dr8'):
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            apps = self._apps_now()
+            self.assertTrue(apps, name)
+            self.assertEqual({a['np_application'] for a in apps}, {False},
+                             name)
+
+    # ---- the page -----------------------------------------------------------
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_applications_table_marks_them(self):
+        js = self._js()
+        start = js.index('async function loadApplications() {')
+        body = js[start:js.index('\n}\n', start)]
+        self.assertIn('${a.app_sel}${npBadge(a)}</td>', body)
+        badge = js[js.index('function npBadge(a) {'):]
+        badge = badge[:badge.index('\n}\n')]
+        self.assertIn('if (!a.np_application) return', badge)
+        self.assertIn('16h:248-249, Table 8-158', badge)
+        tip = js[js.index('const NP_APP_TIP'):js.index('function npBadge')]
+        self.assertIn('DPInitialized, never DPActivated', tip)
+        self.assertIn('Page 16h', tip)
+
+    def test_the_datapath_dropdown_marks_them(self):
+        js = self._js()
+        i = js.index('const opts = _advertisedApps.length')
+        self.assertIn("a.np_application ? ' · NP Application (Host Path)'",
+                      js[i:i + 700])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.200.0'
+__version__ = '2.201.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1457,26 +1457,48 @@ def _compute_module_capacity(apps: list) -> tuple:
         mask = a.get('host_lane_assign_mask') or 0
         h = a.get('host_lanes', 0) or 0
         m = a.get('media_lanes', 0) or 0
+        starts = _lane_starts(mask)
+        if a.get('np_application'):
+            # 7.6.4: an NP Application's descriptor is partial - each start
+            # is a Host Path, and the Host Paths share a Network Path, one per
+            # MediaLaneAssignmentOptions bit, fed by consecutive groups of
+            # Host Paths (8.19.5.5). Appendix H-6's 200GAUI-2 into 400ZR
+            # starts on lanes 1 and 3 and has one media lane, not two.
+            nps = _lane_starts(a.get('media_lane_assign_mask') or 0)
+            per_np = max(1, len(starts) // len(nps))
+            for i, start in enumerate(starts):
+                network = (a.get('media_if_id'),
+                           nps[min(i // per_np, len(nps) - 1)])
+                parsed.append((start, start + max(h, 1), h, m, network))
+            continue
         # Every permissible first lane is an instance the module can run side
         # by side with the others: 55h on a two-lane Application is four
         # Data Paths (Appendix C-1, "four integrated parallel 100GBASE-DR
         # transceivers"). Only the lowest was counted, so a module
         # advertising nothing but the breakout read as two host lanes.
-        for start in _lane_starts(mask):
-            parsed.append((start, start + max(h, 1), h, m))
+        for start in starts:
+            parsed.append((start, start + max(h, 1), h, m, None))
 
     # Greedy: pick biggest non-overlapping apps first
     parsed.sort(key=lambda x: -x[2])
     occupied = set()
+    networks = set()
     sel_host = 0
     sel_media = 0
-    for start, end, h, m in parsed:
+    for start, end, h, m, network in parsed:
         lanes = set(range(start, end))
         if lanes & occupied:
             continue
         occupied |= lanes
         sel_host += h
-        sel_media += m
+        # A Network Path's media lanes count once, however many Host Paths
+        # feed it - and descriptors of one mixed multiplex share it too, as
+        # they name the same MediaInterfaceID and media lane (8.19.5.4).
+        if network is None:
+            sel_media += m
+        elif network not in networks:
+            networks.add(network)
+            sel_media += m
     return (sel_host, sel_media)
 
 
@@ -1496,16 +1518,20 @@ def _format_lanes_detail(apps: list, host_total: int, media_total: int) -> str:
 
     # Alternatives, not a sum - " + " read as one. An Application that may
     # start on several lanes says how many instances fit.
-    def times(a):
-        n = len(_lane_starts(a.get('host_lane_assign_mask') or 0))
+    def times(a, key='host_lane_assign_mask'):
+        n = len(_lane_starts(a.get(key) or 0))
         return f' ×{n}' if n > 1 else ''
 
-    parts = [f"AppSel#{a['app_sel']}: "
-             f"{part(str(a.get('host_lanes_text', a['host_lanes'])), 'H')}"
-             f"/{part(str(a.get('media_lanes_text', a['media_lanes'])), 'M')}"
-             f"{times(a)}"
-             for a in apps]
-    return ' · '.join(parts)
+    def one(a):
+        host = part(str(a.get('host_lanes_text', a['host_lanes'])), 'H')
+        media = part(str(a.get('media_lanes_text', a['media_lanes'])), 'M')
+        if a.get('np_application'):
+            # Host Paths into Network Paths, not side-by-side Data Paths.
+            return (f"AppSel#{a['app_sel']} (NP): {host}{times(a)} → "
+                    f"{media}{times(a, 'media_lane_assign_mask')}")
+        return f"AppSel#{a['app_sel']}: {host}/{media}{times(a)}"
+
+    return ' · '.join(one(a) for a in apps)
 
 
 # ---------------------------------------------------------------------------
@@ -1664,9 +1690,9 @@ def api_module_info():
         appdesc_raw = _read_lower(0x56, 32)
         # The same Media Interface ID means different things on MMF and SMF,
         # so the module's global media type picks the table.
-        apps = cmis.parse_application_descriptors(
+        apps = _mark_np_applications(cmis.parse_application_descriptors(
             appdesc_raw, media_type_raw[0], _additional_app_descriptors(),
-            _media_lane_assignments(), _flat_memory())
+            _media_lane_assignments(), _flat_memory()))
         host_lanes_app1 = apps[0]['host_lanes'] if apps else 0
         media_lanes_app1 = apps[0]['media_lanes'] if apps else 0
         host_total, media_total = _compute_module_capacity(apps)
@@ -3152,9 +3178,9 @@ def api_applications():
     try:
         data = _read_lower(0x56, 32)  # the first eight, 4 bytes each
         media_type = _read_lower(0x55, 1)[0]
-        apps = cmis.parse_application_descriptors(
+        apps = _mark_np_applications(cmis.parse_application_descriptors(
             data, media_type, _additional_app_descriptors(),
-            _media_lane_assignments(), _flat_memory())
+            _media_lane_assignments(), _flat_memory()))
         # Table 8-60: every advertised start is an instance that has to fit,
         # on lanes the module has, alongside all the others. The bitmap is
         # lanes 1-8, so it is judged against the first eight media lanes.
@@ -3439,6 +3465,23 @@ def _media_lane_assignments():
         raw = b''
     _state['media_lane_assign'] = raw
     return raw
+
+
+def _mark_np_applications(apps: list) -> list:
+    """Set `np_application` on each descriptor from 16h:248-249 (Table
+    8-158). 8.19.5.3: a uniplex NP Application's descriptor cannot be told
+    from a DP Application's, so a module with NP Applications says which is
+    which - and one without Page 16h (01h:142.7) has only DP Applications."""
+    np_sels = set()
+    if (_state.get('caps') or {}).get('network_path_pages_supported'):
+        try:
+            np_sels = set(cmis.parse_np_applications(
+                _read_upper(*cmis.REG_NP_EXT_APP)))
+        except Exception:
+            np_sels = set()
+    for a in apps:
+        a['np_application'] = a['app_sel'] in np_sels
+    return apps
 
 
 def _additional_app_descriptors():

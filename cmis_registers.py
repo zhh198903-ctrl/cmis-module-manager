@@ -260,6 +260,10 @@ REG_ADDITIONAL_APPS    = (0x01, 0xDF, 28)  # 223-250 App 9-15, Table 8-61
 # first 15 Applications advertised in the Basic Application Descriptors".
 REG_NAD_BANKS          = (0x01, 0xAF, 1)   # 175 NADBanksSupported
 REG_MEDIA_LANE_ASSIGN  = (0x01, 0xB0, 15)  # 176-190 App 1-15, Table 8-60
+# Table 8-158: which Application Descriptors describe an NP Application.
+# Rqd. on a module with Page 16h (01h:142.7); without it every descriptor
+# is a DP Application.
+REG_NP_EXT_APP         = (0x16, 0xF8, 2)   # 248-249 ExtAppDescriptor<i>
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
 REG_ACS_TX_EQ_RECALLED = (0x11, 0xD7, 2)  # 215-216 AdaptiveInputEqRecalledTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx
@@ -1801,6 +1805,22 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
                                        if i < len(media_assign) else None),
         })
     return apps
+
+
+def parse_np_applications(raw: bytes) -> list:
+    """AppSel codes whose descriptor (partially) describes a Network Path
+    Application, from 16h:248-249 (Table 8-158): 248 bits 7-0 are
+    ExtAppDescriptor15-8, 249 bits 7-1 ExtAppDescriptor7-1; 249 bit 0 is
+    not assigned. Appendix H-5: 249 = xxx0 1110b is "AppSel 1,2,3 is NP,
+    4 is DP"."""
+    if len(raw) < 2:
+        return []
+    out = []
+    for sel in range(1, 16):
+        byte, bit = (raw[0], sel - 8) if sel >= 8 else (raw[1], sel)
+        if (byte >> bit) & 1:
+            out.append(sel)
+    return out
 
 
 def media_lane_assignment_problems(mask, width, present=None) -> list:
