@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.196.0<br>
+      <b>版本</b>　2.197.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.196.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.196.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.197.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.197.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>非可调谐模块上 Laser Tuning 的 Apply 不再可点</h3>
+  <p>这一版把 12 个演示模块的每个 Apply 按钮都按了一遍(DataPath、Squelch、Apply Immediate、采集计数清零、媒体通道切换、环回、PRBS、激光调谐),只找到一个注定失败的:<b>Laser Tuning</b> 卡片在非可调谐模块上写着「Not a tunable laser module」,Apply 却仍可点,一点就是红色的「This module is not tunable (01h:155.6)」——12 个演示模块里有 9 个是这样。现在没有可写的内容时(非可调谐,或读取失败)Apply 变灰,悬停说明原因;换到可调谐模块后恢复。服务器端的拒绝保持不变。</p>
 
   <h3>Media Type 按 Table 8-20 原文命名:03h 包括线性有源铜缆</h3>
   <p>规范 Table 8-20 把介质类型 <code>03h</code> 叫作 <b>Passive and Linear Active Copper Cables</b>(CMIS 5.3 起把无源铜缆的相关数据扩展到了线性有源铜缆),工具显示的是「Passive Copper」——等于说线性有源铜缆是无源的。其它几项也是简写。现在 Module Info 的 Media Type 按原文显示(Optical Interfaces: MMF / SMF、Active Cables、BASE-T)。Rx 输出均衡类型的 <code>00b</code> 也补上了原文的「or no information」。</p>
@@ -4636,6 +4639,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <h3>10.7 Laser Tuning（激光调谐）— 仅限可调谐模块</h3>
+  <p>非可调谐模块(<code>01h:155.6</code> 为 0)上这张卡片只显示一行说明,<b>Apply</b> 是灰的,悬停写明原因。</p>
   <p><b>换栅格或信道前,先在 DataPath 页用 DP Deinit 把承载该通道的 Data Path 停下</b>(规范 7.5.2);运行中这两个输入框是锁定的。微调偏移和目标功率随时可改,只要 Data Path 不在过渡状态。模块没有声明微调能力(<code>04h:129[7]</code>)时,微调偏移框是灰的——那是模块没有的控件。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -5060,7 +5064,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.196.0<br>
+    CMIS Module Manager 操作手册 v2.197.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

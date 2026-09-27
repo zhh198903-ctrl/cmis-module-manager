@@ -39318,6 +39318,79 @@ class TestTheMediaTypeNamesAreTable820s(CMISTestCase):
         self.assertEqual(d['media_type'], 'Optical Interfaces: SMF')
 
 
+class TestAnApplyWithNothingToWriteIsNotOffered(CMISTestCase):
+    """A sweep that pressed every Apply button on every demo module found one
+    that could only fail: Laser Tuning's, on a module that is not tunable.
+    The card said "Not a tunable laser module" and left Apply enabled, and
+    pressing it gave a red "This module is not tunable (01h:155.6)" - on
+    nine of the twelve demo modules. The button is now disabled, with the
+    reason as its tooltip, wherever there is nothing to write."""
+
+    def _load_laser(self, reply, before=None):
+        """Run the page's loadLaser against a stubbed reply; the Apply
+        button's disabled state and tooltip afterwards."""
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'const els={};'
+            'const el=(id)=>els[id]||(els[id]={innerHTML:"",disabled:false,title:""});'
+            'Object.assign(el("btn-apply-laser"),' + json.dumps(before or {}) + ');'
+            'var document={getElementById:el};'
+            'var AppState={connected:true};'
+            'var _laserData=null,_relThresholds=null;'
+            'var apiGet=async()=>(' + json.dumps(reply) + ');'
+            'eval(pick(/async function loadLaser\\([\\s\\S]*?\\r?\\n}\\r?\\n/)'
+            '.replace("async function loadLaser","globalThis.loadLaser=async function"));'
+            'loadLaser().catch(()=>{}).finally(()=>process.stdout.write('
+            'JSON.stringify({disabled:el("btn-apply-laser").disabled,'
+            'title:el("btn-apply-laser").title})));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_non_tunable_module_offers_no_apply(self):
+        got = self._load_laser({'status': 'ok', 'data': {'tunable': False}})
+        self.assertIs(got['disabled'], True)
+        self.assertIn('01h:155.6', got['title'])
+
+    def test_a_failed_read_offers_no_apply(self):
+        got = self._load_laser({'status': 'error', 'message': 'bus'})
+        self.assertIs(got['disabled'], True)
+        self.assertIn('could not be read', got['title'])
+
+    def test_a_tunable_module_gets_it_back(self):
+        """After a non-tunable module, connecting a tunable one must enable
+        the button again - the page keeps its DOM between modules."""
+        js_reply = {'status': 'ok', 'data': {
+            'tunable': True, 'grids_supported': [], 'fine_tuning_supported': False,
+            'power_range_dbm': [0, 0], 'lanes': []}}
+        got = self._load_laser(js_reply, {'disabled': True, 'title': 'not tunable'})
+        self.assertIs(got['disabled'], False)
+        self.assertEqual(got['title'], '')
+
+    def test_the_server_still_refuses(self):
+        """The button is the courtesy; the refusal is the rule."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        resp = self.client.post('/api/module/laser', data=json.dumps({'lanes': []}),
+                                content_type='application/json')
+        self.assertNotEqual(resp.status_code, 200)
+        self.assertIn('not tunable', resp.get_json()['message'])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -5765,8 +5765,17 @@ async function loadLaser() {
   const tbody = document.getElementById('tbl-laser');
   const capsEl = document.getElementById('laser-caps');
   if (!tbody) return;
+  // Apply writes Pages 04h/12h. Left enabled with nothing to write, it was
+  // an offer the server always refused - on every non-tunable module.
+  const applyBtn = document.getElementById('btn-apply-laser');
+  const canApply = (why) => {
+    if (!applyBtn) return;
+    applyBtn.disabled = !!why;
+    applyBtn.title = why || '';
+  };
   if (res.status !== 'ok') {
     tbody.innerHTML = `<tr><td colspan="9" class="placeholder-text">Laser tuning not available: ${res.message}</td></tr>`;
+    canApply('Nothing to apply: the laser settings could not be read');
     return;
   }
   _laserData = res.data;
@@ -5783,8 +5792,11 @@ async function loadLaser() {
       capsEl.innerHTML = '<span style="color:var(--muted)">Not a tunable laser module — 01h:155.6 (TransmitterIsTunable) is clear, so this module has no Page 04h or 12h.</span>';
     }
     tbody.innerHTML = '<tr><td colspan="9" class="placeholder-text">Non-tunable module — no Page 04h/12h to read.</td></tr>';
+    canApply('Not a tunable laser module (01h:155.6 is clear): there is no '
+             + 'Page 04h or 12h to write');
     return;
   }
+  canApply(null);
 
   if (capsEl) {
     capsEl.innerHTML =
