@@ -2493,6 +2493,20 @@ def is_copper_media(code) -> bool:
     answer the block with zeros, which the specification defines as "not
     available (not relevant or otherwise unknown)".
     """
+    return is_cable_assembly(code)
+
+
+def is_cable_assembly(code) -> bool:
+    """Media types 03h and 04h (Table 8-20): "For Cable Assemblies, the
+    interconnect media are not detachable" (8.3.8).
+
+    Three advertisements read the other way round on one: the cable's length
+    is 00h:202 (Table 8-33), zero on separable optics; the far end breakout
+    is 00h:211, "cleared" for detachable media; and the supported fibre link
+    lengths 01h:132-137 are zero - "Active optical cables shall populate the
+    fields in this table with zeroes and instead report their actual length"
+    in 00h:202 (8.4.2).
+    """
     return code in (0x03, 0x04)
 
 

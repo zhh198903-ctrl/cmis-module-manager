@@ -689,7 +689,7 @@ async function loadInfo() {
     ['Power Class',     `Class ${d.power_class}`,                                                 '00h',   '0xC8[7:5]',   'Module Power Class (1–8)'],
     ['Max Power',       `${d.max_power_w} W`,                                                     '00h',   '0xC9',        'Maximum Power Consumption (×0.25 W)'],
     ['Cable Length',    cableLengthCell(d),    '00h',   '0xCA',        '[7:6]=mult, [5:0]=base (m)'],
-    ['Link Length',     linkLengthSummary(d.link_lengths),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
+    ['Link Length',     linkLengthCell(d),                                        '01h',   '0x84–0x89',   'Supported fiber link length per media type (Table 8-45)'],
     ['Connector',       `${d.connector_type} (0x${(d.connector_code||0).toString(16).toUpperCase().padStart(2,'0')})`, '00h', '0xCB', 'SFF-8024 Connector Type (Table 4-3)'],
     // The raw code is appended so the reader can take it to Table 8-41,
     // but Reserved codes carry it in the name already and printing it
@@ -887,11 +887,7 @@ async function loadInfo() {
        + 'CDB messaging at all and the rest of the table does not apply.'],
     ]) : []),
     ...(c.far_end ? [
-      ['Far End Breakout', esc(c.far_end.summary || '-')
-       + (c.far_end.uniform
-          ? ' <span class="reg-meta">uniform ' + esc(c.far_end.uniform)
-            + ' breakout</span>'
-          : ''),
+      ['Far End Breakout', farEndCell(c),
        '00h', '0xD3[4:0]',
        'FarEndConfiguration (Table 8-37, codes in Tables 8-38 and 8-39) - '
        + 'which near end host lanes are cabled to which discrete far end '
@@ -939,11 +935,11 @@ async function loadInfo() {
     ['Host Lanes',      d.lanes_detail ? `${d.host_lanes} <span style="color:var(--text-muted);font-size:var(--fs-xs)">(${d.lanes_detail})</span>` : `${d.host_lanes}`,  'Lower', '0x56+', 'Max concurrent host lanes in one lane group; CMIS caps an Application at 8 lanes (5.4 §6.4.1)'],
     ['Media Lanes',     `${d.media_lanes}`, 'Lower', '0x56+', 'Max concurrent media lanes in one lane group'],
     ['FW Revision',     firmwareCell(d.fw_revision, d.fw_active),                                                            'Lower', '0x27–0x28',   'Module Active Firmware Major.Minor'],
-    ['Inactive FW',     firmwareCell(d.fw_inactive_revision, d.fw_inactive_decoded),                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
-    ['HW Revision',     d.hw_revision,                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
-    ['Temperature',     moduleMonitorCell(s.temperature_c, 2, '°C', (s.monitors_present || {}).temperature, (s.na || {}).temperature, '01h:159.0'), 'Lower', '0x0E–0x0F',   'Module Temperature (s16/256); NA value -32768 (Table 7-8)'],
-    ['Supply Voltage',  moduleMonitorCell(s.voltage_v, 4, 'V', (s.monitors_present || {}).vcc, (s.na || {}).vcc, '01h:159.1'), 'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV); NA value 0 (Table 7-8)'],
-    ['Module Flags',    moduleFlagsCell(s), 'Lower', '0x09–0x0B', 'Alarm and warning Flags of the module monitors - temperature, Vcc, Aux1-3, Custom (Table 8-9). Latched, cleared by the read that reports them'],
+    ['Inactive FW',     d.fw_inactive_revision === null ? NO_PAGE_01H : firmwareCell(d.fw_inactive_revision, d.fw_inactive_decoded),                                            '01h',   '0x80–0x81',   'Module Inactive Firmware Major.Minor (Table 8-44) — the standby image'],
+    ['HW Revision',     d.hw_revision === null ? NO_PAGE_01H : esc(d.hw_revision),                                                            '01h',   '0x82–0x83',   'Hardware Revision Major.Minor'],
+    ['Temperature',     s.static_module ? notStatic('8-10') : moduleMonitorCell(s.temperature_c, 2, '°C', (s.monitors_present || {}).temperature, (s.na || {}).temperature, '01h:159.0'), 'Lower', '0x0E–0x0F',   'Module Temperature (s16/256); NA value -32768 (Table 7-8)'],
+    ['Supply Voltage',  s.static_module ? notStatic('8-10') : moduleMonitorCell(s.voltage_v, 4, 'V', (s.monitors_present || {}).vcc, (s.na || {}).vcc, '01h:159.1'), 'Lower', '0x10–0x11',   'Supply Voltage (u16 × 100 µV); NA value 0 (Table 7-8)'],
+    ['Module Flags',    s.static_module ? notStatic('8-9') : moduleFlagsCell(s), 'Lower', '0x09–0x0B', 'Alarm and warning Flags of the module monitors - temperature, Vcc, Aux1-3, Custom (Table 8-9). Latched, cleared by the read that reports them'],
     // The API has computed this from Lower 0x03 since the beginning and
     // nothing displayed it. CMIS defines the line in one sentence - it is
     // "asserted as long as any Flag is set with its associated Mask
@@ -967,9 +963,11 @@ async function loadInfo() {
         + flagsSummaryNote(s.flags_summary),
      'Lower', '0x03[0]',
      'InterruptDeasserted (Table 8-6) — the module\'s own request for the host\'s attention, reported with its sense inverted. CMIS asserts it "as long as any Flag is set with its associated Mask cleared", so a Flag showing here with no Interrupt is one whose Mask is set'],
-    ['Module State Changes', moduleStateChangeCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (Table 6-9) — set on entering ModuleLowPwr, ModuleReady or ModuleFault: a reset, but equally a power-mode change. Latched, cleared by the read that reports it'],
-    ['Module Restarts', moduleRestartCell(s), '13h', '0xB8-0xBF', 'Host Scratchpad (8.16.13, Table 8-132) — the module clears it on every firmware restart, including recovery reboots. The tool keeps a mark there and reports a restart when it is gone'],
-    ['Firmware Faults', firmwareFlagCell(s), 'Lower', '0x08[3:1]', 'ModuleFirmwareErrorFlag, DataPathFirmwareErrorFlag and AbnormalFwIndicationFlag (Table 8-9) — latched, cleared by the read that reports them'],
+    ['Module State Changes', s.static_module ? notStatic('8-9') : moduleStateChangeCell(s), 'Lower', '0x08[0]', 'ModuleStateChangedFlag (Table 6-9) — set on entering ModuleLowPwr, ModuleReady or ModuleFault: a reset, but equally a power-mode change. Latched, cleared by the read that reports it'],
+    ['Module Restarts', s.static_module
+        ? '\u2014 <span class="reg-meta">no Page 13h on a flat memory module</span>'
+        : moduleRestartCell(s), '13h', '0xB8-0xBF', 'Host Scratchpad (8.16.13, Table 8-132) — the module clears it on every firmware restart, including recovery reboots. The tool keeps a mark there and reports a restart when it is gone'],
+    ['Firmware Faults', s.static_module ? notStatic('8-9') : firmwareFlagCell(s), 'Lower', '0x08[3:1]', 'ModuleFirmwareErrorFlag, DataPathFirmwareErrorFlag and AbnormalFwIndicationFlag (Table 8-9) — latched, cleared by the read that reports them'],
     // Only on a module that does CDB (01h:163.7-6): elsewhere the bits
     // belong to nothing.
     ...(Object.values(s.cdb_complete || {}).some(v => v !== null) ? [
@@ -1292,13 +1290,15 @@ function propagationRow(c) {
   // "Propagation delay of a non-separable AOC". A module whose media comes
   // off has no cable for light to cross, so the row is absent rather than
   // reporting "not specified" about something that does not apply.
-  const cableAssembly = c.media_type_code === 3 || c.media_type_code === 4;
+  const cableAssembly = !!c.cable_assembly;
   if (ns == null && !cableAssembly) return null;
   const odd = ns != null && !cableAssembly;
   return [[
     'Cable Propagation Delay',
     ns == null
-      ? 'Not specified <span class="reg-meta">the module reports zero</span>'
+      // A flat cable has no Page 01h to report anything from.
+      ? (c.flat_memory ? NO_PAGE_01H
+         : 'Not specified <span class="reg-meta">the module reports zero</span>')
       : esc(String(ns)) + ' ns' + (odd
           ? ' <span class="flag-warn" title="01h:148-149 is defined as the '
             + 'propagation delay of a non-separable AOC, and this module '
@@ -1435,11 +1435,83 @@ function cuAttenuationCell(att) {
 }
 
 
+// A \u25b2 with the reason in its title, after a value that contradicts the kind
+// of module reporting it.
+function _kindWarn(why, note) {
+  return ' <span class="flag-warn" title="' + esc(why) + '">\u25b2</span>'
+    + ' <span class="reg-meta">' + esc(note) + '</span>';
+}
+
+// 01h:128-137 on a flat module: there is no Page 01h to read, and what came
+// back was Page 00h - an inactive firmware of 30.79 made of the identifier
+// and the first letter of the vendor name.
+// Tables 8-9 to 8-12 and 8-16 are each titled "not for static memory
+// modules": a passive cable has no module monitors, Flags, Masks or fault
+// cause, and says so by being flat rather than by zeros.
+function notStatic(table) {
+  return '\u2014 <span class="reg-meta">not for static memory modules '
+    + '(Table ' + table + ')</span>';
+}
+
+const NO_PAGE_01H = '\u2014 <span class="reg-meta">no Page 01h on a flat '
+  + 'memory module</span>';
+
+// Table 8-33: a cable assembly's length is here, and "modules with separable
+// optical media shall set the CableAssemblyLinkLength value to 0000 0000b".
+// A zero on a cable was labelled a transceiver.
 function cableLengthCell(d) {
   const cl = d.cable_length;
   if (!cl) return d.cable_length_m ? esc(d.cable_length_m + ' m') : '-';
-  if (cl.undefined) return esc('\u2014 (transceiver, see Link Length)');
-  return esc(cl.text);
+  if (cl.undefined) {
+    return d.cable_assembly
+      ? 'Not stated' + _kindWarn('Table 8-33: a cable assembly reports its '
+          + 'length in 00h:202; zero is what a module with separable media '
+          + 'writes there.', 'this cable assembly reports zero')
+      : esc('\u2014 (transceiver, see Link Length)');
+  }
+  const optical = d.media_type_code === 1 || d.media_type_code === 2;
+  return esc(cl.text) + (optical
+    ? _kindWarn('Table 8-33: "Modules with separable optical media shall set '
+        + 'the CableAssemblyLinkLength value to 0000 0000b".',
+        'but this module\u2019s optical media is separable')
+    : '');
+}
+
+// 8.4.2: these are fibre reaches "for modules with a separable optical media
+// interface", and "Active optical cables shall populate the fields in this
+// table with zeroes and instead report their actual length" under Cable
+// Length. An AOC reporting 0.5 km of SMF was shown as its reach.
+function linkLengthCell(d) {
+  const text = linkLengthSummary(d.link_lengths);
+  if (!d.cable_assembly)
+    return d.memory_model === 'Flat' ? NO_PAGE_01H : text;
+  if (!d.link_lengths || !d.link_lengths.length)
+    return esc('\u2014 (cable assembly, see Cable Length)');
+  return text + _kindWarn('8.4.2: a cable assembly populates 01h:132-137 '
+      + 'with zeroes and reports its actual length in 00h:202.',
+      'but a cable assembly reports zero here');
+}
+
+// 8.3.8: the byte describes a cable assembly's far end, and "for modules
+// with detachable media connectors the FarEndConfiguration byte is cleared".
+// Code 0 is named "Undefined. Module with detachable media", which on a
+// cable was the one thing the row got wrong.
+function farEndCell(c) {
+  const f = c.far_end;
+  if (f.code === 0 && c.cable_assembly) {
+    return 'Not stated' + _kindWarn('00h:211 is 0, whose name in Table 8-38 is '
+        + '"Undefined. Module with detachable media" - but this is a cable '
+        + 'assembly, the kind of module the byte describes.',
+        'code 0 is for detachable media; this is a cable assembly');
+  }
+  const text = esc(f.summary || '-') + (f.uniform
+    ? ' <span class="reg-meta">uniform ' + esc(f.uniform) + ' breakout</span>'
+    : '');
+  return f.code !== 0 && !c.cable_assembly
+    ? text + _kindWarn('8.3.8: "For modules with detachable media connectors '
+        + 'the FarEndConfiguration byte is cleared."',
+        'but this module\u2019s media is detachable')
+    : text;
 }
 
 // 8.2.9: FFh.FFh is not a version, it is "the active firmware load is

@@ -542,6 +542,14 @@ _AOC_400G = dict(
     # with separable media has to write zero here, so a non-zero value is
     # how this one says its fibre does not come off.
     cable_length_202=0x54,
+    # 8.4.2: "Active optical cables shall populate the fields in this table
+    # with zeroes and instead report their actual length" above. It carried
+    # the DR8's 0.5 km of SMF, which the panel showed as this cable's reach.
+    link_lengths={},
+    # 00h:211 (Tables 8-37, 8-39): a straight cable, all eight near end lanes
+    # to one far end module. Left at 0 it said "module with detachable media"
+    # about a cable.
+    far_end_config_211=0x02,
     # 01h:146-150. Light covers about 0.2 m/ns in fibre, so 20 m is close to
     # 100 ns; the register counts multiples of 10 ns, hence 10.
     module_limits=(70, -40, 10, 0xA5),
@@ -610,6 +618,12 @@ _FLAT_DAC = dict(
     vendor_pn=b"DEMO-DAC-FLAT   ",
     vendor_sn=b"DEMO000000012   ",
     media_type=0x03,          # Passive and Linear Active Copper Cables
+    # The DR8's MPO connector and 1310 nm EML came along with the rest of
+    # it: a copper cable with an optical connector and a laser. SFF-8024
+    # 23h is "No separable connector"; Table 8-41 0Ah is "Copper cable,
+    # passive, unequalized".
+    connector_type=0x23,
+    media_if_tech=0x0A,
     # Code 3 in Table 8-39: lanes 1-4 to one far end module, 5-8 to another -
     # the 2x400G breakout a DAC of this shape is usually ordered as, and one
     # of the five uniform codes Table 8-38 singles out.
@@ -3070,7 +3084,13 @@ class MockBackend(I2CInterface):
         A Mask register the profile never wrote reads 0, which is "not
         masked" - the default - so an unmodelled Mask does not silently
         suppress the line.
+
+        A static module has no Flags to raise it with - Tables 8-9 and 8-12
+        are "not for static memory modules" - so the line stays deasserted.
+        The flat DAC reported Interrupt asserted over Flags it does not have.
         """
+        if self._flat_memory:
+            return False
         for flag_page, flag_first, mask_page, mask_first, count in \
                 cmis.FLAG_MASK_BLOCKS:
             flag_banks = (self._page_dicts(flag_page)

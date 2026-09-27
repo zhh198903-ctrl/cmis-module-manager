@@ -20596,7 +20596,7 @@ class TestAFlatModuleHasNoPageToRead(CMISTestCase):
                    '/api/module/loopback', '/api/module/prbs',
                    '/api/module/snr', '/api/module/ber',
                    '/api/module/laser', '/api/module/counters',
-                   '/api/module/status', '/api/module/ext54'):
+                   '/api/module/ext54'):
             r = self.client.get(ep)
             self.assertEqual(r.status_code, 409, ep)
             msg = json.loads(r.data)['message']
@@ -21590,7 +21590,10 @@ class TestWhatTheCableBreaksOutInto(CMISTestCase):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
             js = f.read()
-        self.assertIn('c.far_end.summary', js)
+        # The summary goes through farEndCell now, which also weighs it
+        # against the kind of module (8.3.8).
+        self.assertIn("const text = esc(f.summary || '-')", js)
+        self.assertIn("['Far End Breakout', farEndCell(c),", js)
         self.assertIn("'0xD3[4:0]'", js)
 
 
@@ -24907,8 +24910,11 @@ class TestHowLongTheCableItselfTakes(CMISTestCase):
         not come off. Dropping 03h would hide the row on the one cable
         assembly this suite had before the AOC."""
         body = self._row_body()
-        self.assertIn('c.media_type_code === 3 || c.media_type_code === 4',
-                      body)
+        # The rule is the server's now, shared with Cable Length, Link
+        # Length and Far End (cmis.is_cable_assembly).
+        self.assertIn('const cableAssembly = !!c.cable_assembly;', body)
+        import cmis_registers as c
+        self.assertTrue(c.is_cable_assembly(3) and c.is_cable_assembly(4))
 
     def test_the_row_says_which_delay_it_is(self):
         """Both this and the Page 15h Data Path latency are nanoseconds, and
@@ -33671,8 +33677,8 @@ class TestAFirmwareFaultIsNotForgotten(CMISTestCase):
 
     def test_the_status_table_and_header_use_it(self):
         js = self._js()
-        self.assertIn("['Firmware Faults', firmwareFlagCell(s), 'Lower', "
-                      "'0x08[3:1]'", js)
+        self.assertIn("['Firmware Faults', s.static_module ? notStatic('8-9') "
+                      ": firmwareFlagCell(s), 'Lower', '0x08[3:1]'", js)
         hdr = js[js.index('function renderHealthIndicator'):]
         hdr = hdr[:hdr.index('\n}')]
         self.assertIn("const fwFault = ['module_firmware_error', "
@@ -34947,8 +34953,9 @@ class TestARestartIsToldByTheScratchpad(CMISTestCase):
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
-        self.assertIn("['Module State Changes', moduleStateChangeCell(s), 'Lower', '0x08[0]'", js)
-        self.assertIn("['Module Restarts', moduleRestartCell(s), '13h', '0xB8-0xBF'", js)
+        self.assertIn("['Module State Changes', s.static_module ? notStatic('8-9') : "
+                      "moduleStateChangeCell(s), 'Lower', '0x08[0]'", js)
+        self.assertIn("        : moduleRestartCell(s), '13h', '0xB8-0xBF'", js)
         header = js[js.index('function renderHealthIndicator('):]
         header = header[:header.index(chr(10) + '}')]
         self.assertLess(header.index("includes('module_restarted')"),
@@ -35056,7 +35063,8 @@ class TestAWarningIsNotAnAlarm(CMISTestCase):
                             'static', 'app.js')
         with open(path, encoding='utf-8') as f:
             js = f.read()
-        self.assertIn("['Module Flags',    moduleFlagsCell(s), 'Lower', '0x09–0x0B'", js)
+        self.assertIn("['Module Flags',    s.static_module ? notStatic('8-9') : "
+                      "moduleFlagsCell(s), 'Lower', '0x09–0x0B'", js)
         self.assertNotIn("['Alarms',", js)
         header = js[js.index('function renderHealthIndicator('):]
         header = header[:header.index(chr(10) + '}')]
@@ -37355,6 +37363,222 @@ class TestEveryApplyTriggerIsWriteOnly(CMISTestCase):
         self.assertIn('会被拒绝的只有四种', s11)
         self.assertIn('<li><b>夹带 Apply 触发字节的多字节写</b>', s11)
         self.assertIn('<code>16h:176/177</code>', s11)
+
+
+class TestACableAndAFlatModuleReadTheirOwnWay(CMISTestCase):
+    """8.3.8: a cable assembly (media type 03h/04h) has media that do not
+    come off, and three fields read the other way round on one - 00h:202 is
+    its length (zero on separable optics), 00h:211 describes its far end
+    ("cleared" for detachable media, code 0's name), and 01h:132-137 are
+    zero (8.4.2: "Active optical cables shall populate the fields in this
+    table with zeroes"). The panel read all three as if every module were a
+    transceiver, and the demo AOC reported 0.5 km of SMF and far end 0.
+
+    A flat module has no Page 01h at all, and Module Info read 01h:128-137
+    anyway: the demo DAC showed an inactive firmware of 30.79, hardware
+    revision 80.69 and five fibre reaches - its identifier and vendor name.
+    """
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _info(self):
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def test_which_modules_are_cable_assemblies(self):
+        import cmis_registers as c
+        self.assertEqual([code for code in range(6) if c.is_cable_assembly(code)],
+                         [3, 4])
+        for backend, code, cable in (('mock_aoc', 4, True),
+                                     ('mock_flat_dac', 3, True),
+                                     ('mock_dr8', 2, False)):
+            self._connect(backend)
+            d = self._info()
+            self.assertEqual(d['media_type_code'], code, backend)
+            self.assertIs(d['cable_assembly'], cable, backend)
+            self.assertIs(_state['caps']['cable_assembly'], cable, backend)
+
+    def test_the_demo_cable_keeps_to_the_rules(self):
+        self._connect('mock_aoc')
+        d = self._info()
+        self.assertEqual(d['link_lengths'], [])            # 8.4.2
+        self.assertEqual(d['cable_length']['text'], '20 m')
+        self.assertEqual(_state['caps']['far_end']['code'], 2)
+
+    def test_a_flat_module_has_no_page_01h_to_show(self):
+        b = self._connect('mock_flat_dac')
+        pages = []
+        orig = b.read_bytes
+
+        def read_bytes(register, length):
+            if register >= 0x80:
+                pages.append(b._current_page)
+            return orig(register, length)
+        b.read_bytes = read_bytes
+        d = self._info()
+        self.assertIsNone(d['fw_inactive_revision'])
+        self.assertIsNone(d['hw_revision'])
+        self.assertEqual(d['link_lengths'], [])
+        self.assertTrue(pages)
+        self.assertEqual(set(pages), {0x00})
+        del pages[:]
+        self.assertOk(self.client.get('/api/module/applications'))
+        self.assertEqual(set(pages) - {0x00}, set())
+        self.assertEqual(app_module._additional_app_descriptors(), b'')
+
+    def test_a_flat_module_has_a_status(self):
+        """Module Info renders nothing unless both of its requests succeed,
+        and the status one was refused on a flat module - the tab was empty
+        on every passive cable."""
+        b = self._connect('mock_flat_dac')
+        pages = []
+        orig = b.read_bytes
+
+        def read_bytes(register, length):
+            pages.append(None if register < 0x80 else b._current_page)
+            return orig(register, length)
+        b.read_bytes = read_bytes
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertEqual(set(pages), {None})          # Lower Memory only
+        self.assertIs(s['static_module'], True)
+        self.assertEqual(s['module_state'], 'ModuleReady')
+        self.assertIs(s['interrupt_asserted'], False)  # no Flags to raise it
+        self.assertIsNone(s['temperature_c'])
+        self.assertIsNone(s['fault_cause'])
+        self.assertEqual(s['restart_watch'], 'unsupported')
+        self.assertEqual(s['page_checksums'], _state['caps']['page_checksums'])
+        self.assertEqual(len(s['page_checksums']), 1)
+
+    def test_module_info_can_render_on_every_demo_module(self):
+        names = [b['name'] for b in self.assertOk(
+            self.client.get('/api/backends'))['data']
+            if b['name'].startswith('mock_')]
+        self.assertEqual(len(names), 12)
+        for name in names:
+            self._connect(name)
+            self.assertOk(self.client.get('/api/module/info'))
+            self.assertOk(self.client.get('/api/module/status'))
+
+    def test_the_demo_dac_is_copper(self):
+        self._connect('mock_flat_dac')
+        d = self._info()
+        self.assertEqual(d['connector_code'], 0x23)     # No separable connector
+        self.assertEqual(d['media_if_tech_code'], 0x0A)  # copper, unequalized
+
+    def test_a_paged_module_still_shows_them(self):
+        self._connect('mock_dr8')
+        d = self._info()
+        self.assertEqual(d['hw_revision'], '1.2')
+        self.assertEqual([x['media'] for x in d['link_lengths']], ['SMF'])
+        self.assertIsNotNone(d['fw_inactive_revision'])
+        self.assertEqual(len(app_module._additional_app_descriptors()), 28)
+
+    # ---- the page ----------------------------------------------------------------------
+    def _node(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/const NO_PAGE_01H = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function notStatic\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function _kindWarn\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function cableLengthCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function linkLengthSummary\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function linkLengthCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function farEndCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_cable_length(self):
+        undef = "{undefined: true, text: 'x'}"
+        self.assertIn('Not stated', self._node(
+            "cableLengthCell({cable_length: %s, cable_assembly: true})" % undef))
+        self.assertIn('(transceiver, see Link Length)', self._node(
+            "cableLengthCell({cable_length: %s, cable_assembly: false})" % undef))
+        cable = self._node("cableLengthCell({cable_length: {text: '20 m'}, "
+                           "cable_assembly: true, media_type_code: 4})")
+        self.assertEqual(cable, '20 m')
+        for code, warned in ((1, True), (2, True), (5, False)):
+            cell = self._node("cableLengthCell({cable_length: {text: '20 m'}, "
+                              "cable_assembly: false, media_type_code: %d})" % code)
+            self.assertEqual('optical media is separable' in cell, warned, code)
+
+    def test_link_length(self):
+        smf = "[{media: 'SMF', km: 0.5}]"
+        self.assertEqual(self._node("linkLengthCell({link_lengths: %s})" % smf),
+                         'SMF 0.5 km')
+        self.assertIn('but a cable assembly reports zero here', self._node(
+            "linkLengthCell({link_lengths: %s, cable_assembly: true})" % smf))
+        self.assertIn('(cable assembly, see Cable Length)', self._node(
+            "linkLengthCell({link_lengths: [], cable_assembly: true})"))
+        self.assertIn('no Page 01h', self._node(
+            "linkLengthCell({link_lengths: [], memory_model: 'Flat'})"))
+        self.assertEqual(self._node("linkLengthCell({link_lengths: []})"),
+                         '— (not advertised)')
+
+    def test_far_end(self):
+        zero = "{code: 0, summary: 'Undefined - module with detachable media'}"
+        two = "{code: 2, summary: 'All lanes to one far end module'}"
+        self.assertIn('Not stated', self._node(
+            "farEndCell({far_end: %s, cable_assembly: true})" % zero))
+        self.assertEqual(self._node(
+            "farEndCell({far_end: %s, cable_assembly: false})" % zero),
+            'Undefined - module with detachable media')
+        self.assertIn('but this module’s media is detachable', self._node(
+            "farEndCell({far_end: %s, cable_assembly: false})" % two))
+        self.assertEqual(self._node(
+            "farEndCell({far_end: %s, cable_assembly: true})" % two),
+            'All lanes to one far end module')
+
+    def test_the_revision_rows_say_there_is_no_page(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("['Inactive FW',     d.fw_inactive_revision === null "
+                      "? NO_PAGE_01H :", js)
+        self.assertIn("['HW Revision',     d.hw_revision === null ? NO_PAGE_01H "
+                      ": esc(d.hw_revision),", js)
+        self.assertIn("['Link Length',     linkLengthCell(d),", js)
+        self.assertIn("['Far End Breakout', farEndCell(c),", js)
+        self.assertIn('const cableAssembly = !!c.cable_assembly;', js)
+        self.assertIn("? (c.flat_memory ? NO_PAGE_01H", js)
+        for row, table in (('Temperature', '8-10'), ('Supply Voltage', '8-10'),
+                           ('Module Flags', '8-9'),
+                           ('Module State Changes', '8-9'),
+                           ('Firmware Faults', '8-9')):
+            self.assertRegex(js, r"\['%s',\s+s\.static_module \? notStatic\('%s'\)"
+                             % (row, table), row)
+        self.assertRegex(js, r"\['Module Restarts', s\.static_module\s+\? '\\u2014 "
+                             r"<span class=\"reg-meta\">no Page 13h")
+        self.assertIn("if (statusRes.status !== 'ok') { toast(", js)
+
+    def test_not_for_static(self):
+        self.assertEqual(self._node("notStatic('8-9')"),
+                         '— <span class="reg-meta">not for static memory '
+                         'modules (Table 8-9)</span>')
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s7 = man[man.index('id="s7"'):man.index('id="s8"')]
+        self.assertIn('显示 "no Page 01h on a flat memory module"', s7)
+        self.assertIn('（cable assembly, see Cable Length）', s7)
+        self.assertIn('几行显示 "not for static memory modules"', s7)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

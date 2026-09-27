@@ -762,6 +762,12 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 在不分 Bank 的页上给了非 0 的 bank；在下半区（`0x00–0x7F`）给了 bank。
 从下半区开始、读过 `0x7F` 的读取例外：`bank` 管的是 `0x80` 之后那部分。
 
+## 线缆组件和平坦内存模块
+
+`GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。
+平坦内存模块没有 Page 01h:info 里 `fw_inactive_revision`、`hw_revision` 为 `null`,`link_lengths` 为空;不要自己去读 01h,读回来的是 Page 00h。
+`GET /api/module/status` 在平坦模块上也返回 200,带 `static_module: true`:只有 `module_state`、`interrupt_asserted`、`flags_summary` 有值,温度/电压为 `null`,Flag 类字段为空(Table 8-9..8-12、8-16 不适用于静态模块),`restart_watch` 为 `unsupported`。
+
 ## 跨过 0x7F 的读写
 
 规范 B.1.2：字节地址在当前 128 字节内回绕，Lower Memory 从 127 回到 0，上页从 255 回到 128。

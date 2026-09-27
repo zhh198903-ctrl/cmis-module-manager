@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.182.0<br>
+      <b>版本</b>　2.183.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.182.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.182.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.183.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.183.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1142,16 +1142,16 @@
       <tbody>
         <tr><td>Power Class</td><td class="label">模块功耗等级 Class 1–8（bits[7:5]）</td><td><code>00h / 0xC8</code></td></tr>
         <tr><td>Max Power</td><td class="label">最大功耗（W），原始值 × 0.25</td><td><code>00h / 0xC9</code></td></tr>
-        <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效；普通光模块按规范这里写 0，显示为 "—（transceiver，见 Link Length）"</td><td><code>00h / 0xCA</code></td></tr>
-        <tr><td>Link Length</td><td class="label">模块在每种光纤上的<b>最大支持距离</b>（Table 8-45）。SMF 以 km 计，带两位倍率；OM5/OM4/OM3 以 2 m 为单位，OM2 以 1 m 为单位。不支持的光纤类型写 0，所以只会列出真正支持的那几种</td><td><code>01h / 0x84–0x89</code></td></tr>
+        <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效；普通光模块按规范这里写 0，显示为 "—（transceiver，见 Link Length）"。线缆组件（Media Type 03h/04h）报 0 时显示 <b>Not stated</b> 并标 ▲；可拆卸光模块报了非 0 长度也标 ▲（Table 8-33 要求它写 0）</td><td><code>00h / 0xCA</code></td></tr>
+        <tr><td>Link Length</td><td class="label">模块在每种光纤上的<b>最大支持距离</b>（Table 8-45）。SMF 以 km 计，带两位倍率；OM5/OM4/OM3 以 2 m 为单位，OM2 以 1 m 为单位。不支持的光纤类型写 0，所以只会列出真正支持的那几种。线缆组件没有这张表：规范 8.4.2 要求有源光缆在这里<b>全部写 0</b>、长度改报在 Cable Length，所以线缆显示 "—（cable assembly, see Cable Length）"，报了非 0 值则标 ▲。平坦内存模块没有 Page 01h，显示 "no Page 01h"</td><td><code>01h / 0x84–0x89</code></td></tr>
         <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
         <tr><td>Host / Media Interface ID</td><td class="label">应用码里的主机电接口与媒体接口编号，本工具按 <b>SFF-8024 Rev 4.14</b> 解出名称一并显示（如 <code>0x83</code> = 1.6TAUI-8 C2M、<code>0x7F</code> = 1.6TBASE-DR8）。<b>CMIS 本身不定义这些编码</b>，只存编号并指向 SFF-8024。同一编号在多模与单模光纤上含义不同，按模块的 Media Type 选表。遇到比编码表更新的编号会显示 <code>Unknown (0x..)</code> 而不是留空——留空会让人以为模块什么都没报</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
         <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
-        <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行</td><td><code>01h / 0x80–0x81</code></td></tr>
-        <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本</td><td><code>01h / 0x82–0x83</code></td></tr>
+        <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行。平坦内存模块没有 Page 01h，显示 "no Page 01h on a flat memory module"</td><td><code>01h / 0x80–0x81</code></td></tr>
+        <tr><td>HW Revision</td><td class="label">硬件版本 主版本.次版本。平坦内存模块同样没有，显示 "no Page 01h"。平坦内存模块的温度、电压、模块 Flag、状态变化、固件故障几行显示 "not for static memory modules"（规范 Table 8-9 / 8-10 只适用于分页模块）</td><td><code>01h / 0x82–0x83</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -1733,6 +1733,22 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Module Info:平坦内存模块(无源铜缆)不再是空白页</h3>
+  <p>平坦内存(静态)模块只有 Lower Memory 和 Page 00h。规范里 Table 8-6(模块状态、Interrupt)和 Table 8-8(Flag 汇总)对它适用,Table 8-9 到 8-12 和 8-16(模块 Flag、监控值、控制、Mask、故障原因)标题都写着「not for static memory modules」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>从 v2.80.0 起,状态接口对平坦内存模块一律拒绝(为了不去读它没有的页),而 Module Info 页要状态和身份两个请求都成功才会显示——结果<b>所有无源铜缆的 Module Info 页都是空白</b>,只弹一个「Status error」。演示用平坦铜缆在此之外还有三处不对:Interrupt 显示「已触发」(它根本没有 Flag),连接器是 MPO、介质技术是 1310 nm EML(照抄了光模块的配置)。</span>
+  </div>
+  <p>现在:平坦模块的状态只读 Lower Memory,返回模块状态、Interrupt 和 Flag 汇总;Temperature、Supply Voltage、Module Flags、Module State Changes、Firmware Faults 几行显示「not for static memory modules (Table 8-x)」,Module Restarts 显示「no Page 13h」。演示用铜缆的 Interrupt 不再触发,连接器改为「No Separable Connector」(23h),介质技术改为「Copper cable, passive, unequalized」(0Ah)。</p>
+
+  <h3>Module Info:线缆组件和平坦内存模块的几行按自己的规则读</h3>
+  <p>规范 8.3.8:线缆组件(Media Type 03h 无源铜缆、04h 有源线缆)的介质不可拆卸。三个字段在线缆上的含义和可拆卸光模块正好相反:<code>00h:202</code> 线缆长度(光模块写 0)、<code>00h:211</code> 远端分支(可拆卸介质时清零,代码 0 的名字就是「可拆卸介质模块」)、<code>01h:132–137</code> 光纤链路长度(8.4.2:有源光缆必须全写 0,长度改报在 00h:202)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>平坦内存模块没有 Page 01h,但 Module Info 照样去读 <code>01h:128–137</code>,读回来的是 Page 00h 的标识符和厂商名:演示用无源铜缆显示「Inactive FW 30.79」「HW Revision 80.69」和五种光纤的链路长度,全是厂商名的字母。同样,线缆报远端分支代码 0 时,这一行写的是「module with detachable media」;报 0 长度时写的是「transceiver」。演示用有源光缆自己也不合规范:它报了 0.5 km 的 SMF 链路长度,远端分支是 0。</span>
+  </div>
+  <p>现在:平坦内存模块不再读 Page 01h,这三行显示「no Page 01h」(扩展的 Application 描述符 01h:223–250 同样不读);Cable Length、Link Length、Far End Breakout 按模块是不是线缆组件判断,值和模块类型矛盾时标 ▲ 并说明;演示用有源光缆改为链路长度全 0、远端分支代码 2(整根线缆接一个 8 通道远端模块)。</p>
 
   <h3>Raw Registers:所有 Apply 触发字节都按只写、单字节处理</h3>
   <p>CMIS 5.4 修订记录:「Apply* 触发寄存器只允许单字节 WRITE(新限制)」;这些字节在各自的寄存器表里都是 WO(只写)。</p>
@@ -4890,7 +4906,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.182.0<br>
+    CMIS Module Manager 操作手册 v2.183.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

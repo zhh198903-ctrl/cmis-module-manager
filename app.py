@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.182.0'
+__version__ = '2.183.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1168,6 +1168,7 @@ def _discover_capabilities() -> dict:
         # because two Page 00h blocks below are defined only for some media
         # types and are Reserved for the rest.
         caps['media_type_code'] = _read_lower(*cmis.REG_MEDIA_TYPE[1:])[0]
+        caps['cable_assembly'] = cmis.is_cable_assembly(caps['media_type_code'])
         # Lower 56-57 (Table 8-18), and read before the flat branch for the
         # same reason: a passive cable is exactly the module whose answer
         # matters, and it returns early below.
@@ -1581,23 +1582,29 @@ def api_module_info():
         # revision (Table 8-44), the hardware revision, and the supported link
         # length per fibre type (Table 8-45). One burst rather than three
         # reads, because on real hardware each one costs a page select.
-        try:
-            blk = _read_upper(cmis.REG_FW_INACT_MAJOR[0],
-                              cmis.REG_FW_INACT_MAJOR[1], 10)
-            # Same encoding (Table 8-44), and "a module without inactive
-            # firmware clears these fields" - so 0.0 here is the common case,
-            # not a module without firmware.
-            fw_inact = cmis.parse_firmware_revision(blk[0], blk[1])
-            fw_inactive = (fw_inact['version'] or
-                           ('Invalid firmware load' if fw_inact['invalid']
-                            else 'None'))
-            hw_rev = f"{blk[2]}.{blk[3]}"
-            link_lengths = cmis.parse_link_lengths(blk[4:10])
-        except Exception:
-            fw_inactive = "N/A"
-            fw_inact = None
-            hw_rev = "N/A"
-            link_lengths = []
+        #
+        # A flat module has no Page 01h (8.2), and a read of it comes back
+        # from Page 00h: the identifier and the vendor name were shown as an
+        # inactive firmware of 30.79 and a hardware revision of 80.69, and
+        # the vendor name's letters as five fibre reaches.
+        fw_inactive = fw_inact = hw_rev = None
+        link_lengths = []
+        if not _flat_memory():
+            try:
+                blk = _read_upper(cmis.REG_FW_INACT_MAJOR[0],
+                                  cmis.REG_FW_INACT_MAJOR[1], 10)
+                # Same encoding (Table 8-44), and "a module without inactive
+                # firmware clears these fields" - so 0.0 here is the common
+                # case, not a module without firmware.
+                fw_inact = cmis.parse_firmware_revision(blk[0], blk[1])
+                fw_inactive = (fw_inact['version'] or
+                               ('Invalid firmware load' if fw_inact['invalid']
+                                else 'None'))
+                hw_rev = f"{blk[2]}.{blk[3]}"
+                link_lengths = cmis.parse_link_lengths(blk[4:10])
+            except Exception:
+                fw_inactive = "N/A"
+                hw_rev = "N/A"
 
         pwr_class = cmis.parse_power_class(pwr_class_raw[0])
 
@@ -1609,6 +1616,10 @@ def api_module_info():
             'config_capabilities': cmis.parse_config_capabilities(
                 mem_model_raw[0]),
             'media_type': cmis.media_type_name(media_type_raw[0]),
+            'media_type_code': media_type_raw[0],
+            # Cable Length, Link Length and Far End read the other way round
+            # on a cable assembly - see cmis.is_cable_assembly.
+            'cable_assembly': cmis.is_cable_assembly(media_type_raw[0]),
             'vendor_name': cmis.parse_ascii(vendor_name_raw),
             'vendor_oui':  cmis.parse_oui(vendor_oui_raw),
             'vendor_pn':   cmis.parse_ascii(vendor_pn_raw),
@@ -1694,14 +1705,58 @@ def _restart_watch() -> dict:
     return {'state': 'armed', 'restarted': restarted}
 
 
+def _static_module_status():
+    """Module status of a static (flat) memory module.
+
+    It has Tables 8-6 and 8-8 - the module state, the Interrupt and the Flags
+    summary in Lower 3-7 - and nothing more: Tables 8-9 to 8-12 and 8-16
+    (module Flags, monitors, controls, Masks, fault cause) are each titled
+    "not for static memory modules", and there is no Page 13h to keep a
+    restart mark on. This request used to be refused for the pages a flat
+    module lacks, and Module Info renders nothing without it, so the tab
+    stayed empty on every passive cable.
+    """
+    state_raw = _read_lower(0x03, 1)
+    summary_raw = _read_lower(*cmis.REG_FLAGS_SUMMARY[1:])
+    return _ok({
+        'static_module': True,
+        'module_state': cmis.parse_module_state(state_raw[0]),
+        'fault_cause': None,
+        'interrupt_asserted': cmis.parse_interrupt_asserted(state_raw[0]),
+        'flags_summary': cmis.parse_flags_summary(summary_raw),
+        'temperature_c': None,
+        'voltage_v': None,
+        'na': {'temperature': False, 'vcc': False},
+        'monitors_present': {key: False for key in (
+            'temperature', 'vcc', 'aux1', 'aux2', 'aux3', 'custom')},
+        'aux': [],
+        'module_flag_masks': {},
+        'module_flags_masked_set': [],
+        'module_state_changed': None,
+        'restart_watch': 'unsupported',
+        'firmware_flags': {},
+        'firmware_flag_masks': {},
+        'cdb_complete': {},
+        'cdb_complete_masks': {},
+        'alarm_active': False,
+        'warning_active': False,
+        'seen': [],
+        'limits': {},
+        'wavelength': {},
+        'page_checksums': _state['caps'].get('page_checksums', []),
+    })
+
+
 @app.route('/api/module/status', methods=['GET'])
 def api_module_status():
     err = _require_connected()
     if err:
         return err
-    err = _require_paged('The module state machine')
-    if err:
-        return err
+    if _flat_memory():
+        try:
+            return _static_module_status()
+        except Exception as e:
+            return _err(str(e), 500)
     try:
         state_raw = _read_lower(0x03, 1)             # CORRECT: byte 3, bits[3:1]
         # Table 8-16: why the module is in ModuleFault. The state was shown
@@ -3267,8 +3322,11 @@ def _media_lane_assignments():
 
 def _additional_app_descriptors():
     """01h:223-250, the seven Application Descriptors that do not fit in lower
-    memory (Table 8-61). Absent on a module that does not serve Page 01h, and
-    harmless there: the list already ended at its FFh terminator."""
+    memory (Table 8-61). A flat module has no Page 01h, and a read of it
+    returns Page 00h - which, on one using all eight Lower Memory
+    descriptors, would have been listed as Applications 9 onwards."""
+    if _flat_memory():
+        return b''
     try:
         return _read_upper(*cmis.REG_ADDITIONAL_APPS)
     except Exception:
