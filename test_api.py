@@ -19270,7 +19270,10 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-82': 'Staged Control Set 0, Data Path Configuration (Page 10h)',
         '8-83': 'Staged Control Set 0, Tx Controls (Page 10h)',
         '8-84': 'Staged Control Set 0, Rx Controls (Page 10h)',
+        '8-85': 'Staged Control Set 0, Unidirectional Apply Triggers (Page 10h)',
+        '8-86': 'Staged Control Set 1, Apply Triggers (Page 10h)',
         '8-88': 'Staged Control Set 1, Tx Controls (Page 10h)',
+        '8-90': 'Staged Control Set 1, Unidirectional Apply Triggers (Page 10h)',
         '8-91': 'Lane-Specific Masks (Page 10h)',
         '8-92': 'Page 11h Overview',
         '8-93': 'Lane-associated Data Path States (Page 11h)',
@@ -19321,6 +19324,8 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-176': 'Host Lane Switching (Page 1Dh)',
         '8-139': 'Diagnostics Data (Bytes 192-255) Contents per Diagnostics Selector (Page 14h)',
         '8-141': 'Data Path Rx and Tx Latency, per lane (Page 15h)',
+        '8-148': 'Staged Control Set 0, Apply Triggers (Page 16h)',
+        '8-149': 'Staged Control Set 1, Apply Triggers (Page 16h)',
         '8-163': 'Network Path Related Flags (Page 17h)',
         '8-172': 'Page 1Ch Overview',
         '8-173': 'Normalized Application Descriptor (NAD) Structure (Page 1Ch)',
@@ -32789,7 +32794,10 @@ class TestAWriteOnlyByteDoesNotReadBack(CMISTestCase):
         self.assertEqual([(b['first'], b['last'], b['access']) for b in got],
                          [(120, 121, 'WO/SC'), (122, 123, 'WO/SC')])
         self.assertEqual(c.write_only_overlap(0x10, 143, 2)[0]['access'], 'WO')
-        self.assertEqual(c.write_only_overlap(0x10, 128, 8), [])
+        self.assertEqual(c.write_only_overlap(0x10, 128, 7), [])
+        # 135 is the Store location, WO in Table 8-79
+        self.assertEqual([(g['first'], g['last']) for g in
+                          c.write_only_overlap(0x10, 128, 8)], [(135, 135)])
         # Lower Memory whatever page is named
         self.assertEqual(len(c.write_only_overlap(0x13, 118, 8)), 2)
 
@@ -37120,7 +37128,7 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
         import cmis_registers as c
         blocks = ([b[:3] for b in c.CLEAR_ON_READ_BLOCKS]
                   + [b[:3] for b in c.WRITE_ONLY_BLOCKS])
-        self.assertEqual(len(blocks), 12)
+        self.assertEqual(len(blocks), 18)
         for page, first, last in blocks:
             if page is None:
                 self.assertLessEqual(last, 0x7F, (page, first, last))
@@ -37137,7 +37145,8 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
                          [(0x11, 0x86, 0x8B)])
         wo = c.write_only_overlap(0x10, 0x78, 0x18)              # 78h-8Fh
         self.assertEqual([(g['page'], g['first'], g['last']) for g in wo],
-                         [(None, 0x78, 0x79), (None, 0x7A, 0x7D), (0x10, 0x8F, 0x8F)])
+                         [(None, 0x78, 0x79), (None, 0x7A, 0x7D), (0x10, 0x87, 0x88),
+                          (0x10, 0x8F, 0x8F)])
 
     # ---- writes -----------------------------------------------------------------------
     def _write(self, **kw):
@@ -37223,9 +37232,10 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
         self._connect()
         d = self.assertOk(self._read(page=0x10, address=0x78, length=24))['data']
         blocks = d['write_only']
-        self.assertEqual(len(blocks), 3)
+        self.assertEqual(len(blocks), 4)
         lines = self._node('%s.map(b => _corWhere(b, 16))' % self._js(blocks))
-        self.assertEqual(lines, ['Lower 120-121', 'Lower 122-125', '10h:143'])
+        self.assertEqual(lines, ['Lower 120-121', 'Lower 122-125', '10h:135-136',
+                                 '10h:143'])
         d = self.assertOk(self._read(page=0x11, address=0x84, length=4))['data']
         self.assertEqual(self._node('%s.map(b => _corWhere(b, 17))'
                                     % self._js(d['clears_on_read'])),
@@ -37245,6 +37255,106 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
         self.assertIn('<code>Lower Memory, then Page 0x11 from 0x80</code>', s11)
         self.assertIn('规范 B.1.2', s11)
         self.assertNotIn('中途会改掉页选择', s11)
+
+
+class TestEveryApplyTriggerIsWriteOnly(CMISTestCase):
+    """CMIS 5.4's change list: "Apply* trigger registers allow single byte
+    WRITE only (new restriction)", and every one is typed WO. The tool knew
+    the Staged Control Set 0 pair, 10h:143-144 - the two the Page 10h
+    overview names - and not the unidirectional 10h:176-177, the Staged
+    Control Set 1 10h:178-179 and 211-212, or the Network Path 16h:176-177.
+    Raw Registers let any of those go out inside a longer WRITE, and read
+    them back without saying they are write-only. The Store location
+    10h:135-136 (Table 8-79) and CommitRedirection 1Dh:160 (Table 8-176)
+    were missing from the write-only list as well."""
+
+    WO = {None: set(range(118, 126)),
+          0x10: {135, 136, 143, 144, 176, 177, 178, 179, 211, 212},
+          0x16: {176, 177}, 0x1D: {160}, 0x60: {192, 193}, 0x6D: {160}}
+    SINGLE = {(0x10, a) for a in (143, 144, 176, 177, 178, 179, 211, 212)} \
+        | {(0x16, 176), (0x16, 177)}
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _write(self, page, address, data):
+        return self.client.post('/api/register/write', data=json.dumps(
+            {'page': page, 'address': address, 'data': data}),
+            content_type='application/json')
+
+    def _read(self, page, address, length):
+        return self.assertOk(self.client.post(
+            '/api/register/read', data=json.dumps(
+                {'page': page, 'address': address, 'length': length}),
+            content_type='application/json'))['data']
+
+    def test_the_write_only_list_is_the_tables(self):
+        import cmis_registers as c
+        got = {}
+        for page, first, last, _access, _what in c.WRITE_ONLY_BLOCKS:
+            got.setdefault(page, set()).update(range(first, last + 1))
+        self.assertEqual(got, self.WO)
+
+    def test_the_demo_module_agrees(self):
+        from i2c_backends.mock import MockBackend
+        self.assertEqual({p: set(a) for p, a in MockBackend._WRITE_ONLY.items()},
+                         self.WO)
+
+    def test_every_apply_trigger_is_single_byte(self):
+        import cmis_registers as c
+        self.assertEqual({(p, a) for p, a, _n in c.SINGLE_BYTE_WRITE},
+                         self.SINGLE)
+        # all of them write-only, as their tables type them
+        for page, addr in self.SINGLE:
+            self.assertIn(addr, self.WO[page], (page, addr))
+
+    def test_a_trigger_inside_a_longer_write_is_refused(self):
+        self._connect()
+        for page, addr, data in ((0x10, 176, [0x01, 0x01]),
+                                 (0x10, 177, [0x01, 0x00]),
+                                 (0x10, 175, [0x00, 0x01]),
+                                 (0x10, 210, [0x00, 0x01, 0x01]),
+                                 (0x16, 176, [0x01, 0x01])):
+            body = self.assertErr(self._write(page, addr, data), 400)
+            self.assertIn('single-byte WRITE', body['message'], (page, addr))
+        # each on its own goes through (no demo module has Page 16h, and
+        # the refusal above comes before any page is selected)
+        for page, addr in sorted(self.SINGLE):
+            if page == 0x10:
+                self.assertOk(self._write(page, addr, [0x00]))
+
+    def test_the_read_says_they_are_write_only(self):
+        self._connect()
+        d = self._read(0x10, 176, 4)
+        self.assertEqual([(b['first'], b['last']) for b in d['write_only']],
+                         [(176, 177), (178, 179)])
+        d = self._read(0x10, 135, 2)
+        self.assertEqual([b['holds'] for b in d['write_only']],
+                         ['AdaptiveInputEqStoreTx (Table 8-79), a store location'])
+        import cmis_registers as c
+        self.assertEqual(len(c.write_only_overlap(0x16, 176, 2)), 1)
+        self._connect('mock_24lane')             # has Page 1Dh
+        self.assertEqual([b['holds'] for b in self._read(0x1D, 160, 1)['write_only']],
+                         ['CommitRedirection (Table 8-176), a trigger'])
+
+    def test_what_was_written_does_not_read_back(self):
+        self._connect()
+        for page, addr in ((0x10, 178), (0x10, 211), (0x10, 176), (0x10, 135)):
+            self.assertOk(self._write(page, addr, [0x0F]))
+            self.assertEqual(self._read(page, addr, 1)['data'], [0], (page, addr))
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s11 = man[man.index('id="s11"'):man.index('id="s12"')]
+        self.assertIn('会被拒绝的只有四种', s11)
+        self.assertIn('<li><b>夹带 Apply 触发字节的多字节写</b>', s11)
+        self.assertIn('<code>16h:176/177</code>', s11)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

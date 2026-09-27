@@ -406,18 +406,43 @@ CLEAR_ON_READ_BLOCKS = (
 # the point of the type ("mainly useful when privacy protection of written
 # data is to be specified").
 # (page, or None for Lower Memory; first; last; access; what it is)
+# Every whole byte typed WO or WO/SC in the register tables of chapter 8.
+# Only the two Staged Control Set 0 triggers were here, which is what the
+# Page 10h overview names; the other Apply bytes, the Store location and the
+# host lane Commit are in the tables themselves.
 WRITE_ONLY_BLOCKS = (
     (None, 118, 121, 'WO/SC', 'PasswordChangeEntryArea (Table 8-25)'),
     (None, 122, 125, 'WO/SC', 'PasswordEntryArea (Table 8-25)'),
+    (0x10, 135, 136, 'WO', 'AdaptiveInputEqStoreTx (Table 8-79), a store '
+                           'location'),
     (0x10, 143, 143, 'WO', 'ApplyDPInit, a trigger'),
     (0x10, 144, 144, 'WO', 'ApplyImmediate, a trigger'),
+    (0x10, 176, 177, 'WO', 'ApplyImmediateTx / ApplyImmediateRx, Staged '
+                           'Control Set 0 (Table 8-85), triggers'),
+    (0x10, 178, 179, 'WO', 'ApplyDPInit / ApplyImmediate, Staged Control '
+                           'Set 1 (Table 8-86), triggers'),
+    (0x10, 211, 212, 'WO', 'ApplyImmediateTx / ApplyImmediateRx, Staged '
+                           'Control Set 1 (Table 8-90), triggers'),
+    (0x16, 176, 177, 'WO', 'ApplyNPInit, Staged Control Sets 0 and 1 '
+                           '(Tables 8-148, 8-149), triggers'),
+    (0x1D, 160, 160, 'WO/SC', 'CommitRedirection (Table 8-176), a trigger'),
     (0x60, 192, 193, 'WO', 'ResetAcquisitionCounters (Table 8-189), a trigger'),
     (0x6D, 160, 160, 'WO/SC', 'CommitMediaLaneRedirection (Table 8-196), a trigger'),
 )
 
-# Page 10h, ApplyDPInit and ApplyImmediate: "Restriction: This byte must be
-# written in a single-byte WRITE".
-SINGLE_BYTE_WRITE = ((0x10, 143, 'ApplyDPInit'), (0x10, 144, 'ApplyImmediate'))
+# "Restriction: This byte must be written in a single-byte WRITE" - on every
+# Apply trigger, a restriction new in 5.4 (change list: "Apply* trigger
+# registers allow single byte WRITE only"). Only the Staged Control Set 0
+# pair was listed.
+SINGLE_BYTE_WRITE = (
+    (0x10, 143, 'ApplyDPInit'), (0x10, 144, 'ApplyImmediate'),
+    (0x10, 176, 'ApplyImmediateTx'), (0x10, 177, 'ApplyImmediateRx'),
+    (0x10, 178, 'ApplyDPInit of Staged Control Set 1'),
+    (0x10, 179, 'ApplyImmediate of Staged Control Set 1'),
+    (0x10, 211, 'ApplyImmediateTx of Staged Control Set 1'),
+    (0x10, 212, 'ApplyImmediateRx of Staged Control Set 1'),
+    (0x16, 176, 'ApplyNPInit'), (0x16, 177, 'ApplyNPInit of Staged Control Set 1'),
+)
 
 
 def _on_this_read(blk_page, page):

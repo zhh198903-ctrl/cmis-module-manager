@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.181.0<br>
+      <b>版本</b>　2.182.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.181.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.181.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.182.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.182.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Raw Registers:所有 Apply 触发字节都按只写、单字节处理</h3>
+  <p>CMIS 5.4 修订记录:「Apply* 触发寄存器只允许单字节 WRITE(新限制)」;这些字节在各自的寄存器表里都是 WO(只写)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前只认 Staged Control Set 0 的两个触发字节 <code>10h:143/144</code>(这正是 Page 10h 概览表列出的那两个)。另外八个 Apply 触发字节——单向触发 <code>10h:176/177</code>、Staged Control Set 1 的 <code>10h:178/179</code> 与 <code>10h:211/212</code>、Network Path 的 <code>16h:176/177</code>——可以夹在多字节写入里发出去,读到时也不标「write-only」。同样漏掉的只写字节还有 <code>10h:135–136</code> AdaptiveInputEqStoreTx(存储位置)和 <code>1Dh:160</code> CommitRedirection。</span>
+  </div>
+  <p>现在:这十个触发字节夹在多字节写入里都会被拒绝;Raw Registers 读到上面任何一个只写字节,都在十六进制显示上方标出「write-only……not what was written」。演示模块也把它们当只写字节,读出来是 0。</p>
 
   <h3>Raw Registers:跨过 0x7F 的读取读的是它标出的字节</h3>
   <p>规范 B.1.2:字节地址在当前 128 字节内回绕——Lower Memory 从 127 回到 0,上页从 255 回到 128。</p>
@@ -4598,7 +4606,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>会被拒绝的只有三种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
+    <span>会被拒绝的只有四种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；把 Apply 触发字节（<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code>）夹在多字节写入里（规范要求这些字节单字节 WRITE）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
     只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
   </div>
 
@@ -4621,13 +4629,14 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       </tbody>
     </table>
   </div>
-  <p>另有三种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
+  <p>另有四种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
   <ul>
     <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
     <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
     <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
         不会进入上页，而是落在 <code>Lower 0x00</code> 起；途中写到的 <code>0x7F</code> 还会改掉页选择。从 <code>0x7F</code> 开始写两个字节也一样。
         工具直接拒绝，提示 <code>would run past 0x7F</code>，要求你<b>拆成两次写</b></li>
+    <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范 5.4 规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
   </ul>
   <div class="callout callout-danger">
     <span class="callout-icon">✕</span>
@@ -4881,7 +4890,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.181.0<br>
+    CMIS Module Manager 操作手册 v2.182.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

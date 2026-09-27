@@ -508,8 +508,8 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 
 ## 只写寄存器:读不回来,触发字节要单独写
 
-密码区 `00h:118-125`(WO/SC)、`10h:143/144`(ApplyDPInit / ApplyImmediate,WO)、`60h:192-193`、`6Dh:160` 读出来都不是写进去的值;
-`POST /api/register/read` 的 `write_only` 列出读到的只写字节。`10h:143/144` 必须单字节写,`POST /api/register/write` 夹在多字节里会 400。
+密码区 `00h:118-125`(WO/SC)、`10h:135-136`(AdaptiveInputEqStoreTx)、`10h:143/144`(ApplyDPInit / ApplyImmediate,WO)、`10h:176-179`、`10h:211-212`、`16h:176-177`(其余 Apply 触发字节)、`1Dh:160`、`60h:192-193`、`6Dh:160` 读出来都不是写进去的值;
+`POST /api/register/read` 的 `write_only` 列出读到的只写字节。所有 Apply 触发字节(`10h:143/144`、`10h:176-179`、`10h:211/212`、`16h:176/177`)必须单字节写(5.4 新限制),`POST /api/register/write` 夹在多字节里会 400。
 
 ## 写只读寄存器:成功但无效果
 

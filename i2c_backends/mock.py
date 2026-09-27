@@ -4202,7 +4202,13 @@ class MockBackend(I2CInterface):
     # Table 8-3: what a write-only byte reads back is not what was written -
     # zero for WO/SC once taken, anything for WO. Kept as zero here. The
     # password areas read back the password before.
-    _WRITE_ONLY = {None: set(range(118, 126)), 0x10: {143, 144},
+    # Page 10h: the Store location (Table 8-79) and every Apply trigger of
+    # both Staged Control Sets (8-80, 8-85, 8-86, 8-90); Page 16h the two NP
+    # triggers (8-148, 8-149). A mock that kept what was written to these
+    # read it back as if it were a setting.
+    _WRITE_ONLY = {None: set(range(118, 126)),
+                   0x10: {135, 136, 143, 144, 176, 177, 178, 179, 211, 212},
+                   0x16: {176, 177},
                    0x60: {192, 193}, 0x6D: {160}, 0x1D: {160}}
 
     def _write_only(self, page, addr: int) -> bool:
