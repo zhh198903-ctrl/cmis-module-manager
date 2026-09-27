@@ -40773,6 +40773,133 @@ class TestJunkInputIsRefusedNotTruncated(CMISTestCase):
         self.assertIn('patterns.push(sel ? parseInt(sel.value, 10) : 0);', js)
 
 
+class TestTheLaserAndConnectRefuseJunkToo(CMISTestCase):
+    """The sweep behind the previous release reached the laser endpoint on a
+    module that is not tunable, where every request is refused for that
+    reason alone - so it said nothing about the fields. On the tunable demo
+    it answered like the others had: grid_code, channel, fine offset and
+    target power went through int() and float(), so "x" or null was a 500,
+    channel 0.5 was channel 0, true was 1 GHz of offset or 1 dBm of power
+    and was written, grid_code 21 went down as 5 (& 0x0F), and "no" turned
+    fine tuning on. /api/connect handed true, 1.5, -1 and 256 to the
+    adapter as a bus or an I2C address."""
+
+    BASE = {'lane': 1, 'grid_code': 5, 'channel': 0}
+
+    def _connect(self, backend='mock_coherent_zr'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _laser(self, **entry):
+        return self.client.post(
+            '/api/module/laser',
+            data=json.dumps({'lanes': [dict(self.BASE, **entry)]}),
+            content_type='application/json')
+
+    @staticmethod
+    def _page12(backend):
+        return {a: v for a, v in backend._registers[0x12].items()
+                if 128 <= a < 168 or 200 <= a < 218}
+
+    def test_the_baseline_is_accepted(self):
+        """So the refusals below are about the field, not the module."""
+        self._connect()
+        self.assertOk(self._laser())
+        self.assertOk(self._laser(fine_offset_ghz=1.5, fine_tuning_enabled=True,
+                                  target_power_dbm=-1))
+
+    def test_every_field_refuses_junk_and_writes_nothing(self):
+        junk = ['x', None, {'a': 1}, ['x'], [1], True]
+        for field in ('lane', 'grid_code', 'channel', 'fine_offset_ghz',
+                      'fine_tuning_enabled', 'target_power_dbm'):
+            for value in junk:
+                if field == 'fine_tuning_enabled' and value is True:
+                    continue
+                backend = self._connect()
+                before = self._page12(backend)
+                rv = self._laser(**{field: value})
+                self.assertEqual(rv.status_code, 400, '%s=%r: %s'
+                                 % (field, value, rv.data[:120]))
+                self.assertEqual(self._page12(backend), before,
+                                 '%s=%r wrote' % (field, value))
+
+    def test_a_channel_is_a_whole_number(self):
+        self._connect()
+        rv = self._laser(channel=0.5)
+        self.assertErr(rv, 400)
+        self.assertIn('whole number', json.loads(rv.data)['message'])
+
+    def test_a_grid_code_is_four_bits(self):
+        backend = self._connect()
+        before = self._page12(backend)
+        for code in (21, 16, -1):
+            rv = self._laser(grid_code=code)
+            self.assertErr(rv, 400)
+            self.assertIn('4-bit', json.loads(rv.data)['message'])
+        self.assertEqual(self._page12(backend), before)
+
+    def test_true_is_not_a_frequency_or_a_power(self):
+        backend = self._connect()
+        before = self._page12(backend)
+        for field in ('fine_offset_ghz', 'target_power_dbm'):
+            self.assertErr(self._laser(**{field: True}), 400)
+        self.assertEqual(self._page12(backend), before)
+
+    def test_not_a_number_is_not_a_number(self):
+        """Python's JSON reader takes NaN and Infinity; the advertised range
+        is what refuses them."""
+        self._connect()
+        for field in ('fine_offset_ghz', 'target_power_dbm'):
+            rv = self.client.post(
+                '/api/module/laser',
+                data='{"lanes": [{"lane": 1, "%s": NaN}]}' % field,
+                content_type='application/json')
+            self.assertErr(rv, 400)
+            rv = self.client.post(
+                '/api/module/laser',
+                data='{"lanes": [{"lane": 1, "%s": Infinity}]}' % field,
+                content_type='application/json')
+            self.assertErr(rv, 400)
+
+    def test_fine_tuning_is_true_or_false(self):
+        backend = self._connect()
+        before = backend._registers[0x12][128]
+        for value in ('no', 1, [0]):
+            self.assertErr(self._laser(fine_tuning_enabled=value), 400)
+        self.assertEqual(backend._registers[0x12][128], before)
+
+    # ---- connect ---------------------------------------------------------------
+
+    def _post_connect(self, **over):
+        body = {'backend': 'mock_dr8', 'bus': 0, 'address': 80}
+        body.update(over)
+        return self.client.post('/api/connect', data=json.dumps(body),
+                                content_type='application/json')
+
+    def test_the_address_is_seven_bits(self):
+        for value in (True, 1.5, -1, 128, 256, None, 'x'):
+            rv = self._post_connect(address=value)
+            self.assertErr(rv, 400)
+        for value in (80, 0x7F, '0x50', '80'):
+            self.assertOk(self._post_connect(address=value))
+
+    def test_the_bus_is_a_whole_number_from_0(self):
+        for value in (True, 1.5, -1, None):
+            self.assertErr(self._post_connect(bus=value), 400)
+        self.assertOk(self._post_connect(bus=0))
+
+    def test_a_refused_connect_leaves_the_session_alone(self):
+        """Refused before the old backend is disconnected."""
+        self._connect('mock_dr8')
+        backend = app_module._state['backend']
+        self.assertErr(self._post_connect(address=128), 400)
+        self.assertIs(app_module._state['backend'], backend)
+        self.assertTrue(app_module._state['connected'])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -685,6 +685,7 @@ Apply 那次读取清掉的其它标志(包括 `wavelength_unlocked`)都记在 `
 开关类字段只收 JSON `true` / `false`:`low_pwr`、`software_reset`、`allow_lp_hw`、`bank_broadcast`、`squelch_method`、`apply`、`apply_immediate`、媒体通道切换的 `enable` / `commit`。`1`、`"true"`、`[0]` 都是 400。`action` 只能是 `reset` / `low_power` / `high_power`。
 掩码是整数(覆盖所有通道)或每 Bank 一个字节的整数列表;`true`、`1.5`、字符串是 400。PRBS `patterns` 每条通道一项,0-15;`redirection` 每条媒体通道一项。
 `register/write` 必须给 `page` 和 `address`;数据字节 00h-FFh,越界是 400(以前被截成低 8 位)。页号 / 地址 / Bank 不收 `true`、小数。
+激光调谐的每条 lane:`grid_code` 0-15、`lane` / `channel` 整数、`fine_offset_ghz` / `target_power_dbm` 数字(不收 `true`)、`fine_tuning_enabled` 只收 `true` / `false`(v2.205.0 起)。`/api/connect` 的 `address` 是 0-127 的 7 位地址(模块是 80),`bus` ≥ 0;被拒绝时原连接不断开。
 脚本报 400 时看 message,它写明哪个字段、收到了什么。
 
 ## 环回写入会读回

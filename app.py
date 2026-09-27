@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.204.0'
+__version__ = '2.205.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -843,6 +843,13 @@ def _is_whole(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_real(value) -> bool:
+    """A number: an offset in GHz, a power in dBm. true is not 1 GHz, and
+    float() made it one. (NaN and infinity get as far as the advertised
+    range, which refuses them.)"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _require_bools(body: dict, keys) -> object:
     """A switch is true or false. Anything else was taken by its
     truthiness, so "no", -1 and [0] all turned a control on - and one of the
@@ -1607,15 +1614,18 @@ def api_connect():
     body = request.get_json(silent=True) or {}
     backend_name = body.get('backend', 'mock_dr8')
     try:
-        bus = int(body.get('bus', 0))
-        # Accept hex string or int for address
-        addr_raw = body.get('address', 80)
-        if isinstance(addr_raw, str):
-            address = int(addr_raw, 0)
-        else:
-            address = int(addr_raw)
-    except (ValueError, TypeError) as e:
+        # Hex strings stay welcome; true and 1.5 are not a bus or an address.
+        bus = _as_int(body.get('bus', 0), 'Bus')
+        address = _as_int(body.get('address', 80), 'Address')
+    except ValueError as e:
         return _err(f"Invalid bus or address parameter: {e}")
+    # The adapter drivers take whatever they are handed: a 7-bit two-wire
+    # address (the module's is 50h, A0h on the wire) and a bus number.
+    if not 0 <= address <= 0x7F or bus < 0:
+        return _err('Invalid bus or address parameter: the address is a 7-bit '
+                    'I2C address, 0-127 (the module answers at 80, 50h), and '
+                    'the bus is 0 or more; got bus %r, address %r'
+                    % (bus, address))
 
     # Disconnect existing backend first
     if _state['backend'] is not None:
@@ -5837,6 +5847,26 @@ def api_laser_set():
                                   where='in lane entry %d, ' % (_i + 1))
             if bad:
                 return bad
+            # int() and float() took whatever came: a grid of "x" was a 500,
+            # channel 0.5 was channel 0, true was 1 GHz of fine offset or 1
+            # dBm of target power, and "no" turned fine tuning on.
+            for _f in ('lane', 'grid_code', 'channel'):
+                if _f in _entry and not _is_whole(_entry[_f]):
+                    return _err('Lane entry %d: %s is a whole number, not %r'
+                                % (_i + 1, _f, _entry[_f]), 400)
+            # GridSpacingTx is 12h:128 bits 7-4 (Table 8-109): four bits,
+            # and 21 was being staged as 5.
+            if 'grid_code' in _entry and not 0 <= _entry['grid_code'] <= 15:
+                return _err('Lane entry %d: grid_code is a 4-bit code, 0-15 '
+                            '(12h:128 bits 7-4), not %r'
+                            % (_i + 1, _entry['grid_code']), 400)
+            for _f in ('fine_offset_ghz', 'target_power_dbm'):
+                if _f in _entry and not _is_real(_entry[_f]):
+                    return _err('Lane entry %d: %s is a number, not %r'
+                                % (_i + 1, _f, _entry[_f]), 400)
+            bad = _require_bools(_entry, ('fine_tuning_enabled',))
+            if bad:
+                return bad
         # The ranges the module advertises are the only thing that says what a
         # legal request looks like, so read them before writing one.
         _set_page(0x04)
@@ -5914,7 +5944,7 @@ def api_laser_set():
             bank, slot = divmod(lane, 8)
             state = dp_of.get(lane + 1)
             ch_now = struct.unpack('>h', ch_now_raw[lane * 2:lane * 2 + 2])[0]
-            retune = (('grid_code' in ldata and (int(ldata['grid_code']) & 0x0F)
+            retune = (('grid_code' in ldata and ldata['grid_code']
                        != grid_now[lane] >> 4)
                       or ('channel' in ldata and int(ldata['channel']) != ch_now))
             if retune and state not in (None, 'Deactivated'):
@@ -5944,7 +5974,7 @@ def api_laser_set():
             # channel at all. Judged on the grid and channel the lane will
             # have - a new grid under the old channel is the same question.
             if 'grid_code' in ldata or 'channel' in ldata:
-                gc_eff = (int(ldata['grid_code']) & 0x0F if 'grid_code' in ldata
+                gc_eff = (ldata['grid_code'] if 'grid_code' in ldata
                           else grid_now[lane] >> 4)
                 ch_eff = int(ldata['channel']) if 'channel' in ldata else ch_now
                 mult = cmis.grid_channel_multiple(gc_eff)
@@ -5966,7 +5996,7 @@ def api_laser_set():
                     '- writing them would report success and change nothing'
                     % (lane + 1), 400)
             if 'grid_code' in ldata:
-                gc = int(ldata['grid_code']) & 0x0F
+                gc = ldata['grid_code']
                 # Only a change is judged: a lane may already sit on a grid
                 # the module no longer advertises, and the page writes it back.
                 if gc not in ch_ranges and gc != grid_now[lane] >> 4:

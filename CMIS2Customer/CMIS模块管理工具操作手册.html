@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.204.0<br>
+      <b>版本</b>　2.205.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.204.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.204.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.205.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.205.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,11 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>激光调谐和连接:同样严格检查字段</h3>
+  <p>上一版的字段检查在激光调谐接口上是用一个<b>不可调谐</b>的演示模块做的——那里每个请求本来就会因「模块不可调谐」被拒绝,所以其实没测到字段本身。换成可调谐的演示模块后,问题和其它接口一样:<code>grid_code</code>、<code>channel</code>、<code>fine_offset_ghz</code>、<code>target_power_dbm</code> 给字符串或 <code>null</code> 得到 500;<code>channel: 0.5</code> 被当成信道 0;<code>true</code> 被当成 1 GHz 的微调偏移或 1 dBm 的目标功率并写入;<code>grid_code: 21</code> 被截成 5(100 GHz);<code>fine_tuning_enabled: "no"</code> 反而打开了微调。</p>
+  <p>现在:<code>grid_code</code> 是 0–15 的整数(<code>12h:128</code> 高 4 位),<code>lane</code>、<code>channel</code> 是整数,偏移和功率是数字(不收 <code>true</code>;NaN、无穷大会被模块声明的范围拒绝),<code>fine_tuning_enabled</code> 只收 <code>true</code> / <code>false</code>,都在写入之前检查。</p>
+  <p>连接接口(<code>/api/connect</code>)以前把 <code>true</code>、<code>1.5</code>、-1、256 原样交给 I2C 适配器当总线号或地址。现在地址必须是 0–127 的 7 位 I2C 地址(模块在 80 = 50h),总线号是 0 或以上的整数;十六进制字符串(如 <code>"0x50"</code>)照旧可以。被拒绝时,当前连接保持不动。</p>
 
   <h3>写入接口:类型或范围不对的值一律拒绝(400),不再被截断、猜真假或补零</h3>
   <p>对每个写入接口的每个字段逐一送入错误类型和越界的值,发现三类问题:</p>
@@ -5110,7 +5115,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.204.0<br>
+    CMIS Module Manager 操作手册 v2.205.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
