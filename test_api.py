@@ -19362,9 +19362,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     # type, fiber face type and heatsink type are SFF-8024, and so are the
     # copper, active cable and BASE-T media interface codes (4-8 to 4-10,
     # checked against Rev 4.14) and the Identifier Values (4-1, Rev 4.14 page
-    # 17); the launch power and receive sensitivity windows the coherent and
-    # 1.6T profiles are built from are IEEE 802.3 clause 180 and 185.
-    VERIFIED_OTHER = frozenset(['4-1', '4-3', '4-8', '4-9', '4-10', '4-12',
+    # 17), and the Host Electrical Interface IDs (4-5, whose GID 0 rows
+    # 70h-73h are PCIe 4.0 to 7.0); the launch power and receive sensitivity
+    # windows the coherent and 1.6T profiles are built from are IEEE 802.3
+    # clause 180 and 185.
+    VERIFIED_OTHER = frozenset(['4-1', '4-3', '4-5', '4-8', '4-9', '4-10', '4-12',
                                 '4-13', '180-7', '180-8', '185-5', '185-6'])
 
     # test_api.py is scanned too. It was left out at first, and a citation
@@ -22070,8 +22072,10 @@ class TestHowLossyTheCableIs(CMISTestCase):
         Reserved byte is not promised to be zero. Whatever is in it is not a
         cable loss, because there is no cable."""
         import app as appmod
-        orig = appmod._read_upper
+        orig = appmod._read_upper, appmod._read_lower
         appmod._read_upper = lambda *a: bytes([3, 6, 9, 14, 21])
+        # No Applications: the frequencies are the table's own.
+        appmod._read_lower = lambda *a: bytes([0xFF]) * 32
         try:
             for code in (0x01, 0x02, 0x05, 0x00):
                 self.assertIsNone(
@@ -22081,7 +22085,7 @@ class TestHowLossyTheCableIs(CMISTestCase):
             att = appmod._read_cu_attenuation({'media_type_code': 0x03})
             self.assertEqual([a['db'] for a in att], [3, 6, 9, 14, 21])
         finally:
-            appmod._read_upper = orig
+            appmod._read_upper, appmod._read_lower = orig
 
     def test_a_copper_module_that_filled_nothing_in_shows_no_row(self):
         """Media type alone is not enough: an active optical cable shares
@@ -36645,9 +36649,6 @@ class TestTheInterfaceNamesAreSFF8024s(CMISTestCase):
             for code, name in names.items():
                 seen.setdefault(name, []).append(code)
             dups = {n: c for n, c in seen.items() if len(c) > 1}
-            # SFF-8024 itself names 70h-73h "PCIe"; the rest of the row differs.
-            if table == 'host':
-                dups.pop('PCIe', None)
             self.assertEqual(dups, {}, table)
 
     def test_the_names_that_were_wrong(self):
@@ -38106,6 +38107,9 @@ class TestACitedTableHoldsTheAddressBesideIt(unittest.TestCase):
         '8-90': ('10', 211, 212), '8-91': ('10', 213, 255),
         '8-96': ('11', 134, 134), '8-97': ('11', 135, 146),
         '8-98': ('11', 147, 153),
+        '8-55': ('01', 163, 166), '8-73': ('0C', 192, 255),
+        '8-176': ('1D', 128, 199), '8-191': ('61', 128, 191),
+        '8-196': ('6D', 128, 199),
     }
     FILES = ('app.py', 'cmis_registers.py', os.path.join('static', 'app.js'),
              os.path.join('templates', 'index.html'),
@@ -38136,6 +38140,206 @@ class TestACitedTableHoldsTheAddressBesideIt(unittest.TestCase):
                                             m.group(4)))
         self.assertGreater(checked, 10)
         self.assertEqual(wrong, [])
+
+
+class TestAPcieCableIsReadAtPcieFrequencies(CMISTestCase):
+    """The note under Table 8-35: "when the module advertises itself as a PCIe
+    application, the cable attenuation fields above are reported for
+    frequencies 2.5, 4.0, 8.0, 16.0, 32.0 GHz" instead of 5 to 53.125 GHz.
+    The second set was in the register file and nothing used it, so a PCIe
+    cable's 32 GHz loss was printed as its loss at 53.125 GHz.
+
+    Which Applications are PCIe is SFF-8024 Table 4-5's to say, and it names
+    70h-73h PCIe 4.0, 5.0, 6.0 and 7.0. The tool had all four as "PCIe" - the
+    group heading printed above them - and a test said SFF-8024 did too."""
+
+    def _connect(self, backend='mock_flat_dac'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _caps(self):
+        return self.assertOk(
+            self.client.get('/api/module/capabilities'))['data']
+
+    def _rediscover(self):
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_host_codes_carry_the_generation(self):
+        import cmis_registers as c
+        self.assertEqual([c.HOST_INTERFACE_IDS[x] for x in range(0x70, 0x74)],
+                         ['PCIe 4.0', 'PCIe 5.0', 'PCIe 6.0', 'PCIe 7.0'])
+        self.assertEqual(c.PCIE_HOST_IDS, frozenset(range(0x70, 0x74)))
+
+    def test_only_those_codes_in_sff_8024s_own_group_are_pcie(self):
+        import cmis_registers as c
+
+        def app(host, gid=None):
+            return {'host_if_id': host, 'host_interface_gid': gid}
+        for host in (0x70, 0x71, 0x72, 0x73):
+            self.assertTrue(c.advertises_pcie([app(host)]), hex(host))
+            self.assertTrue(c.advertises_pcie([app(0x51), app(host, 0)]))
+            self.assertFalse(c.advertises_pcie([app(host, 1)]),
+                             'GID 1 is another table; 70h there is not PCIe')
+        for host in (0x6F, 0x74, 0x51, 0xBE):
+            self.assertFalse(c.advertises_pcie([app(host)]), hex(host))
+        self.assertFalse(c.advertises_pcie([]))
+
+    def test_the_parser_takes_the_other_frequencies(self):
+        import cmis_registers as c
+        att = c.parse_cu_attenuation(bytes([1, 2, 3, 4, 5]), True)
+        self.assertEqual([a['ghz'] for a in att], [2.5, 4.0, 8.0, 16.0, 32.0])
+        self.assertEqual([a['db'] for a in att], [1, 2, 3, 4, 5])
+        att = c.parse_cu_attenuation(bytes([1, 2, 3, 4, 5]))
+        self.assertEqual([a['ghz'] for a in att], [5.0, 7.0, 12.9, 25.8, 53.125])
+
+    def test_the_demo_cable_is_not_pcie(self):
+        self._connect()
+        caps = self._caps()
+        self.assertIs(caps['cu_attenuation_pcie'], False)
+        self.assertEqual([a['ghz'] for a in caps['cu_attenuation']],
+                         [5.0, 7.0, 12.9, 25.8, 53.125])
+
+    def test_a_cable_with_a_pcie_application_reads_at_pcie_frequencies(self):
+        self._connect()
+        app_module._state['backend'].poke_bytes(0x5A, bytes([0x72]))
+        self._rediscover()
+        caps = self._caps()
+        self.assertIs(caps['cu_attenuation_pcie'], True,
+                      'Application 2 is PCIe 6.0')
+        att = caps['cu_attenuation']
+        self.assertEqual([a['ghz'] for a in att], [2.5, 4.0, 8.0, 16.0, 32.0])
+        self.assertEqual([a['db'] for a in att], [5, 6, 9, 14, None])
+
+    def test_a_flat_modules_code_in_another_group_is_not_pcie(self):
+        self._connect()
+        app_module._state['backend'].poke_bytes(0x56, bytes([0x71]))
+        app_module._state['backend'].poke_bytes(0x59, bytes([0x01]))
+        self._rediscover()
+        self.assertIs(self._caps()['cu_attenuation_pcie'], False,
+                      'HostInterfaceGID 1: 71h names another table')
+
+    def _read_with(self, flat, extra_host):
+        """_read_cu_attenuation over stub reads: eight Lower Memory
+        Applications, then a ninth on Page 01h."""
+        import app as appmod
+        import cmis_registers as cmis
+        seen = []
+
+        def upper(page, addr, length, *a):
+            seen.append((page, addr))
+            if (page, addr) == cmis.REG_ADDITIONAL_APPS[:2]:
+                return bytes([extra_host, 0x01, 0x44, 0x01]) + b'\xff' * 24
+            return bytes([3, 6, 9, 14, 21])
+        orig = appmod._read_upper, appmod._read_lower
+        appmod._read_upper = upper
+        appmod._read_lower = lambda addr, length: bytes([0x51, 0x01, 0x44, 0x01]) * 8
+        caps = {'media_type_code': 0x03, 'flat_memory': flat}
+        try:
+            att = appmod._read_cu_attenuation(caps)
+        finally:
+            appmod._read_upper, appmod._read_lower = orig
+        return caps, att, seen
+
+    def test_the_additional_applications_count_on_a_paged_module(self):
+        caps, att, seen = self._read_with(False, 0x73)
+        self.assertIs(caps['cu_attenuation_pcie'], True, 'Application 9')
+        self.assertEqual(att[0]['ghz'], 2.5)
+        caps, att, seen = self._read_with(False, 0x51)
+        self.assertIs(caps['cu_attenuation_pcie'], False)
+
+    def test_a_flat_module_has_no_page_01h_to_read_them_from(self):
+        import cmis_registers as cmis
+        caps, att, seen = self._read_with(True, 0x73)
+        self.assertIs(caps['cu_attenuation_pcie'], False)
+        self.assertNotIn(cmis.REG_ADDITIONAL_APPS[:2], seen)
+
+    def test_nothing_more_is_read_for_a_block_left_empty(self):
+        import app as appmod
+        import cmis_registers as cmis
+        seen = []
+        orig = appmod._read_upper, appmod._read_lower
+        appmod._read_upper = lambda *a: (seen.append(a[:2]), bytes(5))[1]
+        appmod._read_lower = lambda *a: (seen.append(a[:1]), bytes(32))[1]
+        try:
+            self.assertIsNone(appmod._read_cu_attenuation(
+                {'media_type_code': 0x03, 'flat_memory': False}))
+        finally:
+            appmod._read_upper, appmod._read_lower = orig
+        self.assertEqual(seen, [cmis.REG_CU_ATTENUATION[:2]])
+
+    def test_the_row_says_which_frequencies_and_why(self):
+        js = self._js()
+        i = js.index("['Cable Attenuation'")
+        row = js[i:js.index('] : []),', i)]
+        self.assertIn('c.cu_attenuation_pcie', row)
+        self.assertIn('note under Table 8-35', row)
+        self.assertIn('70h-73h', row)
+
+
+class TestEveryModuleInfoRowIsInTheManual(CMISTestCase):
+    """Chapter 7 of the manual is where a reader looks a Module Info row up,
+    and it had fallen about forty rows behind the page - each one announced
+    in its release notes and never added to the table. Two labels had
+    drifted as well (Connector Type, Media Interface Tech), and one row
+    described the Applications table instead. Checked both ways: every row
+    the page can draw has a manual row, and every manual row is one the page
+    draws."""
+
+    def _read(self, *parts):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, *parts), encoding='utf-8') as f:
+            return f.read()
+
+    def _page_labels(self):
+        js = self._read('static', 'app.js')
+        i = js.index('async function loadInfo(')
+        body = js[i:js.index('tbody.innerHTML = rows.map', i)]
+        labels = set(re.findall(r"\[\[?\s*'([A-Za-z][^'\n]*)',", body))
+        i = js.index('function propagationRow(')
+        labels |= set(re.findall(r"\[\[\s*'([A-Z][^'\n]*)',",
+                                 js[i:js.index('\n}\n', i)]))
+        i = js.index('const PAGE_GROUP_BITS = [')
+        labels |= set(re.findall(r"\['[a-z_0-9]+', '([^']+)',",
+                                 js[i:js.index('];', i)]))
+        return labels
+
+    def _manual_labels(self):
+        html = self._read('CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        ch7 = html[html.index('id="s7"'):html.index('id="s8"')]
+        return set(re.findall(r'<tr><td>([^<]+)</td>', ch7))
+
+    def test_the_page_labels_are_found(self):
+        page = self._page_labels()
+        for label in ('Module Type', 'Page Checksums', 'Cable Propagation Delay',
+                      'Network Path Pages', 'User EEPROM (Page 03h)',
+                      'Custom Monitor', 'CDB Command Complete', 'Heatsink Type'):
+            self.assertIn(label, page)
+        self.assertGreater(len(page), 60)
+
+    def test_every_row_on_the_page_is_in_the_manual(self):
+        missing = sorted(self._page_labels() - self._manual_labels())
+        self.assertEqual(missing, [])
+
+    def test_every_manual_row_is_one_the_page_draws(self):
+        # Aux rows are named by the module: "Aux1 - TEC Current".
+        extra = sorted(self._manual_labels() - self._page_labels() - {'Aux1–3'})
+        self.assertEqual(extra, [])
+        self.assertIn('rows.push([`Aux${a.index} — ${a.name}`',
+                      self._read('static', 'app.js'))
+
+    def test_the_labels_that_had_drifted(self):
+        manual = self._manual_labels()
+        for old in ('Connector Type', 'Media Interface Tech',
+                    'Host / Media Interface ID'):
+            self.assertNotIn(old, manual)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

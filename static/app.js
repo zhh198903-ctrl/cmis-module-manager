@@ -971,8 +971,15 @@ async function loadInfo() {
        + 'five frequencies. A frequency shown as not specified is the '
        + 'module reporting 0 dB, which the specification defines as the '
        + 'characteristic being unavailable rather than as a lossless cable. '
-       + 'On a PCIe module the same five bytes are reported at 2.5, 4.0, '
-       + '8.0, 16.0 and 32.0 GHz instead. Byte 209 is Reserved.'],
+       + (c.cu_attenuation_pcie
+          ? 'This module advertises a PCIe application (host interface '
+            + '70h-73h), so by the note under Table 8-35 the five bytes are '
+            + 'at 2.5, 4.0, 8.0, 16.0 and 32.0 GHz rather than 5 to '
+            + '53.125 GHz. '
+          : 'A module advertising a PCIe application reports the same five '
+            + 'bytes at 2.5, 4.0, 8.0, 16.0 and 32.0 GHz instead; this one '
+            + 'advertises none. ')
+       + 'Byte 209 is Reserved.'],
     ] : []),
     // 01h:151 has seven fields; two reached the interface. The byte is read
     // at connect either way, and the two timing bits in particular change

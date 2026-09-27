@@ -2259,6 +2259,19 @@ FAR_END_UNIFORM = {1: '1-lane', 12: '2-lane', 3: '4-lane', 2: '8-lane',
 CU_ATTENUATION_GHZ = (5.0, 7.0, 12.9, 25.8, 53.125)
 CU_ATTENUATION_GHZ_PCIE = (2.5, 4.0, 8.0, 16.0, 32.0)
 
+# SFF-8024 Table 4-5, GID 0: PCIe 4.0, 5.0, 6.0 and 7.0.
+PCIE_HOST_IDS = frozenset((0x70, 0x71, 0x72, 0x73))
+
+
+def advertises_pcie(apps: list) -> bool:
+    """Whether any Application Descriptor is a PCIe one - the condition of
+    the note under Table 8-35. The codes are PCIe only in SFF-8024's own
+    table: a flat module names the table its HostInterfaceID comes from in
+    the descriptor's fourth byte (HostInterfaceGID, Table 8-23), and 70h
+    in any other group is something else."""
+    return any(a['host_if_id'] in PCIE_HOST_IDS and not a['host_interface_gid']
+               for a in apps)
+
 
 NAD_SIZE = 8
 NADS_PER_BANK = 15
@@ -2565,7 +2578,7 @@ def is_cable_assembly(code) -> bool:
     return code in (0x03, 0x04)
 
 
-def parse_cu_attenuation(data: bytes) -> list:
+def parse_cu_attenuation(data: bytes, pcie: bool = False) -> list:
     """00h:204-208 (Table 8-35): cable attenuation in whole dB.
 
     "A value of 0 dB indicates that this characteristic is not available (not
@@ -2578,9 +2591,13 @@ def parse_cu_attenuation(data: bytes) -> list:
 
     "For active linear copper cables with host-programmable gain, the
     characteristics are reported for the 0 dB gain setting."
+
+    pcie: the module advertises a PCIe application (advertises_pcie), and
+    the same five bytes are at the frequencies of the note under the table.
     """
     out = []
-    for i, ghz in enumerate(CU_ATTENUATION_GHZ):
+    for i, ghz in enumerate(CU_ATTENUATION_GHZ_PCIE if pcie
+                            else CU_ATTENUATION_GHZ):
         db = data[i] if i < len(data) else 0
         out.append({'ghz': ghz, 'db': db or None})
     return out
@@ -4165,10 +4182,12 @@ HOST_INTERFACE_IDS = {
     0x56: '1.6TAUI-16-L C2M',
     0x57: '800GBASE-CR4',
     0x58: '1.6TBASE-CR8',
-    0x70: 'PCIe',
-    0x71: 'PCIe',
-    0x72: 'PCIe',
-    0x73: 'PCIe',
+    # SFF-8024 prints "PCIe" as a group heading above these four rows; the
+    # names in the rows carry the generation.
+    0x70: 'PCIe 4.0',
+    0x71: 'PCIe 5.0',
+    0x72: 'PCIe 6.0',
+    0x73: 'PCIe 7.0',
     0x74: 'CEI-112G-LINEAR-PAM4',
     0x80: '200GAUI-1 C2M',
     0x81: '400GAUI-2 C2M',

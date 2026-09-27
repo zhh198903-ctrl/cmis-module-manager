@@ -776,6 +776,7 @@ capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码
 平坦内存模块没有 Page 01h:info 里 `fw_inactive_revision`、`hw_revision` 为 `null`,`link_lengths` 为空;不要自己去读 01h,读回来的是 Page 00h。
 页面上 Monitoring、DataPath Config、Diagnostics 三个标签页在平坦模块上只显示一行原因(DataPath 保留 Applications),不会去请求那些会被 409 拒绝的接口。没有声明诊断页(`01h:142.5` 为 0)的分页模块,Diagnostics 页同样只说明一次,只保留 Laser Tuning。
 `GET /api/module/status` 在平坦模块上也返回 200,带 `static_module: true`:只有 `module_state`、`interrupt_asserted`、`flags_summary` 有值,温度/电压为 `null`,Flag 类字段为空(Table 8-9..8-12、8-16 不适用于静态模块),`restart_watch` 为 `unsupported`。
+线缆衰减 `cu_attenuation`(`00h:204-208`,Table 8-35)只在线缆组件上有;每项 `ghz` 就是它的频点。`cu_attenuation_pcie` 为 true 时模块声明了 PCIe 应用(Host Interface 70h–73h,平坦模块要求 GID 为 0),频点是 2.5/4/8/16/32 GHz(表下注释),不要按 5–53.125 GHz 解读。
 
 ## 跨过 0x7F 的读写
 

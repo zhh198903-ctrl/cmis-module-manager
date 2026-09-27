@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.188.0<br>
+      <b>版本</b>　2.189.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.188.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.188.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.189.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.189.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1118,6 +1118,7 @@
       <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier，按 SFF-8024 Rev 4.14 Table 4-1 命名（如 18h QSFP-DD、19h OSFP、1Eh QSFP+ or later with CMIS、21h OSFP-XD with CMIS）；27h–7Fh 为 Reserved，80h–FFh 为 Vendor specific。如果这个标识在 Table 4-1 里写明用的是别的管理接口（SFF-8472、SFF-8636/8436、SFP-DD 管理接口），这一行标 ▲ 并注明「not a CMIS module」——规范 8.2.1:模块被识别为 CMIS 模块之后,其余字段才能按 CMIS 解读</td><td><code>Lower / 0x00</code></td></tr>
+        <tr><td>Module ID</td><td class="label">同一个标识字节的原始十六进制值;上一行 Module Type 是它的名称</td><td><code>Lower / 0x00</code></td></tr>
         <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.x 模块兼容（附录 G.3）。4.x 模块标 ▲：<code>12h:128–135</code> 的 33/75 GHz 栅格代码已按版本换算，Flag 汇总（Lower 4–7）和输出状态（11h:132–133）不显示（Interrupt 行注明「Flags summary not decoded」，Monitoring 的输出列显示「n/a (CMIS 4.x)」）；主版本号高于 5 的模块标 ▲「可能无法管理」</td><td><code>Lower / 0x01</code></td></tr>
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）。Flat 模块上 Monitoring、DataPath Config、Diagnostics 三个标签页的内容大多不适用，页面顶部会用一行说明原因（DataPath Config 仍显示 Supported Applications）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
@@ -1144,9 +1145,49 @@
         <tr><td>Max Power</td><td class="label">最大功耗（W），原始值 × 0.25</td><td><code>00h / 0xC9</code></td></tr>
         <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效；普通光模块按规范这里写 0，显示为 "—（transceiver，见 Link Length）"。线缆组件（Media Type 03h/04h）报 0 时显示 <b>Not stated</b> 并标 ▲；可拆卸光模块报了非 0 长度也标 ▲（Table 8-33 要求它写 0）</td><td><code>00h / 0xCA</code></td></tr>
         <tr><td>Link Length</td><td class="label">模块在每种光纤上的<b>最大支持距离</b>（Table 8-45）。SMF 以 km 计，带两位倍率；OM5/OM4/OM3 以 2 m 为单位，OM2 以 1 m 为单位。不支持的光纤类型写 0，所以只会列出真正支持的那几种。线缆组件没有这张表：规范 8.4.2 要求有源光缆在这里<b>全部写 0</b>、长度改报在 Cable Length，所以线缆显示 "—（cable assembly, see Cable Length）"，报了非 0 值则标 ▲。平坦内存模块没有 Page 01h，显示 "no Page 01h"</td><td><code>01h / 0x84–0x89</code></td></tr>
-        <tr><td>Connector Type</td><td class="label">光口类型：LC / MPO-12 / MPO-16 / SC / CS / SN / RJ45 等（SFF-8024 Table 4-3）</td><td><code>00h / 0xCB</code></td></tr>
-        <tr><td>Host / Media Interface ID</td><td class="label">应用码里的主机电接口与媒体接口编号，本工具按 <b>SFF-8024 Rev 4.14</b> 解出名称一并显示（如 <code>0x83</code> = 1.6TAUI-8 C2M、<code>0x7F</code> = 1.6TBASE-DR8）。<b>CMIS 本身不定义这些编码</b>，只存编号并指向 SFF-8024。同一编号在多模与单模光纤上含义不同，按模块的 Media Type 选表。遇到比编码表更新的编号会显示 <code>Unknown (0x..)</code> 而不是留空——留空会让人以为模块什么都没报</td><td><code>Lower / 0x56+</code></td></tr>
-        <tr><td>Media Interface Tech</td><td class="label">媒体接口技术：850nm VCSEL / 1310 EML / C-band Tunable / Cu Equalized 等</td><td><code>00h / 0xD4</code></td></tr>
+        <tr><td>Connector</td><td class="label">光口类型,按 SFF-8024 Table 4-3 命名(如 LC、MPO 1×12、MPO 2×16、CS、SN、RJ45;线缆组件常见 No Separable Connector),括号里是原始编码</td><td><code>00h / 0xCB</code></td></tr>
+        <tr><td>Media Interface</td><td class="label">媒体接口技术(Table 8-41):850 nm VCSEL、1310 nm EML、C-band tunable laser、Copper passive equalized 等,括号里是原始编码;保留编码显示 Reserved</td><td><code>00h / 0xD4</code></td></tr>
+        <tr><td>Nominal Wavelength</td><td class="label">模块自报的标称波长和容差(Table 8-46,单位 0.05 nm / 0.005 nm)。模块没填(为 0)时不显示这一行;模块带多个波长时注明 several wavelengths on this module——Table 8-46 只为单波长模块定义这个字段</td><td><code>01h / 0x8A–0x8D</code></td></tr>
+        <tr><td>Tx Input Clocking</td><td class="label">哪些 Tx 输入通道必须频率同步(Table 8-50):1–8 全部同步 / 1–4 与 5–8 各自同步 / 两两同步 / 可以异步。超过 8 通道的模块在每个 Bank 内按同样方式分组</td><td><code>01h / 0x91[6:5]</code></td></tr>
+        <tr><td>Transmitter</td><td class="label">发射器是否制冷(CoolingImplemented,Table 8-50):Cooled / Uncooled</td><td><code>01h / 0x91[7]</code></td></tr>
+        <tr><td>ePPS</td><td class="label">是否支持 ePPS(增强型秒脉冲)定时信号(Table 8-50)</td><td><code>01h / 0x91[4]</code></td></tr>
+        <tr><td>Timing (Page 15h)</td><td class="label">是否在 Page 15h 提供每条通道的数据通道时延(Table 8-50、Table 8-141);支持时在 DataPath 页显示</td><td><code>01h / 0x91[3]</code></td></tr>
+        <tr><td>Cable Propagation Delay</td><td class="label">不可分离有源光缆的传播时延(Table 8-50),10 ns 为单位,0 表示未给出(显示 Not specified)。线缆组件总有这一行;可拆卸光模块只在报了非 0 值时出现,并标 ▲。这是光在线缆里走的时延,DataPath 页的数据通道时延(Page 15h)是经过模块内部的时延,单位相同但不是一回事。平坦内存线缆显示 "no Page 01h"</td><td><code>01h / 0x94–0x95</code></td></tr>
+        <tr><td>State Machines</td><td class="label">模块运行哪几个状态机(CmisSmSupport,Table 8-18):模块状态机 MSM、数据通道状态机 DPSM、网络通道状态机 NPSM。编码 0 表示「未声明」(CMIS 5.3 之前的模块),不是「没有」——这时按 Memory Model 判断;5 及以上是保留值</td><td><code>Lower / 0x38</code></td></tr>
+        <tr><td>Module Function</td><td class="label">模块功能类型(ModuleFunctionType,Table 8-18):Transmission Module(传输模块)或 ELSFP Resource Module;2–127 显示 Reserved,128 以上显示 Custom</td><td><code>Lower / 0x39</code></td></tr>
+        <tr><td>Tx CDR</td><td class="label">有没有 Tx CDR、主机能否旁路它(Table 8-54):Present · host can bypass it / Present · always in circuit / No CDR。声明了旁路控制却没有 CDR 时照实写明——单看旁路位会以为能控制</td><td><code>01h / 0xA1[1:0]</code></td></tr>
+        <tr><td>Rx CDR</td><td class="label">同上,Rx 侧(Table 8-54)</td><td><code>01h / 0xA2[1:0]</code></td></tr>
+        <tr><td>CDR Bypass Saves</td><td class="label">每个 CDR、每条通道旁路后<b>至少</b>省下的功耗(CDRPowerSavedPerLane,Table 8-50,0.01 W 为单位),以及所有可旁路的 CDR 全部旁路时的合计;模块报 0 时显示 Not stated</td><td><code>01h / 0x98</code></td></tr>
+        <tr><td>Tx Input EQ Freeze</td><td class="label">是否支持冻结 Tx 输入均衡器的自适应(Table 8-54)</td><td><code>01h / 0xA1[4]</code></td></tr>
+        <tr><td>Tx Input EQ Recall</td><td class="label">模块能存几组 Tx 输入均衡自适应结果,供 Staged Control Set 调回(Table 8-54):Not supported / 1 buffer / 2 buffers;11b 是保留值,显示 Reserved</td><td><code>01h / 0xA1[6:5]</code></td></tr>
+        <tr><td>Staged Control Set 1</td><td class="label">是否有第二套 Staged Control Set(Page 10h),主机可以同时备好两套配置(Table 8-54);本工具写的是 Set 0</td><td><code>01h / 0xA2[5]</code></td></tr>
+        <tr><td>Unidirectional Reconfig</td><td class="label">是否支持单方向重配置(Table 8-54):Page 10h 的 ApplyImmediateTx/Rx 与 Page 19h 的 DPConfigTx/Rx,只重配一个方向、不让另一个方向中断</td><td><code>01h / 0xA2[6]</code></td></tr>
+        <tr><td>Versatile Control Set</td><td class="label">是否支持 CMIS-VCS(Table 8-54),其参数空间延伸到 Page 18h 和 19h</td><td><code>01h / 0xA2[7]</code></td></tr>
+        <tr><td>Network Path Pages</td><td class="label">是否有网络通道页:Page 16h 及 Page 17h 中与网络通道相关的部分(Table 8-47)</td><td><code>01h / 0x8E[7]</code></td></tr>
+        <tr><td>VDM Pages</td><td class="label">是否有 VDM 页 20h–2Fh(可以只实现一部分,详细声明在 Page 2Fh;Table 8-47)</td><td><code>01h / 0x8E[6]</code></td></tr>
+        <tr><td>Diagnostic Pages</td><td class="label">是否有诊断页(分 Bank 的 13h–14h):环回、码型发生与检测、SNR、BER 和比特计数器(Table 8-47)。未声明时本工具拒绝这些控制</td><td><code>01h / 0x8E[5]</code></td></tr>
+        <tr><td>Coherent Pages</td><td class="label">是否有相干页(分 Bank 的 30h–4Fh,可以只实现一部分,细节见 C-CMIS;Table 8-47)</td><td><code>01h / 0x8E[4]</code></td></tr>
+        <tr><td>CMIS-FF (Page 05h)</td><td class="label">是否有 Page 05h 的封装形式专属功能(见 CMIS-FF 补充规范;Table 8-47)</td><td><code>01h / 0x8E[3]</code></td></tr>
+        <tr><td>User EEPROM (Page 03h)</td><td class="label">是否有主机可写的 Page 03h 用户 EEPROM(Table 8-47)。CMIS 不规定里面存什么;一次最多写 8 字节,模块内部写完之前拒绝寄存器访问</td><td><code>01h / 0x8E[2]</code></td></tr>
+        <tr><td>CDB Messaging</td><td class="label">模块有几个 CDB 实例(CdbInstancesSupported,Table 8-55)。CDB 是固件升级和规范第 9 章命令所走的消息机制;为 0 时显示 Not supported,下面几行 CDB 都不出现;3 是保留值</td><td><code>01h / 0xA3[7:6]</code></td></tr>
+        <tr><td>CDB Background Mode</td><td class="label">CDB 命令执行期间能否访问其它寄存器(Table 8-55)。显示 No 的模块在命令执行完之前<b>整个管理接口</b>都不应答,不只是 CDB 页</td><td><code>01h / 0xA3[5]</code></td></tr>
+        <tr><td>CDB Max Busy</td><td class="label">模块执行一条 CDB 命令最长可能忙多久,主机据此判断命令是否卡住。Table 8-55 对选择编码的那一位前后说法相反,工具按定义该位的那一行取值、标 ▲,并把另一种读法的数值一起列出</td><td><code>01h / 0xA5[4:0] / 0xA6</code></td></tr>
+        <tr><td>CDB EPL Pages</td><td class="label">模块有几页扩展载荷(EPL)页,以及页号范围和总字节数(CdbMaxPagesEPL,Table 8-55)。编码不等于页数:5、6、7 分别表示 8、12、16 页</td><td><code>01h / 0xA3[3:0]</code></td></tr>
+        <tr><td>CDB Max Access</td><td class="label">一次访问最多读写多少字节(CdbReadWriteLengthExtension,Table 8-55),EPL 与 LPL 分开列出:同一个值在 Page 9Fh 的 LPL(120 字节)上最多 128,在 EPL 页上最多 2048</td><td><code>01h / 0xA4</code></td></tr>
+        <tr><td>CDB Auto Paging</td><td class="label">是否支持自动翻页(Table 8-55)。不支持时主机不应写过一页 EPL 的末尾——地址在页内回绕,不会跳到下一页</td><td><code>01h / 0xA3[4]</code></td></tr>
+        <tr><td>CDB Trigger</td><td class="label">CDB 命令怎样触发(CdbCommandTriggerMethod,Table 8-55):一次包含 9Fh:129 的写入结束(STOP)时触发,整条消息可以一次写完;或者只在写 CMDID 寄存器时触发,要先写正文、再单独触发</td><td><code>01h / 0xA5[7]</code></td></tr>
+        <tr><td>Far End Breakout</td><td class="label">近端各主机通道分别接到远端哪个分立模块(FarEndConfiguration,Table 8-37,编码见 Table 8-38 / 8-39),一分几的均匀分支另外注明。可拆卸光模块这里应为 0,报了非 0 值标 ▲;线缆组件报 0 显示 Not stated 并标 ▲。超过 8 通道时每 8 条重复一次</td><td><code>00h / 0xD3[4:0]</code></td></tr>
+        <tr><td>Cable Attenuation</td><td class="label">线缆组件在五个频点的插入损耗,整数 dB(Table 8-35):5、7、12.9、25.8、53.125 GHz。模块声明了 PCIe 应用(Host Interface 70h–73h)时,按表下注释同样五个字节对应 2.5、4.0、8.0、16.0、32.0 GHz,工具按此标频点。报 0 dB 表示该项不可用,显示 not specified,而不是「没有损耗」;五项都是 0 时不显示这一行</td><td><code>00h / 0xCC–0xD0</code></td></tr>
+        <tr><td>Optical Detector</td><td class="label">光探测器类型(OpticalDetectorType,Table 8-50):PIN / APD</td><td><code>01h / 0x97[7]</code></td></tr>
+        <tr><td>Rx Output EQ Type</td><td class="label">Rx 输出均衡保持哪一种幅度恒定(RxOutputEqType,Table 8-50)</td><td><code>01h / 0x97[6:5]</code></td></tr>
+        <tr><td>Rx LOS Timing</td><td class="label">Rx LOS 按封装规范的快速模式时限还是常规时限上报(RxLOSIsFast,Table 8-50):Fast mode / Regular</td><td><code>01h / 0x97[2]</code></td></tr>
+        <tr><td>Tx Disable Timing</td><td class="label">模块响应 Tx 输出关断有多快(TxDisableIsFast,Table 8-50):Fast mode / Regular</td><td><code>01h / 0x97[1]</code></td></tr>
+        <tr><td>Heatsink Type</td><td class="label">散热器类型,按 SFF-8024 Table 4-13 命名(SFF8024HeatsinkType)</td><td><code>Lower / 0x3D[7:4]</code></td></tr>
+        <tr><td>Module Lanes</td><td class="label">模块<b>物理</b>通道总数和 Bank 数(BanksSupported);11b 转到 <code>01h:174</code>,最多 256 通道</td><td><code>01h / 0x8E[1:0]</code></td></tr>
+        <tr><td>Default Polarity</td><td class="label">出厂默认的 Tx 输入 / Rx 输出极性(Table 8-57),列出反相的通道,全部正常时显示 All regular。超过 8 通道的模块上,这 8 位按每 8 条一组套用,除非 Page 60h 给出了逐通道的值(8.4.13)</td><td><code>01h / 0xAB–0xAC</code></td></tr>
+        <tr><td>Media Lane Switching</td><td class="label">是否支持媒体侧通道切换(MediaLaneSwitchingSupported,Table 8-62)</td><td><code>01h / 0xFC[5]</code></td></tr>
+        <tr><td>Host Lane Switching</td><td class="label">是否支持主机侧通道切换(HostLaneSwitchingSupported,Table 8-62):把主机电通道接到别的标称通道(7.8),CMIS 5.3 新增</td><td><code>01h / 0xFC[7]</code></td></tr>
+        <tr><td>Extra Pages</td><td class="label">模块声明了哪些附加页:0Ch / 0Dh / 60h / 61h / 62h(Table 8-58);都没有时显示 none advertised</td><td><code>01h / 0xAD–0xAE</code></td></tr>
         <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
@@ -1170,6 +1211,7 @@
     <table>
       <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
+        <tr><td>Page Checksums</td><td class="label">每个静态页都带一个校验和(静态字节之和的低 8 位)。工具连接时逐页核对,全部一致显示 N pages verified;不一致时列出页号——那几页的静态数据可能是一次坏读。模块没有的页不核对:平坦内存模块只核对 00h,04h 只在可调谐模块上核对</td><td><code>00h:222 · 01h:255 · 02h:255 · 04h:255</code></td></tr>
         <tr><td>Temperature</td><td class="label">模块内部温度，signed16 ÷ 256 (°C)</td><td><code>Lower / 0x0E–0x0F</code></td></tr>
         <tr><td>Supply Voltage</td><td class="label">供电电压，uint16 × 100 µV</td><td><code>Lower / 0x10–0x11</code></td></tr>
         <tr><td>Module Flags</td><td class="label">六个模块级监控(温度 / 电压 / Aux1–3 / 自定义)的告警和警告标志,逐项列出:告警红色、警告黄色;两次刷新之间出现过的保留 ●! 记录</td><td><code>Lower / 0x09–0x0B</code></td></tr>
@@ -1178,6 +1220,7 @@
         <tr><td>Module State Changes</td><td class="label">ModuleStateChangedFlag:进入 ModuleLowPwr、ModuleReady 或 ModuleFault 时置位(Table 6-9)——复位会点亮,切一次低功耗再回来<b>同样</b>会;保留 ●! 历史</td><td><code>Lower / 0x08[0]</code></td></tr>
         <tr><td>Module Restarts</td><td class="label">由 Host Scratchpad 判断模块是否真的重启过(8.16.13);无法判断时写明原因(见「Module State Changes 与 Module Restarts」)</td><td><code>13h / 0xB8–0xBF</code></td></tr>
         <tr><td>Firmware Faults</td><td class="label">模块 / DSP 固件错误与异常固件指示(Table 8-9);已读清的保留 ●! 记录,被屏蔽时标 masked。异常固件指示是「Adv.」标志,只有模块在 <code>0Ch:194.4</code> 声明支持时才检查,否则格子里注明 no firmware-vs-load check</td><td><code>Lower / 0x08[3:1]</code></td></tr>
+        <tr><td>Aux1–3</td><td class="label">辅助监控值,标签随模块而定(如 Aux1 — TEC Current、Aux2 — Laser Temperature)。测的是什么由 <code>01h:145</code> 决定;模块没声明的不显示。无有效采样时标 no valid sample,后面附该项的告警 / 警告标志</td><td><code>Lower / 0x12–0x17</code></td></tr>
         <tr><td>Custom Monitor</td><td class="label">只在模块声明有自定义监控时出现:编码由厂商定义,只显示它的告警 / 警告标志</td><td><code>Lower / 0x0B[7:4]</code></td></tr>
         <tr><td>CDB Command Complete</td><td class="label">只在模块声明支持 CDB(<code>01h:163.7-6</code>)时出现:每个 CDB 实例一项,命令执行完时模块置位(7.2.5.2);已读清的保留 ●! 记录,被屏蔽时标 masked。命令成功与否看 CdbStatus(<code>Lower 37–38</code>)</td><td><code>Lower / 0x08[7:6]</code></td></tr>
       </tbody>
@@ -1251,7 +1294,7 @@
       <tbody>
         <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)</td><td>—</td></tr>
         <tr><td>Tx Power</td><td class="label">发送光功率（µW 和 dBm）</td><td><code>11h / 0x9A+((n−1)%8)×2</code></td></tr>
-        <tr><td>Tx Bias</td><td class="label">发送偏置电流(mA)。寄存器每个计数是 2 µA 乘以 <code>01h:160.4-3</code> 的倍率(×1 / ×2 / ×4,Table 8-99),列标题写出本模块一个计数是多少 µA</td><td><code>11h / 0xAA+((n−1)%8)×2</code></td></tr>
+        <tr><td>Tx Bias</td><td class="label">发送偏置电流(mA)。寄存器每个计数是 2 µA 乘以 <code>01h:160.4-3</code> 的倍率(×1 / ×2 / ×4,Table 8-53;计数单位见 Table 8-99),列标题写出本模块一个计数是多少 µA</td><td><code>11h / 0xAA+((n−1)%8)×2</code></td></tr>
         <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+((n−1)%8)×2</code></td></tr>
         <tr><td>DataPath State</td><td class="label">数据通道状态，4 bits/lane（见下表枚举）</td><td><code>11h / 0x80–0x83</code></td></tr>
         <tr><td>Output</td><td class="label">该 lane 的 Tx / Rx 输出是否真的在送有效信号（1 bit/lane）</td><td><code>11h / 0x84 Rx、0x85 Tx</code></td></tr>
@@ -1733,6 +1776,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>PCIe 线缆的衰减按 PCIe 频点标注;PCIe 接口编码带上代次</h3>
+  <p>规范 Table 8-35 下的注释:模块声明自己是 PCIe 应用时,<code>00h:204-208</code> 这五个衰减值对应 2.5、4.0、8.0、16.0、32.0 GHz,而不是 5、7、12.9、25.8、53.125 GHz。工具此前不分模块一律按后一组频点标注——PCIe 线缆在 32 GHz 的损耗会被写成 53.125 GHz 的损耗。</p>
+  <p>现在:线缆组件任一 Application 的 Host Interface 是 SFF-8024 的 70h–73h 时,Module Info 的 <b>Cable Attenuation</b> 行按 PCIe 频点标注,并在说明里写明原因。平坦内存模块的 Application 描述符第四个字节是 HostInterfaceGID,只有 GID 为 0(SFF-8024 自己的表)时 70h–73h 才算 PCIe。</p>
+  <p>另外,SFF-8024 Table 4-5 里这四个编码的名称是 <b>PCIe 4.0</b>、<b>PCIe 5.0</b>、<b>PCIe 6.0</b>、<b>PCIe 7.0</b>;工具此前四个都只显示「PCIe」(表里印在它们上方的分组标题)。Supported Applications 表现在显示完整名称。</p>
+
+  <h3>手册第 7 章:Module Info 的每一行都能查到</h3>
+  <p>第 7 章的字段表是对照 Module Info 查某一行含义的地方,但它落后页面约四十行——CDB、CDR、状态机、各类页面支持位、远端分支、线缆衰减、页校验和、Aux 监控等行在以往的发布说明里介绍过,却没有进这张表。现在全部补齐;两处名称按页面改正(Connector、Media Interface);原来放在这里的 Host / Media Interface ID 说明移到 9.2 Supported Applications;Tx Bias 行的倍率出处更正为 Table 8-53。这一节只改手册。</p>
 
   <h3>手册勘误:通道 Flag 的 Mask 在 Table 8-91</h3>
   <p>「标志与屏蔽的对应」表里,通道级 Flag(<code>11h:134-153</code>)的 Mask <code>10h:213-232</code> 此前标注为 Table 8-83;Table 8-83 是 Staged Control Set 0 的 Tx 控制,Mask 所在的是 <b>Table 8-91</b>(Lane-Specific Masks)。已更正。工具的行为没有变化。</p>
@@ -4145,7 +4196,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <thead><tr><th>列</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td>AppSel</td><td class="label">应用码序号(1–15),写入 DataPath 配置表时使用</td></tr>
-        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M)</td></tr>
+        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M、0x71 = PCIe 5.0)。<b>CMIS 本身不定义这些编码</b>,只存编号并指向 SFF-8024(本工具按 Rev 4.14 解名称)。比编码表更新的编号显示 <code>Unknown (0x..)</code>,不留空;<code>0xBE</code> 显示 <code>See NAD (0xBE)</code>(真实编号在 Normalized Application Descriptor 里)</td></tr>
         <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID,按 Media Type(Lower 85)查 SFF-8024 的对应表:MMF(4-6)、SMF(4-7)、无源 / 线性有源铜缆(4-8)、有源线缆(4-9)、BASE-T(4-10)</td></tr>
         <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
         <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）;扁平内存模块上这个字节是 HostInterfaceGID</td></tr>
@@ -4942,7 +4993,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.188.0<br>
+    CMIS Module Manager 操作手册 v2.189.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.188.0'
+__version__ = '2.189.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1128,9 +1128,21 @@ def _read_cu_attenuation(caps):
     """
     if not cmis.is_copper_media(caps.get('media_type_code')):
         return None
-    att = cmis.parse_cu_attenuation(_read_upper(*cmis.REG_CU_ATTENUATION))
+    raw = _read_upper(*cmis.REG_CU_ATTENUATION)
     # Every figure absent is not a cable with no loss.
-    return att if any(a['db'] is not None for a in att) else None
+    if not any(raw):
+        return None
+    # The note under Table 8-35 moves all five figures to other frequencies
+    # on a PCIe application, and the Applications say whether this is one.
+    # Flatness from caps rather than _flat_memory(): during discovery _state
+    # still holds the previous module's capabilities.
+    flat = bool(caps.get('flat_memory'))
+    apps = cmis.parse_application_descriptors(
+        _read_lower(0x56, 32),
+        extra=b'' if flat else _read_upper(*cmis.REG_ADDITIONAL_APPS),
+        flat_memory=flat)
+    caps['cu_attenuation_pcie'] = cmis.advertises_pcie(apps)
+    return cmis.parse_cu_attenuation(raw, caps['cu_attenuation_pcie'])
 
 
 def _discover_capabilities() -> dict:
