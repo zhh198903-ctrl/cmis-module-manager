@@ -37999,6 +37999,96 @@ class TestACmis4ModulesGridCodesAreTranslated(CMISTestCase):
         self.assertNotIn('CMIS 5.4 修订记录:「Apply*', man)
 
 
+class TestACmis4ModuleShowsNoSummaryOrOutputStatus(CMISTestCase):
+    """The Rev 5.0 change list has two more items a 4.x module does not
+    share: "Flag summaries now indicate bank and page (instead of bank and
+    lane)" (Lower 4-7) and "Added OutputStatusRx ... and OutputStatusTx"
+    (11h:132-133). Read by 5.x rules, a 4.x module's zeros made every output
+    look muted, and its summary named pages it was not talking about. The
+    last version only said so on the CMIS Revision row."""
+
+    def _connect(self, major=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        if major is not None:
+            _state['caps']['cmis_major'] = major
+
+    def test_a_cmis4_module_reports_no_output_status(self):
+        self._connect(major=4)
+        lanes = self.assertOk(self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertEqual(len(lanes), 8)
+        for l in lanes:
+            self.assertIsNone(l['output_valid_rx'])
+            self.assertIsNone(l['output_valid_tx'])
+            self.assertIs(l['output_status_pre50'], True)
+
+    def test_a_cmis5_module_still_does(self):
+        self._connect()
+        lanes = self.assertOk(self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertTrue(all(l['output_valid_rx'] in (True, False) for l in lanes))
+        self.assertTrue(all(l['output_status_pre50'] is False for l in lanes))
+
+    def test_the_summary_is_not_decoded_before_5_0(self):
+        self._connect(major=4)
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertIsNone(s['flags_summary'])
+        self._connect()
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertIsInstance(s['flags_summary'], list)
+
+    def test_a_flat_cmis4_module_too(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_flat_dac', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['caps']['cmis_major'] = 4
+        s = self.assertOk(self.client.get('/api/module/status'))['data']
+        self.assertIsNone(s['flags_summary'])
+
+    def _node(self, expr, fns):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        body = ''.join(r' + s.match(/function %s\([\s\S]*?\r?\n}\r?\n/)[0]' % f
+                       for f in fns)
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]' + body +
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_page(self):
+        cell = self._node("outputCell({lane: 1, output_status_pre50: true, "
+                          "output_valid_rx: null, output_valid_tx: null})",
+                          ['outputCell'])
+        self.assertIn('n/a (CMIS 4.x)', cell)
+        self.assertNotIn('&#9675;', cell)
+        note = self._node('flagsSummaryNote(null)', ['flagsSummaryNote'])
+        self.assertIn('Flags summary not decoded: before CMIS 5.0 it meant '
+                      'bank and lane', note)
+        self.assertEqual(self._node('flagsSummaryNote([])', ['flagsSummaryNote']), '')
+        rev = self._node("revisionCell('4.0', 4)", ['revisionCell'])
+        self.assertIn('Flags summary and output status not shown', rev)
+        self.assertNotIn('read by 5.x rules', rev)
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        self.assertIn('<h3>CMIS 4.x 模块:Flag 汇总和输出状态不再按 5.x 规则显示</h3>', man)
+        self.assertNotIn('Flag 汇总和输出状态仍按 5.x 读', man)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

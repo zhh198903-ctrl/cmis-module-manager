@@ -1170,6 +1170,14 @@ function rebuildLaneColumns() {
 // holds the VDM Flags, which no tab here shows - so an Interrupt raised from
 // there had nothing on screen to explain it.
 function flagsSummaryNote(summary) {
+  // null: a module older than CMIS 5.0, whose summary means bank and lane
+  // rather than bank and page (Rev 5.0 change list).
+  if (summary === null) {
+    return '<br><small class="text-muted" title="FlagsSummary (Lower '
+      + '4\u20137): &quot;Flag summaries now indicate bank and page (instead '
+      + 'of bank and lane)&quot; - Rev 5.0 change list">Flags summary not '
+      + 'decoded: before CMIS 5.0 it meant bank and lane</small>';
+  }
   const list = summary || [];
   if (!list.length) return '';
   const where = list.map(e => `Page ${e.page}${e.bank ? ` bank ${e.bank}` : ''}`
@@ -1344,16 +1352,16 @@ function revisionCell(text, major) {
   const why = major < 5
     ? 'Rev 5.0 changed encodings this tool reads. The 33 and 75 GHz grid '
       + 'codes of 12h:128-135 were swapped, and are translated for this '
-      + 'module. Not adapted: the Flags summary (Lower 4-7) meant bank and '
-      + 'lane before 5.0 and is read as bank and page, and OutputStatus '
-      + '(11h:132-133) was added in 5.0 and is read as if present.'
+      + 'module. Not shown: the Flags summary (Lower 4-7), which meant bank '
+      + 'and lane before 5.0, and OutputStatus (11h:132-133), which 5.0 '
+      + 'added.'
     : 'Appendix G.3: a module reporting a higher major revision than the '
       + 'host "may not behave as per host expectations and therefore cannot '
       + 'be managed". This tool implements CMIS 5.';
   return shown + ' <span class="flag-warn" title="' + esc(why) + '">\u25b2</span> '
     + '<span class="reg-meta">' + (major < 5
       ? 'older than CMIS 5.0 - grid codes translated, Flags summary and '
-        + 'output status read by 5.x rules'
+        + 'output status not shown'
       : 'newer major revision than this tool - it may not be manageable') + '</span>';
 }
 
@@ -2814,6 +2822,13 @@ function dpStateNote(lane) {
 // fewer than its host lanes the row number means something different for
 // each dot - and the Tx one is about a lane this module may not have.
 function outputCell(lane) {
+  // Rev 5.0 added OutputStatusRx/Tx (11h:132-133); a 4.x module has
+  // nothing there, and its zeros read as every output muted.
+  if (lane.output_status_pre50) {
+    return '<span class="flag-none" title="' + esc('OutputStatusRx and '
+      + 'OutputStatusTx (11h:132-133) were added in CMIS Rev 5.0, and this '
+      + 'module reports CMIS 4.x.') + '">n/a (CMIS 4.x)</span>';
+  }
   const dot = (valid, label, why, side) => valid
     ? `<span class="flag-ok" title="${esc(label + ' output signal valid on '
         + side + ' lane ' + lane.lane)}">&#9679;</span> ${label}`

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.186.0<br>
+      <b>版本</b>　2.187.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.186.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.186.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.187.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.187.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1118,7 +1118,7 @@
       <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier，按 SFF-8024 Rev 4.14 Table 4-1 命名（如 18h QSFP-DD、19h OSFP、1Eh QSFP+ or later with CMIS、21h OSFP-XD with CMIS）；27h–7Fh 为 Reserved，80h–FFh 为 Vendor specific。如果这个标识在 Table 4-1 里写明用的是别的管理接口（SFF-8472、SFF-8636/8436、SFP-DD 管理接口），这一行标 ▲ 并注明「not a CMIS module」——规范 8.2.1:模块被识别为 CMIS 模块之后,其余字段才能按 CMIS 解读</td><td><code>Lower / 0x00</code></td></tr>
-        <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.x 模块兼容（附录 G.3）。4.x 模块标 ▲：<code>12h:128–135</code> 的 33/75 GHz 栅格代码已按版本换算，Flag 汇总和输出状态仍按 5.x 读；主版本号高于 5 的模块标 ▲「可能无法管理」</td><td><code>Lower / 0x01</code></td></tr>
+        <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.x 模块兼容（附录 G.3）。4.x 模块标 ▲：<code>12h:128–135</code> 的 33/75 GHz 栅格代码已按版本换算，Flag 汇总（Lower 4–7）和输出状态（11h:132–133）不显示（Interrupt 行注明「Flags summary not decoded」，Monitoring 的输出列显示「n/a (CMIS 4.x)」）；主版本号高于 5 的模块标 ▲「可能无法管理」</td><td><code>Lower / 0x01</code></td></tr>
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）。Flat 模块上 Monitoring、DataPath Config、Diagnostics 三个标签页的内容大多不适用，页面顶部会用一行说明原因（DataPath Config 仍显示 Supported Applications）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
         <tr><td>MCI Max Speed</td><td class="label">模块支持的管理总线最高速率（本工具只走 I2C，按 I2C 一列解：0=400 kHz、1=1 MHz、2=3.4 MHz）。3–15 是保留值，工具直接显示编号而不自己编一个速率出来</td><td><code>Lower / 0x02[5:2]</code></td></tr>
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>CMIS 4.x 模块:Flag 汇总和输出状态不再按 5.x 规则显示</h3>
+  <p>CMIS Rev 5.0 修订记录里另有两条和 4.x 模块不兼容:「Flag summaries now indicate bank and page (instead of bank and lane)」(Lower 4–7 的含义变了),以及「Added OutputStatusRx ... and OutputStatusTx」(11h:132–133 是 5.0 才加的)。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>上一版只在 CMIS Revision 行说明了这两项仍按 5.x 读。实际效果是:4.x 模块的 11h:132–133 读出来是 0,Monitoring 的输出列把每条通道都显示成「输出无效」;Interrupt 行把按「Bank + 通道」编码的汇总当成「Bank + 页」解读,写出的页名并不是模块说的意思。</span>
+  </div>
+  <p>现在:4.x 模块上,Monitoring 的输出列显示「n/a (CMIS 4.x)」,Interrupt 行注明「Flags summary not decoded: before CMIS 5.0 it meant bank and lane」,CMIS Revision 行的说明相应改为「Flags summary and output status not shown」。5.x 模块不受影响。</p>
 
   <h3>CMIS 4.x 模块:33/75 GHz 栅格代码按模块版本换算,版本差异在 CMIS Revision 行说明</h3>
   <p>CMIS Rev 5.0 的修订记录:「Frequency grid encoding in field (12h:128-135.7-4) has swapped the codes for 33GHz and 75 GHz」。也就是说,声明 CMIS 4.x 的模块(不少早期可调谐 400ZR 模块就是)在 <code>12h:128–135</code> 里用 6 表示 75 GHz、7 表示 33 GHz,和 5.x 正好相反。附录 G.3:模块主版本号不高于主机时,主机可以通过适配旧版本来管理它;主版本号更高的模块「可能不按主机的预期工作,因此无法管理」。</p>
@@ -4931,7 +4939,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.186.0<br>
+    CMIS Module Manager 操作手册 v2.187.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

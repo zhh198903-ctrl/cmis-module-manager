@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.186.0'
+__version__ = '2.187.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1342,6 +1342,14 @@ def _cmis_major() -> int:
     return (_state.get('caps') or {}).get('cmis_major', 5)
 
 
+def _flags_summary(raw: bytes):
+    """Lower 4-7 (Table 8-8), or None on a module older than CMIS 5.0: the
+    Rev 5.0 change list, "Flag summaries now indicate bank and page
+    (instead of bank and lane)". Decoded the 5.x way, a 4.x module's
+    summary names pages it was not talking about."""
+    return cmis.parse_flags_summary(raw) if _cmis_major() >= 5 else None
+
+
 def _read_grid_bytes() -> list:
     """12h:128-135 per media lane, the grid nibble in the 5.x codes this
     tool works in - see cmis.grid_code_on_module for the Rev 5.0 swap."""
@@ -1743,7 +1751,7 @@ def _static_module_status():
         'module_state': cmis.parse_module_state(state_raw[0]),
         'fault_cause': None,
         'interrupt_asserted': cmis.parse_interrupt_asserted(state_raw[0]),
-        'flags_summary': cmis.parse_flags_summary(summary_raw),
+        'flags_summary': _flags_summary(summary_raw),
         'temperature_c': None,
         'voltage_v': None,
         'na': {'temperature': False, 'vcc': False},
@@ -1940,7 +1948,7 @@ def api_module_status():
             'firmware_flags': firmware_flags,
             # Where the Flags behind an asserted Interrupt are. Read before
             # this poll's other reads clear any of them.
-            'flags_summary': cmis.parse_flags_summary(summary_raw),
+            'flags_summary': _flags_summary(summary_raw),
             'firmware_flag_masks': firmware_masks,
             'cdb_complete': cdb_complete,
             'cdb_complete_masks': cdb_complete_masks,
@@ -2574,6 +2582,7 @@ def api_module_monitoring():
         # controls in this tool mute an output and none of them change the
         # DataPath State, so without this a muted lane looks fully Activated.
         out_rx, out_tx = [], []
+        pre50 = _cmis_major() < 5
         for _bank, raw in _read_banks(cmis.REG_OUTPUT_STATUS_RX[0],
                                       cmis.REG_OUTPUT_STATUS_RX[1], 2):
             out_rx += cmis.parse_lane_flags(raw[0])
@@ -2681,8 +2690,13 @@ def api_module_monitoring():
                 # path is Activated - check Tx disable, force squelch or Rx
                 # output disable" on seven lanes that are not there, while the
                 # optical power beside it was correctly blank.
-                'output_valid_tx': out_tx[i] if media else None,
-                'output_valid_rx': out_rx[i],
+                'output_valid_tx': (out_tx[i] if media and not pre50
+                                    else None),
+                'output_valid_rx': None if pre50 else out_rx[i],
+                # Rev 5.0 added 11h:132-133 ("Added OutputStatusRx ...
+                # and OutputStatusTx ... (required)"): on a 4.x module
+                # they carry nothing, and read as every output muted.
+                'output_status_pre50': pre50,
                 'config_status': cfg_statuses[i],
                 # Whether the module accepted the configuration is a
                 # property of the code, not of how its name is spelled.

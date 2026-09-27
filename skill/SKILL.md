@@ -764,7 +764,7 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 
 ## CMIS 版本(Lower 0x01)
 
-capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码 6/7 与 5.x 互换(Rev 5.0 修订记录):`/api/module/laser` 的 `grid_code` 和写入都用 5.x 代码,工具在寄存器处换算,自己直读 `12h:128` 时要自己换。Flag 汇总(Lower 4-7)和输出状态(11h:132-133)没有换算,4.x 模块上按 5.x 规则读。主版本号高于 5 的模块按附录 G.3 视为不可管理。
+capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码 6/7 与 5.x 互换(Rev 5.0 修订记录):`/api/module/laser` 的 `grid_code` 和写入都用 5.x 代码,工具在寄存器处换算,自己直读 `12h:128` 时要自己换。4.x 模块上 Flag 汇总(Lower 4-7,5.0 前是 Bank + 通道)不解码:`/api/module/status` 的 `flags_summary` 为 `null`;输出状态(11h:132-133,5.0 才有)不报告:`/api/module/monitoring` 每条通道的 `output_valid_rx/tx` 为 `null`、`output_status_pre50` 为 true。主版本号高于 5 的模块按附录 G.3 视为不可管理。
 
 ## 模块标识(Lower 0x00)
 
