@@ -1632,6 +1632,41 @@ def parse_application_descriptors(data: bytes, media_type: int = 0x02,
     return apps
 
 
+def media_lane_assignment_problems(mask, width, present=None) -> list:
+    """Where a MediaLaneAssignmentOptions bitmap contradicts itself.
+
+    Table 8-60: a set bit is a media lane "a Data Path for the Application
+    is allowed to begin on", "Each instance of an Application uses
+    contiguous Media Lane numbers", and "all instances must be supported
+    concurrently". So every advertised start needs `width` lanes of its own
+    within lanes 1-8, and each of them a lane the module has (00h:210,
+    `present`). Returns one entry per start that cannot be: problem is
+    'past_lane_8', 'absent' or 'overlap', with the lanes concerned. Empty
+    when there is nothing to judge - no bitmap (a flat module) or no number
+    of lanes (a width the interface ID decides).
+    """
+    if mask is None or not isinstance(width, int) or width <= 0:
+        return []
+    out, taken = [], set()
+    for bit in range(8):
+        if not (mask >> bit) & 1:
+            continue
+        start = bit + 1
+        group = list(range(start, start + width))
+        if group[-1] > 8:
+            out.append({'start': start, 'problem': 'past_lane_8',
+                        'lanes': [l for l in group if l > 8]})
+        missing = [l for l in group if present is not None
+                   and l <= len(present) and not present[l - 1]]
+        if missing:
+            out.append({'start': start, 'problem': 'absent', 'lanes': missing})
+        clash = sorted(taken & set(group))
+        if clash:
+            out.append({'start': start, 'problem': 'overlap', 'lanes': clash})
+        taken |= set(group)
+    return out
+
+
 def lane_count_field(nibble: int) -> tuple:
     """Table 8-22 byte 2: the two lane-count nibbles do not only hold counts.
 

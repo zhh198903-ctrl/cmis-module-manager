@@ -10420,15 +10420,19 @@ class TestTheFifthByteOfAnApplicationDescriptor(CMISTestCase):
 
     def test_it_is_not_the_host_bitmap_under_another_name(self):
         """A profile where the two sides differ, so returning one for the
-        other cannot pass."""
-        self._connect('mock_coherent')
+        other cannot pass. It was the coherent demo, advertising all eight
+        media starts for its one carrier - which 00h:210 says is the only
+        media lane it has (Table 8-60: every start must be supportable)."""
+        self._connect('mock_fr4x2')
         for a in self._apps():
-            self.assertEqual(a['media_lanes'], 1)
-            self.assertEqual(a['media_lane_assign_mask'], 0xFF,
-                             'a single media lane Application may start on '
-                             'any of them')
+            self.assertEqual(a['media_lanes'], 4)
+            self.assertEqual(a['media_lane_assign_mask'], 0b00010001)
             self.assertNotEqual(a['media_lane_assign_mask'],
                                 a['host_lane_assign_mask'])
+        self._connect('mock_coherent')
+        for a in self._apps():
+            self.assertEqual(a['media_lane_assign_mask'], 0x01,
+                             'one media lane, so one place to start')
 
     def test_a_descriptor_without_the_fifth_byte_says_so(self):
         """Flat memory map modules do not carry it, and None is how that
@@ -26472,6 +26476,13 @@ class TestWhichMediaLanesADataPathUses(CMISTestCase):
         the monitoring row numbered 5 is media lane 5 - which belongs to
         nothing."""
         self._connect('mock_coherent_zr')
+        # The demo has one media lane, so it now advertises one start
+        # (Table 8-60). A module with two carriers is made here: lane 2
+        # present (00h:210) and a second start for AppSel 2 (01h:177).
+        poke(0x00, 0xD2, 0xFC)
+        poke(0x01, 0xB1, 0x03)
+        _state['caps']['media_lane_unsupported_mask'] = 0xFC
+        _state['media_lane_assign'] = None
         self.assertOk(self.client.post(
             '/api/module/datapath',
             data=json.dumps({'app_select': [2] * 8}),
@@ -36681,6 +36692,113 @@ class TestTheInterfaceNamesAreSFF8024s(CMISTestCase):
         self.assertNotIn('0x4F=200GAUI-2-S', s92)
         self.assertIn('BASE-T(4-10)', s92)
         self.assertIn('<tr><td>Media Lane Assign</td>', s92)
+
+
+class TestAMediaStartMustBeSupportable(CMISTestCase):
+    """Table 8-60: a set bit in MediaLaneAssignmentOptions is a media lane
+    "a Data Path for the Application is allowed to begin on", each instance
+    "uses contiguous Media Lane numbers", and "all instances must be
+    supported concurrently". The one-carrier coherent demos advertised all
+    eight starts and the four-lane AOC starts on lanes 5-8 - lanes 00h:210
+    says are not there - and nothing on the page compared the two. The
+    Applications reply now lists each start that cannot be, and the page
+    shows it; the demos advertise only starts they could serve."""
+
+    DEMOS = ('mock_coherent', 'mock_dr8', 'mock_sr8', 'mock_1600g_dr8',
+             'mock_1600g_16lane', 'mock_24lane', 'mock_coherent_zr',
+             'mock_zr16', 'mock_flat_dac', 'mock_aoc', 'mock_fewmon',
+             'mock_fr4x2')
+
+    def _apps(self, backend=None):
+        if backend:
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+
+    def test_the_rule(self):
+        import cmis_registers as c
+        f = c.media_lane_assignment_problems
+        self.assertEqual(f(0x01, 8, [True] * 8), [])
+        self.assertEqual(f(0x11, 4, [True] * 8), [])
+        self.assertEqual(f(0x03, 4, [True] * 8),
+                         [{'start': 2, 'problem': 'overlap', 'lanes': [2, 3, 4]}])
+        self.assertEqual(f(0x40, 4, None),
+                         [{'start': 7, 'problem': 'past_lane_8', 'lanes': [9, 10]}])
+        # the boundary: 6-9 does not fit, 5-8 does
+        self.assertEqual(f(0x20, 4, None),
+                         [{'start': 6, 'problem': 'past_lane_8', 'lanes': [9]}])
+        self.assertEqual(f(0x10, 4, None), [])
+        self.assertEqual(f(0x11, 4, [True] * 4 + [False] * 4),
+                         [{'start': 5, 'problem': 'absent', 'lanes': [5, 6, 7, 8]}])
+        self.assertEqual(len(f(0xFF, 1, [True] + [False] * 7)), 7)
+        for mask, width in ((None, 4), (0x01, None), (0x01, 0), (0x01, 'x')):
+            self.assertEqual(f(mask, width, [True] * 8), [], (mask, width))
+
+    def test_the_demos_contradict_nothing(self):
+        for backend in self.DEMOS:
+            for a in self._apps(backend):
+                self.assertEqual(a['media_lane_assign_problems'], [],
+                                 '%s AppSel %d' % (backend, a['app_sel']))
+
+    def test_the_one_carrier_demos_advertise_one_start(self):
+        for backend in ('mock_coherent', 'mock_coherent_zr'):
+            self.assertEqual({a['media_lane_assign_mask']
+                              for a in self._apps(backend)}, {0x01}, backend)
+        aoc = self._apps('mock_aoc')
+        self.assertEqual([a['media_lane_assign_mask'] for a in aoc], [0x01, 0x0F])
+
+    def test_a_contradiction_is_reported(self):
+        self._apps('mock_coherent_zr')
+        poke(0x01, 0xB0, 0xFF)                 # every start for one carrier
+        _state['media_lane_assign'] = None
+        first = self._apps()[0]
+        self.assertEqual([p['start'] for p in first['media_lane_assign_problems']],
+                         list(range(2, 9)))
+        self.assertEqual({p['problem'] for p in first['media_lane_assign_problems']},
+                         {'absent'})
+
+    def test_the_page_says_so(self):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        probs = ("[{start: 5, problem: 'absent', lanes: [5, 6, 7, 8]},"
+                 " {start: 2, problem: 'overlap', lanes: [2, 3]},"
+                 " {start: 7, problem: 'past_lane_8', lanes: [9, 10]}]")
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function _laneRun\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/const MEDIA_ASSIGN_PROBLEMS = \{[\s\S]*?\r?\n\};\r?\n/)[0]'
+                  r' + s.match(/function mediaAssignProblems\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify([mediaAssignProblems([]),'
+                  ' mediaAssignProblems(' + probs + ')]));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        none, some = json.loads(out.stdout)
+        self.assertEqual(none, '')
+        self.assertIn('start 5: lane 5–8: no such media lane (00h:210)', some)
+        self.assertIn('start 2: shares lane 2–3 with an earlier start', some)
+        self.assertIn('start 7: would need lane 9, 10 - past lane 8', some)
+        self.assertIn('Table 8-60', some)
+        with open(src, encoding='utf-8') as f:
+            self.assertIn('+ mediaAssignProblems(a.media_lane_assign_problems)', f.read())
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s92 = man[man.index('<h3>9.2 Supported Applications'):man.index('<h3>9.3 ')]
+        self.assertIn('00h:210', s92)
+        self.assertIn('Table 8-60', s92)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

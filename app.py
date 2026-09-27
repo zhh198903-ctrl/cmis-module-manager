@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.177.0'
+__version__ = '2.178.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -2966,6 +2966,14 @@ def api_applications():
         apps = cmis.parse_application_descriptors(
             data, media_type, _additional_app_descriptors(),
             _media_lane_assignments(), _flat_memory())
+        # Table 8-60: every advertised start is an instance that has to fit,
+        # on lanes the module has, alongside all the others. The bitmap is
+        # lanes 1-8, so it is judged against the first eight media lanes.
+        present = _media_lanes_present()[:8]
+        for a in apps:
+            a['media_lane_assign_problems'] = (
+                cmis.media_lane_assignment_problems(
+                    a['media_lane_assign_mask'], a['media_lanes'], present))
         # 01h:175: a module with Normalized Application Descriptors keeps
         # the rest of its Applications on Page 1Ch, so this list is a prefix
         # rather than the set. Saying so beats showing fifteen of hundreds

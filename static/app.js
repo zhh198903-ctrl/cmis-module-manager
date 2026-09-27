@@ -3699,7 +3699,29 @@ function mediaAssignCell(a) {
   const tip = `Media Lane Assignment: ${bin} bin = ${hex8(m)} hex = ${m} dec`
     + `\nBit n set = an instance of this Application may start on media lane n+1`
     + `\n01h:${176 + a.app_sel - 1}`;
-  return `<td title="${esc(tip)}"><code>${bin}</code></td>`;
+  return `<td title="${esc(tip)}"><code>${bin}</code>`
+    + mediaAssignProblems(a.media_lane_assign_problems) + '</td>';
+}
+
+// Table 8-60: each set bit starts an instance on contiguous media lanes, and
+// "all instances must be supported concurrently" - so a start that runs past
+// lane 8, onto a lane the module does not have, or into another start's
+// lanes is the module contradicting itself.
+const MEDIA_ASSIGN_PROBLEMS = {
+  past_lane_8: l => `would need lane ${l.join(', ')} - past lane 8`,
+  absent: l => `lane ${_laneRun(l)}: no such media lane (00h:210)`,
+  overlap: l => `shares lane ${_laneRun(l)} with an earlier start`,
+};
+
+function mediaAssignProblems(problems) {
+  if (!problems || !problems.length) return '';
+  const text = problems.map(p => `start ${p.start}: `
+    + (MEDIA_ASSIGN_PROBLEMS[p.problem] || (() => p.problem))(p.lanes));
+  return `<div class="flag-warn" style="font-size:var(--fs-xs)" title="${esc(
+    'Table 8-60: a set bit is a media lane a Data Path may begin on, each '
+    + 'instance uses contiguous media lanes, and all instances must be '
+    + 'supported concurrently.\n' + text.join('\n'))}">⚠ `
+    + esc(text.join('; ')) + '</div>';
 }
 
 async function loadApplications() {

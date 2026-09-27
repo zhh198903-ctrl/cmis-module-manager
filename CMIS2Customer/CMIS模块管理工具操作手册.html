@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.177.0<br>
+      <b>版本</b>　2.178.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.177.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.177.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.178.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.178.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>媒体侧起始位图与模块自己的媒体 lane 对不上时,会标出来</h3>
+  <p>规范 Table 8-60:MediaLaneAssignmentOptions 的每一位是一个数据通道可以起始的媒体 lane,每个实例占用连续的媒体 lane,并且「所有实例必须能同时支持」。所以起点不能落在 <code>00h:210</code> 声明不存在的媒体 lane 上,也不能超出 lane 8 或与别的起点重叠。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前工具只把这个位图原样显示,不和 <code>00h:210</code> 对照。演示模块自己就有这个矛盾:只有一条光载波的两个相干模块把 8 个起点都声明了,只有 4 条媒体 lane 的有源光缆把 lane 5–8 也声明成起点。</span>
+  </div>
+  <p>现在:Supported Applications 表的 Media Lane Assign 格子里会列出不成立的起点及原因;接口回复里每个应用多了 <code>media_lane_assign_problems</code>。演示模块只声明自己能支持的起点。超过 8 通道的模块,<code>00h:210</code> 按规范无法无歧义地声明媒体 lane,这时只检查超界和重叠。</p>
 
   <h3>接口名称按 SFF-8024 补全,按媒介类型查表</h3>
   <p>Supported Applications 表里的 Host / Media Interface 名称来自 SFF-8024 的代码表。对照 SFF-8024 Rev 4.14 逐条核对后发现:</p>
@@ -4053,7 +4061,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID,按 Media Type(Lower 85)查 SFF-8024 的对应表:MMF(4-6)、SMF(4-7)、无源 / 线性有源铜缆(4-8)、有源线缆(4-9)、BASE-T(4-10)</td></tr>
         <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
         <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）;扁平内存模块上这个字节是 HostInterfaceGID</td></tr>
-        <tr><td>Media Lane Assign</td><td class="label"><code>01h:176–190</code> 的位图,该应用的媒体侧可以从哪些 lane 起始;扁平内存模块没有 Page 01h,不显示</td></tr>
+        <tr><td>Media Lane Assign</td><td class="label"><code>01h:176–190</code> 的位图,该应用的媒体侧可以从哪些 lane 起始;扁平内存模块没有 Page 01h,不显示。按 Table 8-60,每个起点都要有自己连续的若干条媒体 lane、全部同时可用;某个起点超出 lane 8、落在 <code>00h:210</code> 声明不存在的媒体 lane 上、或与前一个起点重叠时,格子里会标 ⚠ 并写明是哪一个</td></tr>
       </tbody>
     </table>
   </div>
@@ -4836,7 +4844,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.177.0<br>
+    CMIS Module Manager 操作手册 v2.178.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -1287,11 +1287,19 @@ class MockBackend(I2CInterface):
         # module. An Application that uses m of the eight media lanes can start
         # on every m-th one, which is what a breakout Application needs the
         # host to know.
+        # Table 8-60 has "all instances ... supported concurrently", and an
+        # instance cannot start on - or run into - a media lane 00h:210 says
+        # is not there. The one-carrier coherent demos advertised all eight
+        # starts, the four-lane AOC starts on lanes 5-8.
+        absent = p.get('media_lane_unsupported', 0)
         for i, desc in enumerate(p['app_descriptors'][:15]):
             media_lanes = desc[2] & 0x0F
             if media_lanes:
-                p01[0xB0 + i] = sum(1 << (k * media_lanes)
-                                    for k in range(8 // media_lanes))
+                group = (1 << media_lanes) - 1
+                p01[0xB0 + i] = sum(
+                    1 << (k * media_lanes)
+                    for k in range(8 // media_lanes)
+                    if not (absent >> (k * media_lanes)) & group)
 
         # 223-250 (Table 8-61): the seven Application Descriptors that do not
         # fit in lower memory. A module with eight or fewer never reaches
