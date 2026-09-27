@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.180.0'
+__version__ = '2.181.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5813,7 +5813,10 @@ def api_register_read():
             bank = _as_int(body.get('bank', 0), 'Bank')
         except ValueError as e:
             return _err(str(e))
-        err = _check_bank(page, address, bank)
+        # A read from Lower Memory that runs on past 0x7F reaches the page,
+        # and the bank names which copy of it.
+        err = _check_bank(page, max(address, min(address + length - 1, 0x80)),
+                          bank)
         if err:
             return err
         if length < 1 or length > 128:
@@ -5825,19 +5828,32 @@ def api_register_read():
         if address + length > 0x100:
             return _err(f"Read would cross end of page (address 0x{address:02X} + length {length} > 0x100)")
 
-        if address >= 0x80:
-            data = _read_upper(page, address, length, bank)
-        else:
-            data = _read_lower(address, length)
+        # B.1.2: the byte address rolls over at the end of its 128-byte area,
+        # 127 back to 0 in Lower Memory, so one READ past 0x7F does not go on
+        # into the page - the rest came back as Lower 0x00 onwards, dumped
+        # as 0x80 onwards. It is two reads: Lower Memory to 0x7F, then the
+        # page named. The page is selected before either, so that the Bank
+        # and Page Select bytes in the dump name the page shown under them.
+        in_lower = max(0, min(length, 0x80 - address))
+        if length > in_lower:
+            _set_page(page, bank)
+        data = _read_lower(address, in_lower) if in_lower else b''
+        if length > in_lower:
+            data += _read_upper(page, address + in_lower, length - in_lower,
+                                bank)
 
         return _ok({
             'page': page,
             'address': address,
             'bank': bank,
+            # Which memory the bytes are: Lower Memory below 0x80 whatever
+            # page was named, and the page only from 0x80 on.
+            'lower': in_lower > 0,
+            'upper': length > in_lower,
             # So the dump can say which eight lanes it is showing. Without it
             # a page of Bank 0 and the same page of Bank 3 are the same
             # picture on screen.
-            'banked': address >= 0x80 and cmis.is_banked_page(page),
+            'banked': length > in_lower and cmis.is_banked_page(page),
             'banks': ((_state.get('caps') or {}).get('banks_supported', 1)),
             'length': length,
             'data': list(data),
@@ -5895,12 +5911,14 @@ def api_register_write():
             return _err("Address must be 0x00–0xFF")
         if address + len(data) > 0x100:
             return _err(f"Write would cross end of page (address 0x{address:02X} + {len(data)} bytes > 0x100)")
-        # Running a multi-byte write through 0x7F would reprogram the page
-        # select mid-transfer and dump the remaining bytes into whatever page
-        # that byte happened to name.
-        if address < 0x7F < address + len(data):
-            return _err(f"Write from 0x{address:02X} would run through the page "
-                        f"select register at 0x7F; split it into two writes")
+        # B.1.2: Lower Memory rolls over from 127 to 0, so the bytes of a
+        # WRITE past 0x7F land on Lower 0x00 onwards, not on the page - and
+        # the one on 0x7F reselects the page on the way.
+        if address < 0x80 < address + len(data):
+            return _err(f"Write from 0x{address:02X} would run past 0x7F, "
+                        f"where Lower Memory wraps back to byte 0 (CMIS "
+                        f"B.1.2) instead of going on into the page; split "
+                        f"it into two writes")
 
         # A write longer than one WRITE goes as several (5.2.2.2) - except
         # on the CDB header, where writing 9Fh:129 is what sends the command

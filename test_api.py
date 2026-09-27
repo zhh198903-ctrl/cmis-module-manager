@@ -36996,6 +36996,257 @@ class TestAnUnadvertisedFlagIsNotChecked(CMISTestCase):
         self.assertIn('只有模块在 <code>0Ch:194.4</code> 声明支持时才检查', s7)
 
 
+class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
+    """B.1.2: the current byte address "rolls over (wraps around) after
+    incrementing past the end of the current 128-byte memory area" - Lower
+    127 back to 0, Upper 255 back to 128. Raw Registers sent a read of
+    7Ch-83h as one READ, so on a module the four bytes dumped as 80h-83h
+    were Lower 00h-03h; the mock read on into the page and hid it. A write
+    from 7Fh on was let through and landed on Lower 00h. The dump header
+    also named the Page field for Lower Memory bytes ("Page 0x11" over Lower
+    0-3), and the clear-on-read warning judged a crossing read by its first
+    byte only."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _read(self, **kw):
+        return self.client.post('/api/register/read', data=json.dumps(kw),
+                                content_type='application/json')
+
+    def _watch(self, b):
+        seen = []
+        orig = b.read_bytes
+
+        def read_bytes(register, length):
+            seen.append((register, length))
+            return orig(register, length)
+        b.read_bytes = read_bytes
+        return seen
+
+    # ---- the mock rolls over as B.1.2 says -------------------------------------------------
+    def test_the_mock_rolls_lower_memory_over(self):
+        b = self._connect()
+        lower = b._registers[None]
+        want = bytes([lower.get(a, 0) for a in (0x7E, 0x7F, 0x00, 0x01)])
+        self.assertEqual(b.read_bytes(0x7E, 4), want)
+
+    def test_the_mock_rolls_upper_memory_over(self):
+        b = self._connect()
+        app_module._set_page(0x00)
+        p00 = b._registers[0x00]
+        want = bytes([p00.get(a, 0) for a in (0xFE, 0xFF, 0x80, 0x81)])
+        self.assertEqual(b.read_bytes(0xFE, 4), want)
+
+    def test_a_mock_write_rolls_over_too(self):
+        b = self._connect()
+        app_module._set_page(0x00)
+        before = b._registers[0x00].get(0x80)
+        b.poke_bytes(0x7F, bytes([0x00, 0xAB]))
+        app_module._invalidate_page()
+        self.assertEqual(b._registers[None][0x00], 0xAB)
+        self.assertEqual(b._registers[0x00].get(0x80), before)
+
+    def test_clear_on_read_follows_the_roll(self):
+        b = self._connect()
+        b.poke_bytes(0x08, bytes([0xFF]))
+        app_module._invalidate_page()
+        b._max_read = 0x80                       # one READ, as a full-page module
+        b.read_bytes(0x7C, 0x0D)                 # 7Ch-7Fh, then 00h-08h
+        self.assertEqual(b._registers[None][0x08], 0x00,
+                         'the rolled-over read did not clear Lower 8')
+
+    # ---- the API reads a crossing range as two ---------------------------------------------
+    def test_a_crossing_read_is_the_bytes_it_names(self):
+        b = self._connect()
+        self.assertOk(self._read(page=0x11, address=0x80, length=1))   # 11h left selected
+        d = self.assertOk(self._read(page=0x01, address=0x7C, length=8))['data']
+        lower, p01 = b._registers[None], b._registers[0x01]
+        self.assertEqual(d['data'],
+                         [lower.get(a, 0) for a in range(0x7C, 0x80)]
+                         + [p01.get(a, 0) for a in range(0x80, 0x84)])
+        self.assertEqual(d['data'][3], 0x01, 'PageSelect in the dump is not '
+                                             'the page shown under it')
+        self.assertIs(d['lower'], True)
+        self.assertIs(d['upper'], True)
+        self.assertIs(d['banked'], False)
+
+    def test_no_read_crosses(self):
+        b = self._connect()
+        seen = self._watch(b)
+        self.assertOk(self._read(page=0x00, address=0x7C, length=8))
+        self.assertEqual(seen, [(0x7C, 4), (0x80, 4)])
+        del seen[:]
+        self.assertOk(self._read(page=0x00, address=0x70, length=0x20))
+        self.assertEqual(sum(n for _, n in seen), 0x20)
+        self.assertTrue(all(a >= 0x80 or a + n <= 0x80 for a, n in seen), seen)
+
+    def test_which_memory(self):
+        self._connect()
+        for address, length, lower, upper in ((0x10, 4, True, False),
+                                              (0x7F, 1, True, False),
+                                              (0x7F, 2, True, True),
+                                              (0x80, 4, False, True)):
+            d = self.assertOk(self._read(page=0x00, address=address,
+                                         length=length))['data']
+            self.assertEqual((d['lower'], d['upper'], len(d['data'])),
+                             (lower, upper, length), hex(address))
+
+    def test_a_bank_reaches_the_page_part(self):
+        b = self._connect('mock_1600g_16lane')
+        self.assertGreater(_state['caps']['banks_supported'], 1)
+        d = self.assertOk(self._read(page=0x11, address=0x78, length=16,
+                                     bank=1))['data']
+        self.assertIs(d['banked'], True)
+        page = b._registers.get((0x11, 1), b._registers[0x11])
+        self.assertEqual(d['data'][8:], [page.get(a, 0) for a in range(0x80, 0x88)])
+        # all of it Lower Memory: the bank names nothing
+        self.assertErr(self._read(page=0x11, address=0x70, length=16, bank=1), 400)
+
+    def test_the_flags_past_7fh_are_warned_of(self):
+        self._connect()
+        d = self.assertOk(self._read(page=0x11, address=0x7C, length=16))['data']
+        cleared = [(g['page'], g['first'], g['last']) for g in d['clears_on_read']]
+        self.assertIn((0x11, 0x86, 0x8B), cleared)
+
+    # ---- the helpers --------------------------------------------------------------------
+    def test_the_blocks_keep_to_their_halves(self):
+        """What lets the overlaps take Lower Memory's blocks and the page's
+        together and leave the rest to the range test."""
+        import cmis_registers as c
+        blocks = ([b[:3] for b in c.CLEAR_ON_READ_BLOCKS]
+                  + [b[:3] for b in c.WRITE_ONLY_BLOCKS])
+        self.assertEqual(len(blocks), 12)
+        for page, first, last in blocks:
+            if page is None:
+                self.assertLessEqual(last, 0x7F, (page, first, last))
+            else:
+                self.assertGreaterEqual(first, 0x80, (page, first, last))
+
+    def test_the_overlaps_look_at_both_halves(self):
+        import cmis_registers as c
+        cor = c.clear_on_read_overlap(0x11, 0x06, 0x7C)          # 06h-81h
+        self.assertEqual([(g['page'], g['first'], g['last']) for g in cor],
+                         [(None, 0x08, 0x0D)])
+        cor = c.clear_on_read_overlap(0x11, 0x7C, 16)
+        self.assertEqual([(g['page'], g['first'], g['last']) for g in cor],
+                         [(0x11, 0x86, 0x8B)])
+        wo = c.write_only_overlap(0x10, 0x78, 0x18)              # 78h-8Fh
+        self.assertEqual([(g['page'], g['first'], g['last']) for g in wo],
+                         [(None, 0x78, 0x79), (None, 0x7A, 0x7D), (0x10, 0x8F, 0x8F)])
+
+    # ---- writes -----------------------------------------------------------------------
+    def _write(self, **kw):
+        return self.client.post('/api/register/write', data=json.dumps(kw),
+                                content_type='application/json')
+
+    def test_a_write_from_7fh_on_is_refused(self):
+        b = self._connect()
+        before = dict(b._registers[None])
+        body = self.assertErr(self._write(page=0x00, address=0x7F,
+                                          data=[0x00, 0x12]), 400)
+        self.assertIn('B.1.2', body['message'])
+        self.assertEqual(b._registers[None], before)
+
+    def test_a_write_ending_on_7fh_is_not(self):
+        self._connect()
+        self.assertOk(self._write(page=0x00, address=0x7E, data=[0x00, 0x00]))
+
+    # ---- the page ----------------------------------------------------------------------
+    def _node(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const AppState={caps:{clear_on_read_blocks:['
+                  '{page:null,first:8,last:11,holds:"L"},'
+                  '{page:null,first:127,last:127,holds:"E"},'
+                  '{page:17,first:128,last:128,holds:"B"},'
+                  '{page:17,first:134,last:153,holds:"F"}]}};'
+                  r'eval(s.match(/function _rawWhere\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function _clearOnReadOverlap\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function _corWhere\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_header_says_lower_memory(self):
+        self.assertEqual(self._node('_rawWhere(17, 0, false, true, false)'),
+                         'Lower Memory')
+        self.assertEqual(self._node('_rawWhere(17, 0, false, true, true)'),
+                         'Lower Memory, then Page 0x11 from 0x80')
+        self.assertEqual(self._node('_rawWhere(17, 1, true, false, true)'),
+                         'Page 0x11 Bank 1 · lanes 9-16')
+
+    def test_both_callers_say_which_memory(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        self.assertEqual(len(re.findall(r'_rawWhere\(', js)), 3)
+        self.assertRegex(js, r'_rawWhere\(res\.data\.page, res\.data\.bank, '
+                             r'res\.data\.banked,\s+res\.data\.lower, res\.data\.upper\)')
+        self.assertRegex(js, r'_rawWhere\(page, bank, back\.data\.banked,\s+'
+                             r'back\.data\.lower, back\.data\.upper\)')
+
+    def test_the_warning_looks_past_7fh(self):
+        def at(expr):
+            return [(g['page'], g['first'], g['last'])
+                    for g in self._node('_clearOnReadOverlap(%s)' % expr)]
+        self.assertEqual(at('17, 0x7C, 16'),
+                         [(None, 0x7F, 0x7F), (17, 0x80, 0x80), (17, 0x86, 0x8B)])
+        self.assertEqual(at('17, 6, 4'), [(None, 8, 9)])
+        self.assertEqual(at('17, 0x70, 15'), [])
+        self.assertEqual(at('17, 0x7F, 1'), [(None, 0x7F, 0x7F)])
+        self.assertEqual(at('17, 0x7F, 2'), [(None, 0x7F, 0x7F), (17, 0x80, 0x80)])
+        self.assertEqual(at('17, 0x80, 1'), [(17, 0x80, 0x80)])
+
+    @staticmethod
+    def _js(blocks):
+        return json.dumps([{k: b[k] for k in ('page', 'first', 'last')}
+                           for b in blocks]).replace('"', "'")
+
+    def test_the_dump_lines_name_the_bytes(self):
+        """The lines under the dump take the server's clears_on_read and
+        write_only, which say first/last; they were read as from/to and
+        every one printed "Lower undefined"."""
+        self._connect()
+        d = self.assertOk(self._read(page=0x10, address=0x78, length=24))['data']
+        blocks = d['write_only']
+        self.assertEqual(len(blocks), 3)
+        lines = self._node('%s.map(b => _corWhere(b, 16))' % self._js(blocks))
+        self.assertEqual(lines, ['Lower 120-121', 'Lower 122-125', '10h:143'])
+        d = self.assertOk(self._read(page=0x11, address=0x84, length=4))['data']
+        self.assertEqual(self._node('%s.map(b => _corWhere(b, 17))'
+                                    % self._js(d['clears_on_read'])),
+                         ['11h:134-135'])
+        # and the warning before the read, from the page's own copy
+        self.assertEqual(self._node('_clearOnReadOverlap(17, 0x84, 4)'
+                                    '.map(b => _corWhere(b, 17))'),
+                         ['11h:134-135'])
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s11 = man[man.index('id="s11"'):man.index('id="s12"')]
+        self.assertIn('分成两次读', s11)
+        self.assertIn('<code>Lower Memory, then Page 0x11 from 0x80</code>', s11)
+        self.assertIn('规范 B.1.2', s11)
+        self.assertNotIn('中途会改掉页选择', s11)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -3907,10 +3907,15 @@ function _rawBankNote() {
   }
 }
 
-function _rawWhere(page, bank, banked) {
+function _rawWhere(page, bank, banked, lower, upper) {
   const hex = `0x${page.toString(16).toUpperCase().padStart(2, '0')}`;
-  if (!banked) return `Page ${hex}`;
-  return `Page ${hex} Bank ${bank} · lanes ${bank * 8 + 1}-${bank * 8 + 8}`;
+  const paged = !banked ? `Page ${hex}`
+    : `Page ${hex} Bank ${bank} · lanes ${bank * 8 + 1}-${bank * 8 + 8}`;
+  // Below 0x80 is Lower Memory whatever page is named, and it was labelled
+  // with the page field - a dump of Lower 0-3 read "Page 0x11".
+  if (lower && upper) return `Lower Memory, then ${paged} from 0x80`;
+  if (lower) return 'Lower Memory';
+  return paged;
 }
 
 // Table 8-3: "All bits in a RO/COR Byte are cleared by the module after the
@@ -3922,19 +3927,24 @@ function _rawWhere(page, bank, banked) {
 function _clearOnReadOverlap(page, address, length) {
   const blocks = (AppState.caps || {}).clear_on_read_blocks || [];
   const last = address + Math.max(length, 1) - 1;
-  const onPage = address < 0x80 ? null : page;
+  // Lower Memory's blocks lie below 0x80 and the page's from 0x80, so the
+  // range test finds both halves of a read past 0x7F. Choosing one of the
+  // two by the first address missed the Flags in the other.
   return blocks
-    .filter(b => b.page === onPage
+    .filter(b => (b.page === null || b.page === page)
                  && Math.max(address, b.first) <= Math.min(last, b.last))
     .map(b => ({ holds: b.holds, page: b.page,
-                 from: Math.max(address, b.first),
-                 to: Math.min(last, b.last) }));
+                 first: Math.max(address, b.first),
+                 last: Math.min(last, b.last) }));
 }
 
+// Takes the blocks above and the server's clears_on_read / write_only alike,
+// which is why they share first/last: the dump lines after a read printed
+// "Lower undefined" when this read from/to.
 function _corWhere(b, page) {
   const where = b.page === null
     ? 'Lower ' : `${page.toString(16).toUpperCase().padStart(2, '0')}h:`;
-  return where + (b.from === b.to ? b.from : `${b.from}-${b.to}`);
+  return where + (b.first === b.last ? b.first : `${b.first}-${b.last}`);
 }
 
 async function rawRead() {
@@ -3972,7 +3982,8 @@ async function rawRead() {
   // never as what was written - a password does not read back.
   const writeOnly = res.data.write_only || [];
   dumpEl.textContent =
-    _rawWhere(res.data.page, res.data.bank, res.data.banked) + '\n'
+    _rawWhere(res.data.page, res.data.bank, res.data.banked,
+              res.data.lower, res.data.upper) + '\n'
     + (cleared.length
        ? cleared.map(b => 'cleared by this read: '
                           + _corWhere(b, res.data.page) + ' — ' + b.holds)
@@ -4013,7 +4024,8 @@ async function rawWrite() {
       const same = got.length === data.length && got.every((b, i) => b === data[i]);
       dumpEl.textContent =
         `Wrote ${data.length} byte(s) to `
-        + `${_rawWhere(page, bank, back.data.banked)} `
+        + `${_rawWhere(page, bank, back.data.banked,
+                       back.data.lower, back.data.upper)} `
         + `addr 0x${address.toString(16).toUpperCase().padStart(2,'0')}\n`
         // A WRITE carries at most 8 bytes (5.2.2.2), so a longer one went as
         // several - and a register array written in pieces was not written

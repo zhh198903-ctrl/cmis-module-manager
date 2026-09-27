@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.180.0<br>
+      <b>版本</b>　2.181.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.180.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.180.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.181.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.181.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,17 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Raw Registers:跨过 0x7F 的读取读的是它标出的字节</h3>
+  <p>规范 B.1.2:字节地址在当前 128 字节内回绕——Lower Memory 从 127 回到 0,上页从 255 回到 128。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前从 <code>0x7C</code> 读 8 个字节是一次读完的,在真实模块上 <code>0x80–0x83</code> 位置显示的其实是 <code>Lower 0x00–0x03</code>(演示模块会接着读进上页,把这个问题藏住了)。
+    从 <code>0x7F</code> 开始写两个字节也会放行,第二个字节落在 <code>Lower 0x00</code>。
+    另外 Dump 标题对 Lower Memory 的字节也写 Page 字段(读 Lower 0–3 显示「Page 0x11」),读之前的清除提醒只按起始地址判断,漏掉 <code>0x80</code> 之后的标志字节。</span>
+  </div>
+  <p>现在:跨过 <code>0x7F</code> 的读取先选好页,分成 Lower Memory 与所填的页两次读;标题写 <code>Lower Memory</code> 或 <code>Lower Memory, then Page 0x.. from 0x80</code>;清除提醒两半都查;越过 <code>0x7F</code> 的写入一律拒绝。演示模块也按 B.1.2 回绕。</p>
+  <p>顺带修正:读完之后 Dump 上方的 <code>cleared by this read</code> 和 <code>write-only</code> 两类提示行,地址一直显示成 <code>Lower undefined</code>,现在显示真实的字节号(如 <code>Lower 122-125</code>、<code>10h:143</code>)。</p>
 
   <h3>模块没声明的异常固件指示,不再算作「没有故障」</h3>
   <p>Lower 8 bit 3 的 AbnormalFwIndicationFlag 在规范里是「Adv.」(Table 8-9),唯一的声明位是 <code>0Ch:194.4</code> AbnormalIndicationSupported(Table 8-73);而固件加载管理(<code>0Ch:162–163</code>)没声明时,这些细节位按规范「应被忽略」。</p>
@@ -4548,6 +4559,14 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <pre>0x80: A1 B2 C3 D4 E5 F6 01 02  ........
 0x88: 03 04 05 06 07 08 09 0A  ........</pre>
   <p>格式：<code>地址: 十六进制字节&ensp;&ensp;ASCII（不可打印字符显示为 .）</code></p>
+  <p>Dump 上方第一行写明这些字节来自哪里：<code>Lower Memory</code>（地址 &lt; <code>0x80</code>，不分页，与 Page 字段无关）、<code>Page 0x11</code>，或分 Bank 的页上的 <code>Page 0x11 Bank 1 · lanes 9-16</code>。</p>
+  <div class="callout callout-note">
+    <span class="callout-icon">ℹ</span>
+    <span><b>跨过 0x7F 的读取会分成两次读。</b>规范 B.1.2 规定字节地址在自己那块 128 字节里回绕：Lower Memory 读到 127 之后回到 0，<b>不会</b>接着读进上页。
+    一次读完的话，显示在 <code>0x80</code> 之后的其实是 <code>Lower 0x00</code> 起的内容。
+    所以工具先选好 Page（和 Bank），读 Lower Memory 到 <code>0x7F</code>，再从 <code>0x80</code> 读所填的页，标题写成 <code>Lower Memory, then Page 0x11 from 0x80</code>。
+    因为页是先选好的，Dump 里 <code>0x7E / 0x7F</code>（Bank / Page 选择）显示的就是下面那一页。读之前那条 <code>This read clears what it returns</code> 提醒（读到会被读清的标志字节时弹出）两半都会检查。</span>
+  </div>
 
   <h3>11.2 写入寄存器</h3>
   <ol class="steps">
@@ -4557,7 +4576,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </ol>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>地址 ≥ <code>0x80</code> 为上页寄存器，工具自动切页；地址 &lt; <code>0x80</code> 为下页，忽略 Page 字段。</span>
+    <span>地址 ≥ <code>0x80</code> 为上页寄存器，工具自动切页；地址 &lt; <code>0x80</code> 为下页，忽略 Page 字段（读取跨过 <code>0x7F</code> 时，<code>0x80</code> 起的部分按 Page 字段读，见 11.1）。</span>
   </div>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
@@ -4579,7 +4598,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>会被拒绝的只有三种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；从 <code>0x7F</code> 以下一直写过 <code>0x7F</code>（中途会改掉页选择）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
+    <span>会被拒绝的只有三种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
     只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
   </div>
 
@@ -4606,8 +4625,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <ul>
     <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
     <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
-    <li><b>跨过 0x7F 的多字节写</b>：一次写入若从 <code>0x7F</code> 之前开始、越过它继续写，会在传输中途
-        改掉页选择寄存器，剩余字节将落到另一页上。工具直接拒绝并要求你<b>拆成两次写</b></li>
+    <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
+        不会进入上页，而是落在 <code>Lower 0x00</code> 起；途中写到的 <code>0x7F</code> 还会改掉页选择。从 <code>0x7F</code> 开始写两个字节也一样。
+        工具直接拒绝，提示 <code>would run past 0x7F</code>，要求你<b>拆成两次写</b></li>
   </ul>
   <div class="callout callout-danger">
     <span class="callout-icon">✕</span>
@@ -4861,7 +4881,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.180.0<br>
+    CMIS Module Manager 操作手册 v2.181.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -760,6 +760,18 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 
 **这三种会直接报 400，不会默默给 Bank 0**：bank 超出模块的 Bank 数；
 在不分 Bank 的页上给了非 0 的 bank；在下半区（`0x00–0x7F`）给了 bank。
+从下半区开始、读过 `0x7F` 的读取例外：`bank` 管的是 `0x80` 之后那部分。
+
+## 跨过 0x7F 的读写
+
+规范 B.1.2：字节地址在当前 128 字节内回绕，Lower Memory 从 127 回到 0，上页从 255 回到 128。
+一次 READ 读过 `0x7F` 拿到的是 `Lower 0x00` 起的字节，**不是**上页。
+
+- `POST /api/register/read` 跨过 `0x7F` 时先选好 `page`/`bank`，再分两次读：Lower 到 `0x7F`，
+  然后所填的页从 `0x80` 起。返回的 `lower` / `upper` 说明这次读覆盖了哪几块内存；
+  `clears_on_read` / `write_only` 两块都查。因为页是先选好的，数据里 `0x7E/0x7F` 就是下面那页的 Bank/Page。
+- `POST /api/register/write` 越过 `0x7F`（包括从 `0x7F` 起写 2 个字节）一律 400（`would run past 0x7F`），拆成两次写。
+- 自己拿别的工具直接读 I2C 时同样要在 `0x7F` 处拆开。
 
 ## 接真适配器
 

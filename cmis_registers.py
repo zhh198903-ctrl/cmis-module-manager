@@ -420,13 +420,23 @@ WRITE_ONLY_BLOCKS = (
 SINGLE_BYTE_WRITE = ((0x10, 143, 'ApplyDPInit'), (0x10, 144, 'ApplyImmediate'))
 
 
+def _on_this_read(blk_page, page):
+    """Lower Memory's blocks lie below 0x80 and a page's from 0x80, so
+    taking both and testing the range finds each half of a Raw Registers
+    read past 0x7F - which reads on into the page named (as a second READ:
+    B.1.2 rolls one over to Lower 0x00). Choosing one of the two by the
+    first address judged a read of 7Ch-83h as Lower Memory end to end, and
+    never looked at the four page bytes it takes."""
+    return blk_page is None or blk_page == page
+
+
 def write_only_overlap(page, address, length):
     """The write-only blocks a read of this range reaches, as
     clear_on_read_overlap reports the latched ones."""
     last = address + max(length, 1) - 1
     out = []
     for blk_page, first, blk_last, access, what in WRITE_ONLY_BLOCKS:
-        if blk_page != (None if address < 0x80 else page):
+        if not _on_this_read(blk_page, page):
             continue
         lo, hi = max(address, first), min(last, blk_last)
         if lo > hi:
@@ -447,7 +457,7 @@ def clear_on_read_overlap(page, address, length):
     last = address + max(length, 1) - 1
     out = []
     for blk_page, first, blk_last, what in CLEAR_ON_READ_BLOCKS:
-        if blk_page != (None if address < 0x80 else page):
+        if not _on_this_read(blk_page, page):
             continue
         lo, hi = max(address, first), min(last, blk_last)
         if lo > hi:

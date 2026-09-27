@@ -4111,11 +4111,23 @@ class MockBackend(I2CInterface):
             # page as-is: an 8-lane module has only bank 0 and never notices.
             page_dict = self._registers.get(
                 (page, bank), self._registers.get(page, {}))
-        result = bytearray(length)
-        for i in range(length):
-            result[i] = page_dict.get(register + i, 0x00)
-        self._clear_on_read(page_dict, register, length)
-        return bytes(result)
+        addrs = self._rolled(register, length)
+        result = bytes(page_dict.get(a, 0x00) for a in addrs)
+        self._clear_on_read(page_dict, register, addrs)
+        return result
+
+    @staticmethod
+    def _rolled(register: int, length: int) -> list:
+        """The byte addresses a READ or WRITE of `length` at `register` touches.
+
+        B.1.2: the current byte address "rolls over (wraps around) after
+        incrementing past the end of the current 128-byte memory area" - 127
+        back to 0 in Lower Memory, 255 back to 128 in Upper Memory. A mock
+        that read on from Lower 127 into the page let a host dump a READ
+        across 0x7F under 0x80 onwards and never see it was Lower 0x00.
+        """
+        base = register & 0x80
+        return [base + (register - base + i) % 0x80 for i in range(length)]
 
     # Flag bytes: 11h:135-152 per lane, and Lower 8-9 module-wide. CMIS 5.4
     # calls these latched with clear-on-read access - "a Flag bit remains set
@@ -4145,12 +4157,12 @@ class MockBackend(I2CInterface):
         0x12: range(0xE6, 0xEF),
     }
 
-    def _clear_on_read(self, page_dict, register: int, length: int) -> None:
+    def _clear_on_read(self, page_dict, register: int, addrs: list) -> None:
         page = None if register < 0x80 else self._current_page
         span = self._COR_BYTES.get(page)
         if span is None:
             return
-        for addr in range(register, register + length):
+        for addr in addrs:
             if addr in span:
                 page_dict[addr] = 0x00
 
@@ -4228,10 +4240,9 @@ class MockBackend(I2CInterface):
         data = self._intercept_write(register, data)
         if register < 0x80:
             page_dict = self._registers.setdefault(None, {})
-            for i, b in enumerate(data):
-                if self._host_writable(None, register + i):
-                    page_dict[register + i] = (
-                        0 if self._write_only(None, register + i) else b)
+            for addr, b in zip(self._rolled(register, len(data)), data):
+                if self._host_writable(None, addr):
+                    page_dict[addr] = 0 if self._write_only(None, addr) else b
             was = (self._current_page, self._current_bank)
             if register <= 0x7E <= register + len(data) - 1:
                 self._current_bank = data[0x7E - register]
