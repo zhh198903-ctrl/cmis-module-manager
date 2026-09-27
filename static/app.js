@@ -4343,6 +4343,20 @@ async function loadThresholds() {
     ['Tx Bias (mA)',     '02h / 0xB8–0xBF', d.tx_bias_high_alarm_ma,   d.tx_bias_low_alarm_ma,   d.tx_bias_high_warn_ma,   d.tx_bias_low_warn_ma],
     ['Rx Power (dBm)',   '02h / 0xC0–0xC7', ...['high_alarm', 'low_alarm', 'high_warn', 'low_warn'].map(k => pwrThr(d, 'rx_power_' + k))],
   ];
+  // Tables 8-64/8-65 make each of these "Cnd.": required of a module that
+  // has the monitor. One it does not have (01h:159-160) leaves four numbers
+  // that are no threshold of anything, and they were printed as limits.
+  const present = d.monitors_present || {};
+  const MONITOR_OF = [['temperature', '01h:159.0'], ['vcc', '01h:159.1'],
+                      ['tx_power', '01h:160.1'], ['tx_bias', '01h:160.0'],
+                      ['rx_power', '01h:160.2']];
+  MONITOR_OF.forEach(([key, bit], i) => {
+    if (present[key] !== false) return;
+    const none = `<span class="flag-none" title="${esc('This module does not '
+      + 'implement the monitor (' + bit + '), and Table 8-64/8-65 require '
+      + 'these thresholds only of one that does (Cnd.)')}">no monitor</span>`;
+    rows[i] = [rows[i][0], rows[i][1], none, none, none, none];
+  });
 
   // 02h:144-175 (Table 8-64). The Aux readings were on screen in Module Info
   // with nothing to judge them by, while the module gives four levels for

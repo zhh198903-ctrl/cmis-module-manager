@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.178.0'
+__version__ = '2.179.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3990,6 +3990,16 @@ def api_module_thresholds():
             'tx_bias_high_warn_ma':    _round_or_none(txbias_hw),
             'tx_bias_low_warn_ma':     _round_or_none(txbias_lw),
             'tx_bias_scale_unknown':   bias_scale_unknown,
+            # Tables 8-64/8-65 type every one of these "Cnd." - required of
+            # a module that has the monitor. For one it does not have
+            # (01h:159-160) the bytes are no threshold of anything.
+            'monitors_present': {
+                'temperature': _monitor_present('temperature'),
+                'vcc':         _monitor_present('vcc'),
+                'tx_power':    _monitor_present('tx_optical_power'),
+                'tx_bias':     _monitor_present('tx_bias'),
+                'rx_power':    _monitor_present('rx_optical_power'),
+            },
             'rx_power_high_alarm_dbm': _round_or_none(cmis.uw_to_dbm(rxpwr_ha_uw), 2),
             'rx_power_low_alarm_dbm':  _round_or_none(cmis.uw_to_dbm(rxpwr_la_uw), 2),
             'rx_power_high_warn_dbm':  _round_or_none(cmis.uw_to_dbm(rxpwr_hw_uw), 2),

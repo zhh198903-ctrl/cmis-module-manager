@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.178.0<br>
+      <b>版本</b>　2.179.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.178.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.178.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.179.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.179.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>没有的监控,不再显示它的阈值</h3>
+  <p>Page 02h 的温度、Vcc、Tx 光功率、Tx 偏置、Rx 光功率阈值,规范都标为 <b>Cnd.</b>(Table 8-64 / 8-65)——只要求实现了该监控的模块提供。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>Monitoring 表已经会把模块没有的监控显示成 not implemented,但下方的 Module Thresholds 卡片仍把这几项的阈值照常显示成数字,看起来像模块给出的告警门限。演示模块 mock_fewmon(没有 Vcc、Tx 光功率、Tx 偏置监控)就是这样。Aux 监控的阈值行以前就只在模块有该监控时才出现。</span>
+  </div>
+  <p>现在:模块没有的监控(<code>01h:159–160</code>),阈值卡片那一行显示 <b>no monitor</b>,悬停说明原因;阈值接口多了 <code>monitors_present</code>。</p>
 
   <h3>媒体侧起始位图与模块自己的媒体 lane 对不上时,会标出来</h3>
   <p>规范 Table 8-60:MediaLaneAssignmentOptions 的每一位是一个数据通道可以起始的媒体 lane,每个实例占用连续的媒体 lane,并且「所有实例必须能同时支持」。所以起点不能落在 <code>00h:210</code> 声明不存在的媒体 lane 上,也不能超出 lane 8 或与别的起点重叠。</p>
@@ -4004,6 +4012,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       </tbody>
     </table>
   </div>
+  <p>这几组阈值在规范里都是 <b>Cnd.</b>(Table 8-64 / 8-65):只要求<b>实现了对应监控</b>的模块提供。模块在 <code>01h:159–160</code> 声明没有某个监控时,这一行显示 <b>no monitor</b>,不再把那几个字节当成阈值显示。</p>
 
   <h3>8.4 通道标志位（Lane Flags）</h3>
   <div class="table-wrap">
@@ -4844,7 +4853,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.178.0<br>
+    CMIS Module Manager 操作手册 v2.179.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

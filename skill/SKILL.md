@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 没有的监控,阈值不算数
+
+`GET /api/module/thresholds` 带 `monitors_present`(temperature / vcc / tx_power / tx_bias / rx_power,来自 `01h:159-160`)。Page 02h 的阈值在规范里都是 Cnd.(Table 8-64 / 8-65),为 `false` 的那一组数字不是阈值,页面显示 no monitor。
+
 ## 媒体侧起始位图自相矛盾时
 
 `/api/module/applications` 每个应用带 `media_lane_assign_problems`:按 Table 8-60(每个起点一组连续媒体 lane、所有实例同时可用),列出超出 lane 8(`past_lane_8`)、落在 `00h:210` 声明不存在的媒体 lane 上(`absent`)、或与前一个起点重叠(`overlap`)的起点。超过 8 通道的模块 `00h:210` 不作数,只查超界和重叠。非空说明模块的声明本身有矛盾,不是工具读错。

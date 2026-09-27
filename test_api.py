@@ -36801,6 +36801,88 @@ class TestAMediaStartMustBeSupportable(CMISTestCase):
         self.assertIn('Table 8-60', s92)
 
 
+class TestAThresholdNeedsItsMonitor(CMISTestCase):
+    """Tables 8-64 and 8-65 type every Page 02h threshold "Cnd." - required
+    of a module that has the monitor. Monitoring already said "not
+    implemented" for a monitor 01h:159-160 leaves out, and the Module
+    Thresholds card under it printed that monitor's four bytes as limits
+    anyway (the Aux rows have long appeared only for monitors that exist).
+    The reply now says which monitors exist and the card says "no monitor"
+    for the rest."""
+
+    def _thresholds(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(self.client.get('/api/module/thresholds'))['data']
+
+    def test_the_reply_says_which_monitors_exist(self):
+        self.assertEqual(self._thresholds('mock_fewmon')['monitors_present'],
+                         {'temperature': True, 'vcc': False, 'tx_power': False,
+                          'tx_bias': False, 'rx_power': True})
+        self.assertEqual(set(self._thresholds('mock_dr8')['monitors_present']
+                             .values()), {True})
+
+    def _card(self, present):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        d = self._thresholds('mock_dr8')
+        d['monitors_present'] = present
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const AppState={connected:true};let _moduleThresholds=null;'
+                  'const tb={innerHTML:""};'
+                  'const document={getElementById:()=>tb};'
+                  'const toast=()=>{};'
+                  'const apiGet=async()=>({status:"ok",data:' + json.dumps(d) + '});'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function pwrThr\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/async function loadThresholds\([\s\S]*?\r?\n}\r?\n/)[0]);'
+                  'loadThresholds().then(()=>process.stdout.write(JSON.stringify(tb.innerHTML)));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        rows = json.loads(out.stdout).split('</tr>')
+        return {r.split('</td>')[0].split('>')[-1]: r for r in rows if '<td' in r}
+
+    def test_the_card_blanks_a_row_without_a_monitor(self):
+        rows = self._card({'temperature': True, 'vcc': False, 'tx_power': True,
+                           'tx_bias': False, 'rx_power': True})
+        self.assertEqual(rows['Vcc (V)'].count('no monitor'), 4)
+        self.assertIn('01h:159.1', rows['Vcc (V)'])
+        self.assertEqual(rows['Tx Bias (mA)'].count('no monitor'), 4)
+        self.assertIn('01h:160.0', rows['Tx Bias (mA)'])
+        self.assertNotIn('no monitor', rows['Temperature (°C)'])
+        self.assertNotIn('no monitor', rows['Tx Power (dBm)'])
+        self.assertNotIn('no monitor', rows['Rx Power (dBm)'])
+
+    def test_each_row_names_its_own_bit(self):
+        rows = self._card({'temperature': False, 'vcc': True, 'tx_power': False,
+                           'tx_bias': True, 'rx_power': False})
+        self.assertIn('01h:159.0', rows['Temperature (°C)'])
+        self.assertIn('01h:160.1', rows['Tx Power (dBm)'])
+        self.assertIn('01h:160.2', rows['Rx Power (dBm)'])
+        self.assertNotIn('no monitor', rows['Vcc (V)'])
+
+    def test_an_older_reply_shows_everything(self):
+        rows = self._card(None)
+        self.assertFalse(any('no monitor' in r for r in rows.values()))
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        self.assertIn('阈值卡片那一行显示 <b>no monitor</b>', man)
+        self.assertIn('这一行显示 <b>no monitor</b>,不再把那几个字节当成阈值显示', man)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
