@@ -1502,7 +1502,7 @@ class MockBackend(I2CInterface):
         for a in range(0xA2, 0xAA): p10[a] = 0x00       # 162-169 eq targets
         for a in range(0xAA, 0xAE):                     # 170-173 amplitude
             p10[a] = p.get('scs_rx_amplitude', 0x22)    # code 2 on every lane
-        # 213-232 Masks for the Flags at 11h:134-153 (Table 8-83). Zero is
+        # 10h:213-232 (Table 8-91), the Masks for the Flags at 11h:134-153. Zero is
         # "not masked", which is the default and what every profile without
         # an explicit setting gets. A profile that names one is modelling a
         # module found with an alarm already turned off by a previous host -

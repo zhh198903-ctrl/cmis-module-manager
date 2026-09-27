@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.187.0'
+__version__ = '2.188.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3818,7 +3818,7 @@ def api_module_flags():
         blocks = [raw for _bank, raw in
                   _read_banks(cmis.REG_DP_STATE_CHANGED[0], first, 20)]
         # The Masks for the same twenty bytes, 10h:213-232, banked the same
-        # way (Table 8-83). Same burst shape, and the byte at mask_first + k
+        # way (Table 8-91). Same burst shape, and the byte at mask_first + k
         # masks the Flag at first + k.
         _fp, _ff, mask_page, mask_first, _n = cmis.FLAG_MASK_BLOCKS[1]
         mask_blocks = [raw for _bank, raw in
@@ -3842,7 +3842,7 @@ def api_module_flags():
         tx_fault  = flags(0x87)
         tx_los    = flags(0x88)
         tx_cdrlol = flags(0x89)
-        # 11h:138 (Table 8-96), advertised in 01h:157.3. It sits inside the
+        # 11h:138 (Table 8-97), advertised in 01h:157.3. It sits inside the
         # burst above, so the read that fetched the other nineteen bytes
         # cleared this one too - dropping it did not leave it for the next
         # reader, it destroyed it. The advertisement was already being
@@ -3988,7 +3988,7 @@ def api_module_flags():
         if _state['flag_history_since'] is None:
             _state['flag_history_since'] = time.time()
         return _ok({'lanes': lanes,
-                    # 10h:213-232 (Table 8-83). A Flag whose Mask is set is
+                    # 10h:213-232 (Table 8-91). A Flag whose Mask is set is
                     # one the module will not assert the Interrupt line for -
                     # the panel showed the Flag and could not say the alarm
                     # behind it had been turned off.

@@ -38089,6 +38089,55 @@ class TestACmis4ModuleShowsNoSummaryOrOutputStatus(CMISTestCase):
         self.assertNotIn('Flag 汇总和输出状态仍按 5.x 读', man)
 
 
+class TestACitedTableHoldsTheAddressBesideIt(unittest.TestCase):
+    """The registry test proves a cited table exists; it cannot tell that
+    Table 8-83 (Staged Control Set 0, Tx Controls) is the wrong table for
+    the Masks at 10h:213-232, which are Table 8-91 - cited that way in five
+    places, the manual's Masks table among them - or that 11h:138 is a Tx
+    Flag (Table 8-97), not a state-changed one (8-96). Ranges below are
+    read off the tables in OIF-CMIS-05.4, for the tables this tool cites
+    most often next to an address."""
+
+    RANGES = {
+        '8-48': ('01', 143, 144), '8-51': ('01', 155, 156),
+        '8-56': ('01', 167, 169),
+        '8-80': ('10', 143, 144), '8-83': ('10', 153, 160),
+        '8-85': ('10', 176, 177), '8-86': ('10', 178, 179),
+        '8-90': ('10', 211, 212), '8-91': ('10', 213, 255),
+        '8-96': ('11', 134, 134), '8-97': ('11', 135, 146),
+        '8-98': ('11', 147, 153),
+    }
+    FILES = ('app.py', 'cmis_registers.py', os.path.join('static', 'app.js'),
+             os.path.join('templates', 'index.html'),
+             os.path.join('i2c_backends', 'mock.py'),
+             os.path.join('CMIS2Customer', 'CMIS模块管理工具操作手册.html'),
+             os.path.join('skill', 'SKILL.md'))
+
+    def test_every_address_is_in_the_table_it_cites(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        # The address nearest the citation: no other address in between.
+        pat = re.compile(r'\b([0-9A-F]{2})h:(\d{1,3})(?:[-\u2013](\d{1,3}))?'
+                         r'(?:(?![0-9A-F]{2}h:\d)[^\n(]){0,30}\(Table (8-\d+)\)')
+        checked, wrong = 0, []
+        for rel in self.FILES:
+            with open(os.path.join(here, rel), encoding='utf-8') as f:
+                for n, line in enumerate(f, 1):
+                    for m in pat.finditer(line):
+                        rng = self.RANGES.get(m.group(4))
+                        if not rng:
+                            continue
+                        checked += 1
+                        page, first = m.group(1), int(m.group(2))
+                        last = int(m.group(3) or first)
+                        if page != rng[0] or not (rng[1] <= first
+                                                  and last <= rng[2]):
+                            wrong.append('%s:%d %sh:%d-%d cites Table %s'
+                                         % (rel, n, page, first, last,
+                                            m.group(4)))
+        self.assertGreater(checked, 10)
+        self.assertEqual(wrong, [])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.187.0<br>
+      <b>版本</b>　2.188.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.187.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.187.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.188.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.188.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>手册勘误:通道 Flag 的 Mask 在 Table 8-91</h3>
+  <p>「标志与屏蔽的对应」表里,通道级 Flag(<code>11h:134-153</code>)的 Mask <code>10h:213-232</code> 此前标注为 Table 8-83;Table 8-83 是 Staged Control Set 0 的 Tx 控制,Mask 所在的是 <b>Table 8-91</b>(Lane-Specific Masks)。已更正。工具的行为没有变化。</p>
 
   <h3>CMIS 4.x 模块:Flag 汇总和输出状态不再按 5.x 规则显示</h3>
   <p>CMIS Rev 5.0 修订记录里另有两条和 4.x 模块不兼容:「Flag summaries now indicate bank and page (instead of bank and lane)」(Lower 4–7 的含义变了),以及「Added OutputStatusRx ... and OutputStatusTx」(11h:132–133 是 5.0 才加的)。</p>
@@ -2661,7 +2664,7 @@ Read anyway?</pre>
   <table>
     <tr><th>Flag</th><th>对应的 Mask</th><th>本版处理</th></tr>
     <tr><td>Lower 8-13 模块级</td><td>Lower 31-36(Table 8-12)</td><td>已读,中断那一栏会写明</td></tr>
-    <tr><td>11h:134-153 每通道</td><td>10h:213-232(Table 8-83)</td><td>已读,告警表逐格标注</td></tr>
+    <tr><td>11h:134-153 每通道</td><td>10h:213-232(Table 8-91)</td><td>已读,告警表逐格标注</td></tr>
     <tr><td>14h:132-149 诊断</td><td>13h:206-223</td><td>工具只读了该 Flag 块中的一位、也没有对应面板,暂无可标注处</td></tr>
   </table>
   <div class="callout callout-warn">
@@ -4939,7 +4942,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.187.0<br>
+    CMIS Module Manager 操作手册 v2.188.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

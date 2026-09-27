@@ -4377,7 +4377,7 @@ function renderFlags(lanes, supported, masks) {
 
   tbody.innerHTML = lanes.map((lane, li) => {
     const seen = new Set(lane.seen || []);
-    // 10h:213-232 (Table 8-83). A Flag whose Mask is set is one the module
+    // 10h:213-232 (Table 8-91). A Flag whose Mask is set is one the module
     // will not assert the Interrupt line for, so the condition is still
     // reported here and the alarm behind it is off. Without this the panel
     // could not tell an alarm that is quiet from one that was turned off.
