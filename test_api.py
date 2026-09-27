@@ -37439,9 +37439,40 @@ class TestEveryApplyTriggerIsWriteOnly(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             man = f.read()
         s11 = man[man.index('id="s11"'):man.index('id="s12"')]
-        self.assertIn('会被拒绝的只有五种', s11)
+        self.assertIn('会被拒绝的只是格式和规范上的问题', s11)
         self.assertIn('<li><b>夹带 Apply 触发字节的多字节写</b>', s11)
         self.assertIn('<code>16h:176/177</code>', s11)
+
+    def test_the_manual_lists_every_refusal_the_write_can_give(self):
+        """The chapter counted "five" refusals, and v2.204.0 added three
+        without it noticing. Each message the write endpoint can refuse with
+        is named in the chapter instead of counted."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s11 = man[man.index('id="s11"'):man.index('id="s12"')]
+        self.assertNotIn('五种', s11)
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'app.py')
+        with open(src, encoding='utf-8') as f:
+            code = f.read()
+        start = code.index("@app.route('/api/register/write'")
+        body = code[start:code.index('@app.route', start + 10)]
+        for message, words in (
+                ('A write names its page and address',
+                 'A write names its page and address'),
+                ('Data bytes are 00h-FFh', 'Data bytes are 00h-FFh'),
+                ('Write would cross end of page',
+                 'Write would cross end of page'),
+                ('would run past 0x7F', 'would run past 0x7F'),
+                ('"must be written in a',
+                 'must be written in a single-byte WRITE'),
+                ('Page 9Fh the one that includes byte 129 sends the',
+                 'Page 9Fh 上超过 8 字节、包含字节 129 的写'),
+                ('_check_bank(page, address, bank)', 'Bank 不对')):
+            self.assertIn(message, body, 'the endpoint no longer says this')
+            self.assertIn(words, s11, 'the chapter does not name: ' + words)
 
 
 class TestACableAndAFlatModuleReadTheirOwnWay(CMISTestCase):

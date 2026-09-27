@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.208.0<br>
+      <b>版本</b>　2.209.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.208.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.208.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.209.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.209.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1559,7 +1559,8 @@
     （工具按规范的顺序写：停下的等到 DPDeactivated 再 Apply，放开的先 Apply 再放开），以及在
     <code>DPDeactivated</code> 上用 <b>Apply</b>（规范推荐的正是这个用法）。
     两种免中断流程都不支持的模块（<code>Lower 02h</code> AutoCommissioning = 00b）不做这项拒绝。<br>
-    这类拒绝信息现在会在界面上<b>停留 12 秒</b>——原来的 3 秒不够把通道号读完。</span>
+    这类拒绝信息现在会在界面上<b>停留 12 秒</b>——原来的 3 秒不够把通道号读完。<br>
+    另外还有第三种：上一次配置命令还在进行中（Config Status 为 ConfigInProgress）时收到的 Apply，模块也会忽略（规范 6.2.4.2），工具同样拒绝（409）并列出仍在进行中的通道，见「演示模块:两个端口可以同时重配」。</span>
   </div>
 
   <div class="callout callout-note">
@@ -1784,6 +1785,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>手册:裸寄存器写入的拒绝清单按实际补全</h3>
+  <p>第 11 章说裸寄存器写入「会被拒绝的只有五种」,并列了五条;v2.204.0 又加了几种(缺页号或地址、数据字节超出 00h–FFh、页号/地址/Bank 不是整数),清单没跟上,Page 9Fh 上包含字节 129 的长写和 Bank 不对这两种也只在别处提过。现在这一节不再报数目,完整列出每一种拒绝和对应的提示文字;另在「Apply 只重启你改过的那条数据通道」一节补上第三种被模块忽略、工具也会拒绝的情况:上一次配置命令仍在 ConfigInProgress。只改文档,工具行为不变。</p>
 
   <h3>手册附录「会中断业务的按钮」补全并更正</h3>
   <p>附录里这张表此前只列了 Reset Module、Enter/Exit LowPwr、Write、DataPath Apply 和 Loopback Apply,其中 DataPath Apply 一行仍写着「重启全部 8 条 lane」(上一版已更正正文,这里漏改);还写着「只有 Reset Module 有确认对话框」——媒体通道切换的 Commit 也会先弹确认框。</p>
@@ -4819,7 +4823,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>会被拒绝的只有五种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；把 Apply 触发字节（<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code>）夹在多字节写入里（规范要求这些字节单字节 WRITE）；密码寄存器 <code>Lower 118–125</code> 上不是「整 4 字节、只写一个区」的写入（规范 8.2.14，见下）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
+    <span>会被拒绝的只是格式和规范上的问题，写什么值本身不会被拦（完整列表见下文「在写出去之前就被拒绝」）：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；把 Apply 触发字节（<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code>）夹在多字节写入里（规范要求这些字节单字节 WRITE）；密码寄存器 <code>Lower 118–125</code> 上不是「整 4 字节、只写一个区」的写入（规范 8.2.14，见下）；<code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）；以及格式错误——缺页号或地址、数值不是整数或不在字节范围内、Bank 不对。
     只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
   </div>
 
@@ -4850,9 +4854,10 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       </tbody>
     </table>
   </div>
-  <p>另有五种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
+  <p>以下情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
   <ul>
     <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
+    <li><b>数值不合法</b>：数据字节不在 <code>00h–FFh</code>（例如 <code>1FF</code>），提示 <code>Data bytes are 00h-FFh</code>——以前会截成低 8 位照写；页号、地址、Bank 不是整数，或页号、地址超出 <code>0x00–0xFF</code>。直接调用接口时还必须写明页号和地址（<code>A write names its page and address</code>），界面总会带上</li>
     <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
     <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
         不会进入上页，而是落在 <code>Lower 0x00</code> 起；途中写到的 <code>0x7F</code> 还会改掉页选择。从 <code>0x7F</code> 开始写两个字节也一样。
@@ -4862,6 +4867,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         都提示 <code>size-matched four-byte WRITE</code>。上一次密码还在校验中(<code>Lower 42</code> 显示 in progress)
         时,工具最多等 tWRITE(10 ms),仍未出结果就拒绝这次密码写入(409),因为规范要求主机在结果出来之前不要使用密码寄存器</li>
     <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范（Rev 5.0 起）规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
+    <li><b>Page 9Fh 上超过 8 字节、包含字节 129 的写</b>：写到 9Fh:129 就会发出 CDB 命令（见下「发 CDB 命令」），拆成多次写会让命令在其余字节写完之前发出</li>
+    <li><b>Bank 不对</b>：在 Lower Memory 或不分 Bank 的页上指定了 Bank，或 Bank 超出模块声明的数量（<code>01h:142.1-0</code>；CDB 页按 <code>01h:163.7-6</code> 的实例数）</li>
   </ul>
   <h4>发 CDB 命令</h4>
   <p>写到 <code>9Fh:129</code> 就会发出 CDB 命令(规范 7.2.3)。之后模块可能拒绝一切访问:前台模式直到命令执行完,后台模式在接收命令期间(规范 Table 10-4)。工具这时会按模块声明的时间继续重试,回读因此可能要等一会儿;结果区写明<code>CDB command sent (9Fh:129)</code>、处理模式和最长等待时间。命令结果在 <code>Lower 37</code>(实例 1)/<code>38</code>(实例 2),完成时 Module Info 的 CDB Command Complete 会亮。</p>
@@ -5133,7 +5140,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.208.0<br>
+    CMIS Module Manager 操作手册 v2.209.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
