@@ -40963,22 +40963,37 @@ global.fetch = async (path) => ({ status: 200, json: async () => JSON.parse(
   JSON.stringify(input.replies[String(path).split('?')[0]]
                  || { status: 'error', message: 'no reply for ' + path })) });
 vm.runInThisContext(src);
+global.__toasts = [];
+vm.runInThisContext('toast = (m, type) => { __toasts.push([String(type), '
+                    + 'String(m)]); };');
 vm.runInThisContext('AppState.connected = true; AppState.lanes = '
   + input.lanes + '; AppState.caps = ' + JSON.stringify(input.caps) + ';'
   + '_advertisedApps = ' + JSON.stringify(input.apps) + ';');
 (async () => {
   const errors = [];
-  for (const name of input.loaders) {
-    try { await vm.runInThisContext(name)(); }
-    catch (e) { errors.push(name + ': ' + String(e && e.stack || e)
-                              .split('\n').slice(0, 2).join(' ')); }
+  const why = e => String(e && e.stack || e).split('\n').slice(0, 2).join(' ');
+  process.on('unhandledRejection', e => errors.push('async: ' + why(e)));
+  if (input.tabs) {
+    // As the operator opens them: switchTab decides which loaders a tab
+    // runs - none of the paged ones on a flat module - and does not wait.
+    for (const tab of input.tabs) {
+      try { vm.runInThisContext('switchTab')(tab); }
+      catch (e) { errors.push(tab + ': ' + why(e)); }
+      for (let k = 0; k < 200; k++) await new Promise(r => setImmediate(r));
+    }
+  } else {
+    for (const name of input.loaders) {
+      try { await vm.runInThisContext(name)(); }
+      catch (e) { errors.push(name + ': ' + why(e)); }
+    }
   }
-  process.stdout.write(JSON.stringify({ errors, writes }));
+  process.stdout.write(JSON.stringify({ errors, writes, toasts: __toasts }));
 })().catch(e => { process.stderr.write(String(e && e.stack || e));
                   process.exit(1); });
 '''
+    TABS = ('info', 'monitoring', 'datapath', 'diagnostics')
 
-    def _render(self, backend, setup=None):
+    def _render(self, backend, setup=None, tabs=None):
         import shutil
         import subprocess
         node = shutil.which('node')
@@ -41000,11 +41015,52 @@ vm.runInThisContext('AppState.connected = true; AppState.lanes = '
             [node, '-e', self.HARNESS, src],
             input=json.dumps({'replies': replies, 'caps': caps, 'apps': apps,
                               'lanes': app_module._state['lanes'],
-                              'loaders': list(self.LOADERS)}),
+                              'loaders': list(self.LOADERS),
+                              'tabs': list(tabs) if tabs else None}),
             capture_output=True, text=True, encoding='utf-8')
         if out.returncode:
             raise AssertionError(out.stderr[-800:])
         return json.loads(out.stdout)
+
+    # What a panel must never print: a JavaScript value where text was
+    # meant. Table 8-71's own "undefined, unknown" is a compliance code.
+    LEAKS = ('undefined', 'NaN', '[object Object]')
+
+    def _leaks(self, writes):
+        import re
+        found = []
+        for elid, html in writes.items():
+            text = re.sub(r'<[^>]*>', ' ', html).replace('undefined, unknown', '')
+            attrs = ' '.join(re.findall(r'title="([^"]*)"', html))
+            for word in self.LEAKS:
+                pattern = r'(?<![A-Za-z_])' + re.escape(word) + r'(?![A-Za-z_])'
+                if re.search(pattern, text) or re.search(
+                        pattern, attrs.replace('undefined, unknown', '')):
+                    found.append((elid, word))
+        return found
+
+    def test_every_tab_as_the_operator_opens_it(self):
+        """Through switchTab, on every demo module: nothing throws, no panel
+        raises an error toast, and no panel prints a JavaScript value."""
+        from i2c_interface import list_backends
+        names = [b['name'] for b in list_backends()
+                 if b['name'].startswith('mock')]
+        for name in names:
+            res = self._render(name, tabs=self.TABS)
+            self.assertEqual(res['errors'], [], name)
+            self.assertEqual([t for t in res['toasts'] if t[0] == 'error'], [],
+                             name)
+            self.assertEqual(self._leaks(res['writes']), [], name)
+            flat = app_module._state['caps'].get('flat_memory')
+            self.assertEqual('tbl-datapath' in res['writes'], not flat, name)
+            self.assertIn('tbl-apps', res['writes'], name)
+
+    def test_the_leak_scan_sees_one(self):
+        self.assertEqual(self._leaks({'x': '<td>undefined dBm</td>'}),
+                         [('x', 'undefined')])
+        self.assertEqual(self._leaks({'x': '<td title="NaN mA">1</td>'}),
+                         [('x', 'NaN')])
+        self.assertEqual(self._leaks({'x': '<td>undefined, unknown</td>'}), [])
 
     def test_every_demo_module(self):
         from i2c_interface import list_backends
