@@ -1410,12 +1410,40 @@ def parse_media_lane_mapping(data: bytes, lanes: int = 8) -> list:
             entry[side] = {
                 'wavelength': wl if 1 <= wl <= 8 else None,
                 'fiber': fiber if 1 <= fiber <= 8 else None,
+                'wavelength_code': wl,
+                'fiber_code': fiber,
                 'fiber_name': _FIBER_NAMES.get(fiber),
                 'fiber_short': _FIBER_SHORT.get(fiber),
             }
         entry['known'] = any(entry[s]['wavelength'] or entry[s]['fiber']
                              for s in ('tx', 'rx'))
         out.append(entry)
+    return out
+
+
+def media_lane_map_problems(entries: list) -> list:
+    """What makes an advertised Table 8-107 mapping invalid, or [].
+
+    8.14.8: "the shortest wavelength is always designated media wavelength 1
+    and starting from shortest through the longest all others are listed
+    consecutively", and "a mapping advertised in Table 8-107 that violates
+    any of these constraints is invalid". Codes 1001b-1111b are Reserved.
+    The numbering is taken across the whole module rather than per Bank: a
+    wider module may continue it in the next group of eight."""
+    out = []
+    for side in ('tx', 'rx'):
+        name = side.capitalize()
+        for lane, entry in enumerate(entries, 1):
+            for field in ('wavelength', 'fiber'):
+                code = entry[side][field + '_code']
+                if code > 8:
+                    out.append('%s media lane %d: %s code %s is Reserved'
+                               % (name, lane, field, format(code, '04b') + 'b'))
+        used = sorted({e[side]['wavelength'] for e in entries
+                       if e[side]['wavelength']})
+        if used and used != list(range(1, len(used) + 1)):
+            out.append('%s media wavelengths %s are not numbered 1 upward, '
+                       'shortest first' % (name, ', '.join(map(str, used))))
     return out
 
 

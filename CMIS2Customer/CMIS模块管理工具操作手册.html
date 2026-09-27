@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.191.0<br>
+      <b>版本</b>　2.192.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.191.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.191.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.192.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.192.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1300,7 +1300,7 @@
     <table>
       <thead><tr><th>列</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
-        <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)</td><td>—</td></tr>
+        <tr><td>Lane</td><td class="label">通道编号(8 通道模块 1–8;16 通道模块 1–16,第 9 条起在 Bank 1,地址同第 1 条)。模块在 <code>11h:240–255</code>(Table 8-107)声明了映射时,下面一行小字写这条媒体通道的波长和光纤(如 <code>λ1 · TR1/RT1</code>);映射违反规范 8.14.8(保留编码,或波长编号不是从 1 连续编)时前面标 ▲,表格下方说明原因</td><td>—</td></tr>
         <tr><td>Tx Power</td><td class="label">发送光功率（µW 和 dBm）</td><td><code>11h / 0x9A+((n−1)%8)×2</code></td></tr>
         <tr><td>Tx Bias</td><td class="label">发送偏置电流(mA)。寄存器每个计数是 2 µA 乘以 <code>01h:160.4-3</code> 的倍率(×1 / ×2 / ×4,Table 8-53;计数单位见 Table 8-99),列标题写出本模块一个计数是多少 µA</td><td><code>11h / 0xAA+((n−1)%8)×2</code></td></tr>
         <tr><td>Rx Power</td><td class="label">接收光功率（µW 和 dBm）</td><td><code>11h / 0xBA+((n−1)%8)×2</code></td></tr>
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Monitoring:违反规范约束的通道-波长映射会被标出</h3>
+  <p>规范 8.14.8:波分应用里<b>最短的波长编号为 1</b>,其余从短到长<b>连续编号</b>;「违反这些约束的 Table 8-107 映射是无效的」。编码 1001b–1111b 是保留值。工具此前把 <code>11h:240–255</code> 的任何映射都当事实写在 Lane 号下面,保留编码则和「未知」画法一样。</p>
+  <p>现在:映射里有保留编码,或者用到的波长编号不是从 1 开始连续编号(按整个模块算,16 通道模块第 9 条起可以接着编 5–8,也可以重新从 1 编)时,Lane 号下的小字前加 ▲,悬停写明原因,表格下方也用一行说明映射无效。演示模块的映射都有效,行为不变。</p>
 
   <h3>Raw Registers:密码按 8.2.14 写,只写字节不再误报</h3>
   <p>规范 8.2.14:密码寄存器「必须用大小匹配的 4 字节 WRITE 写入」,结果「最终」报在 PasswordCmdResult(<code>Lower 42</code>),显示「校验中」时主机不应再用密码寄存器。Raw Registers 此前接受任何写法(例如一次 8 字节把两个区都写了),写完也从不看 <code>Lower 42</code>,所以写密码得不到任何结论。更糟的是写后回读比对把只写字节也算进去——密码区和 Apply 触发字节读回来都是 0,于是<b>每次</b>写密码或 Apply 触发都弹出红色「module reports different values」。</p>
@@ -5038,7 +5042,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.191.0<br>
+    CMIS Module Manager 操作手册 v2.192.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

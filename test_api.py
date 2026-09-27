@@ -11899,7 +11899,7 @@ class TestWhichFibreAMediaLaneIs(CMISTestCase):
         js = self._src(os.path.join('static', 'app.js'))
         self.assertIn('const laneMap = monRes.data.media_lane_map || [];', js,
                       'the renderer never receives the mapping')
-        self.assertIn('${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}',
+        self.assertIn('${lane.lane}${_laneMapCell(laneMap[lane.lane - 1], mapProblems)}',
                       js, 'the lane cell never shows it')
 
 
@@ -16340,7 +16340,7 @@ class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
 
     def test_each_lane_cell_checks_for_a_missing_reading_first(self):
         js = self._js()
-        i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
+        i = js.index('_laneMapCell(laneMap[lane.lane - 1], mapProblems)')
         row = js[i:js.index('</tr>', i)]
         for guard in ('txDbm == null', 'lane.tx_bias_ma == null',
                       'rxDbm == null'):
@@ -16356,7 +16356,7 @@ class TestThePanelDoesNotFormatAMissingReading(CMISTestCase):
         body = js[i:i + 420]
         self.assertIn('${reg}', body,
                       'the cell does not print the register it was given')
-        i = js.index('_laneMapCell(laneMap[lane.lane - 1])')
+        i = js.index('_laneMapCell(laneMap[lane.lane - 1], mapProblems)')
         row = js[i:js.index('</tr>', i)]
         for reg in ('01h:160.0', '01h:160.1', '01h:160.2'):
             self.assertIn(reg, row, reg)
@@ -38796,6 +38796,147 @@ class TestAPasswordIsEnteredTheWay8214Says(CMISTestCase):
         self.assertEqual(back['data'], [0, 0, 0, 0])
         self.assertEqual([(b['first'], b['last'], b['access'])
                           for b in back['write_only']], [(122, 125, 'WO/SC')])
+
+
+class TestAnInvalidLaneMappingIsSaidToBe(CMISTestCase):
+    """8.14.8: "For WDM applications the shortest wavelength is always
+    designated media wavelength 1 and starting from shortest through the
+    longest all others are listed consecutively", and "a mapping advertised
+    in Table 8-107 that violates any of these constraints is invalid". Codes
+    1001b-1111b are Reserved. The tool drew every mapping beside the lane
+    numbers as fact, and a Reserved code the same as "unknown"."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _map(self, tx, rx=None, lanes=8):
+        import cmis_registers as c
+        data = b''
+        for bank in range(0, lanes, 8):
+            data += bytes(tx[bank:bank + 8]) + bytes((rx or tx)[bank:bank + 8])
+        return c.parse_media_lane_mapping(data, lanes)
+
+    def _problems(self, *a, **k):
+        import cmis_registers as c
+        return c.media_lane_map_problems(self._map(*a, **k))
+
+    def _monitoring(self):
+        return self.assertOk(self.client.get('/api/module/monitoring'))['data']
+
+    def _poke_map(self, addr, value):
+        app_module._set_page(0x11, 0)
+        app_module._state['backend'].poke_bytes(addr, bytes([value]))
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    # ---- the rule --------------------------------------------------------------
+
+    def test_a_wdm_mapping_numbered_from_one_is_valid(self):
+        self.assertEqual(self._problems([0x11, 0x21, 0x31, 0x41, 0x13, 0x23,
+                                         0x33, 0x43]), [])
+        self.assertEqual(self._problems([0] * 8), [], 'unknown is not invalid')
+        self.assertEqual(self._problems([0x11] * 8), [])
+
+    def test_a_gap_or_a_missing_first_wavelength_is_invalid(self):
+        self.assertEqual(self._problems([0x21, 0x31, 0, 0, 0, 0, 0, 0]),
+                         ['Tx media wavelengths 2, 3 are not numbered 1 '
+                          'upward, shortest first',
+                          'Rx media wavelengths 2, 3 are not numbered 1 '
+                          'upward, shortest first'])
+        got = self._problems([0x11, 0x31, 0, 0, 0, 0, 0, 0],
+                             [0x11, 0x21, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(got, ['Tx media wavelengths 1, 3 are not numbered 1 '
+                               'upward, shortest first'])
+
+    def test_reserved_codes_are_invalid_not_unknown(self):
+        got = self._problems([0x91, 0, 0, 0, 0, 0, 0, 0],
+                             [0x1A, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(got, ['Tx media lane 1: wavelength code 1001b is '
+                               'Reserved',
+                               'Rx media lane 1: fiber code 1010b is Reserved'])
+        entry = self._map([0xF8] + [0] * 7)[0]['tx']
+        self.assertEqual((entry['wavelength_code'], entry['fiber_code']), (15, 8))
+        self.assertIsNone(entry['wavelength'])
+
+    def test_a_wide_module_numbers_across_its_banks(self):
+        """Lanes 9-16 may carry wavelengths 5-8, or 1-4 again."""
+        tx = [0x11, 0x21, 0x31, 0x41] * 2 + [0x51, 0x61, 0x71, 0x81] * 2
+        self.assertEqual(self._problems(tx, lanes=16), [])
+        tx = [0x11, 0x21, 0x31, 0x41] * 4
+        self.assertEqual(self._problems(tx, lanes=16), [])
+        tx = [0x11] * 8 + [0x31] * 8
+        self.assertEqual(len(self._problems(tx, lanes=16)), 2)
+
+    # ---- the module ------------------------------------------------------------
+
+    def test_the_demo_mapping_is_valid(self):
+        self._connect()
+        self.assertEqual(self._monitoring()['media_lane_map_problems'], [])
+
+    def test_an_invalid_mapping_reaches_the_monitoring_reply(self):
+        self._connect()
+        self._poke_map(0xF0, 0x71)            # Tx lane 1: wavelength 7
+        got = self._monitoring()['media_lane_map_problems']
+        self.assertEqual(got, ['Tx media wavelengths 1, 2, 3, 4, 7 are not '
+                               'numbered 1 upward, shortest first'])
+        self._poke_map(0xF8, 0x1C)            # Rx lane 1: fibre code 1100b
+        self.assertIn('Rx media lane 1: fiber code 1100b is Reserved',
+                      self._monitoring()['media_lane_map_problems'])
+
+    # ---- the page --------------------------------------------------------------
+
+    def _cell(self, entry, problems):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'eval(pick(/const esc = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function _laneMapCell\\([\\s\\S]*?\\r?\\n}\\r?\\n/));'
+            'process.stdout.write(JSON.stringify(_laneMapCell('
+            + json.dumps(entry) + ',' + json.dumps(problems) + ')));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_cell_marks_an_invalid_mapping(self):
+        entry = self._map([0x71] + [0] * 7)[0]
+        marked = self._cell(entry, ['Tx media wavelengths 7 are not numbered'])
+        self.assertIn('▲', marked)
+        self.assertIn('The mapping is invalid (8.14.8): Tx media wavelengths 7',
+                      marked)
+        plain = self._cell(entry, [])
+        self.assertNotIn('▲', plain)
+        self.assertNotIn('invalid', plain)
+        self.assertIn('λ7', plain)
+
+    def test_the_table_says_so_underneath(self):
+        js = self._js()
+        self.assertIn('_laneMapCell(laneMap[lane.lane - 1], mapProblems)', js)
+        self.assertIn("document.getElementById('mon-lane-map-invalid')", js)
+        self.assertIn("mapNote.style.display = mapProblems.length ? '' : 'none';",
+                      js)
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'templates', 'index.html'),
+                  encoding='utf-8') as f:
+            self.assertIn('id="mon-lane-map-invalid"', f.read())
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

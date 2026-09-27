@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.191.0'
+__version__ = '2.192.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1320,6 +1320,8 @@ def _discover_capabilities() -> dict:
             b''.join(raw for _b, raw in
                      _read_banks(*cmis.REG_MEDIA_LANE_MAP, lane_count)),
             lane_count)
+        caps['media_lane_map_problems'] = cmis.media_lane_map_problems(
+            caps['media_lane_map'])
         # Table 8-46 defines the wavelength fields for single wavelength
         # modules and says the interpretation is not uniquely defined
         # otherwise. The lane mapping is what knows.
@@ -2763,6 +2765,9 @@ def api_module_monitoring():
                     # the module says. Read at connect, so it costs nothing
                     # per poll.
                     'media_lane_map': _state['caps'].get('media_lane_map', []),
+                    # 8.14.8: a mapping that breaks its constraints is invalid.
+                    'media_lane_map_problems': _state['caps'].get(
+                        'media_lane_map_problems', []),
                     'durations': _state['caps'].get('durations', {})})
     except Exception as e:
         return _err(str(e), 500)

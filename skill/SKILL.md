@@ -774,6 +774,10 @@ capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码
 
 capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifier 选列;没有列的标识给出 `Code N (no Table 4-11 column ...)`)、`fiber_face_name`(Lower 61.1-0)、`low_power_restrictions`(Lower 62,Table 8-19:`valid` 为 false 时其余字段是 `null`,不要当成「无限制」;`restricted` 列出在 ModuleLowPwr 下受限的 CDB 组)。平坦内存模块也有这几项。`features` 是 01h:251 的四项(`*_code` 0 = 未声明,CMIS 5.2 及更早),`link_training_supported` 是 01h:252.6(CMIS-LT,Pages 50h-53h)。
 
+## 通道-波长映射(11h:240-255)
+
+`GET /api/module/monitoring` 的 `media_lane_map` 是每条媒体通道的 Tx/Rx 波长和光纤(`wavelength_code` / `fiber_code` 是原始半字节,0 = 未知)。`media_lane_map_problems` 非空时映射按规范 8.14.8 无效(保留编码 9-15,或波长编号不是从 1 连续编;按整个模块算),不要把其中的波长当事实。
+
 ## 线缆组件和平坦内存模块
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。

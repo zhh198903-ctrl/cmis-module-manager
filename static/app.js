@@ -2502,7 +2502,7 @@ let _monitoringHaltedByError = false;
 // one you are looking at was never on screen. 0000b in both nibbles is the
 // module saying the mapping is unknown or undefined, and then there is
 // nothing to show.
-function _laneMapCell(entry) {
+function _laneMapCell(entry, problems) {
   if (!entry || !entry.known) return '';
   const tx = entry.tx || {}, rx = entry.rx || {};
   // A duplex pair carries the same wavelength each way and differs only in
@@ -2520,10 +2520,16 @@ function _laneMapCell(entry) {
   const full = [tx.fiber_name && 'Tx on ' + tx.fiber_name,
                 rx.fiber_name && 'Rx on ' + rx.fiber_name]
     .filter(Boolean).join(', ');
+  // 8.14.8: "a mapping advertised in Table 8-107 that violates any of these
+  // constraints is invalid" - shown as the module's claim, marked.
+  const invalid = (problems || []).length > 0;
   return `<div class="reg-meta" title="${esc('Media lane to wavelength and '
     + 'fibre mapping (11h:240-255)' + (full ? ': ' + full : '')
     + '. Lanes sharing a fibre are separated by wavelength, not by fibre.'
-    )}">${esc(bits.join(' · '))}</div>`;
+    + (invalid ? ' The mapping is invalid (8.14.8): ' + problems.join('; ')
+                 + '.' : '')
+    )}">${invalid ? '<span class="flag-warn">▲</span> ' : ''}`
+    + `${esc(bits.join(' · '))}</div>`;
 }
 
 async function loadMonitoring() {
@@ -2691,6 +2697,16 @@ async function _loadMonitoringOnce() {
   if (dotEl) dotEl.style.display = allActivated ? 'inline-block' : 'none';
 
   const laneMap = monRes.data.media_lane_map || [];
+  const mapProblems = monRes.data.media_lane_map_problems || [];
+  const mapNote = document.getElementById('mon-lane-map-invalid');
+  if (mapNote) {
+    mapNote.style.display = mapProblems.length ? '' : 'none';
+    mapNote.textContent = mapProblems.length
+      ? '▲ The media lane mapping this module advertises (11h:240-255, '
+        + 'Table 8-107) is invalid by 8.14.8: ' + mapProblems.join('; ')
+        + '. The wavelengths and fibres beside the lane numbers are its claim.'
+      : '';
+  }
   // 01h:160.4-3 = 11b is reserved: the bias scale, and so every bias
   // figure, is unknown (8.1.3.8) rather than x1.
   const biasUnknown = monRes.data.tx_bias_scale_unknown === true;
@@ -2776,7 +2792,7 @@ async function _loadMonitoringOnce() {
                    : lane.config_status_code === 0xC ? 'state-init'
                    : 'state-deactivated';
     return `<tr>
-      <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1])}</td>
+      <td>${lane.lane}${_laneMapCell(laneMap[lane.lane - 1], mapProblems)}</td>
       <td class="${txCls}" title="${esc(txTip)}">${txDbm == null
         ? (absentLane ? noLane : laneNa.includes('tx_power')
            ? naCell('no valid sample') : noMon('01h:160.1'))
