@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.206.0<br>
+      <b>版本</b>　2.207.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.206.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.206.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.207.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.207.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>DataPath 页:只改极性或 Tx 关断时,Apply 不再重启数据通道</h3>
+  <p>规范 Table 8-77:<code>10h:129–142</code> 是「独立于数据通道状态机和控制集」的通道控制,极性翻转、Tx 关断写下去就生效,不需要 Apply。页面上改这两项只能通过 DataPath 表的 Apply 按钮,而这个按钮总会请求 Apply;工具把「暂存配置没有变化」一律理解为「重新投运」,于是<b>只翻一条通道的极性,也会重启模块上所有数据通道</b>——在 2×400G 的模块上,两个 400G 端口一起断流。手册从 v2.10.1 起就写着「不会这样」,实际一直是这样。</p>
+  <p>现在:一次提交里只改了极性或 Tx 关断(AppSelect、NAD 块号、DP Deinit 都没变)时,只写这些通道控制,不触发 ApplyDPInit,接口返回 <code>applied_lanes: []</code>,页面提示「Lane controls written … no Data Path was restarted」。什么都没改就点 Apply,仍然是「重新投运全部」;改了 AppSelect 时,只 Apply 改动的那几条数据通路;DP Deinit 的处理不变。</p>
 
   <h3>DataPath 页:有通道暂存在其它 NAD 块时,整张表显示不出来(v2.202.0 引入)</h3>
   <p>v2.202.0 为「暂存在块 0 以外的通道」在下拉框里加了一项「AN n … — kept」。这一项用到了两个在同一函数里<b>更靠后</b>才声明的名字,浏览器在遇到第一条这样的通道时就报错(<code>Cannot access 'bankOf' before initialization</code>),DataPath 配置表整张不显示——恰好发生在这一项要照顾的模块上。之前的检查只核对了源代码里的文字,文字看不出声明顺序;这次是在浏览器里实际操作 24 通道演示模块时发现的。</p>
@@ -4331,9 +4335,10 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
-    <span><b>Apply 会重启全部 8 条 lane，在线业务会中断。</b>点击 Apply 时，工具把 8 条 lane 的
-    AppSelect、TX Enable 和两个极性掩码<b>整体</b>下发，然后写 <code>ApplyDPInit = 0xFF</code>，
-    模块据此重启数据通道状态机——<b>你没有改动的 lane 一样会被重启</b>。
+    <span><b>Apply 会重启哪些数据通道。</b>点击 Apply 时，工具整体下发 AppSelect、TX Enable 和两个极性掩码，
+    然后只对<b>暂存配置有改动的数据通路</b>写 ApplyDPInit，模块据此重启这几条数据通路——在线业务会中断。
+    只改了极性或 TX Enable 时不触发 Apply（这两项写下去就生效，Table 8-77），不重启任何数据通路；
+    什么都没改就点 Apply，则视为「重新投运」，重启全部数据通路。
     Apply 没有确认对话框。若正在跑业务，请先确认可以断流。</span>
   </div>
   <ol class="steps">
@@ -4341,7 +4346,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <li>参考 9.2 Supported Applications 表选择合适的 AppSelect。
         <b>下拉框第一项是「— unused (AppSel 0) —」</b>，表示这条 lane 不参与任何数据通道。</li>
     <li>勾选 / 取消 TX Enable、Pol Flip。</li>
-    <li>点击 <b>Apply</b> 写入模块并激活（自动触发 ApplyDPInit = 0xFF）。</li>
+    <li>点击 <b>Apply</b> 写入模块；暂存配置有改动的数据通路会触发 ApplyDPInit（只改极性或 TX Enable 时不触发）。</li>
     <li><b>配置结果工具会自动告诉你，不需要自己去 Monitoring 页查。</b>Apply 后工具等 300 ms
         重读配置，再检查每条 lane 的 Config Status：全部通过则右下角弹绿色
         <b>「DataPath configuration applied」</b>；只要有 lane 被拒，就弹<b>红色</b>提示并点名是哪几条
@@ -5098,8 +5103,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <thead><tr><th>Apply 所在卡片</th><th>实际下发的内容</th></tr></thead>
       <tbody>
         <tr><td>DataPath 配置表<br><span class="label">（9.3）</span></td>
-            <td class="label"><b>影响最大</b>：整体下发 8 条 lane 的 AppSelect / TX Enable / 两个极性掩码，
-                再写 <code>ApplyDPInit = 0xFF</code> 重启全部数据通道——<b>未改动的 lane 也会被重启</b></td></tr>
+            <td class="label"><b>影响最大</b>：整体下发 AppSelect / TX Enable / 两个极性掩码，
+                再对暂存配置有改动的数据通路写 ApplyDPInit 并重启它们；只改极性或 TX Enable 时不重启；
+                什么都没改时重启全部数据通路（重新投运）</td></tr>
         <tr><td>Output Controls<br><span class="label">（9.4）</span></td>
             <td class="label">只写 Tx Squelch Disable / Tx Squelch Force / Rx Output Disable /
                 Rx Squelch Disable 四个掩码，不触发 DataPath 重启</td></tr>
@@ -5119,7 +5125,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.206.0<br>
+    CMIS Module Manager 操作手册 v2.207.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

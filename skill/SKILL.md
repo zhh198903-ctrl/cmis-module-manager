@@ -173,6 +173,9 @@ DataPath 面板的下拉框每项都写明了，例如 `App 2 — 400GBASE-DR4 4
    新配置被拒绝的通道**保持 DP Deinit**，回复的 `kept_deinit` 列出它们——
    这时放开只会按原来的 Application 起来（DPInit 投入的是 Active Control Set，Table 6-3）。
    v2.200.0 之前是先写 DPDeinit、紧跟着写触发，触发落在过渡状态里被模块丢掉，换应用做不成。
+7. **`applied_lanes` 是空列表** —— 这次只改了极性或 Tx 关断（`10h:129-142`，Table 8-77 的通道控制，写下去就生效），
+   AppSelect / NAD 块号 / DP Deinit 都没变，所以没有触发 ApplyDPInit、没有重启数据通路，这是正常的（v2.207.0 起）。
+   什么都没改就 Apply 才会重新投运全部。
 
 ## 排查：读数看着不对
 

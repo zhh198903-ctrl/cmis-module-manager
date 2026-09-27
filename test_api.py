@@ -7168,10 +7168,11 @@ class TestManualMatchesBehaviour(CMISTestCase):
             self.assertIn(name, manual, f'{name} also reaches the API')
 
     def test_the_datapath_apply_carries_a_traffic_warning(self):
-        """Apply restarts all eight lanes including the untouched ones, which
-        is the easiest way in the whole UI to drop live traffic by accident."""
+        """Apply restarts the Data Paths it changes - and all of them when
+        nothing was changed - which is the easiest way in the whole UI to drop
+        live traffic by accident."""
         manual = self._manual()
-        self.assertIn('Apply 会重启全部 8 条 lane', manual)
+        self.assertIn('Apply 会重启哪些数据通道', manual)
         section = manual.split('9.3 DataPath 配置表', 1)[1].split('9.4', 1)[0]
         self.assertIn('callout-warn', section)
         self.assertIn('中断', section)
@@ -19726,9 +19727,11 @@ class TestTheApplyTriggersAreWrittenOnTheirOwn(CMISTestCase):
     def test_no_write_spans_a_trigger_byte(self):
         """Any write covering 143 or 144 has to be exactly that one byte."""
         self._connect()
+        # A staged change, so the trigger is written: a lane control alone
+        # is written without one (Table 8-77).
         writes = self._writes_during(
             '/api/module/datapath',
-            {'app_select': [1] * 8, 'tx_disable_mask': 0x01, 'apply': True})
+            {'app_select': [2] * 8, 'tx_disable_mask': 0x01, 'apply': True})
         self.assertTrue(writes, 'the request wrote nothing, so this checked '
                                 'nothing')
         touched = 0
@@ -28560,7 +28563,10 @@ class TestARefusalThatChangedNothing(CMISTestCase):
         rv = self._writes_to_page_10h(
             # Media lane 1 only: this module has one media lane, and
             # asking for lanes 2-4 is refused by a different rule first.
-            lambda: self._post(tx_disable_mask=[0x01], apply=True))
+            # With a staged change, so there is an Apply to refuse: a lane
+            # control alone is written without one (Table 8-77).
+            lambda: self._post(app_select=[2] * 8, tx_disable_mask=[0x01],
+                               apply=True))
         self.assertErr(rv[0], 409)
         self.assertIn('transient', json.loads(rv[0].data)['message'])
         self.assertEqual(rv[1], [])
@@ -28570,7 +28576,7 @@ class TestARefusalThatChangedNothing(CMISTestCase):
         deactivated(self.client)
         rv = self._assert_refused_without_writing(
             409, dp_deinit_mask=[0xFF], tx_disable_mask=[0x01],
-            apply_immediate=True)
+            app_select=[2] * 8, apply_immediate=True)
         self.assertIn('ApplyImmediate', json.loads(rv.data)['message'])
 
     def test_apply_immediate_on_a_module_without_it_writes_nothing(self):
@@ -41042,9 +41048,9 @@ vm.runInThisContext('AppState.connected = true; AppState.lanes = '
     def test_every_tab_as_the_operator_opens_it(self):
         """Through switchTab, on every demo module: nothing throws, no panel
         raises an error toast, and no panel prints a JavaScript value."""
-        from i2c_interface import list_backends
-        names = [b['name'] for b in list_backends()
-                 if b['name'].startswith('mock')]
+        # Both kinds: what a tab draws differs between them, and the flat
+        # one is where the tab gates are.
+        names = paged_mock_backends() + flat_mock_backends()
         for name in names:
             res = self._render(name, tabs=self.TABS)
             self.assertEqual(res['errors'], [], name)
@@ -41131,9 +41137,9 @@ vm.runInThisContext('AppState.connected = true; AppState.lanes = '
         self.assertEqual(self._leaks({'x': '<td>undefined, unknown</td>'}), [])
 
     def test_every_demo_module(self):
-        from i2c_interface import list_backends
-        names = [b['name'] for b in list_backends()
-                 if b['name'].startswith('mock')]
+        # Both kinds: what a tab draws differs between them, and the flat
+        # one is where the tab gates are.
+        names = paged_mock_backends() + flat_mock_backends()
         self.assertGreaterEqual(len(names), 12)
         for name in names:
             res = self._render(name)
@@ -41198,6 +41204,110 @@ vm.runInThisContext('AppState.connected = true; AppState.lanes = '
         errors = json.loads(out.stdout)['errors']
         self.assertEqual(len(errors), 1)
         self.assertIn('before initialization', errors[0])
+
+
+class TestALaneControlAloneRestartsNothing(CMISTestCase):
+    """Table 8-77 puts 10h:129-142 under Lane-Specific Control, "independent
+    of the Data Path State machine or control sets": polarity and Tx disable
+    take effect on the write, and need no Apply.
+
+    The DataPath panel writes them with its Apply button, which always asks
+    for an Apply, and the server read "no staged configuration changed" as
+    the operator asking to re-commission - so flipping one lane's polarity
+    restarted every Data Path on the module, both 400G ports of a 2x400G.
+    The manual has said since v2.10.1 that it does not. Now a request whose
+    only change is a lane control is written without a trigger; one that
+    changes nothing still re-commissions, and DP Deinit is unaffected."""
+
+    def _connect(self, backend='mock_fr4x2'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _post(self, **body):
+        return self.assertOk(self.client.post(
+            '/api/module/datapath', data=json.dumps(body),
+            content_type='application/json'))['data']
+
+    def _staged(self):
+        return [l['app_select'] for l in self.assertOk(
+            self.client.get('/api/module/datapath'))['data']['lanes']]
+
+    def test_a_polarity_flip_restarts_nothing(self):
+        """The case that went wrong."""
+        backend = self._connect()
+        sel = self._staged()
+        backend._commands.clear()
+        d = self._post(app_select=sel, tx_polarity_flip_mask=0x02, apply=True)
+        self.assertEqual(d['applied_lanes'], [])
+        self.assertEqual(backend._commands, [], 'an ApplyDPInit was sent')
+        self.assertEqual(backend._registers[0x10][0x81], 0x02)
+
+    def test_a_tx_disable_restarts_nothing(self):
+        backend = self._connect()
+        sel = self._staged()
+        backend._commands.clear()
+        d = self._post(app_select=sel, tx_disable_mask=0x10, apply=True)
+        self.assertEqual(d['applied_lanes'], [])
+        self.assertEqual(backend._commands, [])
+        self.assertEqual(backend._registers[0x10][0x82], 0x10)
+
+    def test_nothing_changed_still_re_commissions(self):
+        self._connect()
+        d = self._post(app_select=self._staged(), apply=True)
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_a_dp_deinit_change_still_applies(self):
+        """Round 155's order is left as it was."""
+        self._connect()
+        d = self._post(app_select=self._staged(), dp_deinit_mask=0xFF,
+                       apply=True)
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_a_dp_deinit_change_with_a_polarity_flip_still_applies(self):
+        self._connect()
+        d = self._post(app_select=self._staged(), dp_deinit_mask=0xFF,
+                       tx_polarity_flip_mask=0x01, apply=True)
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_an_rx_polarity_flip_restarts_nothing(self):
+        backend = self._connect('mock_dr8')
+        backend._commands.clear()
+        d = self._post(app_select=self._staged(), rx_polarity_flip_mask=0x04,
+                       apply=True)
+        self.assertEqual(d['applied_lanes'], [])
+        self.assertEqual(backend._commands, [])
+
+    def test_a_staged_change_with_a_polarity_flip_applies_its_data_path(self):
+        self._connect()
+        deactivated(self.client)
+        sel = self._staged()
+        new = sel[:4] + [1 if x != 1 else 2 for x in sel[4:]]
+        d = self._post(app_select=new, tx_polarity_flip_mask=0x01, apply=True)
+        self.assertEqual(d['applied_lanes'], [5, 6, 7, 8])
+
+    def test_the_page_says_nothing_was_restarted(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        start = js.index('async function applyDatapath(immediate) {')
+        body = js[start:js.index('\n}\n', start)]
+        self.assertIn('Array.isArray(res.data.applied_lanes) '
+                      '&& !res.data.applied_lanes.length', body)
+        self.assertIn('no Data Path was restarted', body)
+
+    def test_the_manual_no_longer_says_apply_restarts_every_lane(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            manual = f.read()
+        self.assertNotIn('Apply 会重启全部 8 条 lane', manual)
+        self.assertNotIn('自动触发 ApplyDPInit = 0xFF', manual)
+        self.assertNotIn('重启全部数据通道——<b>未改动的 lane 也会被重启</b>',
+                         manual)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

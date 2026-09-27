@@ -3803,6 +3803,13 @@ async function applyDatapath(immediate) {
   await new Promise(r => setTimeout(r, 300));
   await loadDatapath();
   await loadSquelch();
+  // Only lane controls changed (polarity, Tx disable - Table 8-77): written
+  // and in effect, and no Data Path was restarted to get there.
+  if (Array.isArray(res.data.applied_lanes) && !res.data.applied_lanes.length) {
+    toast('Lane controls written — polarity and Tx disable take effect '
+          + 'without an Apply, so no Data Path was restarted', 'success', 6000);
+    return;
+  }
 
   // The write itself succeeding says nothing about whether the module accepted
   // the configuration - it reports that per lane in ConfigStatus. Reading it

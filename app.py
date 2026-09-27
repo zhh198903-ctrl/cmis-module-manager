@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.206.0'
+__version__ = '2.207.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3718,10 +3718,10 @@ def api_datapath_set():
         # polarity it did not mention.
         tx_disable_now = _mask_now(cmis.REG_TX_OUTPUT_DIS)
         tx_disable = _keep(body, 'tx_disable_mask', tx_disable_now, banks)
-        tx_pol = _keep(body, 'tx_polarity_flip_mask',
-                       _mask_now(cmis.REG_TX_POL_FLIP), banks)
-        rx_pol = _keep(body, 'rx_polarity_flip_mask',
-                       _mask_now(cmis.REG_RX_POL_FLIP), banks)
+        tx_pol_now = _mask_now(cmis.REG_TX_POL_FLIP)
+        rx_pol_now = _mask_now(cmis.REG_RX_POL_FLIP)
+        tx_pol = _keep(body, 'tx_polarity_flip_mask', tx_pol_now, banks)
+        rx_pol = _keep(body, 'rx_polarity_flip_mask', rx_pol_now, banks)
         deinit_now = _mask_now(cmis.REG_DP_DEINIT)
         dp_deinit = _keep(body, 'dp_deinit_mask', deinit_now, banks)
         apply = bool(body.get('apply', False))
@@ -3952,7 +3952,16 @@ def api_datapath_set():
             # doing nothing would take that away.
             need = _lanes_needing_apply(old_numbers, new_numbers,
                                         host_lanes_by_app)
-            if not need:
+            # Unless all that changed is a lane control. 10h:129-142 are
+            # "independent of the Data Path State machine or control sets"
+            # (Table 8-77) and take effect on the write; the page's only way
+            # to write polarity or Tx disable is this Apply, so re-commissioning
+            # here restarted every Data Path on the module - both 400G ports
+            # of a 2x400G - to flip one lane's polarity.
+            lane_controls_changed = (tx_pol != tx_pol_now or rx_pol != rx_pol_now
+                                     or tx_disable != tx_disable_now)
+            if not need and (dp_deinit != deinit_now
+                             or not lane_controls_changed):
                 need = set(range(_state['lanes']))
             # Section 6.2.4 names two ways an Apply is thrown away without a
             # word. Reporting which lanes were applied while the module
