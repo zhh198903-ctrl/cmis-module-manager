@@ -29640,14 +29640,16 @@ class TestAWriteCarriesEightBytes(CMISTestCase):
 
     # ---- what was already legal stays one WRITE ------------------------------------
     def test_an_eight_byte_block_is_not_split(self):
-        """A PRBS engine block is exactly eight bytes and the AppSel bytes
-        are eight starting at 145 - each is one WRITE, and splitting it would
-        only cost atomicity for nothing."""
+        """The AppSel bytes are eight starting at 145 - one WRITE. A PRBS
+        engine block is eight bytes too, but it is split on purpose: its
+        options first, then the enable on its own (Appendix F.1/F.2 - a
+        multi-byte WRITE is not atomic, 5.2.5.2)."""
         self._connect()
         seen = self._trace()
         self.assertOk(self._post('/api/module/prbs',
                                  {'host_gen': {'enable_mask': 0x01}}))
-        self.assertIn((0x13, 0x90, 8), seen)
+        self.assertEqual([w for w in seen if w[0] == 0x13 and 0x90 <= w[1] < 0x98],
+                         [(0x13, 0x91, 7), (0x13, 0x90, 1)])
         self.assertOk(self._post('/api/module/datapath',
                                  {'tx_disable_mask': 0x00}))
         self.assertIn((0x10, 0x91, 8), seen)
@@ -34564,8 +34566,8 @@ class TestTheCheckerStartsAndStopsTheCount(CMISTestCase):
         self.assertIn("+ note + checkersOffNote(res.data.checking, present)", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmt(", js)
         self.assertIn(": off(side, i) ? offCell(side, l, fmtBer(", js)
-        self.assertIn("? checkerOffCell(held(l, 'host'), formatBer(l.host_ber))", js)
-        self.assertIn("? checkerOffCell(held(l, 'media'), formatBer(l.media_ber))", js)
+        self.assertIn("? checkerOffCell(held(l, 'host'), formatBer(l.host_ber), gated)", js)
+        self.assertIn("? checkerOffCell(held(l, 'media'), formatBer(l.media_ber), gated)", js)
         # a stopped engine's LOL cell is a dash, not a green "locked" dot
         self.assertIn("        : !en\n        ? `<span class=\"flag-none\"",
                       js.replace('\r\n', '\n'))
@@ -36437,8 +36439,8 @@ class TestAZeroBerNeedsBitsCounted(CMISTestCase):
         self.assertIn("berCell(l.host_ber, l.host_ber_na, l.host_measured)", body)
         self.assertIn("berCell(l.media_ber, l.media_ber_na, l.media_measured)", body)
         self.assertIn("l[side + '_measured'] != null", body)
-        self.assertIn("checkerOffCell(held(l, 'host'), formatBer(l.host_ber))", body)
-        self.assertIn("checkerOffCell(held(l, 'media'), formatBer(l.media_ber))", body)
+        self.assertIn("checkerOffCell(held(l, 'host'), formatBer(l.host_ber), gated)", body)
+        self.assertIn("checkerOffCell(held(l, 'media'), formatBer(l.media_ber), gated)", body)
         self.assertIn('TotalBitsCount is 0', js)
 
     def test_the_manual_says_it(self):
@@ -39389,6 +39391,142 @@ class TestAnApplyWithNothingToWriteIsNotOffered(CMISTestCase):
                                 content_type='application/json')
         self.assertNotEqual(resp.status_code, 200)
         self.assertIn('not tunable', resp.get_json()['message'])
+
+
+class TestAPatternEngineIsEnabledLast(CMISTestCase):
+    """Appendix F.1/F.2 give the order for starting a pattern generator or
+    checker: its pattern and options (13h:145-151, 161-167 ...) first, then
+    "Enable the pattern generator on the selected lanes by writing to
+    13h:144" - last. 5.2.5.2: "Multi-Byte WRITE accesses are generally not
+    atomic". The tool wrote each engine as one 8-byte WRITE with the enable
+    byte first, so a module could start the engine - and a checker start
+    counting - before the pattern it was to use had arrived."""
+
+    ENGINES = {0x90: 'host_gen', 0x98: 'media_gen', 0xA0: 'host_chk',
+               0xA8: 'media_chk'}
+
+    def _writes(self, body, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        mock = app_module._state['backend']
+        seen = []
+        orig = mock.write_bytes
+
+        def spy(addr, data):
+            if addr >= 0x80:
+                seen.append((mock._current_page, mock._current_bank, addr,
+                             len(data)))
+            return orig(addr, data)
+        mock.write_bytes = spy
+        try:
+            self.assertOk(self.client.post(
+                '/api/module/prbs', data=json.dumps(body),
+                content_type='application/json'))
+        finally:
+            mock.write_bytes = orig
+        return [w for w in seen if w[0] == 0x13]
+
+    def test_the_options_go_first_and_the_enable_alone_after_them(self):
+        writes = self._writes({'host_gen': {'enable_mask': 0x01,
+                                            'patterns': [1] * 8}})
+        engine = [w for w in writes if 0x90 <= w[2] < 0x98]
+        self.assertEqual([(a, n) for _p, _b, a, n in engine],
+                         [(0x91, 7), (0x90, 1)])
+
+    def test_every_engine_and_bank_in_that_order(self):
+        """All four engines of a 16-lane module: each bank's options before
+        its enable, the enable a single byte."""
+        body = {k: {'enable_mask': [0, 0]} for k in self.ENGINES.values()}
+        writes = self._writes(body, 'mock_1600g_16lane')
+        for base in self.ENGINES:
+            for bank in (0, 1):
+                mine = [(a, n) for _p, b, a, n in writes
+                        if b == bank and base <= a < base + 8]
+                self.assertEqual(mine, [(base + 1, 7), (base, 1)],
+                                 (hex(base), bank))
+
+    def test_what_lands_is_what_was_asked(self):
+        self._writes({'host_chk': {'enable_mask': 0x03, 'patterns': [1] * 8}})
+        got = self.assertOk(self.client.get('/api/module/prbs'))['data']['host_chk']
+        self.assertEqual(got['enable_mask_banks'][0], 0x03)
+        self.assertEqual(got['patterns'][0], 1)
+
+
+class TestAHeldCountUnderAGateMayBeUndefined(CMISTestCase):
+    """Appendix F.2: "If the pattern checker is disabled in the middle of a
+    gated operation, all of the error counters are undefined. Disabling in
+    the middle of a gated count is considered an abort operation." The BER
+    and counter panels show a stopped checker's figures as "held" - true of
+    an ungated count (Table 8-128), not of one stopped mid-gate. The module
+    does not say whether the gate had ended, so under a gate the figure is
+    kept and marked."""
+
+    def _cell(self, held, gated):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'eval(pick(/const esc = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/const CHECKER_OFF_TIP = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/const CHECKER_OFF_GATED_TIP = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function checkerOffCell\\([\\s\\S]*?\\r?\\n}\\r?\\n/));'
+            'process.stdout.write(JSON.stringify(checkerOffCell('
+            + json.dumps(held) + ',"1.0e-12",' + json.dumps(gated) + ')));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_an_ungated_held_count_is_a_result(self):
+        cell = self._cell(True, False)
+        self.assertIn('<small>held</small>', cell)
+        self.assertNotIn('Appendix F.2', cell)
+
+    def test_a_gated_held_count_says_it_may_be_undefined(self):
+        cell = self._cell(True, True)
+        self.assertIn('undefined if stopped mid-gate', cell)
+        self.assertIn('Appendix F.2', cell)
+        self.assertIn('1.0e-12', cell, 'the figure is still shown')
+
+    def test_a_checker_that_never_counted_is_just_off(self):
+        for gated in (False, True):
+            cell = self._cell(False, gated)
+            self.assertIn('>off</td>', cell)
+            self.assertNotIn('Appendix F.2', cell)
+
+    def test_both_panels_pass_the_gate(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read().replace('\r\n', '\n')
+        self.assertEqual(len(re.findall(
+            r"checkerOffCell\(held\(l, '(?:host|media)'\), "
+            r"formatBer\(l\.(?:host|media)_ber\), gated\)", js)), 2)
+        self.assertIn('const gated = !!(((res.data.measurement || {}).controls '
+                      '|| {}).gated);', js)
+        self.assertIn('checkerOffCell(l[`${side}_total_bits`] > 0, html,\n'
+                      '                     !!(((res.data.measurement || {})'
+                      '.controls || {}).gated));', js)
+
+    def test_both_replies_carry_whether_the_measurement_is_gated(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        for path in ('/api/module/ber', '/api/module/counters'):
+            d = self.assertOk(self.client.get(path))['data']
+            self.assertIn(d['measurement']['controls']['gated'], (True, False),
+                          path)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

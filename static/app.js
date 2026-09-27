@@ -4470,11 +4470,23 @@ function checkerOff(checking, side, i) {
   return !!(checking && checking[side] && checking[side][i] === false);
 }
 
-function checkerOffCell(held, html) {
-  return held
-    ? `<td class="text-muted" title="${esc(CHECKER_OFF_TIP + ' This is the '
-      + 'result it held when it stopped.')}">${html} <small>held</small></td>`
-    : `<td class="text-muted" title="${esc(CHECKER_OFF_TIP)}">off</td>`;
+// Appendix F.2: "If the pattern checker is disabled in the middle of a gated
+// operation, all of the error counters are undefined." The module does not
+// say whether the gate had ended first, so a held figure under a gate is
+// marked as one that may not be a result.
+const CHECKER_OFF_GATED_TIP = ' Under a gated measurement that holds only if '
+  + 'the gate had ended before the checker was stopped: stopped in the middle '
+  + 'of a gate, the measurement is aborted and every error counter is '
+  + 'undefined (Appendix F.2).';
+
+function checkerOffCell(held, html, gated) {
+  if (!held) {
+    return `<td class="text-muted" title="${esc(CHECKER_OFF_TIP)}">off</td>`;
+  }
+  const tip = CHECKER_OFF_TIP + ' This is the result it held when it stopped.'
+    + (gated ? CHECKER_OFF_GATED_TIP : '');
+  return `<td class="text-muted" title="${esc(tip)}">${html} <small>held`
+    + (gated ? ' · undefined if stopped mid-gate' : '') + '</small></td>';
 }
 
 // Table 8-136: DiagnosticsSelector "Reverts to 0 if value not supported",
@@ -5594,15 +5606,16 @@ async function loadBer() {
   // Held when the stopped checker counted anything - a clean run holds a 0.
   const held = (l, side) => l[side + '_measured'] != null
     ? l[side + '_measured'] : !!l[side + '_ber'];
+  const gated = !!(((res.data.measurement || {}).controls || {}).gated);
   // Only the running rows: the last gate is a result either way.
   const berRows = (lanes, label, sel, checking) => {
     const hostCells = lanes.map((l, i) => checkerOff(checking, 'host', i)
-      ? checkerOffCell(held(l, 'host'), formatBer(l.host_ber))
+      ? checkerOffCell(held(l, 'host'), formatBer(l.host_ber), gated)
       : berCell(l.host_ber, l.host_ber_na, l.host_measured)).join('');
     const mediaCells = lanes.map((l, i) =>
       mediaAbsent(res.data.media_lanes_present, i) ? noMediaLaneCell(l.lane)
         : checkerOff(checking, 'media', i)
-          ? checkerOffCell(held(l, 'media'), formatBer(l.media_ber))
+          ? checkerOffCell(held(l, 'media'), formatBer(l.media_ber), gated)
         : berCell(l.media_ber, l.media_ber_na, l.media_measured)).join('');
     return `<tr><td style="color:var(--text-muted)">Host${label}<span class="reg-badge">14h/0xC0${sel}</span></td>${hostCells}</tr>` +
       `<tr><td style="color:var(--text-muted)">Media${label}<span class="reg-badge">14h/0xD0${sel}</span></td>${mediaCells}</tr>`;
@@ -5649,7 +5662,8 @@ async function loadCounters() {
     // A stopped checker's count is held, and one that never ran has none.
     const off = (side, i) => checkerOff(checking, side, i);
     const offCell = (side, l, html) =>
-      checkerOffCell(l[`${side}_total_bits`] > 0, html);
+      checkerOffCell(l[`${side}_total_bits`] > 0, html,
+                     !!(((res.data.measurement || {}).controls || {}).gated));
     // MAX(U64) is the error count's NA value (Table 7-8); the BER built on
     // it is no measurement either.
     const row = (side, field, fmt) => lanes.map((l, i) =>

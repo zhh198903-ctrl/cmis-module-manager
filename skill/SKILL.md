@@ -539,6 +539,8 @@ Table 8-68:75 GHz 是 `193.1 + n×0.025`(n 为 3 的倍数),150 GHz 是 `193.1 +
 Page 13h 分 Bank,`13h:176-179`(Table 8-127)每个 Bank 一份。`/api/module/ber` 和 `/api/module/counters` 的 `measurement` 里,
 `controls` 是 Bank 0 的,`controls_banks` 是每个 Bank 的,`banks_that_differ` 列出门控时间/自动重启/更新周期和 Bank 0 不同的 Bank。
 `/api/module/prbs` 另有 `clock_sources_banks`。判断通道 9 以后的 BER 是在什么窗口下测的,看它所在 Bank 的那一份。
+门控测量(`controls.gated` 为 true)下,检测器已停的通道显示的保留值只有在门控结束后才停下才算结果;门控中途停下的计数按附录 F.2 未定义。
+`POST /api/module/prbs` 按附录 F 的顺序写:每个引擎先写码型和选项,最后单独写使能字节;自己用 Raw Registers 启动引擎时也照这个顺序。
 
 ## 通道掩码:一个数覆盖所有通道
 

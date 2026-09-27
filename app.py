@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.197.0'
+__version__ = '2.198.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5070,9 +5070,14 @@ def api_prbs_set():
             if err:
                 return err
 
+        # Appendix F.1/F.2: the pattern and its options first, the enable last
+        # (step 5). 5.2.5.2 makes a multi-byte WRITE non-atomic, so with the
+        # enable at the front of one WRITE a module may start the engine - and
+        # a checker start counting - before the pattern it is to use arrives.
         for bank, base_addr, block in plan:
             _set_page(0x13, bank)
-            _bus_write(base_addr, block)
+            _bus_write(base_addr + 1, block[1:])
+            _bus_write(base_addr, block[:1])
         return _ok({'message': 'PRBS configuration written'})
     except _LaneMaskError as e:
         return _err(str(e), 400)

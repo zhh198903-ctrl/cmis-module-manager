@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.197.0<br>
+      <b>版本</b>　2.198.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.197.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.197.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.198.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.198.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>PRBS:先写码型、最后写使能;门控中途停下的计数标为可能无效</h3>
+  <p>规范附录 F.1 / F.2 给出启动码型发生器 / 检测器的推荐顺序:先配码型和选项(<code>13h:145-151</code>、<code>161-167</code> 等),<b>最后</b>写使能(<code>13h:144</code> / <code>160</code>)。规范 5.2.5.2 又说多字节 WRITE 一般不是原子的。工具此前把每个引擎的 8 个字节一次写入、使能字节在最前,模块可能先按旧码型启动——检测器会按旧码型开始计数。现在先写码型与选项,再单独写使能字节。</p>
+  <p>附录 F.2 还说:<b>门控测量进行中关掉检测器,所有误码计数都未定义</b>(视为中止)。BER 和计数器面板对停下的检测器显示「held」(保留的结果)——不门控时这是对的,门控时只有在门控结束后才停下才算结果。模块不告诉主机停下时门控是否已结束,所以门控测量下这些格子保留数值,但标「undefined if stopped mid-gate」并在悬停里说明。</p>
 
   <h3>非可调谐模块上 Laser Tuning 的 Apply 不再可点</h3>
   <p>这一版把 12 个演示模块的每个 Apply 按钮都按了一遍(DataPath、Squelch、Apply Immediate、采集计数清零、媒体通道切换、环回、PRBS、激光调谐),只找到一个注定失败的:<b>Laser Tuning</b> 卡片在非可调谐模块上写着「Not a tunable laser module」,Apply 却仍可点,一点就是红色的「This module is not tunable (01h:155.6)」——12 个演示模块里有 9 个是这样。现在没有可写的内容时(非可调谐,或读取失败)Apply 变灰,悬停说明原因;换到可调谐模块后恢复。服务器端的拒绝保持不变。</p>
@@ -4478,7 +4482,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p>媒体侧的两行环回的是<b>媒体通道</b>(Figure 8-2)。模块在 <code>00h:210</code> 里声明没有的媒体通道,对应格子置灰;模块不支持逐通道环回时则不置灰——那时任何一个格子都代表全部通道。</p>
 
   <h3>10.2 PRBS Generator（PRBS 发生器）</h3>
-  <p>每个 PRBS 块为 8 字节：Enable（使能位图）/ Invert（数据反转位图）/ ByteSwap（PAM4 MSB/LSB 交换位图）/ PreFEC（FEC 编码前注入）/ Pattern×4（4 字节, 4 bits/lane）。</p>
+  <p>每个 PRBS 块为 8 字节：Enable（使能位图）/ Invert（数据反转位图）/ ByteSwap（PAM4 MSB/LSB 交换位图）/ PreFEC（FEC 编码前注入）/ Pattern×4（4 字节, 4 bits/lane）。Apply 时按规范附录 F 的顺序写入:先写后 7 个字节(反转、交换、FEC、码型),最后单独写 Enable——多字节写入不保证原子,使能在前可能让引擎按旧码型启动。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>分区</th><th>En</th><th>Invert</th><th>ByteSwap</th><th>PreFEC</th><th>Pattern</th><th>LOL 地址</th></tr></thead>
@@ -4575,7 +4579,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <p><b>这个 BER 是 PRBS 检测器数出来的。</b>规范 8.17 说明这些误码与 BER 监测基于码型发生器和检测器的侵入式测量,
      用于停业务测试;不是业务流量上的 FEC 估计。所以:</p>
   <ul>
-    <li>检测器没在运行的通道显示 <b>off</b>;运行过又停下的,显示它停下时保留的结果并标 <b>held</b>
+    <li>检测器没在运行的通道显示 <b>off</b>;运行过又停下的,显示它停下时保留的结果并标 <b>held</b>(门控测量下再加「undefined if stopped mid-gate」:规范附录 F.2,门控中途停下的计数未定义)
         (Table 8-128–8-130:启用检测器即清零并开始计数,停用即停止并保留)。一个检测器都没开时,表格下方会说明。</li>
     <li>模块声明支持门控结果(<code>13h:129.5</code>)时,另有两行 <b>· last gate</b>,读的是 Selector <code>11h</code>——
         上一个完整门控周期的结果,在下一个周期结束前不变。</li>
@@ -5064,7 +5068,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.197.0<br>
+    CMIS Module Manager 操作手册 v2.198.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
