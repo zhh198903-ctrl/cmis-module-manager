@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.179.0'
+__version__ = '2.180.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1313,6 +1313,14 @@ def _discover_capabilities() -> dict:
             cmis.na_values_advertised(
                 _read_upper(*cmis.REG_CONSOLIDATED_PM),
                 _read_upper(*cmis.REG_FEATURE_DETAILS)[0])
+        # The one advertisement AbnormalFwIndicationFlag has (Lower 8.3,
+        # "Adv."). Without it the bit is no report of anything, and the
+        # Firmware Faults row said "None" for a check it never made.
+        caps['abnormal_fw_indication'] = \
+            bool(caps.get('page_0ch_supported')) and \
+            cmis.abnormal_indication_advertised(
+                _read_upper(*cmis.REG_LOAD_MANAGEMENT),
+                _read_upper(*cmis.REG_FEATURE_DETAILS)[2])
         # Last: which pages exist is decided by advertisements read above, so
         # checking earlier would gate on a capability block that is not
         # filled in yet and quietly skip every page but 00h.
@@ -1778,6 +1786,11 @@ def api_module_status():
         # was read, cleared and forgotten.
         firmware_flags = cmis.parse_module_firmware_flags(mod_flags_raw[0])
         firmware_masks = cmis.parse_module_firmware_flags(mod_masks_raw[0])
+        # 8.3 is "Adv." - 0Ch:194.4 (Table 8-73). Unadvertised, it is None:
+        # not implemented, rather than a check that came back clear.
+        if not _caps.get('abnormal_fw_indication'):
+            firmware_flags['abnormal_fw_flag'] = None
+            firmware_masks['abnormal_fw_flag'] = None
         # And bits 6-7, one per CDB instance the module has (01h:163.7-6).
         _cdb_n = (_caps.get('cdb') or {}).get('instances', 0)
         cdb_complete = cmis.parse_cdb_complete_flags(mod_flags_raw[0], _cdb_n)

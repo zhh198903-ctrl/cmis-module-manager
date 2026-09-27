@@ -33565,6 +33565,10 @@ class TestAFirmwareFaultIsNotForgotten(CMISTestCase):
             '/api/connect',
             data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
             content_type='application/json'))
+        # A module that advertises AbnormalFwIndicationFlag (0Ch:194.4);
+        # without it the bit is reported as not implemented, which is
+        # TestAnUnadvertisedFlagIsNotChecked's subject, not this class's.
+        _state['caps']['abnormal_fw_indication'] = True
 
     def _status(self):
         return self.assertOk(self.client.get('/api/module/status'))['data']
@@ -36881,6 +36885,115 @@ class TestAThresholdNeedsItsMonitor(CMISTestCase):
             man = f.read()
         self.assertIn('阈值卡片那一行显示 <b>no monitor</b>', man)
         self.assertIn('这一行显示 <b>no monitor</b>,不再把那几个字节当成阈值显示', man)
+
+
+class TestAnUnadvertisedFlagIsNotChecked(CMISTestCase):
+    """Table 8-9 types AbnormalFwIndicationFlag (Lower 8.3) "Adv.", and its
+    one advertisement is AbnormalIndicationSupported, 0Ch:194.4 (Table 8-73)
+    - details that "should be ignored" where firmware load management is
+    not advertised (0Ch:162-163). The status read reported the bit either
+    way, and the Firmware Faults row counted it into "None" on modules that
+    have no such check - which none of the demos do. It is now None there,
+    and the row says the check is not implemented. The Page 0Ch details line
+    also printed a missing bit as "X (X is supported)"; it says what the bit
+    is and what full support wants."""
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _status(self):
+        return self.assertOk(self.client.get('/api/module/status'))['data']
+
+    def test_the_advertisement(self):
+        import cmis_registers as c
+        f = c.abnormal_indication_advertised
+        self.assertTrue(f(bytes([0x54, 0x11]), 0x10))
+        self.assertFalse(f(bytes([0x54, 0x11]), 0xE8), '194.4 clear')
+        self.assertFalse(f(bytes([0x00, 0x00]), 0xFF), 'feature not advertised')
+
+    def test_an_unadvertised_flag_is_none(self):
+        self._connect()
+        self.assertIs(_state['caps']['abnormal_fw_indication'], False)
+        poke(0, 0x08, 0x08)                  # the bit set all the same
+        s = self._status()
+        self.assertIsNone(s['firmware_flags']['abnormal_fw_flag'])
+        self.assertIsNone(s['firmware_flag_masks']['abnormal_fw_flag'])
+        self.assertNotIn('abnormal_fw_flag', s['seen'])
+        self.assertIs(s['firmware_flags']['module_firmware_error'], False)
+
+    def test_an_advertised_one_is_read(self):
+        self._connect()
+        poke(0x0C, 0xC2, 0xF8)               # 0Ch:194, AbnormalIndication set
+        # the advertisement is static and read at connect; re-derive it
+        # from the poked byte the way connect does
+        _state['caps']['abnormal_fw_indication'] = \
+            app_module.cmis.abnormal_indication_advertised(
+                app_module._read_upper(*app_module.cmis.REG_LOAD_MANAGEMENT),
+                app_module._read_upper(*app_module.cmis.REG_FEATURE_DETAILS)[2])
+        self.assertIs(_state['caps']['abnormal_fw_indication'], True)
+        poke(0, 0x08, 0x08)
+        self.assertIs(self._status()['firmware_flags']['abnormal_fw_flag'], True)
+
+    def test_without_page_0ch_it_is_none(self):
+        self._connect('mock_dr8')
+        self.assertIs(_state['caps']['abnormal_fw_indication'], False)
+        self.assertIsNone(self._status()['firmware_flags']['abnormal_fw_flag'])
+
+    # ---- the page ----------------------------------------------------------------------------
+    def _node(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function firmwareFlagCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function featureDetails\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_row_says_the_check_is_not_there(self):
+        cell = self._node("firmwareFlagCell({firmware_flags: {module_firmware_error: false,"
+                          " datapath_firmware_error: false, abnormal_fw_flag: null}})")
+        self.assertIn('None', cell)
+        self.assertIn('no firmware-vs-load check (0Ch:194.4)', cell)
+        self.assertNotIn('differs from its load', cell)
+        advertised = self._node("firmwareFlagCell({firmware_flags: {module_firmware_error: false,"
+                                " datapath_firmware_error: false, abnormal_fw_flag: true}})")
+        self.assertIn('Firmware differs from its load', advertised)
+        self.assertNotIn('0Ch:194.4', advertised)
+
+    def test_the_details_line_says_what_the_bit_is(self):
+        line = self._node(
+            "featureDetails({raw: 0xE8, full: false, partial: true, full_per_source: [],"
+            " fields: [{name: 'AbnormalIndicationSupported', value: 0,"
+            " wanted_for_full: 1, meets: false,"
+            " description: 'Abnormal Firmware Indication is supported'}]})")
+        self.assertIn('AbnormalIndicationSupported = 0, full support wants 1 '
+                      '(Abnormal Firmware Indication is supported)', line)
+        zero = self._node(
+            "featureDetails({raw: 0x04, full: false, partial: true, full_per_source: [],"
+            " fields: [{name: 'X', value: 1, wanted_for_full: 0, meets: false,"
+            " description: 'x happens'}]})")
+        self.assertIn('X = 1, full support wants 0 (not: x happens)', zero)
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s7 = man[man.index('id="s7"'):man.index('id="s8"')]
+        self.assertIn('只有模块在 <code>0Ch:194.4</code> 声明支持时才检查', s7)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

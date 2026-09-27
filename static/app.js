@@ -1132,7 +1132,16 @@ function firmwareFlagCell(s) {
     if (seen.includes(k)) return `<span class="flag-was">●<sup>!</sup></span> <span class="text-warning">${FIRMWARE_FLAG_NAMES[k]} since last clear</span>${masked}`;
     return '';
   }).filter(Boolean);
-  return parts.length ? parts.join('<br>') : '<span class="text-success">None</span>';
+  // null: a Flag this module does not implement (AbnormalFwIndicationFlag
+  // without 0Ch:194.4), so "None" above says nothing about it.
+  const unchecked = now.abnormal_fw_flag === null
+    ? ' <span class="reg-meta" title="AbnormalFwIndicationFlag (Lower 8.3) is '
+      + 'advertised by AbnormalIndicationSupported, 0Ch:194.4 (Table 8-73), '
+      + 'and this module does not advertise it">no firmware-vs-load check '
+      + '(0Ch:194.4)</span>'
+    : '';
+  return (parts.length ? parts.join('<br>') : '<span class="text-success">None</span>')
+    + unchecked;
 }
 
 // Lower 8 bits 6-7, one per CDB instance: an event, not a fault, and
@@ -2971,8 +2980,12 @@ function featureDetails(det) {
   if (!bad.length) return head;
   // Named, with what each one would have to be. "Some options are missing"
   // does not tell an operator which capability they do not have.
+  // The description is the meaning of the bit when set, and printed alone
+  // beside a bit that is not set it read as a claim the module makes.
   return head + ' <span class="reg-meta">short of full: '
-    + esc(bad.map(f => f.name + ' (' + f.description + ')').join('; '))
+    + esc(bad.map(f => `${f.name} = ${f.value}, full support wants `
+      + `${f.wanted_for_full} (${f.wanted_for_full ? '' : 'not: '}`
+      + `${f.description})`).join('; '))
     + '</span>';
 }
 

@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 异常固件指示要看声明
+
+`/api/module/status` 的 `firmware_flags.abnormal_fw_flag`(Lower 8 bit 3)只在模块声明 `0Ch:194.4` AbnormalIndicationSupported、且固件加载管理(`0Ch:162-163`)本身被声明时才是 true/false;否则为 `null`——模块没有这项检查,不是「没问题」。
+
 ## 没有的监控,阈值不算数
 
 `GET /api/module/thresholds` 带 `monitors_present`(temperature / vcc / tx_power / tx_bias / rx_power,来自 `01h:159-160`)。Page 02h 的阈值在规范里都是 Cnd.(Table 8-64 / 8-65),为 `false` 的那一组数字不是阈值,页面显示 no monitor。

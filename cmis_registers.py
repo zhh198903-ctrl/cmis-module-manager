@@ -3676,6 +3676,15 @@ def na_values_advertised(pm_adv: bytes, details_byte: int) -> bool:
             and bool(details_byte & 0x80))
 
 
+def abnormal_indication_advertised(load_adv: bytes, details_byte: int) -> bool:
+    """Whether Lower 8.3 AbnormalFwIndicationFlag ("Adv.", Table 8-9) is
+    implemented: firmware load management advertised (0Ch:162-163) and
+    AbnormalIndicationSupported (0Ch:194.4, Table 8-73) set in its details -
+    which are to be ignored where the feature is not supported."""
+    return (parse_feature_advertisement(load_adv)['supported']
+            and bool(details_byte & 0x10))
+
+
 def parse_feature_advertisement(raw: bytes) -> dict:
     """Table 8-71. Byte 0 is the CMIS revision the feature is defined by, and
     zero there means the feature is absent - not "revision 0.0"."""

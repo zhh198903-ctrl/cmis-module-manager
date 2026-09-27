@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.179.0<br>
+      <b>版本</b>　2.180.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.179.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.179.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.180.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.180.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1177,7 +1177,7 @@
         <tr><td>Masked module alarms</td><td class="label">只在有<b>已置位但被屏蔽</b>的模块级标志时出现:这些情况模块在报告,却不会为它们拉起中断线</td><td><code>Lower / 0x1F–0x24</code></td></tr>
         <tr><td>Module State Changes</td><td class="label">ModuleStateChangedFlag:进入 ModuleLowPwr、ModuleReady 或 ModuleFault 时置位(Table 6-9)——复位会点亮,切一次低功耗再回来<b>同样</b>会;保留 ●! 历史</td><td><code>Lower / 0x08[0]</code></td></tr>
         <tr><td>Module Restarts</td><td class="label">由 Host Scratchpad 判断模块是否真的重启过(8.16.13);无法判断时写明原因(见「Module State Changes 与 Module Restarts」)</td><td><code>13h / 0xB8–0xBF</code></td></tr>
-        <tr><td>Firmware Faults</td><td class="label">模块 / DSP 固件错误与异常固件指示(Table 8-9);已读清的保留 ●! 记录,被屏蔽时标 masked</td><td><code>Lower / 0x08[3:1]</code></td></tr>
+        <tr><td>Firmware Faults</td><td class="label">模块 / DSP 固件错误与异常固件指示(Table 8-9);已读清的保留 ●! 记录,被屏蔽时标 masked。异常固件指示是「Adv.」标志,只有模块在 <code>0Ch:194.4</code> 声明支持时才检查,否则格子里注明 no firmware-vs-load check</td><td><code>Lower / 0x08[3:1]</code></td></tr>
         <tr><td>Custom Monitor</td><td class="label">只在模块声明有自定义监控时出现:编码由厂商定义,只显示它的告警 / 警告标志</td><td><code>Lower / 0x0B[7:4]</code></td></tr>
         <tr><td>CDB Command Complete</td><td class="label">只在模块声明支持 CDB(<code>01h:163.7-6</code>)时出现:每个 CDB 实例一项,命令执行完时模块置位(7.2.5.2);已读清的保留 ●! 记录,被屏蔽时标 masked。命令成功与否看 CdbStatus(<code>Lower 37–38</code>)</td><td><code>Lower / 0x08[7:6]</code></td></tr>
       </tbody>
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>模块没声明的异常固件指示,不再算作「没有故障」</h3>
+  <p>Lower 8 bit 3 的 AbnormalFwIndicationFlag 在规范里是「Adv.」(Table 8-9),唯一的声明位是 <code>0Ch:194.4</code> AbnormalIndicationSupported(Table 8-73);而固件加载管理(<code>0Ch:162–163</code>)没声明时,这些细节位按规范「应被忽略」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前不管模块有没有声明,工具都读这一位,Module Info 的 Firmware Faults 行把它一起算进「None」——对一个根本没有这项检查的模块,这个 None 是没做过的检查。内置演示模块都没有声明这一项。</span>
+  </div>
+  <p>现在:没声明时,状态接口里这一位为 <code>null</code>,Firmware Faults 行注明 <b>no firmware-vs-load check (0Ch:194.4)</b>。另外,Page 0Ch 固件加载管理的细节行以前把缺的位写成「X (X is supported)」,读起来像是支持;现在写成「X = 0, full support wants 1 (…)」。</p>
 
   <h3>没有的监控,不再显示它的阈值</h3>
   <p>Page 02h 的温度、Vcc、Tx 光功率、Tx 偏置、Rx 光功率阈值,规范都标为 <b>Cnd.</b>(Table 8-64 / 8-65)——只要求实现了该监控的模块提供。</p>
@@ -4853,7 +4861,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.179.0<br>
+    CMIS Module Manager 操作手册 v2.180.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
