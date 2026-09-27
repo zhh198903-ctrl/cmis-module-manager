@@ -991,6 +991,12 @@ class MockBackend(I2CInterface):
         self._module_state = 0b011      # ModuleReady
         self._reset_time = 0.0
         self._lp_request_time = 0.0
+        # 8.2.14. "The factory default of a Host Password is 0000 1011h"; the
+        # Module Password is the vendor's. Locked on leaving MgmtInit.
+        self._host_password = 0x00001011
+        self._module_password = self.PROFILE.get('module_password', 0x8BADF00D)
+        self._password_host_ok = False     # may the Host Password be changed
+        self._password_result_final = None  # Lower 42 after "in progress"
         self._commands = []               # _ConfigCommand, one per Data Path
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._page_redirects = []         # PageSelects that named a missing page
@@ -2882,6 +2888,36 @@ class MockBackend(I2CInterface):
             lower[0x04 + bank] = byte_val
 
     # ------------------------------------------------------------------
+    def _password_write(self, register, value):
+        """8.2.14, for a size-matched four-byte WRITE - anything else to
+        118-125 is not the access the module has to act on, and is dropped.
+
+        122-125 enters a password: the Host Password (0000 0000h-7FFF FFFFh)
+        or the Module Password (8000 0000h and up) unlocks, anything else
+        locks again. 118-121 changes the Host Password, and only after the
+        current one was entered; "the effect of writing a Module Password
+        value is undefined", so it is not accepted. The outcome goes to
+        Lower 42 (Table 8-17) where the module advertises it, reported as
+        "in progress" to the first READ and settled for the next."""
+        advertised = self.PROFILE.get('misc_features_251', 0xAA)
+        if (advertised >> 4) & 0x03 != 2:          # PasswordEntrySupported
+            return
+        if register == 122:
+            if value == self._host_password:
+                code, self._password_host_ok = 0b0010, True
+            elif value == self._module_password:
+                code, self._password_host_ok = 0b0001, False
+            else:
+                code, self._password_host_ok = 0b0011, False
+        elif self._password_host_ok and value < 0x80000000:
+            self._host_password = value
+            code = 0b0010
+        else:
+            code = 0b0011
+        if (advertised >> 2) & 0x03 == 2:          # PasswordEntryResultSupported
+            self._registers[None][0x2A] = 0b1000
+            self._password_result_final = code
+
     def _intercept_write(self, register, data):
         """Trigger state-machine transitions; return the bytes to actually store.
 
@@ -2889,6 +2925,8 @@ class MockBackend(I2CInterface):
         them still set, matching how a real module behaves.
         """
         if register < 0x80:
+            if register in (118, 122) and len(data) == 4:
+                self._password_write(register, int.from_bytes(data, 'big'))
             if register == 0x1A:
                 ctrl = data[0]
                 if ctrl & 0x08:
@@ -2927,6 +2965,11 @@ class MockBackend(I2CInterface):
                         for a in range(0xB8, 0xC0):
                             regs[a] = 0x00
                     self._registers[None][0x29] = 0x00  # ModuleFaultCause
+                    # Password protection "remain[s] unlocked until ... the
+                    # module is reinitialized" (8.2.14).
+                    self._password_host_ok = False
+                    self._password_result_final = None
+                    self._registers[None][0x2A] = 0x00
                     self._current_page = 0x00
                     self._current_bank = 0x00
                     self._prev_selected = None
@@ -4141,6 +4184,10 @@ class MockBackend(I2CInterface):
         addrs = self._rolled(register, length)
         result = bytes(page_dict.get(a, 0x00) for a in addrs)
         self._clear_on_read(page_dict, register, addrs)
+        if (register < 0x80 and 0x2A in addrs
+                and self._password_result_final is not None):
+            page_dict[0x2A] = self._password_result_final
+            self._password_result_final = None
         return result
 
     @staticmethod

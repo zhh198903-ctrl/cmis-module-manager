@@ -19357,6 +19357,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-189': 'Reset Acquisition Counters (Page 60h)',
         '8-196': 'Media Lane Switching (Page 6Dh)',
         '8-19': 'LowPowerRestrictions Byte',
+        '8-17': 'Miscellaneous Status Information (Lower Memory)',
     }
 
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
@@ -37369,7 +37370,7 @@ class TestEveryApplyTriggerIsWriteOnly(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             man = f.read()
         s11 = man[man.index('id="s11"'):man.index('id="s12"')]
-        self.assertIn('会被拒绝的只有四种', s11)
+        self.assertIn('会被拒绝的只有五种', s11)
         self.assertIn('<li><b>夹带 Apply 触发字节的多字节写</b>', s11)
         self.assertIn('<code>16h:176/177</code>', s11)
 
@@ -38571,6 +38572,230 @@ class TestTheRestOfTable818IsShown(CMISTestCase):
         self.assertEqual(caps['features']['full_page_read_code'], 2)
         got = self._cells([['misc', [caps, 'full_page_read']]])
         self.assertEqual(got[0], 'Supported reads of up to 128 bytes')
+
+
+class TestAPasswordIsEnteredTheWay8214Says(CMISTestCase):
+    """8.2.14: "A password entry register must be written using a
+    size-matched four-byte WRITE access", and "the result of the last
+    password entry or of the last password change ... is eventually
+    indicated in the PasswordCmdResult register 00h:42.3-0". While it reads
+    "validation in progress" the host "should refrain from using password
+    entry registers".
+
+    Raw Registers took any write over 118-125 - both areas in one 8-byte
+    WRITE, or two bytes of one - and never looked at Lower 42, so a
+    password write said nothing about whether it was accepted. Worse, its
+    read-back compared the bytes it wrote with bytes that are WO/SC and read
+    as zero, and reported every password, and every Apply trigger, as
+    refused by the module."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _write(self, address, data):
+        return self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': 0, 'address': address, 'data': data}),
+            content_type='application/json')
+
+    def _enter(self, value, address=122):
+        d = self.assertOk(self._write(address, list(value.to_bytes(4, 'big'))))
+        return d['data']['password']
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    # ---- the rule --------------------------------------------------------------
+
+    def test_only_a_whole_area_is_one_write(self):
+        import cmis_registers as c
+        p = c.password_write_problem
+        for ok in ((118, 4), (122, 4), (114, 4), (126, 1), (117, 1),
+                   (0x80 + 118, 4), (0x80 + 122, 8)):
+            self.assertIsNone(p(*ok), ok)
+        for bad in ((118, 8), (122, 2), (120, 4), (115, 4), (125, 1),
+                    (116, 8), (122, 3), (119, 3), (110, 16)):
+            self.assertIn('size-matched four-byte WRITE', p(*bad), bad)
+
+    def test_the_result_codes_are_table_8_17s(self):
+        import cmis_registers as c
+        r = c.parse_password_result
+        self.assertEqual(r(0x02)['text'],
+                         'host password entry or change has been accepted')
+        self.assertEqual(r(0x01)['text'],
+                         'module password entry or change has been accepted')
+        self.assertEqual(r(0x03)['text'], 'password entry not accepted')
+        self.assertEqual(r(0x00)['text'], 'not supported (legacy before CMIS 5.3)')
+        self.assertIs(r(0x08)['in_progress'], True)
+        self.assertEqual(r(0x05)['text'], 'Reserved (5)')
+        self.assertEqual(r(0xF2)['code'], 2, 'bits 7-4 are Reserved')
+        self.assertEqual([r(x)['accepted'] for x in (0, 1, 2, 3, 8)],
+                         [False, True, True, False, False])
+        self.assertEqual(c.REG_PASSWORD_RESULT, (None, 42, 1))
+
+    def test_a_write_across_the_areas_is_refused_and_not_sent(self):
+        self._connect()
+        seen = []
+        backend = app_module._state['backend']
+        orig = backend.write_bytes
+        backend.write_bytes = lambda a, d: (seen.append(a), orig(a, d))[1]
+        try:
+            for addr, data in ((118, [0, 0, 0x10, 0x11, 0, 0, 0x10, 0x11]),
+                               (122, [0x10, 0x11]), (120, [0, 0, 0x10, 0x11])):
+                resp = self._write(addr, data)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn('size-matched', resp.get_json()['message'])
+        finally:
+            backend.write_bytes = orig
+        self.assertEqual(seen, [])
+
+    # ---- the answer ------------------------------------------------------------
+
+    def test_the_factory_host_password_is_accepted(self):
+        """ "The factory default of a Host Password is 0000 1011h." """
+        self._connect()
+        pw = self._enter(0x00001011)
+        self.assertEqual(pw['result']['code'], 0b0010)
+        self.assertIs(pw['result']['accepted'], True)
+        self.assertEqual(pw['entry_advertised'], 'supported')
+
+    def test_a_wrong_password_and_the_module_password(self):
+        self._connect()
+        self.assertEqual(self._enter(0x12345678)['result']['code'], 0b0011)
+        self.assertEqual(self._enter(0x8BADF00D)['result']['code'], 0b0001)
+
+    def test_the_host_password_changes_only_after_the_current_one(self):
+        self._connect()
+        self.assertEqual(self._enter(0x42, 118)['result']['code'], 0b0011)
+        self.assertEqual(self._enter(0x00001011)['result']['code'], 0b0010)
+        self.assertEqual(self._enter(0x42, 118)['result']['code'], 0b0010)
+        self.assertEqual(self._enter(0x00001011)['result']['code'], 0b0011,
+                         'the old one no longer works')
+        self.assertEqual(self._enter(0x42)['result']['code'], 0b0010)
+        # "The effect of writing a Module Password value is undefined."
+        self.assertEqual(self._enter(0x80000001, 118)['result']['code'], 0b0011)
+
+    def test_a_wrong_password_locks_again(self):
+        self._connect()
+        self._enter(0x00001011)
+        self._enter(0x0BADBEEF)
+        self.assertEqual(self._enter(0x42, 118)['result']['code'], 0b0011)
+
+    def test_a_reset_locks_again(self):
+        """ "... until the module is reinitialized." """
+        self._connect()
+        self._enter(0x00001011)
+        backend = app_module._state['backend']
+        backend.write_bytes(0x1A, bytes([0x08]))
+        app_module._invalidate_page()
+        self.assertEqual(backend.read_bytes(42, 1)[0] & 0x0F, 0)
+        self.assertEqual(self._enter(0x42, 118)['result']['code'], 0b0011)
+
+    def test_in_progress_is_asked_again(self):
+        """The module answers "in progress" to the first READ of Lower 42
+        after the WRITE, and the reply carries the settled answer."""
+        self._connect()
+        backend = app_module._state['backend']
+        reads = []
+        orig = backend.read_bytes
+
+        def spy(a, n):
+            got = orig(a, n)
+            if a == 42:
+                reads.append(got[0])
+            return got
+        backend.read_bytes = spy
+        try:
+            pw = self._enter(0x00001011)
+        finally:
+            backend.read_bytes = orig
+        self.assertEqual(pw['result']['code'], 0b0010)
+        self.assertEqual(reads[-2:], [0b1000, 0b0010])
+
+    def test_a_pending_result_refuses_the_next_password(self):
+        self._connect()
+        backend = app_module._state['backend']
+        backend.poke_bytes(42, bytes([0b1000]))
+        seen = []
+        orig = backend.write_bytes
+        backend.write_bytes = lambda a, d: (seen.append(a), orig(a, d))[1]
+        try:
+            resp = self._write(122, [0, 0, 0x10, 0x11])
+        finally:
+            backend.write_bytes = orig
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('refrain', resp.get_json()['message'])
+        self.assertEqual(seen, [])
+
+    def test_a_result_that_settles_in_time_lets_the_write_go_ahead(self):
+        """"Within a period not exceeding tWRITE": the one before this write
+        is waited for, not refused on sight."""
+        self._connect()
+        backend = app_module._state['backend']
+        backend.poke_bytes(42, bytes([0b1000]))
+        backend._password_result_final = 0b0011
+        self.assertEqual(self._enter(0x00001011)['result']['code'], 0b0010)
+
+    def test_a_module_that_does_not_report_the_result(self):
+        """mock_fr4x2 advertises neither (01h:251 = 55h): nothing is read
+        from Lower 42, and the reply says why there is no answer."""
+        self._connect('mock_fr4x2')
+        backend = app_module._state['backend']
+        reads = []
+        orig = backend.read_bytes
+        backend.read_bytes = lambda a, n: (reads.append(a), orig(a, n))[1]
+        try:
+            pw = self._enter(0x00001011)
+        finally:
+            backend.read_bytes = orig
+        self.assertIsNone(pw['result'])
+        self.assertEqual(pw['entry_advertised'], 'not supported')
+        self.assertNotIn(42, reads)
+        self.assertIs(backend._password_host_ok, False,
+                      'a module without password entry does not act on one')
+
+    def test_other_writes_carry_no_password_answer(self):
+        self._connect()
+        d = self.assertOk(self._write(114, [0, 0, 0, 0]))['data']
+        self.assertNotIn('password', d)
+
+    def test_the_mock_ignores_a_write_that_is_not_size_matched(self):
+        self._connect()
+        backend = app_module._state['backend']
+        backend.write_bytes(118, bytes([0, 0, 0x10, 0x11, 0, 0, 0x10, 0x11]))
+        backend.write_bytes(122, bytes([0x10, 0x11]))
+        self.assertEqual(backend.read_bytes(42, 1)[0], 0)
+        self.assertIs(backend._password_host_ok, False)
+
+    # ---- the page ------------------------------------------------------------
+
+    def test_the_read_back_skips_what_cannot_read_back(self):
+        js = self._js()
+        i = js.index('async function rawWrite(')
+        body = js[i:js.index('\nfunction formatHexDump', i)]
+        self.assertIn('const writeOnly = back.data.write_only || [];', body)
+        self.assertIn('compared.every(i => got[i] === data[i])', body)
+        self.assertIn("'password result (Lower 42): '", body)
+        self.assertIn('PasswordCmdResult (01h:251.3-2)', body)
+        self.assertIn("pwResult.accepted ? 'success' : 'error'", body)
+
+    def test_a_password_read_back_is_all_write_only(self):
+        """What the page gets back for the bytes it just wrote: all four are
+        in a WO/SC block, so nothing is left to compare."""
+        self._connect()
+        self._enter(0x00001011)
+        back = self.assertOk(self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': 0, 'address': 122, 'length': 4}),
+            content_type='application/json'))['data']
+        self.assertEqual(back['data'], [0, 0, 0, 0])
+        self.assertEqual([(b['first'], b['last'], b['access'])
+                          for b in back['write_only']], [(122, 125, 'WO/SC')])
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

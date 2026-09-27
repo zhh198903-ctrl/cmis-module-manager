@@ -34,6 +34,7 @@ REG_MODULE_CONTROL   = (None, 0x1A, 1)   # Module-level control register
 REG_FW_ACTIVE_MAJOR  = (None, 0x27, 1)   # Lower 39: Active FW Major (Table 8-15)
 REG_FW_ACTIVE_MINOR  = (None, 0x28, 1)   # Lower 40: Active FW Minor
 REG_FAULT_CAUSE      = (None, 0x29, 1)   # Lower 41: ModuleFaultCause (Table 8-16)
+REG_PASSWORD_RESULT  = (None, 0x2A, 1)   # Lower 42: [3:0] PasswordCmdResult (Table 8-17)
 # Lower 56-57 (Table 8-18), both RO and Required, and both in the same
 # table as the subtype byte below that this already reads.
 # Lower 31-36 (Table 8-12), the Masks for the module-level Flags at 8-13.
@@ -455,6 +456,46 @@ def _on_this_read(blk_page, page):
     first address judged a read of 7Ch-83h as Lower Memory end to end, and
     never looked at the four page bytes it takes."""
     return blk_page is None or blk_page == page
+
+
+# 8.2.14: "A password entry register must be written using a size-matched
+# four-byte WRITE access" - 118-121 (a new host password) or 122-125 (a
+# password), each on its own.
+PASSWORD_AREAS = (118, 122)
+
+# Table 8-17, Lower 42.3-0. Codes not listed are unassigned.
+PASSWORD_CMD_RESULTS = {
+    0b0000: 'not supported (legacy before CMIS 5.3)',
+    0b0001: 'module password entry or change has been accepted',
+    0b0010: 'host password entry or change has been accepted',
+    0b0011: 'password entry not accepted',
+    0b1000: 'password validation in progress',
+}
+PASSWORD_IN_PROGRESS = 0b1000
+
+
+def password_write_problem(address: int, length: int):
+    """Why a WRITE of `length` bytes at Lower `address` breaks 8.2.14, or
+    None. A WRITE that covers both areas, or part of one, is not the
+    size-matched access the module is required to act on."""
+    if address >= 0x80 or address + length <= 118 or address > 125:
+        return None
+    if length == 4 and address in PASSWORD_AREAS:
+        return None
+    return ('Lower 118-125 are the password registers, and 8.2.14 says each '
+            '"must be written using a size-matched four-byte WRITE access". '
+            'Write the four bytes of 122-125 (a password) or of 118-121 (a '
+            'new host password, after the current one) on their own')
+
+
+def parse_password_result(byte_42: int) -> dict:
+    """Lower 42.3-0, PasswordCmdResult: the outcome of the last WRITE to
+    a password register, "eventually"."""
+    code = byte_42 & 0x0F
+    return {'code': code,
+            'text': PASSWORD_CMD_RESULTS.get(code, 'Reserved (%d)' % code),
+            'in_progress': code == PASSWORD_IN_PROGRESS,
+            'accepted': code in (0b0001, 0b0010)}
 
 
 def write_only_overlap(page, address, length):

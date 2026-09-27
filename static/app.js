@@ -4305,7 +4305,17 @@ async function rawWrite() {
                                { page, address, length: data.length, bank });
     if (back.status === 'ok') {
       const got = back.data.data;
-      const same = got.length === data.length && got.every((b, i) => b === data[i]);
+      // Table 8-3: a WO/SC byte reads back as zero and a WO one as anything,
+      // so for those a read-back is no verdict. Compared anyway, every
+      // password and every Apply trigger was reported as rejected.
+      const writeOnly = back.data.write_only || [];
+      const unreadable = i => writeOnly.some(
+        b => b.first <= address + i && address + i <= b.last);
+      const compared = data.map((_b, i) => i).filter(i => !unreadable(i));
+      const same = got.length === data.length
+        && compared.every(i => got[i] === data[i]);
+      const pw = res.data.password;
+      const pwResult = pw && pw.result;
       dumpEl.textContent =
         `Wrote ${data.length} byte(s) to `
         + `${_rawWhere(page, bank, back.data.banked,
@@ -4317,11 +4327,36 @@ async function rawWrite() {
         + (res.data.writes > 1
            ? `as ${res.data.writes} WRITEs of up to 8 bytes each (5.2.2.2)\n`
            : '')
+        + writeOnly.map(b => 'write-only (' + b.access + '), not compared: '
+                             + _corWhere(b, page) + ' — ' + b.holds + '\n').join('')
+        + (pw
+           ? 'password result (Lower 42): '
+             + (pwResult
+                ? pwResult.text
+                : 'not reported - the module does not advertise '
+                  + 'PasswordCmdResult (01h:251.3-2)')
+             + (pw.entry_advertised && pw.entry_advertised !== 'supported'
+                ? ` - and password entry is ${pw.entry_advertised} (01h:251.5-4)`
+                : '')
+             + '\n'
+           : '')
         + `read back:\n${formatHexDump(got, address)}`;
-      toast(same ? `Written and verified ${data.length} byte(s)`
-                 : 'Write completed but the module reports different values — '
-                   + 'the register may be read-only or the value was clamped',
-            same ? 'success' : 'error', same ? 3000 : 8000);
+      if (pwResult) {
+        toast('Password: ' + pwResult.text,
+              pwResult.accepted ? 'success' : 'error',
+              pwResult.accepted ? 4000 : 8000);
+      } else if (!compared.length) {
+        toast(`Written ${data.length} write-only byte(s) - these do not read back`,
+              'success', 4000);
+      } else {
+        toast(same ? `Written and verified ${compared.length} byte(s)`
+                     + (compared.length < data.length
+                        ? ` (${data.length - compared.length} write-only not compared)`
+                        : '')
+                   : 'Write completed but the module reports different values — '
+                     + 'the register may be read-only or the value was clamped',
+              same ? 'success' : 'error', same ? 3000 : 8000);
+      }
     } else {
       dumpEl.textContent = `Wrote ${data.length} byte(s); read-back failed: ${back.message}`;
       toast(`Written, but read-back failed: ${back.message}`, 'error', 6000);

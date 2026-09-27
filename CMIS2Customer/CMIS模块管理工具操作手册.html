@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.190.0<br>
+      <b>版本</b>　2.191.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.190.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.190.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.191.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.191.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Raw Registers:密码按 8.2.14 写,只写字节不再误报</h3>
+  <p>规范 8.2.14:密码寄存器「必须用大小匹配的 4 字节 WRITE 写入」,结果「最终」报在 PasswordCmdResult(<code>Lower 42</code>),显示「校验中」时主机不应再用密码寄存器。Raw Registers 此前接受任何写法(例如一次 8 字节把两个区都写了),写完也从不看 <code>Lower 42</code>,所以写密码得不到任何结论。更糟的是写后回读比对把只写字节也算进去——密码区和 Apply 触发字节读回来都是 0,于是<b>每次</b>写密码或 Apply 触发都弹出红色「module reports different values」。</p>
+  <p>现在:密码寄存器只接受整 4 字节、只写一个区的写入;写完读 <code>Lower 42</code>,结果显示在转储区和提示里(模块报「校验中」时在 tWRITE 内再问);上一次还在校验中时拒绝新的密码写入。回读比对跳过只写字节,并在转储区列出。演示模块实现了 host / module 密码、修改 host 密码、错误密码或复位后重新锁定。</p>
 
   <h3>Module Info:补上 Table 8-18 和 01h:251 的其余广告</h3>
   <p>规范 Table 8-18(Lower 56–63)里的字段都是必需的(Rqd)。工具此前只显示了 56、57 和 61 的散热器类型:模块子类型(Lower 60)和光纤端面(61 的低两位)连接时读了却没有显示,LowPowerRestrictions(Lower 62,Table 8-19,CMIS 5.3 新增)根本没读;平坦内存模块上 60–62 一个都没读,尽管它们和 56–57 一样在 Lower Memory。Page 01h 的 Table 8-62 也有同样的缺口:<code>01h:251</code> 的四项广告(其中「整页读取」本来就决定着工具按多大的块读)和 <code>01h:252.6</code> 链路训练都没有对应的行。</p>
@@ -4728,7 +4732,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
-    <span>会被拒绝的只有四种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；把 Apply 触发字节（<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code>）夹在多字节写入里（规范要求这些字节单字节 WRITE）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
+    <span>会被拒绝的只有五种：<b>跨页越界</b>（起始地址 + 长度超过 0xFF）；越过 <code>0x7F</code> 的写入（规范 B.1.2：Lower Memory 的地址到 127 回到 0，后面的字节落在 <code>Lower 0x00</code> 起，而不是页里）；把 Apply 触发字节（<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code>）夹在多字节写入里（规范要求这些字节单字节 WRITE）；密码寄存器 <code>Lower 118–125</code> 上不是「整 4 字节、只写一个区」的写入（规范 8.2.14，见下）；以及 <code>Page 9Fh</code> 上超过 8 字节、包含字节 129 的写入（见下）。
     只读与保留字节可以写，但模块会忽略或钳位——那时出现红色回读提示是正常的（见上一节）。</span>
   </div>
 
@@ -4748,18 +4752,40 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
             <td class="label"><b>这不是工具故障。</b>传输成功了，但模块把值改掉或忽略了——
                 最常见的原因是<b>写到了只读或保留字节</b>，其次是模块把超范围的值钳位到了合法区间。
                 写只读寄存器时出现这条提示是正常现象</td></tr>
+        <tr><td><span class="badge badge-ok">绿色</span> Written N write-only byte(s) - these do not read back</td>
+            <td class="label">写的全是只写字节(Apply 触发、密码区等,规范 Table 8-3 的 WO / WO/SC):它们读回来是 0 或任意值,
+                <b>不参与比对</b>,转储区会列出 <code>write-only (…), not compared</code>。部分字节只写时,绿色提示注明有几个没比对。
+                以前这些字节也被拿来比,每次写密码或 Apply 触发都会误报红色</td></tr>
+        <tr><td><span class="badge badge-ok">绿色</span> / <span class="badge badge-danger">红色</span> Password: …</td>
+            <td class="label">写的是密码寄存器时,结果来自 <code>Lower 42</code>(PasswordCmdResult,Table 8-17),转储区也写明
+                <code>password result (Lower 42): …</code>。被接受(host / module password)为绿色,<code>password entry not accepted</code>
+                为红色。模块没声明支持这个结果寄存器(<code>01h:251.3-2</code>)时写明「not reported」</td></tr>
       </tbody>
     </table>
   </div>
-  <p>另有四种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
+  <p>另有五种情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
   <ul>
     <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
     <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
     <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
         不会进入上页，而是落在 <code>Lower 0x00</code> 起；途中写到的 <code>0x7F</code> 还会改掉页选择。从 <code>0x7F</code> 开始写两个字节也一样。
         工具直接拒绝，提示 <code>would run past 0x7F</code>，要求你<b>拆成两次写</b></li>
+    <li><b>密码寄存器没按整 4 字节写</b>：<code>Lower 118–121</code>(新的 host 密码)和 <code>122–125</code>(输入密码)
+        规范 8.2.14 要求「必须用大小匹配的 4 字节 WRITE 写入」。从 118 一次写 8 字节、只写 2 字节、或从 120 开始写,
+        都提示 <code>size-matched four-byte WRITE</code>。上一次密码还在校验中(<code>Lower 42</code> 显示 in progress)
+        时,工具最多等 tWRITE(10 ms),仍未出结果就拒绝这次密码写入(409),因为规范要求主机在结果出来之前不要使用密码寄存器</li>
     <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范（Rev 5.0 起）规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
   </ul>
+  <h4>写密码</h4>
+  <p>规范 8.2.14 的密码是 32 位大端数。<code>0000 0000h–7FFF FFFFh</code> 是 host 密码(出厂默认 <code>0000 1011h</code>,主机可改),
+     <code>8000 0000h</code> 以上是 module 密码(厂商定义,主机不能改)。在 Raw Registers 里:</p>
+  <ul>
+    <li>输入密码:Page 任意(Lower Memory),Address <code>0x7A</code>,Data 如 <code>00 00 10 11</code></li>
+    <li>修改 host 密码:先输入正确的当前 host 密码,再在 Address <code>0x76</code> 写新密码的 4 个字节</li>
+    <li>写入后结果区显示 <code>Lower 42</code> 的结果。输入错误的密码会重新锁上;模块复位后也回到锁定状态</li>
+  </ul>
+  <p>演示模块按这些规则工作(module 密码为 <code>8BAD F00D</code>);2× 400GBASE-FR4 演示模块(mock_fr4x2)声明不支持密码输入,写了也没有结果。</p>
+
   <div class="callout callout-danger">
     <span class="callout-icon">✕</span>
     <span><b>警告：</b>直接写寄存器可能影响模块正常工作，请在熟悉 CMIS 规范的前提下操作。
@@ -5012,7 +5038,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.190.0<br>
+    CMIS Module Manager 操作手册 v2.191.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

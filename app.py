@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.190.0'
+__version__ = '2.191.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -6055,6 +6055,18 @@ def api_register_write():
                             'the bytes around it separately'
                             % (sb_page, sb_addr, sb_name), 400)
 
+        problem = cmis.password_write_problem(address, len(data))
+        if problem:
+            return _err(problem, 400)
+        password = address in cmis.PASSWORD_AREAS
+        features = (_state.get('caps') or {}).get('features') or {}
+        with_result = features.get('password_entry_result') == 'supported'
+        if password and with_result and _password_result()['in_progress']:
+            return _err('Lower 42 says the last password WRITE is still being '
+                        'validated, and 8.2.14 has the host "refrain from '
+                        'using password entry registers" until the result is '
+                        'available. Try again in a moment', 409)
+
         err = _check_bank(page, address, bank)
         if err:
             return err
@@ -6075,9 +6087,33 @@ def api_register_write():
             # Said, because it is not one transaction: a register array
             # written in pieces is not written atomically (5.2.5.2).
             'writes': writes,
+            # The bytes of a password register read back as zero (WO/SC), so
+            # a read-back says nothing; Lower 42 is where the module answers.
+            **({'password': {
+                'entry_advertised': features.get('password_entry'),
+                'result': _password_result() if with_result else None,
+            }} if password else {}),
         })
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _password_result() -> dict:
+    """Lower 42.3-0 (Table 8-17) - the outcome of the last password WRITE.
+
+    8.2.14: the module reports it "eventually", may refuse a READ of the
+    byte until it has - which the WRITE hold-off retry already covers - and
+    does so "within a period not exceeding tWRITE". So "in progress" is
+    asked again until that period has passed, and reported as it stands if
+    it is still the answer then.
+    """
+    deadline = time.monotonic() + cmis.TIMING_SECONDS['tWRITE']
+    while True:
+        result = cmis.parse_password_result(
+            _read_lower(*cmis.REG_PASSWORD_RESULT[1:])[0])
+        if not result['in_progress'] or time.monotonic() >= deadline:
+            return result
+        time.sleep(0.001)
 
 
 # ---------------------------------------------------------------------------
