@@ -2192,7 +2192,7 @@ class MockBackend(I2CInterface):
         defaults: a module that happened to land on the same numbers would
         hide the very distinction these registers exist to report.
         """
-        return self._profile.get('acs_si', {
+        acs = self._profile.get('acs_si', {
             0xD6: 1,      # adaptive Tx equalization on
             0xD9: 0,      # so the host-controlled target is not in use
             0xDD: 1,      # Tx CDR enabled on every lane - the staged set
@@ -2201,7 +2201,13 @@ class MockBackend(I2CInterface):
             0xDF: 1,      # a pre-cursor the Application asks for
             0xE3: 0,
             0xE7: 1,      # amplitude code 1
-        }).get(active, 0)
+        })
+        # 6.2.5.2: with pre-cursor control only (01h:162.4-3 = 01b) the
+        # single setting lives in the post-cursor fields and the pre-cursor
+        # ones are ignored. The pre-only demo kept it in the ignored bytes.
+        if (self._profile.get('si_162', 0x1F) >> 3) & 0x03 == 1:
+            acs = {**acs, 0xE3: acs.get(0xDF, 0), 0xDF: 0}
+        return acs.get(active, 0)
 
     def _lane_value(self, page: int, base: int, lane: int, bits: int) -> int:
         """One lane's field, for the 1, 2 and 4 bit widths CMIS packs per lane.
@@ -3923,8 +3929,12 @@ class MockBackend(I2CInterface):
         checks = []
         if (b161 >> 2) & 1:                     # 161.2 host-controlled Tx eq
             checks.append((0x9C, b153 & 0x0F))
+        # 6.2.5.2: with pre-cursor control only, the setting is in the
+        # post-cursor fields and the pre-cursor ones are ignored - so those
+        # are the bytes held to the pre-cursor maximum.
         if eq in (1, 3):
-            checks.append((0xA2, b154 & 0x0F))          # pre-cursor max
+            checks.append((0xA2 if eq == 3 else 0xA6,
+                           b154 & 0x0F))                # pre-cursor max
         if eq in (2, 3):
             checks.append((0xA6, (b154 >> 4) & 0x0F))   # post-cursor max
         p10 = self._registers.get(0x10, {})

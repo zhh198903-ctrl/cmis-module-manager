@@ -36477,6 +36477,93 @@ class TestTheBiasColumnSaysItsUnit(CMISTestCase):
         self.assertNotIn('通道编号（1–8）', man)
 
 
+class TestAPreCursorOnlyModuleUsesThePostBytes(CMISTestCase):
+    """6.2.5.2: a module that advertises a single Rx output emphasis setting
+    (01h:162.4-3 = 01b pre-cursor only, or 10b post-cursor only) takes it
+    from the OutputEqPostCursorTargetRx fields "and ignores the
+    OutputEqPreCursorTargetRx fields"; Table 8-84 has the pre-cursor fields
+    "Used only when both pre- and post-cursor targets are supported". The
+    page's note said so, and the Rx EQ Pre column read the ignored bytes -
+    staged and in force. The SR8 demo, pre-cursor only, kept its setting in
+    the ignored bytes too and checked those on Apply, so the two agreed."""
+
+    def _connect(self, backend='mock_sr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return _state['backend']
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def test_the_staged_setting_is_read_from_the_post_bytes(self):
+        self._connect()
+        poke(0x10, 0xA6, 0x32)                  # lanes 1-2 of the post bytes
+        poke(0x10, 0xA2, 0x77)                  # the ignored pre bytes
+        d = self._dp()
+        self.assertEqual(d['si_advertised']['rx_output_eq_control'], 1)
+        self.assertEqual(d['signal_integrity']['rx_eq_pre_cursor'][:2], [2, 3])
+        self.assertNotIn('rx_eq_post_cursor', d['signal_integrity'])
+
+    def test_the_setting_in_force_likewise(self):
+        self._connect()
+        poke(0x11, 0xDF, 0x55)                  # the ignored pre bytes
+        d = self._dp()
+        self.assertEqual(d['signal_integrity_active']['rx_eq_pre_cursor'],
+                         [1] * 8)
+
+    def test_both_advertised_reads_both(self):
+        self._connect('mock_dr8')
+        poke(0x10, 0xA2, 0x21)
+        poke(0x10, 0xA6, 0x43)
+        d = self._dp()
+        self.assertEqual(d['si_advertised']['rx_output_eq_control'], 3)
+        self.assertEqual(d['signal_integrity']['rx_eq_pre_cursor'][:2], [1, 2])
+        self.assertEqual(d['signal_integrity']['rx_eq_post_cursor'][:2], [3, 4])
+        poke(0x11, 0xDF, 0x21)
+        self.assertEqual(self._dp()['signal_integrity_active']
+                         ['rx_eq_pre_cursor'][:2], [1, 2])
+
+    # ---- the demo ----------------------------------------------------------------------------
+    def test_the_demo_keeps_the_single_setting_in_the_post_bytes(self):
+        b = self._connect()
+        self.assertEqual([b._registers[0x11].get(0xE3 + i) for i in range(4)],
+                         [0x11] * 4)
+        self.assertEqual([b._registers[0x11].get(0xDF + i) for i in range(4)],
+                         [0] * 4)
+        b = self._connect('mock_dr8')
+        self.assertEqual(b._registers[0x11].get(0xDF), 0x11,
+                         'both advertised: the pre bytes are the pre-cursor')
+
+    def test_the_demo_judges_the_post_bytes(self):
+        b = self._connect()
+        ceiling = b._registers[0x01][0x9A] & 0x0F
+        self.assertLess(ceiling, 15)
+        b._registers[0x10][0xA2] = 0x0F         # ignored
+        b._registers[0x10][0xA6] = ceiling
+        self.assertFalse(b._invalid_si([0]))
+        b._registers[0x10][0xA6] = ceiling + 1
+        self.assertTrue(b._invalid_si([0]))
+
+    # ---- the page ----------------------------------------------------------------------------
+    def test_the_page_points_at_the_post_bytes(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("c[0] === 'rx_eq_pre_cursor' && adv.rx_output_eq_control === 1", js)
+        self.assertIn("? [c[0], c[1], '10h / 0xA6–0xA9', 'OutputEqPostCursorTargetRx, '", js)
+        self.assertIn('the pre-cursor bytes are ignored (6.2.5.2), so Rx EQ Pre shows', js)
+
+    def test_the_manual_says_it(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        self.assertIn('<b>Rx EQ Pre</b> 一列读的就是这几个字节', man)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

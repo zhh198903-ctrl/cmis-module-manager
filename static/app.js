@@ -3144,7 +3144,16 @@ function renderSignalIntegrity(d) {
   // 01h:161.6-5 counts buffers and 10h:154-155 numbers them, and that is one
   // fact about the specification, not one about the table.
   const recallUnadvertised = d.si_recall_unadvertised || [];
-  const cols = SI_COLUMNS.filter(([key]) => Array.isArray(si[key]));
+  // 6.2.5.2: with pre-cursor control only (01h:162.4-3 = 01b) the module
+  // takes that setting from the post-cursor bytes and ignores 10h:162-165,
+  // so that is where the server read it and where the column points.
+  const cols = SI_COLUMNS.filter(([key]) => Array.isArray(si[key]))
+    .map(c => c[0] === 'rx_eq_pre_cursor' && adv.rx_output_eq_control === 1
+      ? [c[0], c[1], '10h / 0xA6–0xA9', 'OutputEqPostCursorTargetRx, '
+        + 'carrying the pre-cursor target: this module advertises pre-cursor '
+        + 'control only (01h:162.4-3 = 01b), and 6.2.5.2 has it use the '
+        + 'post-cursor fields for its single setting and ignore 10h:162-165']
+      : c);
 
   if (!cols.length) {
     head.innerHTML = '';
@@ -3322,7 +3331,9 @@ function renderSignalIntegrity(d) {
     // pre-cursor target instead (Table 8-84), so the address alone lies.
     if (adv.rx_output_eq_control === 1) {
       notes.push(esc('This module advertises pre-cursor control only: the '
-        + 'post-cursor bytes carry the pre-cursor target')
+        + 'post-cursor bytes (10h:166-169) carry the pre-cursor target and '
+        + 'the pre-cursor bytes are ignored (6.2.5.2), so Rx EQ Pre shows '
+        + 'those')
         + ' <span class="reg-meta">01h:162.4-3</span>');
     }
     // Table 8-54 defines 11b as reserved, so the module has not said how many

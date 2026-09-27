@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.175.0<br>
+      <b>版本</b>　2.176.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.175.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.175.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.176.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.176.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1652,7 +1652,7 @@
     <code>CDREnableRx</code> 清零的含义是该通道的 CDR 被<b>旁路</b>，信号不再被重定时。<br>
     二是当模块<b>只声明前游标</b>控制时，按规范（Table 8-84）
     <b>后游标那几个字节里装的是前游标目标值</b>——
-    照地址直接叫它“post-cursor”就错了。遇到这种模块表上会先提醒。</span>
+    照地址直接叫它“post-cursor”就错了。遇到这种模块表上会先提醒,<b>Rx EQ Pre</b> 一列读的就是这几个字节(<code>10h:166–169</code>,生效值在 <code>11h:227–230</code>),模块会忽略的前游标字节(<code>10h:162–165</code>)不读(规范 6.2.5.2)。</span>
   </div>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
@@ -1733,6 +1733,14 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>只声明前游标控制的模块:Rx EQ Pre 读对字节</h3>
+  <p>规范 6.2.5.2:模块只支持一个输出均衡设置时(<code>01h:162.4-3</code> 为 01b「只有前游标」或 10b「只有后游标」),这个设置<b>都放在后游标字段</b>(OutputEqPostCursorTargetRx),<b>前游标字段被忽略</b>;Table 8-84 也写明前游标字段「只在两者都支持时使用」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具的提醒一直写着「后游标字节装的是前游标目标值」,Rx EQ Pre 一列读的却是被忽略的前游标字节(<code>10h:162–165</code> / <code>11h:223–226</code>)。演示模块 SR8 正是只声明前游标的模块,它也把生效值放在了被忽略的字节里,两边错得一致,所以没被发现。</span>
+  </div>
+  <p>现在:只声明前游标时,Rx EQ Pre 的暂存值和生效值都从后游标字节读,列标题写 <code>10h / 0xA6–0xA9</code>;两者都声明时照旧。演示模块 SR8 按规范把生效值放进后游标字节,Apply 时也按后游标字节检查是否超过前游标上限。</p>
 
   <h3>Tx Bias 列标题写出本模块的刻度</h3>
   <p>规范 Table 8-99:LaserBiasTx 以「2 µA 为单位,再乘以 Table 8-53 的倍率」——倍率在 <code>01h:160.4-3</code>(×1 / ×2 / ×4)。工具换算读数时一直乘了倍率,但 Monitoring 表 Tx Bias 列的标题固定写着 <code>uint16×2µA</code>,在 ×2、×4 的模块上(内置的相干可调谐演示模块就是 ×2)一个计数其实是 4 µA 或 8 µA。</p>
@@ -4817,7 +4825,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.175.0<br>
+    CMIS Module Manager 操作手册 v2.176.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

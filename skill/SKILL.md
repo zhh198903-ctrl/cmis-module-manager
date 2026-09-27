@@ -611,6 +611,10 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 只有前游标的模块,前游标在后游标字节里
+
+`01h:162.4-3` 为 01b(只支持前游标)时,规范 6.2.5.2 规定这个单一设置放在后游标字段(`10h:166-169`,生效值 `11h:227-230`),前游标字段(`10h:162-165`)被模块忽略。`GET /api/module/datapath` 的 `signal_integrity.rx_eq_pre_cursor` 和 `signal_integrity_active.rx_eq_pre_cursor` 在这种模块上就是从后游标字节读的;自己用 `register/write` 写前游标目标时也要写后游标字节。
+
 ## Tx 偏置的刻度
 
 `GET /api/module/monitoring` 的 `tx_bias_ma` 已乘好倍率;回复里的 `tx_bias_scale` 是 `01h:160.4-3` 的倍率(1 / 2 / 4,保留值 11b 时为 `null`,此时 `tx_bias_scale_unknown` 为 true、读数为 `null`)。自己用 `register/read` 读 `11h:170-185` 时,一个计数 = 2 µA × 这个倍率(Table 8-99)。
