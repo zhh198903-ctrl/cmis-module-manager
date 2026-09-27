@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.201.0'
+__version__ = '2.202.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1082,6 +1082,21 @@ def _read_nad_applications(media_type: int = 0x02):
     for bank in range(banks):
         out += cmis.parse_nad_block(
             _read_upper(page, addr, length, bank), bank, media_type)
+    return out
+
+
+def _nad_block_indices(reg) -> list:
+    """Per-lane NAD Block index, every lane Bank: the Staged Control Set's
+    from 18h:128-135 (Table 8-166), or the Active Control Set's from
+    19h:144-151 (Table 8-171). None on a module without Normalized
+    Application Descriptors: both are "Condition: Page 1Ch supported", and
+    01h:175 is what says it is.
+    """
+    if not ((_state.get('caps') or {}).get('nad') or {}).get('banks'):
+        return None
+    out = []
+    for _bank, raw in _read_banks(*reg):
+        out += list(raw)
     return out
 
 
@@ -2910,6 +2925,12 @@ def api_datapath_get():
         for _bank, raw in _read_banks(*cmis.REG_ACTIVE_APP_SELECT):
             active_app_select += cmis.unpack_appselect(raw)
             active_dpconfig += cmis.unpack_dpconfig(raw)
+        # 6.2.1.7: on a module with NADs the AppSel code is half of which
+        # Application a lane has; the other half is its NAD Block, AN = 15 *
+        # block + AppSel. Showing the code alone named the basic Application
+        # with that code whatever Block the module was on.
+        staged_nad = _nad_block_indices(cmis.REG_SCS0_NAD_BLOCK)
+        active_nad = _nad_block_indices(cmis.REG_ACS_NAD_BLOCK)
 
         # Table 8-106: the Active Control Set having been updated is not the
         # same as the hardware running it. DPInitPending says a Provision has
@@ -2945,6 +2966,10 @@ def api_datapath_get():
                     if i < len(staged_dpconfig) else False),
                 'active_app_select': (active_app_select[i]
                                       if i < len(active_app_select) else 0),
+                'staged_nad_block': (staged_nad[i] if staged_nad is not None
+                                     and i < len(staged_nad) else None),
+                'active_nad_block': (active_nad[i] if active_nad is not None
+                                     and i < len(active_nad) else None),
                 # 11h:206-213 bits 3-1 and bit 0 (Table 8-102).
                 'active_dpidx': (active_dpconfig[i]['dpidx']
                                  if i < len(active_dpconfig) else None),
@@ -3135,6 +3160,7 @@ def api_datapath_get():
             'explicit_control_lanes': [
                 i + 1 for i, d in enumerate(active_dpconfig)
                 if d['explicit_control']],
+            'nad_supported': staged_nad is not None,
             # Where each Application may begin, and whether what is staged
             # right now breaks that. Published rather than re-derived in the
             # page: the grouping is the server's, and two answers to which
@@ -3567,14 +3593,15 @@ def _whole_datapaths(masks: list, app_select: list,
 
 
 def _lanes_needing_apply(old_sel: list, new_sel: list,
-                         host_lanes_by_app: dict) -> set:
+                         host_lanes_by_app: dict, also=()) -> set:
     """Lanes whose Data Path has a changed staged configuration.
 
     Both groupings matter: a lane leaving one Data Path disturbs the one it
-    left as well as the one it joined.
+    left as well as the one it joined. `also` are lanes changed some other
+    way - a new NAD Block with the same AppSel code is a new Application.
     """
     changed = {i for i in range(len(new_sel))
-               if i < len(old_sel) and old_sel[i] != new_sel[i]}
+               if i < len(old_sel) and old_sel[i] != new_sel[i]} | set(also)
     if not changed:
         return set()
     out = set()
@@ -3600,7 +3627,7 @@ def api_datapath_set():
         bad = _reject_unknown(body, ('tx_disable_mask', 'tx_polarity_flip_mask',
                                      'rx_polarity_flip_mask', 'app_select',
                                      'dp_deinit_mask', 'apply',
-                                     'apply_immediate'))
+                                     'apply_immediate', 'nad_block'))
         if bad:
             return bad
 
@@ -3688,6 +3715,16 @@ def api_datapath_set():
         app_select = body.get('app_select',
                               prev_app_select[:_state['lanes']]
                               or [1] * _state['lanes'])
+        # AppSelCode is DPConfigLane bits 7-4 (Table 8-81): packing took the
+        # low four bits of whatever came, so 99 was staged as AppSel 3 and
+        # reported written.
+        if (not isinstance(app_select, list)
+                or len(app_select) > _state['lanes']
+                or any(isinstance(v, bool) or not isinstance(v, int)
+                       or not 0 <= v <= 15 for v in app_select)):
+            return _err('app_select is one AppSel code per lane (at most %d), '
+                        'each 0-15: DPConfigLane bits 7-4, Table 8-81'
+                        % _state['lanes'], 400)
         host_lanes_by_app = {}
         # Bound before the try: the lane-start check below needs the
         # descriptors, and an unbound name there would turn a module whose
@@ -3702,6 +3739,46 @@ def api_datapath_set():
                 host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
             pass
+
+        # 6.2.1.7: with NADs a lane stages its AppSel code in the NAD Block
+        # 18h:128-135 names. The dropdown offers the basic Applications,
+        # which are Block 0, so a lane given a new code gets Block 0 with it
+        # - leaving the Block alone staged Application 15 * block + code
+        # instead of the one chosen. A lane whose code is unchanged keeps
+        # its Block, so a Normalized Application staged some other way is not
+        # quietly swapped for the basic one sharing its code.
+        nad_now = _nad_block_indices(cmis.REG_SCS0_NAD_BLOCK)
+        nad_block, nad_changed = None, set()
+        asked = body.get('nad_block')
+        if 'nad_block' in body:
+            if nad_now is None:
+                return _err('This module has no Normalized Application '
+                            'Descriptors (01h:175 is 0), so there is no NAD '
+                            'Block to stage (18h:128-135)', 400)
+            if not isinstance(asked, list) or len(asked) != _state['lanes']:
+                return _err('nad_block is one entry per lane (%d): 0, the '
+                            'Block the lane already has, or null to decide '
+                            'from app_select' % _state['lanes'], 400)
+        if nad_now is not None:
+            nad_block = []
+            for i in range(_state['lanes']):
+                want = asked[i] if asked is not None else None
+                if want is None:
+                    same = (i >= len(app_select) or (
+                        i < len(prev_app_select)
+                        and prev_app_select[i] == app_select[i]))
+                    nad_block.append(nad_now[i] if same else 0)
+                elif (isinstance(want, int) and not isinstance(want, bool)
+                        and want in (0, nad_now[i])):
+                    nad_block.append(want)
+                else:
+                    return _err('Lane %d: NAD Block %r. This tool stages the '
+                                'basic Applications (Block 0) or keeps the '
+                                'Block a lane already has (%d); it does not '
+                                'select Normalized Applications from other '
+                                'Blocks' % (i + 1, want, nad_now[i]), 400)
+            nad_changed = {i for i in range(_state['lanes'])
+                           if nad_block[i] != nad_now[i]}
 
         refused = _refuse_unsupported((
             ('output_disable_tx', tx_disable),
@@ -3785,7 +3862,7 @@ def api_datapath_set():
             # an unchanged table is a request to re-commission, and quietly
             # doing nothing would take that away.
             need = _lanes_needing_apply(prev_app_select, app_select,
-                                        host_lanes_by_app)
+                                        host_lanes_by_app, nad_changed)
             if not need:
                 need = set(range(_state['lanes']))
             # Section 6.2.4 names two ways an Apply is thrown away without a
@@ -3888,6 +3965,11 @@ def api_datapath_set():
         # a released path came up on the Application it had before.
         going_down = [dp_deinit[b] & ~deinit_now[b] for b in range(banks)]
         releasing = [deinit_now[b] & ~dp_deinit[b] for b in range(banks)]
+        if nad_changed:
+            for bank in range(banks):
+                _set_page(0x18, bank)
+                _bus_write(cmis.REG_SCS0_NAD_BLOCK[1],
+                           bytes(nad_block[bank * 8:bank * 8 + 8]))
         for bank in range(banks):
             _set_page(0x10, bank)
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
@@ -3970,6 +4052,7 @@ def api_datapath_set():
                     'apply_immediate': bool(apply_now),
                     'held_until_ready': held_until_ready,
                     'kept_deinit': kept_deinit,
+                    'nad_block': nad_block,
                     'tx_takes_down': takes_down})
     except _LaneMaskError as e:
         return _err(str(e), 400)

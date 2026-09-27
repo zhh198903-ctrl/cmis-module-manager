@@ -3010,16 +3010,30 @@ async function loadDatapath() {
       const lanes = (d.app_lane_starts || {})[String(sel)];
       return lanes && lanes.length ? ` · begins on ${lanes.join(', ')}` : '';
     };
+    // A lane staged in another NAD Block has an Application this list (Block
+    // 0) does not hold. Kept as it is, and named, rather than shown as the
+    // basic Application that happens to share its code.
+    const stagedBlock = lane.staged_nad_block || 0;
+    const nadAttr = b => d.nad_supported ? ` data-nad="${b}"` : '';
     const opts = _advertisedApps.length
       ? _advertisedApps.map(a =>
-          `<option value="${a.app_sel}" ${lane.app_select === a.app_sel ? 'selected' : ''}>`
+          `<option value="${a.app_sel}"${nadAttr(0)} `
+          + `${lane.app_select === a.app_sel && !stagedBlock ? 'selected' : ''}>`
           + `App ${a.app_sel} — ${a.media_if_name || hex8(a.media_if_id)} `
           + `${esc(laneCountPair(a))}${esc(startsOn(a.app_sel))}`
           + `${a.np_application ? ' · NP Application (Host Path)' : ''}</option>`)
       : Array.from({length: 15}, (_, i) =>
           `<option value="${i + 1}" ${lane.app_select === i + 1 ? 'selected' : ''}>App ${i + 1}</option>`);
-    opts.unshift(`<option value="0" ${lane.app_select === 0 ? 'selected' : ''}>`
+    opts.unshift(`<option value="0"${nadAttr(0)} ${lane.app_select === 0 ? 'selected' : ''}>`
                  + `— unused (AppSel 0) —</option>`);
+    if (stagedBlock && lane.app_select) {
+      opts.unshift(`<option value="${lane.app_select}"${nadAttr(stagedBlock)} selected `
+        + `title="${esc('18h:' + hex8(0x80 + i % 8) + bankOf + ' stages NAD Block '
+          + stagedBlock + ' (Table 8-166). This list is Block 0, the basic '
+          + 'Applications; this lane keeps its Application unless you choose '
+          + 'another.')}">`
+        + `${esc(appName(lane.app_select, stagedBlock))} — kept</option>`);
+    }
     // A lane can sit on a code the module no longer advertises; keep it
     // visible rather than silently snapping the dropdown to another value.
     if (lane.app_select && !_advertisedApps.some(a => a.app_sel === lane.app_select)) {
@@ -3045,7 +3059,11 @@ async function loadDatapath() {
     const active = lane.active_app_select;
     // "App 0" is the misreading 6.2.3.2 exists to prevent: 0000b is not an
     // Application, it is the absence of one.
-    const appName = n => n ? 'App ' + n : 'no Application';
+    // 6.2.1.7: on a module with NADs the Application is the code in its NAD
+    // Block, AN = 15 * block + AppSel. Block 0 is the basic list.
+    const appName = (n, block) => !n ? 'no Application'
+      : block ? `AN ${15 * block + n} (NAD Block ${block}, AppSel ${n})`
+      : 'App ' + n;
     // 6.2.3.2.1: "The host must assign lanes to Data Paths in accordance
     // with the Lane Assignment Options field advertised by the module for
     // that Application." The marker goes on the lane a Data Path *begins*
@@ -3094,13 +3112,16 @@ async function loadDatapath() {
         + `${d.media_lanes_are_nominal ? ' (nominal)' : ''}</div>`
       : '';
     const stale = active !== lane.app_select
+        || (lane.active_nad_block || 0) !== (lane.staged_nad_block || 0)
       ? `<div class="appsel-mismatch" title="${esc(
           'Staged (Page 10h:' + hex8(0x91 + i % 8) + bankOf + ') asks for '
-          + appName(lane.app_select)
+          + appName(lane.app_select, lane.staged_nad_block)
           + ', but the Active Control Set (Page 11h:' + hex8(0xCE + i % 8) + bankOf
-          + ') says the module is running ' + appName(active)
+          + (d.nad_supported ? ', NAD Block on 19h:' + hex8(0x90 + i % 8) : '')
+          + ') says the module is running '
+          + appName(active, lane.active_nad_block)
           + '. The module did not accept the staged configuration.')}">`
-        + `running ${appName(active)}</div>`
+        + `running ${appName(active, lane.active_nad_block)}</div>`
       : '';
     // Table 8-106: with DPInitPending set, a Provision has copied the staged
     // set into the Active Control Set but the transit through DPInit that
@@ -3724,6 +3745,7 @@ function _datapathGroupOf(groups, lane) {
 // than left to fail silently.
 async function applyDatapath(immediate) {
   const app_select = [];
+  const nad_block = [];
   // One mask byte per bank of eight lanes: a 16-lane module needs two, and
   // sending a single byte would silently configure only the first half.
   const banks = Math.ceil(AppState.lanes / 8);
@@ -3737,6 +3759,9 @@ async function applyDatapath(immediate) {
     if (!appSel || !txEn) continue;
     // A disabled box reads as unchecked, which for Tx enable means "disable
     // this output" - the opposite of what the module is doing.
+    // 18h:128-135 on a module with NADs: the Block goes with the choice.
+    const nad = appSel.selectedOptions[0]?.dataset.nad;
+    nad_block.push(nad === undefined ? null : parseInt(nad, 10));
     if (txEn.disabled) { app_select.push(parseInt(appSel.value, 10)); continue; }
     app_select.push(parseInt(appSel.value, 10));
     const b = Math.floor((i - 1) / 8), bit = (i - 1) % 8;
@@ -3758,6 +3783,7 @@ async function applyDatapath(immediate) {
     app_select,
     tx_polarity_flip_mask: tx_pol_mask,
     rx_polarity_flip_mask: rx_pol_mask,
+    ...(nad_block.some(b => b !== null) ? { nad_block } : {}),
     ...(immediate ? { apply_immediate: true } : { apply: true }),
   });
 
@@ -4065,8 +4091,9 @@ async function loadApplications() {
         + `to <b>${nad.max_applications} Applications</b>. The table above is `
         + 'the basic descriptors only; the full list is below. This tool '
         + 'cannot yet provision an Application outside the first block: '
-        + 'that needs the NADBlockIndex in the Staged Control Set '
-        + '(18h:128\u2013143), which it does not write.'
+        + 'it stages the basic Applications with NADBlockIndex 0 '
+        + '(18h:128\u2013135) and keeps the Block a lane already has, but '
+        + 'does not select another.'
       : '';
   }
   renderNAD(res.data);

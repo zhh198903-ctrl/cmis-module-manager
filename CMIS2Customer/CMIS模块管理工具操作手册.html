@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.201.0<br>
+      <b>版本</b>　2.202.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.201.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.201.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.202.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.202.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,17 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>带 NAD 的模块:Application 按「块号 + AppSel」暂存和显示;AppSel 超出 0–15 被拒绝</h3>
+  <p>规范 6.2.1.7 和 8.21.1:模块支持 Normalized Application Descriptor(NAD,Page 1Ch)时,一条通道的 Application 是它的 AppSel 码<b>加上 NAD 块号</b>,AN = 15 × 块号 + AppSel。暂存的块号在 <code>18h:128–135</code>(Table 8-166),运行中的在 <code>19h:144–151</code>(Table 8-171),两者都是「Page 1Ch 支持时必有」。工具此前只读写 AppSel 码:某条通道暂存的块号不是 0 时,在 DataPath 下拉框里选一个基本 Application(块 0),模块实际暂存的是块号不变、同一 AppSel 码的另一个 Application;面板把运行中的 AN 16 也显示成「App 1」。演示模块(24 通道)声明了 NAD,却没有这两页。</p>
+  <p>现在:</p>
+  <ul>
+    <li>DataPath 接口每条通道多了 <code>staged_nad_block</code> / <code>active_nad_block</code>,回复里有 <code>nad_supported</code>;没有 NAD 的模块两个值都是 <code>null</code>,也不去读这两页。</li>
+    <li>在下拉框里改选 Application 的通道,块号一并写成 0;AppSel 没变的通道保留原来的块号,不会把别人暂存的 NAD Application 悄悄换成同码的基本 Application。接口可以显式给 <code>nad_block</code>(每条通道 0、原块号或 null),其它值在写入任何东西之前被拒绝(400)。块号从非 0 改回 0 也算配置变化,会对那条数据通道 Apply。</li>
+    <li>暂存在其它块的通道,下拉框顶部显示「AN n (NAD Block b, AppSel c) — kept」并选中;运行中与暂存不一致时,「running …」同样写出 AN 和块号。</li>
+    <li>演示模块补上了 Page 18h / 19h(每个 bank 一份):Apply 把暂存块号带进 Active Control Set;块里没有的 AppSel 回 ConfigRejectedInvalidAppSel(3h);不同块的同一 AppSel 按各自的描述符判宽度。</li>
+    <li>另外:<code>app_select</code> 以前不做检查——99 会取低 4 位、当成 AppSel 3 写进去并回报成功,字符串则得到 500。现在每条通道必须是 0–15 的整数、条数不超过通道数,否则 400,什么都不写。</li>
+  </ul>
 
   <h3>Network Path 应用(NP)单独标出,通道数按网络通路计算</h3>
   <p>规范 8.19.5.3:支持 Network Path 应用的模块,要在 <code>16h:248–249</code>(Table 8-158,ExtAppDescriptor)里逐个声明每个 AppSel 是 DP 应用还是 NP 应用;<code>01h:142.7</code> 声明模块有 Page 16h。7.6.4:NP 应用的描述符是「部分」的——每个起点是一条 <b>Host Path</b>,若干条 Host Path 复用同一条 <b>Network Path</b>(媒体侧)。工具此前从不读这两个字节,把 NP 应用当成普通数据通道;而主机 / 媒体通道数把每个起点都算成一条自带媒体通道的数据通道,所以 NP 应用没有被更宽的 DP 应用盖住时,媒体通道数会多算:附录 H 表 H-6 的模块去掉两个 400G 应用后,显示 8 / 6,实际是 8 / 5。</p>
@@ -2877,7 +2888,7 @@ Read anyway?</pre>
   </div>
   <p>块 0 <b>必须</b>是基本描述符的镜像(6.2.1.6.2)。工具会逐条核对,不一致就标出来——这意味着模块在同一个 AppSel 码下通告了两个不同的 Application。核对时<b>不能简单地比相等</b>:GID 非零时基本描述符里本来就应该是 BEh,把这种情况报成不一致,等于说每个做对了的模块都是坏的。</p>
   <p class="note">另外,NAD 的第 5 字节第 7 位是 NetworkPathIndicator:这条描述符描述的可能是 <b>Network Path 而不是 Data Path</b>(8.19.5.3),这一行会标上 NP。</p>
-  <p class="note"><b>目前的限制</b>:工具能读全部 NAD,但还<b>不能配置块 0 以外的 Application</b>——那需要往 Staged Control Set 的 NADBlockIndex(18h:128-143)里写值,工具尚未写这个字段。面板上如实写明了这一点。</p>
+  <p class="note"><b>目前的限制</b>:工具能读全部 NAD,但还<b>不能选用块 0 以外的 Application</b>。它读写 Staged Control Set 的 NADBlockIndex(<code>18h:128-135</code>):在 DataPath 下拉框里改选基本 Application 时写 0,AppSel 没变的通道保留原块号;运行中的块号读自 <code>19h:144-151</code>,面板上以 AN 显示。面板上如实写明了这一点。</p>
 
   <h3>每通道数据通路时延(Page 15h)</h3>
   <p>规范 8.18 / Table 8-141 在 Page 15h 给出每条主机通道穿过模块的总时延,单位纳秒:</p>
@@ -3556,10 +3567,10 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     现在：模块声明了 NAD，Applications 表下面会明确写出
     <b>有几个 bank、最多可能有多少条 Application、它们在 Page 1Ch</b>，
     并且直说<b>这张表只是基本描述符</b>。<br>
-    有一点特意<b>没有</b>做：工具<b>不读 Page 1Ch</b>，
-    也<b>不能</b>去投运一条放在那里的 Application——
+    有一点特意<b>没有</b>做：工具<b>不能</b>去投运一条放在块 0 以外的 Application——
     选中那样一条还需要把它的 <b>NAD 块号</b>写进暂存控制集
-    （<code>18h:128–143</code>）。
+    （<code>18h:128–135</code>）；工具只写 0（改选基本 Application 时），
+    或者保留通道原有的块号。Page 1Ch 的内容后来已能读出并列在表里。
     <b>假装能用比原来的沉默更糟</b>，所以这里只把话说清楚，
     不做「支持了」的样子。</span>
   </div>
@@ -4279,6 +4290,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         <tr><td>AppSelect</td><td class="label">应用码选择。下拉<b>只列出该模块实际广播的应用</b>（通常 1–8 个），格式为
             <code>App 2 — 0x4F/0x1B 4H/4M</code>，依次是应用码、主机/媒体接口 ID、主机与媒体 lane 数；
             NP 应用(见 9.2)的那一项末尾注明 <code>NP Application (Host Path)</code>。
+            带 NAD 的模块上,暂存在块 0 以外的通道顶部多一项 <code>AN n (NAD Block b, AppSel c) — kept</code>(<code>18h:128–135</code>);改选其它 Application 时块号写成 0。
             若某 lane 当前停在模块已不再广播的应用码上，会额外出现一条只读的
             <code>App n — not advertised</code> 用于保留现值。
             寄存器本身：DPConfigLane，每 lane 1 字节，bits[7:4]=AppSelCode（0 表示"无应用"，不是 App 0），
@@ -5085,7 +5097,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.201.0<br>
+    CMIS Module Manager 操作手册 v2.202.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

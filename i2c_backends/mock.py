@@ -942,10 +942,10 @@ class _ConfigCommand:
     port wait behind a busy one, and then dropped it.
     """
     __slots__ = ('time', 'mask', 'hot', 'provision_only', 'result', 'staged',
-                 'release')
+                 'release', 'nad')
 
     def __init__(self, started, mask, hot, provision_only, result, staged,
-                 release=False):
+                 release=False, nad=None):
         self.time = started
         self.mask = mask                      # lanes this command selected
         self.hot = hot                        # ApplyImmediate rather than DPInit
@@ -956,6 +956,9 @@ class _ConfigCommand:
         # through DPInit commissions the Active Control Set, and there is no
         # command whose result ConfigStatus would report.
         self.release = release
+        # 18h:128-135 as the trigger saw them: with NADs the Application is
+        # the AppSel code in its NAD Block (6.2.1.7).
+        self.nad = nad
 
 
 class MockBackend(I2CInterface):
@@ -1749,6 +1752,14 @@ class MockBackend(I2CInterface):
                 if bank == 0:
                     regs[0x1C] = p1c
 
+        # ==== Pages 18h / 19h - NAD Block indices (8.21.1, 8.22.2) ====
+        # "Condition: Page 1Ch supported". SCS0 and SCS1 on 18h:128-143, RW;
+        # the Active Control Set's on 19h:144-151, RO. Block 0 is the basic
+        # Applications, which is what every lane starts on here.
+        if nad_blocks:
+            regs[0x18] = {a: 0x00 for a in range(0x80, 0x90)}
+            regs[0x19] = {a: 0x00 for a in range(0x90, 0x98)}
+
         # ==== Page 15h - Timing Characteristics (8.18, Table 8-141) ====
         # 128-223 Reserved; 224-239 Rx latency, 240-255 Tx latency, both
         # 8 x U16 nanoseconds by host lane. Banked below with the other
@@ -1886,7 +1897,7 @@ class MockBackend(I2CInterface):
         lane_count = p.get('lanes', 8)
         if lane_count > 8:
             for bank in range(1, (lane_count + 7) // 8):
-                for page in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                for page in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18, 0x19,
                              0x60, 0x61, 0x62, 0x6D):
                     if page not in regs:
                         continue
@@ -2425,10 +2436,13 @@ class MockBackend(I2CInterface):
         Data Path transitions differ between them."""
         if cmd.release:
             return                           # nothing staged, nothing to report
+        p19 = self._registers.get(0x19)
         for i in range(8):
             if ((cmd.mask >> i) & 1) and cmd.result[i] == 0x1:
                 self._registers[0x11][0xCE + i] = cmd.staged[i]
                 self._provision_si(i, cmd.staged[i] & 0x01)
+                if p19 is not None and cmd.nad is not None:
+                    p19[0x90 + i] = cmd.nad[i]
         # DPIDX is RO in the Active Control Set (Table 8-102): "the Data Path
         # Index (DPIDX) of that Data Path: DPID (lowest numbered lane of Data
         # Path)". The module works it out from what it provisioned; copying
@@ -2481,7 +2495,8 @@ class MockBackend(I2CInterface):
             # Validation and execution both act on the Staged Control Set as
             # it stood when the trigger arrived. Reading 10h again at the
             # completion step would commit whatever was staged since.
-            [self._registers[0x10].get(0x91 + i, 0x10) for i in range(8)])
+            [self._registers[0x10].get(0x91 + i, 0x10) for i in range(8)],
+            nad=self._staged_nad_blocks())
         self._commands.append(cmd)
         # 8.14.7: DPInitPending is set by the Provision, so it stands from
         # here until a transit through DPInit clears it. ApplyImmediate
@@ -3467,6 +3482,10 @@ class MockBackend(I2CInterface):
             if not (mask >> lane) & 1:
                 continue
             p11b[0xCE + lane] = p10b.get(0x91 + lane, p11b.get(0xCE + lane, 0))
+            p18b = self._registers.get((0x18, bank))
+            p19b = self._registers.get((0x19, bank))
+            if p18b is not None and p19b is not None:
+                p19b[0x90 + lane] = p18b.get(0x80 + lane, 0)
             a, sh = 0xCA + lane // 2, 4 * (lane % 2)
             p11b[a] = (p11b.get(a, 0) & ~(0x0F << sh)) | (0x1 << sh)
         self._recompute_dpidx(p11b)
@@ -4001,21 +4020,28 @@ class MockBackend(I2CInterface):
         """
         staged = [(self._registers[0x10].get(0x91 + i, 0x10) >> 4) & 0x0F
                   for i in range(8)]
+        # 6.2.1.7: with NADs the Application is the AppSel code in the NAD
+        # Block 18h names, so a code is looked up in that block - block 0
+        # being the basic descriptors it mirrors.
+        blocks = self._staged_nad_blocks() or [0] * 8
         apps = self._profile['app_descriptors']
+        nads = self._profile.get('nad_blocks') or []
         groups, i = [], 0
         while i < 8:
-            code, j = staged[i], i
-            while j < 8 and staged[j] == code:
+            code, block, j = staged[i], blocks[i], i
+            while j < 8 and staged[j] == code and blocks[j] == block:
                 j += 1
             run = list(range(i, j))
             i = j
+            listed = apps if block == 0 else (
+                nads[block] if block < len(nads) else [])
             if code == 0:
                 groups += [([lane], 0x1, 0) for lane in run]
-            elif code > len(apps):
+            elif code > len(listed):
                 groups.append((run, 0x3, code))
             else:
-                width = (apps[code - 1][2] >> 4) & 0x0F
-                allowed = apps[code - 1][3]
+                width = (listed[code - 1][2] >> 4) & 0x0F
+                allowed = listed[code - 1][3]
                 k = 0
                 while k < len(run):
                     if (width and k + width <= len(run)
@@ -4039,6 +4065,14 @@ class MockBackend(I2CInterface):
                      (raw[lane] >> 1) & 0x07 != lanes[0] for lane in lanes)
                  else code, appsel)
                 for lanes, code, appsel in groups]
+
+    def _staged_nad_blocks(self):
+        """18h:128-135, SCS0's NAD Block index per lane of bank 0; None on a
+        module without Page 1Ch, where there is no such register."""
+        p18 = self._registers.get(0x18)
+        if p18 is None:
+            return None
+        return [p18.get(0x80 + i, 0) for i in range(8)]
 
     def _validate_staged_appsel(self, mask, subset_ok=False):
         """Per-lane ConfigStatus nibble for the Staged Control Set (Table 8-101).
@@ -4346,7 +4380,7 @@ class MockBackend(I2CInterface):
                | set(range(118, 128))),                     # passwords, page mapping
         0x00: set(), 0x01: set(), 0x02: set(), 0x04: set(), 0x0C: set(),
         0x0D: set(range(132, 136)),                          # Table 8-76
-        0x11: set(), 0x1C: set(), 0x61: set(), 0x62: set(),
+        0x11: set(), 0x19: set(), 0x1C: set(), 0x61: set(), 0x62: set(),
         # 168-199 CurrentLaserFrequency and 222-238 status/Flags are RO.
         0x12: set(range(128, 168)) | set(range(200, 218)) | set(range(239, 247)),
         0x13: set(range(144, 256)),                          # 128-143 advertise

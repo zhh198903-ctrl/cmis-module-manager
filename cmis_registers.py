@@ -264,6 +264,13 @@ REG_MEDIA_LANE_ASSIGN  = (0x01, 0xB0, 15)  # 176-190 App 1-15, Table 8-60
 # Rqd. on a module with Page 16h (01h:142.7); without it every descriptor
 # is a DP Application.
 REG_NP_EXT_APP         = (0x16, 0xF8, 2)   # 248-249 ExtAppDescriptor<i>
+# 6.2.1.7: with Normalized Application Descriptors an Application is its
+# AppSel code and a NAD Block index, AN = 15 * block + AppSel. Both
+# registers carry "Condition: Page 1Ch supported" and are banked by lane:
+# 18h:128-135 is Table 8-166,
+# 19h:144-151 is Table 8-171.
+REG_SCS0_NAD_BLOCK     = (0x18, 0x80, 8)   # 128-135 SCS0::NADBlockIndex<lane>
+REG_ACS_NAD_BLOCK      = (0x19, 0x90, 8)   # 144-151 ACS::NADBlockIndex<lane>
 REG_ACS_TX_ADAPT_EQ    = (0x11, 0xD6, 1)  # 214 AdaptiveInputEqEnableTx
 REG_ACS_TX_EQ_RECALLED = (0x11, 0xD7, 2)  # 215-216 AdaptiveInputEqRecalledTx
 REG_ACS_TX_EQ_TARGET   = (0x11, 0xD9, 4)  # 217-220 HostControlledInputEqTargetTx

@@ -674,6 +674,11 @@ Apply 那次读取清掉的其它标志(包括 `wavelength_unlocked`)都记在 `
 `POST /api/module/datapath` 写 `10h:145-152` 时,每条通道的 DPIDX(bit 3-1)写成它所在数据通路的最低通道号减 1(按 Application 宽度分组,Bank 内计),ExplicitControl 保留原值(6.2.3.2.2、Table 8-102)。
 自己用 `register/write` 暂存 2×400G 这类多个数据通路时,通道 5–8 的 DPIDX 要写 4,全写 0 会得到 ConfigRejectedInvalidDataPath。
 
+## 带 NAD 的模块:Application 是「块号 + AppSel」
+
+模块声明了 Page 1Ch(`01h:175` > 0)时,一条通道的 Application 是 AppSel 码加 NAD 块号,AN = 15 × 块号 + AppSel(6.2.1.7)。`GET /api/module/datapath` 每条通道带 `staged_nad_block`(`18h:128-135`)和 `active_nad_block`(`19h:144-151`),回复带 `nad_supported`;没有 NAD 的模块都是 `null`。`POST /api/module/datapath` 改了 AppSel 的通道块号写 0(下拉框列的是块 0 的基本 Application),没改的保留;可以显式给 `nad_block`(每条通道 0、原块号或 null),工具不会选用块 0 以外的其它 Application。用户说「面板写 App 1,模块却跑着别的」时先看 `active_nad_block`——非 0 就是 AN 15b+1。
+`app_select` 每条通道必须是 0-15 的整数,条数不超过通道数,否则 400、什么都不写。
+
 ## 环回写入会读回
 
 `POST /api/module/loopback` 写完逐个 Bank 读回(8.16.12:模块可以拒绝不支持的环回设置,寄存器不变)。没收下时回 409,`rejected[]` 里是 `bank` / `control` / `written` / `read`。

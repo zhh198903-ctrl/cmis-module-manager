@@ -9274,7 +9274,7 @@ class TestALaneCarryingNoApplication(CMISTestCase):
 
     def test_a_lane_running_nothing_is_not_called_app_zero(self):
         js = self._js()
-        self.assertIn("const appName = n => n ? 'App ' + n : 'no Application'",
+        self.assertIn("const appName = (n, block) => !n ? 'no Application'",
                       js, '0000b is the absence of an Application, not App 0')
 
     def test_the_mismatch_warning_fires_on_a_freed_lane(self):
@@ -12838,9 +12838,10 @@ class TestTheApplicationsBeyondTheFirstFifteen(CMISTestCase):
 
         The reading half is done. The provisioning half is not: selecting an
         Application outside block 0 needs the NADBlockIndex in the Staged
-        Control Set, which this tool does not write. Dropping that sentence
-        along with the other one would turn an honest limit into a silent
-        one, which is the failure the original note was written against."""
+        Control Set, which this tool writes only as Block 0 (or leaves as it
+        is). Dropping that sentence along with the other one would turn an
+        honest limit into a silent one, which is the failure the original
+        note was written against."""
         js = self._js()
         self.assertNotIn('this tool does not read Page 1Ch', js)
         note = js[js.index('advertises <b>'):]
@@ -19238,6 +19239,9 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     VERIFIED_CMIS = {
         '6-3': 'Configuration Commands (Intervention-Free Reconfiguration Procedures Supported)',
         '8-158': 'NP Extended Application Advertisement (Page 16h)',
+        '8-81': 'Staged Data Path Configuration per Lane (DPConfigLane<i>)',
+        '8-166': 'Staged Control Set 0 - Normalized Application Descriptor Block Indices (Page 18h)',
+        '8-171': 'Active Control Set - Normalized Application Descriptor Block Indices (Page 19h)',
         '6-4': 'Configuration Commands (Intervention-Free Reconfigurations Not Supported)',
         '6-5': 'Tx Input Eq control relationship to AdaptiveInputEqEnableTx',
         '8-4': 'Lower Memory Overview',
@@ -22937,8 +22941,9 @@ class TestTheApplicationsThatDoNotFitInFifteen(CMISTestCase):
     def test_the_panel_still_states_the_provisioning_limit(self):
         """Reading them is not provisioning them: selecting an Application
         outside block 0 needs the NADBlockIndex in the Staged Control Set,
-        which this tool does not write. Dropping that sentence along with the
-        other one would turn an honest limit into a silent one."""
+        which this tool writes only as Block 0 (or leaves as it is). Dropping
+        that sentence along with the other one would turn an honest limit
+        into a silent one."""
         js = self._js()
         self.assertIn('18h:128', js)
         self.assertIn('cannot yet provision', js)
@@ -40132,6 +40137,282 @@ class TestNetworkPathApplicationsAreToldApart(CMISTestCase):
         i = js.index('const opts = _advertisedApps.length')
         self.assertIn("a.np_application ? ' · NP Application (Host Path)'",
                       js[i:i + 700])
+
+
+class TestTheNadBlockGoesWithTheApplication(CMISTestCase):
+    """6.2.1.7 and 8.21.1: with Normalized Application Descriptors "the
+    relevant Normalized Application Descriptor Block must be identified" -
+    a lane's Application is its AppSel code in its NAD Block, staged in
+    18h:128-135 (Table 8-166) and active in
+    19h:144-151 (Table 8-171). AN = 15 * block + AppSel. Both are
+    "Condition: Page 1Ch supported".
+
+    The tool read and wrote only the AppSel code. On a lane whose staged
+    Block was not 0, choosing a basic Application from the dropdown staged
+    the Normalized one sharing its code, and the panel showed a lane
+    running Application 16 as "App 1". The demo module with NADs had
+    neither page. Separately, app_select was not checked: 99 went down as
+    AppSel 3 and was reported written."""
+
+    def _connect(self, backend='mock_24lane'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    def _stage_block(self, backend, block, lanes=range(8)):
+        for i in lanes:
+            backend._registers[0x18][0x80 + i] = block
+
+    def _settle_config(self):
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            lanes = self.assertOk(self.client.get(
+                '/api/module/monitoring'))['data']['lanes']
+            if all(l['config_status_code'] != 0xC for l in lanes):
+                return lanes
+            time.sleep(0.1)
+        self.fail('ConfigInProgress did not end')
+
+    # ---- the registers ------------------------------------------------------
+
+    def test_the_registers(self):
+        import cmis_registers as c
+        self.assertEqual(c.REG_SCS0_NAD_BLOCK, (0x18, 128, 8))
+        self.assertEqual(c.REG_ACS_NAD_BLOCK, (0x19, 144, 8))
+
+    def test_a_module_with_nads_reports_both_blocks(self):
+        self._connect()
+        d = self._dp()
+        self.assertTrue(d['nad_supported'])
+        self.assertEqual(len(d['lanes']), 24)
+        self.assertEqual({(l['staged_nad_block'], l['active_nad_block'])
+                          for l in d['lanes']}, {(0, 0)})
+
+    def test_a_module_without_nads_has_no_block(self):
+        """And neither page is read."""
+        self._connect('mock_dr8')
+        seen = []
+        orig = app_module._set_page
+
+        def spy(page, bank=0):
+            seen.append(page)
+            return orig(page, bank)
+        app_module._set_page = spy
+        try:
+            d = self._dp()
+        finally:
+            app_module._set_page = orig
+        self.assertFalse(d['nad_supported'])
+        self.assertEqual({(l['staged_nad_block'], l['active_nad_block'])
+                          for l in d['lanes']}, {(None, None)})
+        self.assertFalse({0x18, 0x19} & set(seen))
+
+    def test_every_lane_bank_is_read(self):
+        backend = self._connect()
+        backend._registers[(0x18, 2)][0x80 + 3] = 1
+        backend._registers[(0x19, 1)][0x90 + 0] = 1
+        lanes = self._dp()['lanes']
+        self.assertEqual(lanes[19]['staged_nad_block'], 1)      # lane 20
+        self.assertEqual(lanes[8]['active_nad_block'], 1)       # lane 9
+        self.assertEqual(lanes[0]['staged_nad_block'], 0)
+
+    # ---- staging --------------------------------------------------------------
+
+    def test_a_basic_application_is_staged_in_block_0(self):
+        """The case that went wrong: Block 1 staged, basic App 2 chosen."""
+        backend = self._connect()
+        deactivated(self.client)
+        self._stage_block(backend, 1)
+        sel = [2] * 8 + [1] * 16
+        d = self.assertOk(self._post(app_select=sel, apply=True))['data']
+        self.assertEqual(d['nad_block'][:8], [0] * 8)
+        self.assertEqual([backend._registers[0x18][0x80 + i] for i in range(8)],
+                         [0] * 8)
+        lanes = self._settle_config()
+        self.assertEqual({l['config_status_code'] for l in lanes[:8]}, {0x1})
+        dp = self._dp()
+        self.assertEqual([l['active_app_select'] for l in dp['lanes'][:8]],
+                         [2] * 8)
+        self.assertEqual([l['active_nad_block'] for l in dp['lanes'][:8]],
+                         [0] * 8)
+
+    def test_an_unchanged_code_keeps_its_block(self):
+        """A Normalized Application staged some other way is not swapped for
+        the basic one sharing its code by a write that did not touch it."""
+        backend = self._connect()
+        self._stage_block(backend, 1)
+        d = self.assertOk(self._post(tx_polarity_flip_mask=[1, 0, 0]))['data']
+        self.assertEqual(d['nad_block'][:8], [1] * 8)
+        self.assertEqual([backend._registers[0x18][0x80 + i] for i in range(8)],
+                         [1] * 8)
+
+    def test_a_block_can_be_set_back_to_0_and_that_is_a_change(self):
+        """The dropdown's basic entry with the same code: Block 0 is a
+        different Application, so the Data Path is Applied."""
+        backend = self._connect()
+        deactivated(self.client)
+        self._stage_block(backend, 1)
+        d = self.assertOk(self._post(
+            app_select=[1] * 24, nad_block=[0] * 24, apply=True))['data']
+        self.assertEqual(d['nad_block'][:8], [0] * 8)
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_only_block_0_or_the_one_staged(self):
+        backend = self._connect()
+        self._stage_block(backend, 1)
+        for bank in (1, 2):
+            backend._registers[(0x18, bank)].update(
+                {0x80 + i: 1 for i in range(8)})
+        before = [backend._registers[0x10].get(0x91 + i) for i in range(8)]
+        for bad in ([2] + [0] * 23, [1] * 24 + [0], [0] * 23, [True] * 24,
+                    'x', ['1'] + [0] * 23):
+            rv = self._post(app_select=[1] * 24, nad_block=bad,
+                            tx_polarity_flip_mask=[1, 0, 0])
+            self.assertErr(rv, 400)
+        self.assertEqual([backend._registers[0x10].get(0x91 + i)
+                          for i in range(8)], before)
+        self.assertEqual(backend._registers[0x10].get(0x81, 0) & 1, 0,
+                         'a refused request wrote the polarity')
+        # Keeping the one staged, or null, is fine.
+        self.assertOk(self._post(app_select=[1] * 24,
+                                 nad_block=[1] * 8 + [None] * 16))
+
+    def test_a_short_app_select_keeps_the_rest(self):
+        backend = self._connect()
+        self._stage_block(backend, 1)
+        d = self.assertOk(self._post(app_select=[1, 1]))['data']
+        self.assertEqual(d['nad_block'][:8], [1] * 8)
+
+    def test_a_module_without_nads_refuses_a_block(self):
+        self._connect('mock_dr8')
+        rv = self._post(app_select=[1] * 8, nad_block=[0] * 8)
+        self.assertErr(rv, 400)
+        self.assertIn('01h:175', json.loads(rv.data)['message'])
+
+    # ---- the mock -------------------------------------------------------------
+
+    def _apply_raw(self, backend, block, code):
+        self._stage_block(backend, block)
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x91, bytes([(code << 4) | 0] * 8))
+        backend.write_bytes(0x8F, bytes([0xFF]))
+        app_module._invalidate_page()
+        return self._settle_config()
+
+    def test_the_mock_looks_the_code_up_in_its_block(self):
+        """Block 1 of the demo has three Applications; the first is eight
+        lanes wide, like basic App 1."""
+        backend = self._connect()
+        deactivated(self.client)
+        lanes = self._apply_raw(backend, 1, 1)
+        self.assertEqual({l['config_status_code'] for l in lanes[:8]}, {0x1})
+        self.assertEqual([backend._registers[0x19][0x90 + i] for i in range(8)],
+                         [1] * 8)
+
+    def test_a_code_only_its_block_has_is_valid(self):
+        """The basic list has two Applications; Block 1 has three."""
+        backend = self._connect()
+        deactivated(self.client)
+        lanes = self._apply_raw(backend, 1, 3)
+        self.assertEqual({l['config_status_code'] for l in lanes[:8]}, {0x1})
+
+    def test_lanes_in_different_blocks_are_different_applications(self):
+        """Block 1's AppSel 2 is four lanes wide; Block 2's is eight, so
+        four lanes of it are not an instance."""
+        backend = self._connect()
+        deactivated(self.client)
+        self._stage_block(backend, 1, range(4))
+        self._stage_block(backend, 2, range(4, 8))
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x91, bytes([0x20] * 4 + [0x28] * 4))
+        backend.write_bytes(0x8F, bytes([0xFF]))
+        app_module._invalidate_page()
+        codes = [l['config_status_code'] for l in self._settle_config()[:8]]
+        self.assertEqual(codes, [0x1] * 4 + [0x4] * 4)
+
+    def test_a_code_its_block_does_not_have_is_invalid_appsel(self):
+        backend = self._connect()
+        deactivated(self.client)
+        lanes = self._apply_raw(backend, 1, 4)        # Block 1 holds 1-3
+        self.assertEqual({l['config_status_code'] for l in lanes[:8]}, {0x3})
+        lanes = self._apply_raw(backend, 9, 1)        # there is no Block 9
+        self.assertEqual({l['config_status_code'] for l in lanes[:8]}, {0x3})
+        self.assertEqual([backend._registers[0x19][0x90 + i] for i in range(8)],
+                         [0] * 8)
+
+    def test_the_active_blocks_are_read_only(self):
+        backend = self._connect()
+        app_module._set_page(0x19, 0)
+        backend.write_bytes(0x90, bytes([5] * 8))
+        app_module._invalidate_page()
+        self.assertEqual([backend._registers[0x19][0x90 + i] for i in range(8)],
+                         [0] * 8)
+
+    def test_a_later_bank_takes_its_own_block(self):
+        backend = self._connect()
+        backend._registers[(0x18, 1)].update({0x80 + i: 1 for i in range(8)})
+        app_module._set_page(0x10, 1)
+        backend.write_bytes(0x8F, bytes([0xFF]))
+        app_module._invalidate_page()
+        self.assertEqual([backend._registers[(0x19, 1)][0x90 + i]
+                          for i in range(8)], [1] * 8)
+
+    # ---- app_select ----------------------------------------------------------
+
+    def test_app_select_is_a_four_bit_code_per_lane(self):
+        backend = self._connect('mock_dr8')
+        before = [backend._registers[0x10].get(0x91 + i) for i in range(8)]
+        for bad in ([99] * 8, [16] * 8, [-1] * 8, [True] * 8, 'x', [1] * 9,
+                    ['1'] * 8, [1.0] * 8, 5):
+            rv = self._post(app_select=bad)
+            self.assertErr(rv, 400)
+            self.assertIn('0-15', json.loads(rv.data)['message'])
+        self.assertEqual([backend._registers[0x10].get(0x91 + i)
+                          for i in range(8)], before)
+        self.assertOk(self._post(app_select=[1] * 8))
+
+    # ---- the page -------------------------------------------------------------
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_page_names_the_application_with_its_block(self):
+        js = self._js()
+        self.assertIn("block ? `AN ${15 * block + n} (NAD Block ${block}, "
+                      "AppSel ${n})`", js)
+        self.assertIn("appName(active, lane.active_nad_block)", js)
+        self.assertIn("|| (lane.active_nad_block || 0) !== "
+                      "(lane.staged_nad_block || 0)", js)
+
+    def test_the_dropdown_keeps_a_lane_staged_in_another_block(self):
+        js = self._js()
+        i = js.index('const stagedBlock = lane.staged_nad_block || 0;')
+        body = js[i:i + 2500]
+        self.assertIn("&& !stagedBlock ? 'selected'", body)
+        self.assertIn("if (stagedBlock && lane.app_select) {", body)
+        self.assertIn('${nadAttr(stagedBlock)} selected', body)
+
+    def test_apply_sends_the_block_with_the_choice(self):
+        js = self._js()
+        start = js.index('async function applyDatapath(immediate) {')
+        body = js[start:js.index('\n}\n', start)]
+        self.assertIn("appSel.selectedOptions[0]?.dataset.nad", body)
+        self.assertIn("nad_block.push(nad === undefined ? null : "
+                      "parseInt(nad, 10));", body)
+        self.assertIn("...(nad_block.some(b => b !== null) ? { nad_block } : {})",
+                      body)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
