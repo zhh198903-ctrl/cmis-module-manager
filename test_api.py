@@ -20001,9 +20001,9 @@ class TestUnknownIsSaidOnlyWhereTheToolDoesNotKnow(CMISTestCase):
         import cmis_registers as c
         names = [c.media_if_tech_name(n) for n in (0x12, 0x13, 0x14)]
         self.assertEqual(len(set(names)), 3, names)
-        self.assertIn('near-far end', names[0])
-        self.assertTrue(names[1].startswith('Copper far end'), names[1])
-        self.assertTrue(names[2].startswith('Copper near end'), names[2])
+        self.assertIn('near end and far end', names[0])
+        self.assertTrue(names[1].startswith('Copper cable with far end'), names[1])
+        self.assertTrue(names[2].startswith('Copper cable with near end'), names[2])
 
     def test_the_media_if_tech_boundary(self):
         """14h is the last defined code; 15h-FFh is Reserved."""
@@ -39244,6 +39244,45 @@ class TestCode00hIsNamedNotUnknown(CMISTestCase):
         apps = self.assertOk(self.client.get('/api/module/applications'))[
             'data']['applications']
         self.assertEqual(apps[0]['media_if_name'], 'Undefined')
+
+
+class TestTheMediaTechnologyNamesAreTable841s(CMISTestCase):
+    """00h:212 is decoded by Table 8-41, and the Module Info row cites it.
+    The names were short forms - "Copper unequalized" for "Copper cable,
+    passive, unequalized", "1310 nm DFB" for "1310 nm DFB laser" - which
+    dropped "passive" from both passive copper codes. Checked against
+    OIF-CMIS-05.4 pages 193-194, every code, and held here."""
+
+    TABLE_8_41 = {
+        0x00: '850 nm VCSEL', 0x01: '1310 nm VCSEL', 0x02: '1550 nm VCSEL',
+        0x03: '1310 nm FP laser', 0x04: '1310 nm DFB laser',
+        0x05: '1550 nm DFB laser', 0x06: '1310 nm EML', 0x07: '1550 nm EML',
+        0x08: 'Others', 0x09: '1490 nm DFB laser',
+        0x0A: 'Copper cable, passive, unequalized',
+        0x0B: 'Copper cable, passive, equalized',
+        0x0C: 'Copper cable with near and far end limiting active equalizers',
+        0x0D: 'Copper cable with far end limiting active equalizers',
+        0x0E: 'Copper cable with near end limiting active equalizers',
+        0x0F: 'Copper cable with linear active equalizers (deprecated, do '
+              'not use for new designs)',
+        0x10: 'C-band tunable laser', 0x11: 'L-band tunable laser',
+        0x12: 'Copper cable with near end and far end linear active '
+              'equalizers',
+        0x13: 'Copper cable with far end linear active equalizers',
+        0x14: 'Copper cable with near end linear active equalizers',
+    }
+
+    def test_every_code_has_the_tables_words(self):
+        import cmis_registers as c
+        self.assertEqual(c.MEDIA_IF_TECH, self.TABLE_8_41)
+
+    def test_the_module_info_reply_carries_them(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual(d['media_if_tech'], '1310 nm DFB laser')
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

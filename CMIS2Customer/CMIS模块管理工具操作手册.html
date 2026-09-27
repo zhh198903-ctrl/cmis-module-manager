@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.194.0<br>
+      <b>版本</b>　2.195.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.194.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.194.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.195.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.195.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1146,7 +1146,7 @@
         <tr><td>Cable Length</td><td class="label">线缆长度（米）。仅对 Copper/Active Cable 有效；普通光模块按规范这里写 0，显示为 "—（transceiver，见 Link Length）"。线缆组件（Media Type 03h/04h）报 0 时显示 <b>Not stated</b> 并标 ▲；可拆卸光模块报了非 0 长度也标 ▲（Table 8-33 要求它写 0）</td><td><code>00h / 0xCA</code></td></tr>
         <tr><td>Link Length</td><td class="label">模块在每种光纤上的<b>最大支持距离</b>（Table 8-45）。SMF 以 km 计，带两位倍率；OM5/OM4/OM3 以 2 m 为单位，OM2 以 1 m 为单位。不支持的光纤类型写 0，所以只会列出真正支持的那几种。线缆组件没有这张表：规范 8.4.2 要求有源光缆在这里<b>全部写 0</b>、长度改报在 Cable Length，所以线缆显示 "—（cable assembly, see Cable Length）"，报了非 0 值则标 ▲。平坦内存模块没有 Page 01h，显示 "no Page 01h"</td><td><code>01h / 0x84–0x89</code></td></tr>
         <tr><td>Connector</td><td class="label">光口类型,按 SFF-8024 Table 4-3 命名(如 LC、MPO 1×12、MPO 2×16、CS、SN、RJ45;线缆组件常见 No Separable Connector),括号里是原始编码</td><td><code>00h / 0xCB</code></td></tr>
-        <tr><td>Media Interface</td><td class="label">媒体接口技术(Table 8-41):850 nm VCSEL、1310 nm EML、C-band tunable laser、Copper passive equalized 等,括号里是原始编码;保留编码显示 Reserved</td><td><code>00h / 0xD4</code></td></tr>
+        <tr><td>Media Interface</td><td class="label">媒体接口技术,名称照 Table 8-41 原文:850 nm VCSEL、1310 nm DFB laser、C-band tunable laser、Copper cable, passive, equalized 等,括号里是原始编码;15h 以上是保留值,显示 Reserved</td><td><code>00h / 0xD4</code></td></tr>
         <tr><td>Nominal Wavelength</td><td class="label">模块自报的标称波长和容差(Table 8-46,单位 0.05 nm / 0.005 nm)。模块没填(为 0)时不显示这一行;模块带多个波长时注明 several wavelengths on this module——Table 8-46 只为单波长模块定义这个字段</td><td><code>01h / 0x8A–0x8D</code></td></tr>
         <tr><td>Tx Input Clocking</td><td class="label">哪些 Tx 输入通道必须频率同步(Table 8-50):1–8 全部同步 / 1–4 与 5–8 各自同步 / 两两同步 / 可以异步。超过 8 通道的模块在每个 Bank 内按同样方式分组</td><td><code>01h / 0x91[6:5]</code></td></tr>
         <tr><td>Transmitter</td><td class="label">发射器是否制冷(CoolingImplemented,Table 8-50):Cooled / Uncooled</td><td><code>01h / 0x91[7]</code></td></tr>
@@ -1784,6 +1784,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Media Interface 按 Table 8-41 原文命名</h3>
+  <p>Module Info 的 Media Interface 行(<code>00h:212</code>)注明按 Table 8-41 解码,但显示的是简写:「Copper unequalized」原文是 <b>Copper cable, passive, unequalized</b>,「1310 nm DFB」原文是 <b>1310 nm DFB laser</b>,「Other」原文是 <b>Others</b>——两个无源铜缆编码的简写把「passive」丢了。现在 21 个编码全部照 Table 8-41 原文显示(0Fh 带上原文的「deprecated, do not use for new designs」)。</p>
 
   <h3>接口编码 00h 显示 Undefined,不再显示 Unknown</h3>
   <p>SFF-8024 Rev 4.14 的主机接口表和五张媒体接口表(Table 4-5 至 4-10)都给 <code>00h</code> 起了名字:<b>Undefined</b>;连接器表(4-3)的 <code>00h</code> 是 <b>Unknown or unspecified</b>。工具的表里没有 <code>00h</code>,Supported Applications 于是显示 <code>Unknown (0x00)</code>——而手册里 Unknown 的含义是「比工具的编码表更新的编号」,等于说模块用了工具不认识的编码。现在按 SFF-8024 显示;连接器 <code>00h</code> 也改为 Unknown or unspecified。</p>
@@ -5054,7 +5057,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.194.0<br>
+    CMIS Module Manager 操作手册 v2.195.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

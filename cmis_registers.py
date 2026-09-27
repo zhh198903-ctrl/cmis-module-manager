@@ -1183,29 +1183,32 @@ CONNECTOR_TYPES = {
     0x28: "MPO 1×16",
 }
 
-# Table 8-41 — Media Interface Technology encodings
+# Table 8-41 - Media Interface Technology encodings, in its own words. The
+# short forms this held dropped "passive" from the two passive copper codes
+# and "laser" from the lasers, under a row that cites the table.
 MEDIA_IF_TECH = {
     0x00: "850 nm VCSEL",
     0x01: "1310 nm VCSEL",
     0x02: "1550 nm VCSEL",
-    0x03: "1310 nm FP",
-    0x04: "1310 nm DFB",
-    0x05: "1550 nm DFB",
+    0x03: "1310 nm FP laser",
+    0x04: "1310 nm DFB laser",
+    0x05: "1550 nm DFB laser",
     0x06: "1310 nm EML",
     0x07: "1550 nm EML",
-    0x08: "Other",
-    0x09: "1490 nm DFB",
-    0x0A: "Copper unequalized",
-    0x0B: "Copper passive equalized",
-    0x0C: "Copper near-far end limiting active equalizers",
-    0x0D: "Copper far end limiting active equalizers",
-    0x0E: "Copper near end limiting active equalizers",
-    0x0F: "Copper linear active equalizers (deprecated)",
+    0x08: "Others",
+    0x09: "1490 nm DFB laser",
+    0x0A: "Copper cable, passive, unequalized",
+    0x0B: "Copper cable, passive, equalized",
+    0x0C: "Copper cable with near and far end limiting active equalizers",
+    0x0D: "Copper cable with far end limiting active equalizers",
+    0x0E: "Copper cable with near end limiting active equalizers",
+    0x0F: "Copper cable with linear active equalizers (deprecated, do not "
+          "use for new designs)",
     0x10: "C-band tunable laser",
     0x11: "L-band tunable laser",
-    0x12: "Copper near-far end linear active equalizers",
-    0x13: "Copper far end linear active equalizers",
-    0x14: "Copper near end linear active equalizers",
+    0x12: "Copper cable with near end and far end linear active equalizers",
+    0x13: "Copper cable with far end linear active equalizers",
+    0x14: "Copper cable with near end linear active equalizers",
 }
 
 # Table 8-21 — Media Type (Lower memory byte 85)
