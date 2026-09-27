@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.205.0<br>
+      <b>版本</b>　2.206.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.205.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.205.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.206.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.206.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>DataPath 页:有通道暂存在其它 NAD 块时,整张表显示不出来(v2.202.0 引入)</h3>
+  <p>v2.202.0 为「暂存在块 0 以外的通道」在下拉框里加了一项「AN n … — kept」。这一项用到了两个在同一函数里<b>更靠后</b>才声明的名字,浏览器在遇到第一条这样的通道时就报错(<code>Cannot access 'bankOf' before initialization</code>),DataPath 配置表整张不显示——恰好发生在这一项要照顾的模块上。之前的检查只核对了源代码里的文字,文字看不出声明顺序;这次是在浏览器里实际操作 24 通道演示模块时发现的。</p>
+  <p>现在声明已前移,表格正常显示:通道 1 显示「AN 16 (NAD Block 1, AppSel 1) — kept」,下面照常列出媒体通道和「running App 1」。另外新增了一组回归检查:把页面脚本在 Node 里真正跑一遍,对每个演示模块(以及 NAD 块、Network Path 应用这两种状态)依次执行每个页签的加载函数,任何一个抛出异常就算失败。</p>
 
   <h3>激光调谐和连接:同样严格检查字段</h3>
   <p>上一版的字段检查在激光调谐接口上是用一个<b>不可调谐</b>的演示模块做的——那里每个请求本来就会因「模块不可调谐」被拒绝,所以其实没测到字段本身。换成可调谐的演示模块后,问题和其它接口一样:<code>grid_code</code>、<code>channel</code>、<code>fine_offset_ghz</code>、<code>target_power_dbm</code> 给字符串或 <code>null</code> 得到 500;<code>channel: 0.5</code> 被当成信道 0;<code>true</code> 被当成 1 GHz 的微调偏移或 1 dBm 的目标功率并写入;<code>grid_code: 21</code> 被截成 5(100 GHz);<code>fine_tuning_enabled: "no"</code> 反而打开了微调。</p>
@@ -5115,7 +5119,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.205.0<br>
+    CMIS Module Manager 操作手册 v2.206.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

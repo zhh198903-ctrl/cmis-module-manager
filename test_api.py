@@ -40900,6 +40900,182 @@ class TestTheLaserAndConnectRefuseJunkToo(CMISTestCase):
         self.assertTrue(app_module._state['connected'])
 
 
+class TestEveryPanelRendersOnEveryDemoModule(CMISTestCase):
+    """The page's loaders, run for real against every demo module.
+
+    The dropdown entry that keeps a lane staged in another NAD Block used
+    two names declared further down the same function, so on the first such
+    lane the DataPath table stopped with "Cannot access 'bankOf' before
+    initialization" and showed nothing - on exactly the modules that entry
+    was written for. Every test of it read the source as text, and text has
+    no declaration order.
+
+    Here app.js is loaded into Node under a catch-all DOM, every GET is
+    answered with the server's own reply for that path, and each loader is
+    run in turn. A loader that throws is a panel that does not render."""
+
+    LOADERS = ('loadInfo', 'loadExt54', 'loadMonitoring', 'loadDatapath',
+               'loadModuleControl', 'loadApplications', 'loadSnr',
+               'loadThresholds', 'loadSquelch', 'loadLoopback', 'loadPrbs',
+               'loadBer', 'loadCounters', 'loadLaser')
+    GETS = ('/api/settings/port', '/api/backends', '/api/module/info',
+            '/api/module/status', '/api/module/ext54',
+            '/api/module/capabilities', '/api/module/monitoring',
+            '/api/module/datapath', '/api/module/applications',
+            '/api/module/control', '/api/module/flags',
+            '/api/module/thresholds', '/api/module/squelch',
+            '/api/module/loopback', '/api/module/prbs', '/api/module/snr',
+            '/api/module/ber', '/api/module/laser', '/api/module/counters',
+            '/api/version')
+
+    HARNESS = r'''
+const fs = require('fs'), vm = require('vm');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const handler = {
+  get(t, p) {
+    if (p === Symbol.toPrimitive) return () => '';
+    if (p === Symbol.iterator) return function* () {};
+    if (p === 'then') return undefined;
+    return P;
+  },
+  apply() { return P; }, construct() { return P; }, set() { return true; },
+};
+const P = new Proxy(function () {}, handler);
+const writes = {};
+const element = id => new Proxy(function () {}, {
+  get(t, p) { return p === 'innerHTML' ? (writes[id] || '') : handler.get(t, p); },
+  set(t, p, v) { if (p === 'innerHTML') writes[id] = String(v); return true; },
+  apply() { return P; },
+});
+global.document = new Proxy({}, {
+  get(t, p) { return p === 'getElementById' ? element : P; },
+});
+for (const n of ['window', 'localStorage', 'sessionStorage', 'navigator',
+                 'location', 'history', 'matchMedia', 'getComputedStyle',
+                 'alert', 'EventSource']) global[n] = P;
+global.confirm = () => false;
+for (const n of ['setInterval', 'clearInterval', 'setTimeout',
+                 'clearTimeout', 'requestAnimationFrame']) global[n] = () => 0;
+global.MutationObserver = function () { return P; };
+global.ResizeObserver = function () { return P; };
+global.fetch = async (path) => ({ status: 200, json: async () => JSON.parse(
+  JSON.stringify(input.replies[String(path).split('?')[0]]
+                 || { status: 'error', message: 'no reply for ' + path })) });
+vm.runInThisContext(src);
+vm.runInThisContext('AppState.connected = true; AppState.lanes = '
+  + input.lanes + '; AppState.caps = ' + JSON.stringify(input.caps) + ';'
+  + '_advertisedApps = ' + JSON.stringify(input.apps) + ';');
+(async () => {
+  const errors = [];
+  for (const name of input.loaders) {
+    try { await vm.runInThisContext(name)(); }
+    catch (e) { errors.push(name + ': ' + String(e && e.stack || e)
+                              .split('\n').slice(0, 2).join(' ')); }
+  }
+  process.stdout.write(JSON.stringify({ errors, writes }));
+})().catch(e => { process.stderr.write(String(e && e.stack || e));
+                  process.exit(1); });
+'''
+
+    def _render(self, backend, setup=None):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        if setup:
+            setup(app_module._state['backend'])
+        replies = {g: self.client.get(g).get_json() for g in self.GETS}
+        caps = (replies['/api/module/capabilities'] or {}).get('data') or {}
+        apps = (((replies['/api/module/applications'] or {}).get('data')
+                 or {}).get('applications') or [])
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        out = subprocess.run(
+            [node, '-e', self.HARNESS, src],
+            input=json.dumps({'replies': replies, 'caps': caps, 'apps': apps,
+                              'lanes': app_module._state['lanes'],
+                              'loaders': list(self.LOADERS)}),
+            capture_output=True, text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr[-800:])
+        return json.loads(out.stdout)
+
+    def test_every_demo_module(self):
+        from i2c_interface import list_backends
+        names = [b['name'] for b in list_backends()
+                 if b['name'].startswith('mock')]
+        self.assertGreaterEqual(len(names), 12)
+        for name in names:
+            res = self._render(name)
+            self.assertEqual(res['errors'], [], name)
+            # A flat module's DataPath tab says why there is no table.
+            if not app_module._state['caps'].get('flat_memory'):
+                self.assertIn('tbl-datapath', res['writes'], name)
+
+    def test_a_lane_kept_in_another_nad_block(self):
+        """The case that went wrong."""
+        def kept(backend):
+            for i in range(8):
+                backend._registers[0x18][0x80 + i] = 1
+        res = self._render('mock_24lane', kept)
+        self.assertEqual(res['errors'], [])
+        html = res['writes']['tbl-datapath']
+        self.assertIn('AN 16 (NAD Block 1, AppSel 1) — kept</option>', html)
+        self.assertIn('running App 1', html)
+
+    def test_a_network_path_application(self):
+        def marked(backend):
+            backend._registers[0x01][0x8E] |= 0x80
+            backend._registers.setdefault(0x16, {}).update({0xF8: 0,
+                                                             0xF9: 0x02})
+            app_module._invalidate_page()
+            app_module._state['caps'] = app_module._discover_capabilities()
+        res = self._render('mock_coherent_zr', marked)
+        self.assertEqual(res['errors'], [])
+        self.assertIn('>NP</span>', res['writes']['tbl-apps'])
+
+    def test_the_harness_sees_a_loader_that_throws(self):
+        """A harness that cannot fail proves nothing: the same run with the
+        declaration moved back below its use."""
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        with open(src, encoding='utf-8') as f:
+            js = f.read()
+        broken = js.replace('    const stagedBlock = lane.staged_nad_block || 0;',
+                            '    const stagedBlock = lane.staged_nad_block || 0;'
+                            ' void laterName; const laterName = 1;', 1)
+        self.assertNotEqual(broken, js)
+        with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False,
+                                         encoding='utf-8') as tmp:
+            tmp.write(broken)
+        self.addCleanup(os.remove, tmp.name)
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        replies = {g: self.client.get(g).get_json() for g in self.GETS}
+        out = subprocess.run(
+            [node, '-e', self.HARNESS, tmp.name],
+            input=json.dumps({'replies': replies, 'caps': {}, 'apps': [],
+                              'lanes': 8, 'loaders': ['loadDatapath']}),
+            capture_output=True, text=True, encoding='utf-8')
+        errors = json.loads(out.stdout)['errors']
+        self.assertEqual(len(errors), 1)
+        self.assertIn('before initialization', errors[0])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

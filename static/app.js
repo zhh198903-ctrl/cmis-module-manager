@@ -3010,6 +3010,16 @@ async function loadDatapath() {
       const lanes = (d.app_lane_starts || {})[String(sel)];
       return lanes && lanes.length ? ` · begins on ${lanes.join(', ')}` : '';
     };
+    // DPConfigLane is one byte per lane of its Bank; the rest are one bit
+    // per lane. Lane 9 is Bank 1's 0x91 - 0x91 + 8 is AdaptiveInputEqEnableTx.
+    const bankOf = (d.lanes || []).length > 8 ? ` (Bank ${Math.floor(i / 8)})` : '';
+    // "App 0" is the misreading 6.2.3.2 exists to prevent: 0000b is not an
+    // Application, it is the absence of one.
+    // 6.2.1.7: on a module with NADs the Application is the code in its NAD
+    // Block, AN = 15 * block + AppSel. Block 0 is the basic list.
+    const appName = (n, block) => !n ? 'no Application'
+      : block ? `AN ${15 * block + n} (NAD Block ${block}, AppSel ${n})`
+      : 'App ' + n;
     // A lane staged in another NAD Block has an Application this list (Block
     // 0) does not hold. Kept as it is, and named, rather than shown as the
     // basic Application that happens to share its code.
@@ -3042,9 +3052,6 @@ async function loadDatapath() {
     }
     const appOpts = opts.join('');
 
-    // DPConfigLane is one byte per lane of its Bank; the rest are one bit
-    // per lane. Lane 9 is Bank 1's 0x91 - 0x91 + 8 is AdaptiveInputEqEnableTx.
-    const bankOf = (d.lanes || []).length > 8 ? ` (Bank ${Math.floor(i / 8)})` : '';
     const tipApp = regTip({
       field: `DPConfigLane${(i % 8) + 1}${bankOf}`, page: 0x10, addr: 0x91 + i % 8,
       note: dpconfigNote(lane),
@@ -3057,13 +3064,6 @@ async function loadDatapath() {
     // dropdown cannot show the truth on its own - the module running nothing
     // on this lane - was also the case with no warning under it.
     const active = lane.active_app_select;
-    // "App 0" is the misreading 6.2.3.2 exists to prevent: 0000b is not an
-    // Application, it is the absence of one.
-    // 6.2.1.7: on a module with NADs the Application is the code in its NAD
-    // Block, AN = 15 * block + AppSel. Block 0 is the basic list.
-    const appName = (n, block) => !n ? 'no Application'
-      : block ? `AN ${15 * block + n} (NAD Block ${block}, AppSel ${n})`
-      : 'App ' + n;
     // 6.2.3.2.1: "The host must assign lanes to Data Paths in accordance
     // with the Lane Assignment Options field advertised by the module for
     // that Application." The marker goes on the lane a Data Path *begins*
