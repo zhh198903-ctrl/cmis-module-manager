@@ -443,6 +443,7 @@ async function connectModule() {
   const caps = await apiGet('/api/module/capabilities');
   AppState.caps = caps.status === 'ok' ? caps.data : {};
   rebuildLaneColumns();
+  renderAbsentPageTabs();
   updateConnectionUI(true, `${backend}  bus:${bus}  addr:0x${address.toString(16).toUpperCase()}`
     + (AppState.lanes > 8 ? `  ${AppState.lanes} lanes` : ''));
   updateBackendInfoArea(backend);
@@ -470,6 +471,7 @@ function _endSession(message, tone) {
   AppState.connected = false;
   AppState.lanes = 8;
   AppState.caps = {};
+  renderAbsentPageTabs();
   // The next module advertises its own limits and its own Applications.
   _moduleThresholds = null;
   _commissionedKey = null;
@@ -595,6 +597,68 @@ function clearTabContent() {
 // ---------------------------------------------------------------------------
 // Tab switching
 // ---------------------------------------------------------------------------
+// 8.2: a flat memory module has Lower Memory and Page 00h and nothing else.
+// These three tabs are built on Pages 02h, 04h and 10h-14h, and on such a
+// module every card asked, was refused, and said so in red - a passive
+// cable reported as a string of failures, and Monitoring told the reader
+// to press Now "once the module responds again". It was responding.
+const FLAT_TAB_LACKS = {
+  monitoring: 'lane monitors or Flags (Page 11h) and no thresholds (Page '
+    + '02h); its module-level monitors are not for static memory modules '
+    + 'either (Table 8-10)',
+  datapath: 'Data Path controls or states (Pages 10h-11h), and the module '
+    + 'controls are not for static memory modules (Table 8-11). What does '
+    + 'apply is the Applications it advertises in Lower Memory, below',
+  diagnostics: 'loopback, pattern generation and checking, BER, SNR or '
+    + 'laser tuning (Pages 04h, 12h-14h)',
+};
+
+function isFlatModule() {
+  return !!(AppState.caps || {}).flat_memory;
+}
+
+// 01h:142.5 clear on a paged module: no Pages 13h-14h, and the Diagnostics
+// tab's loopback, PRBS, BER, SNR and counter cards were refused one by one
+// in the same way. Laser tuning is Page 12h and still applies.
+function lacksDiagnosticPages() {
+  const c = AppState.caps || {};
+  return !c.flat_memory && c.diagnostic_pages_supported === false;
+}
+
+function renderAbsentPageTabs() {
+  const flat = isFlatModule();
+  const noDiag = lacksDiagnosticPages();
+  for (const [tab, lacks] of Object.entries(FLAT_TAB_LACKS)) {
+    const panel = document.getElementById('tab-' + tab);
+    if (!panel) continue;
+    const absent = flat || (noDiag && tab === 'diagnostics');
+    panel.classList.toggle('pages-absent', absent);
+    let note = document.getElementById('absent-note-' + tab);
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'absent-note-' + tab;
+      note.className = 'caps-note';
+      panel.prepend(note);
+    }
+    note.innerHTML = flat
+      ? '<span class="flag-warn">\u25b2</span> Flat memory module '
+        + '<span class="reg-meta">Lower 0x02[7]</span>: it has only Lower '
+        + 'Memory and Page 00h (CMIS 8.2), so it has no ' + esc(lacks) + '.'
+      : absent
+      ? '<span class="flag-warn">\u25b2</span> This module does not '
+        + 'advertise the diagnostic Pages 13h-14h <span class="reg-meta">'
+        + '01h:142.5</span>, so it has no loopback, pattern generation and '
+        + 'checking, BER or SNR. Laser tuning is Page 12h, below.'
+      : '';
+  }
+  // What still applies where the rest does not.
+  const card = id => (document.getElementById(id) || {closest: () => null})
+    .closest('.card');
+  const apps = card('tbl-apps'), laser = card('tbl-laser');
+  if (apps) apps.classList.add('pages-keep');         // Lower Memory
+  if (laser) laser.classList.toggle('pages-keep', noDiag);
+}
+
 function switchTab(name) {
   if (!AppState.connected && name !== 'info') return;
 
@@ -603,7 +667,9 @@ function switchTab(name) {
     stopMonitoring();
     startHealthWatch();
   }
-  if (name === 'monitoring') stopHealthWatch();   // its own loop takes over
+  const flat = isFlatModule();
+  // its own loop takes over - except on a flat module, which has none
+  if (name === 'monitoring' && !flat) stopHealthWatch();
 
   AppState.currentTab = name;
 
@@ -617,16 +683,18 @@ function switchTab(name) {
 
   // Auto-load data for tab
   if (name === 'info')        loadInfo();
-  if (name === 'monitoring')  startMonitoring();
+  if (name === 'monitoring' && !flat)  startMonitoring();
   // The 5.4 optional-page cards live inside the functional tabs (badged
   // "5.4"), so each hosting tab pulls them alongside its own data.
   if (['info', 'monitoring', 'datapath', 'diagnostics'].includes(name)
-      && AppState.connected) {
+      && AppState.connected && !flat) {
     loadExt54();
   }
   // The AppSelect dropdown is built from the advertised Applications, so they
   // must be in hand before the DataPath table renders.
-  if (name === 'datapath') {
+  if (name === 'datapath' && flat) {
+    loadApplications();     // Lower Memory: the one card that applies
+  } else if (name === 'datapath') {
     loadModuleControl();
     loadSquelch();
     loadApplications().then(loadDatapath);
@@ -635,7 +703,9 @@ function switchTab(name) {
   // laser tuning used to sit empty until each card's own refresh was clicked,
   // so half the page showed live data next to placeholders or values from
   // before a reset.
-  if (name === 'diagnostics') {
+  if (name === 'diagnostics' && !flat && lacksDiagnosticPages()) {
+    loadLaser();
+  } else if (name === 'diagnostics' && !flat) {
     loadLoopback(); loadPrbs(); loadBer(); loadSnr(); loadCounters(); loadLaser();
   }
 }

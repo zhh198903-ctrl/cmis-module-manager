@@ -766,6 +766,7 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。
 平坦内存模块没有 Page 01h:info 里 `fw_inactive_revision`、`hw_revision` 为 `null`,`link_lengths` 为空;不要自己去读 01h,读回来的是 Page 00h。
+页面上 Monitoring、DataPath Config、Diagnostics 三个标签页在平坦模块上只显示一行原因(DataPath 保留 Applications),不会去请求那些会被 409 拒绝的接口。没有声明诊断页(`01h:142.5` 为 0)的分页模块,Diagnostics 页同样只说明一次,只保留 Laser Tuning。
 `GET /api/module/status` 在平坦模块上也返回 200,带 `static_module: true`:只有 `module_state`、`interrupt_asserted`、`flags_summary` 有值,温度/电压为 `null`,Flag 类字段为空(Table 8-9..8-12、8-16 不适用于静态模块),`restart_watch` 为 `unsupported`。
 
 ## 跨过 0x7F 的读写

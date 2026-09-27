@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.183.0<br>
+      <b>版本</b>　2.184.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.183.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.183.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.184.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.184.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1119,7 +1119,7 @@
       <tbody>
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier（如 QSFP-DD、OSFP、CMIS-Compliant）</td><td><code>Lower / 0x00</code></td></tr>
         <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.3 模块完全兼容</td><td><code>Lower / 0x01</code></td></tr>
-        <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）</td><td><code>Lower / 0x02[7]</code></td></tr>
+        <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）。Flat 模块上 Monitoring、DataPath Config、Diagnostics 三个标签页的内容大多不适用，页面顶部会用一行说明原因（DataPath Config 仍显示 Supported Applications）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
         <tr><td>MCI Max Speed</td><td class="label">模块支持的管理总线最高速率（本工具只走 I2C，按 I2C 一列解：0=400 kHz、1=1 MHz、2=3.4 MHz）。3–15 是保留值，工具直接显示编号而不自己编一个速率出来</td><td><code>Lower / 0x02[5:2]</code></td></tr>
         <tr><td>Media Type</td><td class="label">MMF / SMF / Passive Copper / Active Cable / BASE-T</td><td><code>Lower / 0x55</code></td></tr>
@@ -1733,6 +1733,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>平坦内存模块:三个标签页说明原因,不再逐项报错</h3>
+  <p>规范 8.2:平坦内存(静态)模块只有 Lower Memory 和 Page 00h。Monitoring、DataPath Config、Diagnostics 三个标签页读的是 Page 02h、04h、10h–14h,这种模块上都没有。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>以前在无源铜缆上切到这三个标签页,每张卡片各自去读、各自被拒绝、各自弹一条红色错误——三个标签页一共十二条,「5.4 pages error」每个标签页都弹一次;Monitoring 还显示「读数已过期,等模块恢复响应后按 ↻ Now」。模块其实一直在正常响应。</span>
+  </div>
+  <p>现在:平坦模块上这三个标签页不再去读它没有的页,顶部用一行说明「Flat memory module … it has only Lower Memory and Page 00h (CMIS 8.2), so it has no …」,并写明缺的是什么;DataPath Config 保留 Supported Applications(它在 Lower Memory 里)。换接分页模块后一切照常。</p>
+  <p>同样的情况也出现在<b>没有声明诊断页</b>(<code>01h:142.5</code> 为 0,没有 Page 13h–14h)的分页模块上:Diagnostics 页的环回、PRBS、BER、SNR、计数器五张卡片以前各弹一条错误。现在顶部说明一次,只保留 Laser Tuning(它在 Page 12h)。</p>
 
   <h3>Module Info:平坦内存模块(无源铜缆)不再是空白页</h3>
   <p>平坦内存(静态)模块只有 Lower Memory 和 Page 00h。规范里 Table 8-6(模块状态、Interrupt)和 Table 8-8(Flag 汇总)对它适用,Table 8-9 到 8-12 和 8-16(模块 Flag、监控值、控制、Mask、故障原因)标题都写着「not for static memory modules」。</p>
@@ -4906,7 +4915,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.183.0<br>
+    CMIS Module Manager 操作手册 v2.184.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

@@ -326,7 +326,9 @@ class TestMonitoringPresentation(CMISTestCase):
 
     def test_diagnostics_tab_loads_every_card(self):
         js = self._js()
-        block = js.split("if (name === 'diagnostics')")[1].split('\n  }')[0]
+        # the branch for a module with the diagnostic pages (8.16)
+        block = js.split("} else if (name === 'diagnostics' && !flat) {")[1] \
+            .split('\n  }')[0]
         for fn in ('loadLoopback', 'loadPrbs', 'loadBer', 'loadSnr',
                    'loadCounters', 'loadLaser'):
             self.assertIn(fn, block, f'{fn} is not loaded when the tab opens')
@@ -37579,6 +37581,175 @@ class TestACableAndAFlatModuleReadTheirOwnWay(CMISTestCase):
         self.assertIn('显示 "no Page 01h on a flat memory module"', s7)
         self.assertIn('（cable assembly, see Cable Length）', s7)
         self.assertIn('几行显示 "not for static memory modules"', s7)
+
+
+class TestAFlatModulesTabsSayWhyRatherThanFail(CMISTestCase):
+    """8.2: a flat memory module has Lower Memory and Page 00h only. The
+    Monitoring, DataPath and Diagnostics tabs read Pages 02h, 04h and
+    10h-14h, and on such a module every card asked, was refused and put up a
+    red toast - twelve of them across three tabs, the 5.4 card's on every
+    tab - and Monitoring said its readings were stale and to press Now "once
+    the module responds again". The tabs now skip what cannot apply and say
+    why once; DataPath keeps the Applications, which are Lower Memory."""
+
+    LOADERS = ('loadInfo', 'loadExt54', 'startMonitoring', 'stopMonitoring',
+               'startHealthWatch', 'stopHealthWatch', 'loadModuleControl',
+               'loadSquelch', 'loadApplications', 'loadDatapath',
+               'loadLoopback', 'loadPrbs', 'loadBer', 'loadSnr',
+               'loadCounters', 'loadLaser')
+
+    def _calls(self, tab, flat, diag=True):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        stubs = ''.join(
+            'function %s(){calls.push("%s");return Promise.resolve();}' % (n, n)
+            for n in self.LOADERS)
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  'const calls=[];' + stubs +
+                  'const document={querySelector:()=>null,'
+                  'querySelectorAll:()=>[],getElementById:()=>null};'
+                  'const AppState={connected:true,currentTab:"info",caps:{flat_memory:'
+                  + ('true' if flat else 'false')
+                  + ',diagnostic_pages_supported:' + ('true' if diag else 'false')
+                  + '}};'
+                  r'eval(s.match(/function isFlatModule\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function lacksDiagnosticPages\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function switchTab\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "switchTab(\\"' + tab + '\\");");'
+                  'setTimeout(()=>process.stdout.write(JSON.stringify(calls)),0);')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_flat_module_loads_only_what_it_has(self):
+        self.assertEqual(self._calls('monitoring', True), [])
+        self.assertEqual(self._calls('datapath', True), ['loadApplications'])
+        self.assertEqual(self._calls('diagnostics', True), [])
+        self.assertEqual(self._calls('info', True), ['loadInfo'])
+
+    def test_without_the_diagnostic_pages_only_the_laser_card_loads(self):
+        self.assertEqual(self._calls('diagnostics', False, diag=False),
+                         ['loadExt54', 'loadLaser'])
+        # and a flat module, which has no Page 12h either, loads none
+        self.assertEqual(self._calls('diagnostics', True, diag=False), [])
+
+    def test_a_paged_module_loads_everything(self):
+        self.assertEqual(self._calls('monitoring', False),
+                         ['stopHealthWatch', 'startMonitoring', 'loadExt54'])
+        self.assertEqual(self._calls('datapath', False),
+                         ['loadExt54', 'loadModuleControl', 'loadSquelch',
+                          'loadApplications', 'loadDatapath'])
+        self.assertEqual(self._calls('diagnostics', False),
+                         ['loadExt54', 'loadLoopback', 'loadPrbs', 'loadBer',
+                          'loadSnr', 'loadCounters', 'loadLaser'])
+
+    def test_what_the_skipped_loaders_would_have_met(self):
+        """The reason for skipping them: each is refused on a flat module."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_flat_dac', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        for ep in ('/api/module/monitoring', '/api/module/thresholds',
+                   '/api/module/ext54', '/api/module/control',
+                   '/api/module/datapath', '/api/module/loopback',
+                   '/api/module/laser'):
+            self.assertEqual(self.client.get(ep).status_code, 409, ep)
+        self.assertOk(self.client.get('/api/module/applications'))
+
+    def test_the_tabs_say_why(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            js = f.read()
+        with open(os.path.join(here, 'static', 'style.css'), encoding='utf-8') as f:
+            css = f.read()
+        self.assertIn('.tab-panel.pages-absent > .card:not(.pages-keep) '
+                      '{ display: none !important; }', css)
+        # on connect and on every way a session ends
+        self.assertEqual(js.count('renderAbsentPageTabs();'), 2)
+
+    def _render(self, flat, diag):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        fake = (
+            'function el(){const cls=new Set();return {cls,innerHTML:"",'
+            'classList:{toggle:(c,on)=>{on?cls.add(c):cls.delete(c)},add:c=>cls.add(c)},'
+            'prepend:n=>{notes[n.id]=n}};}'
+            'const notes={};const panels={monitoring:el(),datapath:el(),diagnostics:el()};'
+            'const apps=el(),laser=el();'
+            'const document={createElement:()=>el(),getElementById:id=>'
+            'id.startsWith("tab-")?panels[id.slice(4)]:'
+            'id.startsWith("absent-note-")?(notes[id]||null):'
+            'id==="tbl-apps"?{closest:()=>apps}:id==="tbl-laser"?{closest:()=>laser}:null};')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");' + fake +
+                  'const AppState={connected:true,caps:{flat_memory:%s%s}};'
+                  % ('true' if flat else 'false',
+                     '' if diag is None else ',diagnostic_pages_supported:'
+                     + ('true' if diag else 'false')) +
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/const FLAT_TAB_LACKS = \{[\s\S]*?\r?\n};\r?\n/)[0]'
+                  r' + s.match(/function isFlatModule\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function lacksDiagnosticPages\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r' + s.match(/function renderAbsentPageTabs\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "renderAbsentPageTabs();");'
+                  'const out={};for(const t in panels)out[t]={absent:panels[t].cls.has("pages-absent"),'
+                  'note:(notes["absent-note-"+t]||{}).innerHTML||""};'
+                  'out.apps_kept=apps.cls.has("pages-keep");out.laser_kept=laser.cls.has("pages-keep");'
+                  'process.stdout.write(JSON.stringify(out));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_a_flat_module_is_told_on_three_tabs(self):
+        r = self._render(flat=True, diag=False)
+        for tab in ('monitoring', 'datapath', 'diagnostics'):
+            self.assertTrue(r[tab]['absent'], tab)
+            self.assertIn('(CMIS 8.2), so it has no', r[tab]['note'], tab)
+        self.assertIn('Page 11h', r['monitoring']['note'])
+        self.assertIn('Applications it advertises in Lower Memory',
+                      r['datapath']['note'])
+        self.assertTrue(r['apps_kept'])
+        self.assertFalse(r['laser_kept'])      # no Page 12h either
+
+    def test_a_module_without_diagnostic_pages_keeps_laser_tuning(self):
+        r = self._render(flat=False, diag=False)
+        self.assertEqual([t for t in ('monitoring', 'datapath', 'diagnostics')
+                          if r[t]['absent']], ['diagnostics'])
+        self.assertIn('01h:142.5', r['diagnostics']['note'])
+        self.assertIn('Laser tuning is Page 12h', r['diagnostics']['note'])
+        self.assertTrue(r['laser_kept'])
+
+    def test_an_unknown_advertisement_is_not_absence(self):
+        """Capabilities without the key - after a disconnect, or a failed
+        read - say nothing about Pages 13h-14h."""
+        r = self._render(flat=False, diag=None)
+        self.assertEqual(r['diagnostics'], {'absent': False, 'note': ''})
+
+    def test_an_ordinary_module_is_left_alone(self):
+        r = self._render(flat=False, diag=True)
+        for tab in ('monitoring', 'datapath', 'diagnostics'):
+            self.assertEqual(r[tab], {'absent': False, 'note': ''}, tab)
+        self.assertFalse(r['laser_kept'])
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        self.assertIn('<h3>平坦内存模块:三个标签页说明原因,不再逐项报错</h3>', man)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

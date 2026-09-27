@@ -1139,6 +1139,11 @@ input[type="checkbox"] {
 }
 .caps-note:empty { display: none; }
 
+/* A module without the pages these cards read - a flat one (8.2), or one
+   not advertising Pages 13h-14h - is told once instead of every card
+   failing on its own. */
+.tab-panel.pages-absent > .card:not(.pages-keep) { display: none !important; }
+
 /* A cell whose control the module says it does not implement. */
 .control-unavailable {
   opacity: 0.4;
