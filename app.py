@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.202.0'
+__version__ = '2.203.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1098,6 +1098,28 @@ def _nad_block_indices(reg) -> list:
     for _bank, raw in _read_banks(*reg):
         out += list(raw)
     return out
+
+
+def _application_numbers(app_select: list, blocks) -> list:
+    """Each lane's Application as one number: its AppSel code in Block 0,
+    AN = 15 * block + AppSel in any other (6.2.1.6.2). Grouping lanes into
+    Data Paths and sizing them goes by Application, and two lanes with the
+    same code in different Blocks carry different ones."""
+    return [code if not code or not blocks or i >= len(blocks)
+            or not blocks[i] else 15 * blocks[i] + code
+            for i, code in enumerate(app_select)]
+
+
+def _with_nad_applications(apps: list, numbers: list) -> list:
+    """The basic descriptors, plus the Page 1Ch ones filed under their AN
+    when a lane is on an Application past the basic fifteen - so a lane in
+    NAD Block b is sized and placed by its own descriptor, not by the basic
+    one that shares its AppSel code."""
+    if not any(n > 15 for n in numbers):
+        return list(apps)
+    nads = _read_nad_applications(_read_lower(0x55, 1)[0]) or []
+    return list(apps) + [dict(n, app_sel=n['app_number']) for n in nads
+                         if n['nad_block_index']]
 
 
 def _read_dp_latency(lanes: int):
@@ -3098,13 +3120,19 @@ def api_datapath_get():
                 _read_lower(0x56, 32), _read_lower(0x55, 1)[0],
                 _additional_app_descriptors(),
                 _media_lane_assignments(), _flat_memory())
-            for a in _apps:
-                host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         except Exception:
             pass
+        # 6.2.1.7: a lane staged in NAD Block b is on Application 15b + code,
+        # with a width and start lanes of its own. Sized by the basic
+        # descriptor sharing its code, an eight-lane Application in Block 1
+        # read as eight one-lane Data Paths.
+        staged_numbers = _application_numbers(app_select[:_state['lanes']],
+                                              staged_nad)
+        _keyed = _with_nad_applications(_apps, staged_numbers)
+        for a in _keyed:
+            host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
         groups = [[i + 1 for i in g]
-                  for g in _datapath_groups(app_select[:_state['lanes']],
-                                            host_lanes_by_app)]
+                  for g in _datapath_groups(staged_numbers, host_lanes_by_app)]
 
         # Page 15h, read here rather than with the advertisements: 8.18
         # calls these "read-only reporting registers (not necessarily
@@ -3173,15 +3201,14 @@ def api_datapath_get():
                 for a in (_apps or [])
                 if a.get('host_lane_assign_mask')},
             'lane_start_violations': cmis.lane_start_violations(
-                groups, app_select[:_state['lanes']], _apps or []),
+                groups, staged_numbers, _keyed),
             # Keyed by the first host lane of each Data Path, the same way
             # datapath_groups is ordered. Nominal, and the flag beside it
             # says so: a module that can redirect media lanes reports the
             # mapping it actually committed on Page 6Dh.
             'media_lane_groups': {
                 str(k): v for k, v in _nominal_media_lanes(
-                    groups, app_select[:_state['lanes']],
-                    _apps or []).items()},
+                    groups, staged_numbers, _keyed).items()},
             # True when the module can redirect media lanes: then 7.9.1's
             # allocation is what would happen by default and Page 6Dh's
             # committed mapping is what did.
@@ -3593,15 +3620,15 @@ def _whole_datapaths(masks: list, app_select: list,
 
 
 def _lanes_needing_apply(old_sel: list, new_sel: list,
-                         host_lanes_by_app: dict, also=()) -> set:
+                         host_lanes_by_app: dict) -> set:
     """Lanes whose Data Path has a changed staged configuration.
 
     Both groupings matter: a lane leaving one Data Path disturbs the one it
-    left as well as the one it joined. `also` are lanes changed some other
-    way - a new NAD Block with the same AppSel code is a new Application.
+    left as well as the one it joined. By Application Number, so a new NAD
+    Block with the same AppSel code is a change.
     """
     changed = {i for i in range(len(new_sel))
-               if i < len(old_sel) and old_sel[i] != new_sel[i]} | set(also)
+               if i < len(old_sel) and old_sel[i] != new_sel[i]}
     if not changed:
         return set()
     out = set()
@@ -3779,6 +3806,14 @@ def api_datapath_set():
                                 'Blocks' % (i + 1, want, nad_now[i]), 400)
             nad_changed = {i for i in range(_state['lanes'])
                            if nad_block[i] != nad_now[i]}
+        # The staged set before and after, by Application: the Data Path
+        # groupings, DPIDX and the Apply mask all come from these. The new
+        # numbers decide whether Page 1Ch is needed: a lane only in the old
+        # set is a changed lane, in the Apply whatever its old width.
+        new_numbers = _application_numbers(app_select, nad_block)
+        old_numbers = _application_numbers(prev_app_select, nad_now)
+        for a in _with_nad_applications(_apps, new_numbers):
+            host_lanes_by_app[a['app_sel']] = a.get('host_lanes') or 1
 
         refused = _refuse_unsupported((
             ('output_disable_tx', tx_disable),
@@ -3822,7 +3857,7 @@ def api_datapath_set():
         # - the alternative is a half-torn-down path the module never asked
         # for. The same grouping the Apply mask uses.
         if 'dp_deinit_mask' in body:
-            dp_deinit = _whole_datapaths(dp_deinit, app_select,
+            dp_deinit = _whole_datapaths(dp_deinit, new_numbers,
                                          host_lanes_by_app, banks)
 
         # Every refusal below is decided before anything is written. They
@@ -3861,8 +3896,8 @@ def api_datapath_set():
             # Narrowing only when the change can be located. Pressing Apply on
             # an unchanged table is a request to re-commission, and quietly
             # doing nothing would take that away.
-            need = _lanes_needing_apply(prev_app_select, app_select,
-                                        host_lanes_by_app, nad_changed)
+            need = _lanes_needing_apply(old_numbers, new_numbers,
+                                        host_lanes_by_app)
             if not need:
                 need = set(range(_state['lanes']))
             # Section 6.2.4 names two ways an Apply is thrown away without a
@@ -3950,7 +3985,7 @@ def api_datapath_set():
         # three low bits, which is the lane within its Bank. ExplicitControl
         # is not this tool's to change, so what is staged stays.
         dpidx = [0] * len(app_select)
-        for group in _datapath_groups(app_select, host_lanes_by_app):
+        for group in _datapath_groups(new_numbers, host_lanes_by_app):
             if app_select[group[0]]:
                 for lane in group:
                     dpidx[lane] = group[0]

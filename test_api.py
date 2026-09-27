@@ -40415,6 +40415,168 @@ class TestTheNadBlockGoesWithTheApplication(CMISTestCase):
                       body)
 
 
+class TestALaneInAnotherBlockIsSizedByItsOwnDescriptor(CMISTestCase):
+    """6.2.1.6.2 / 6.2.1.7: a lane staged in NAD Block b is on Application
+    AN = 15b + AppSel, with a HostLaneCount, HostLaneAssignmentOptions and
+    MediaLaneAssignmentOptions of its own (Table 8-173).
+
+    Last release kept such a lane's Block on writes that did not change its
+    code - but everything that groups lanes into Data Paths still sized them
+    by the basic descriptor sharing the code. A polarity change on an
+    eight-lane Application in Block 1 rewrote its DPIDX as eight one-lane
+    Data Paths (0x30, 0x32 ... 0x3E), which the next Apply would have had
+    rejected; the panel grouped the lanes one by one, judged start lanes
+    against the wrong bitmap and gave the Data Path no media lanes. Every
+    grouping now goes by Application Number, with the Page 1Ch descriptors
+    filed under theirs.
+
+    The demo's Block 1 AppSel 3 is eight host lanes from lane 1, four media
+    lanes; Block 3 AppSel 1 is two lanes starting on 1, 3, 5 or 7. The basic
+    list has no AppSel 3, and its AppSel 1 is eight lanes from lane 1."""
+
+    def _connect(self):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_24lane', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _stage(self, backend, block, dpconfig, lanes=range(8)):
+        for i in lanes:
+            backend._registers[0x18][0x80 + i] = block
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x91, bytes(dpconfig))
+        app_module._invalidate_page()
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _dp(self):
+        return self.assertOk(self.client.get('/api/module/datapath'))['data']
+
+    # ---- the numbering --------------------------------------------------------
+
+    def test_application_numbers(self):
+        n = app_module._application_numbers
+        self.assertEqual(n([1, 2, 0, 3], [0, 1, 2, 3]), [1, 17, 0, 48])
+        self.assertEqual(n([1, 2], None), [1, 2])
+        self.assertEqual(n([1, 2, 3], [0, 1]), [1, 17, 3])
+
+    def test_page_1ch_is_read_only_when_a_lane_needs_it(self):
+        self._connect()
+        seen = []
+        orig = app_module._set_page
+
+        def spy(page, bank=0):
+            seen.append(page)
+            return orig(page, bank)
+        app_module._set_page = spy
+        try:
+            self._dp()
+            self.assertNotIn(0x1C, seen)
+            backend = app_module._state['backend']
+            backend._registers[0x18][0x80] = 1
+            self._dp()
+        finally:
+            app_module._set_page = orig
+        self.assertIn(0x1C, seen)
+
+    # ---- the writes -----------------------------------------------------------
+
+    def test_a_polarity_change_keeps_the_dpidx_of_a_block_1_application(self):
+        """The case that went wrong."""
+        backend = self._connect()
+        self._stage(backend, 1, [0x30] * 8)
+        self.assertOk(self._post(tx_polarity_flip_mask=[1, 0, 0]))
+        self.assertEqual([backend._registers[0x10][0x91 + i]
+                          for i in range(8)], [0x30] * 8)
+
+    def test_a_two_lane_application_gets_a_dpidx_per_data_path(self):
+        backend = self._connect()
+        self._stage(backend, 3, [0x10] * 8)
+        self.assertOk(self._post(tx_polarity_flip_mask=[1, 0, 0]))
+        self.assertEqual([backend._registers[0x10][0x91 + i]
+                          for i in range(8)],
+                         [0x10, 0x10, 0x14, 0x14, 0x18, 0x18, 0x1C, 0x1C])
+
+    def test_dpdeinit_takes_down_its_own_data_path(self):
+        """Table 8-78: all lanes of a Data Path alike - two lanes here, not
+        the eight of the basic AppSel 1."""
+        backend = self._connect()
+        self._stage(backend, 3, [0x10, 0x10, 0x14, 0x14, 0x18, 0x18,
+                                 0x1C, 0x1C])
+        d = self._dp()
+        self.assertOk(self._post(dp_deinit_mask=[0x01, 0, 0]))
+        self.assertEqual(backend._registers[0x10][0x80], 0x03)
+
+    def test_a_block_change_applies_its_data_paths(self):
+        backend = self._connect()
+        deactivated(self.client)
+        self._stage(backend, 3, [0x10, 0x10, 0x14, 0x14, 0x18, 0x18,
+                                 0x1C, 0x1C])
+        d = self.assertOk(self._post(app_select=[1] * 24, nad_block=[0] * 24,
+                                     apply=True))['data']
+        # Lanes 1-8 leave four two-lane Data Paths for one eight-lane basic
+        # one; the lanes of Banks 1 and 2 did not change.
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_a_lane_leaving_a_wide_application_applies_all_of_it(self):
+        """Lane 1 freed from Block 1's eight-lane Application: the Data
+        Path it leaves is lanes 1-8, which only that Application's own width
+        says."""
+        backend = self._connect()
+        deactivated(self.client)
+        self._stage(backend, 1, [0x30] * 8)
+        d = self.assertOk(self._post(
+            app_select=[0] + [3] * 7 + [1] * 16,
+            nad_block=[0] + [1] * 7 + [0] * 16, apply=True))['data']
+        self.assertEqual(d['applied_lanes'], list(range(1, 9)))
+
+    def test_block_0_keeps_the_basic_descriptors(self):
+        """Block 0 has to mirror them (6.2.1.6.2); where a module's does
+        not, the panel flags it, and the basic registers stay what a Block 0
+        lane is sized by."""
+        backend = self._connect()
+        backend._registers[0x1C][0x80 + 2] = 0x22    # NAD 1: two lanes
+        backend._registers[0x18][0x80 + 8] = 0       # (bank 0 lanes stay 0)
+        backend._registers[(0x18, 1)][0x80] = 1      # lane 9: Block 1
+        self.assertEqual(self._dp()['datapath_groups'][0], list(range(1, 9)))
+
+    # ---- the panel ------------------------------------------------------------
+
+    def test_the_data_path_groups_follow_the_block(self):
+        backend = self._connect()
+        self._stage(backend, 1, [0x30] * 8)
+        self.assertEqual(self._dp()['datapath_groups'][0], list(range(1, 9)))
+        self._stage(backend, 3, [0x10, 0x10, 0x14, 0x14, 0x18, 0x18,
+                                 0x1C, 0x1C])
+        self.assertEqual(self._dp()['datapath_groups'][:4],
+                         [[1, 2], [3, 4], [5, 6], [7, 8]])
+
+    def test_start_lanes_are_judged_by_the_blocks_bitmap(self):
+        backend = self._connect()
+        self._stage(backend, 3, [0x00, 0x12, 0x12, 0x00, 0x00, 0x00,
+                                 0x00, 0x00])
+        v = self._dp()['lane_start_violations']
+        self.assertEqual(len(v), 1)
+        self.assertEqual((v[0]['lane'], v[0]['app_sel'],
+                          v[0]['allowed_starts']), (2, 46, [1, 3, 5, 7]))
+
+    def test_media_lanes_come_from_the_blocks_descriptor(self):
+        backend = self._connect()
+        self._stage(backend, 1, [0x30] * 8)
+        self.assertEqual(self._dp()['media_lane_groups'], {'1': [1, 2, 3, 4]})
+
+    def test_the_page_says_an_for_a_number_past_15(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("(badStart.app_sel > 15 ? 'AN ' : 'App ')", js)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

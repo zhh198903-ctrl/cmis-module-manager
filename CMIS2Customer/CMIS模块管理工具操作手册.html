@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.202.0<br>
+      <b>版本</b>　2.203.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.202.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.202.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.203.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.203.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>NAD 块号不为 0 的通道:数据通路按它自己的描述符划分,不再被改成单通道</h3>
+  <p>上一版起,AppSel 没变的通道保留它的 NAD 块号。但工具把通道分成数据通路(写 DPIDX、按整条数据通路 DP Deinit、决定 Apply 哪几条通道)时,仍按<b>基本描述符</b>里同一个 AppSel 的宽度来算——块 b 里的 Application 是 AN = 15b + AppSel,宽度、起始通道、媒体通道都是它自己的(Table 8-173)。实测:块 1 里一个 8 通道的 Application,只点一下极性翻转,暂存的 DPIDX 就被改写成 8 条单通道数据通路(<code>0x30、0x32 … 0x3E</code>),下一次 Apply 模块会回 ConfigRejectedInvalidDataPath;面板把这 8 条通道一条条分开显示,起始通道按错的位图判断,也算不出媒体通道。</p>
+  <p>现在所有「哪些通道是同一条数据通路」的计算都按 Application 编号(块 0 为 AppSel,其它块为 AN)进行,块 0 以外的描述符从 Page 1Ch 读取——只在确有通道处在其它块时才读。块 0 的通道仍按基本描述符(规范要求块 0 与之一致,不一致时面板另有提示)。起始通道提示里,块 0 以外的应用写作 <code>AN n</code>。</p>
 
   <h3>带 NAD 的模块:Application 按「块号 + AppSel」暂存和显示;AppSel 超出 0–15 被拒绝</h3>
   <p>规范 6.2.1.7 和 8.21.1:模块支持 Normalized Application Descriptor(NAD,Page 1Ch)时,一条通道的 Application 是它的 AppSel 码<b>加上 NAD 块号</b>,AN = 15 × 块号 + AppSel。暂存的块号在 <code>18h:128–135</code>(Table 8-166),运行中的在 <code>19h:144–151</code>(Table 8-171),两者都是「Page 1Ch 支持时必有」。工具此前只读写 AppSel 码:某条通道暂存的块号不是 0 时,在 DataPath 下拉框里选一个基本 Application(块 0),模块实际暂存的是块号不变、同一 AppSel 码的另一个 Application;面板把运行中的 AN 16 也显示成「App 1」。演示模块(24 通道)声明了 NAD,却没有这两页。</p>
@@ -5097,7 +5101,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.202.0<br>
+    CMIS Module Manager 操作手册 v2.203.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

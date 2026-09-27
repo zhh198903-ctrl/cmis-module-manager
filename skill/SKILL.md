@@ -677,6 +677,7 @@ Apply 那次读取清掉的其它标志(包括 `wavelength_unlocked`)都记在 `
 ## 带 NAD 的模块:Application 是「块号 + AppSel」
 
 模块声明了 Page 1Ch(`01h:175` > 0)时,一条通道的 Application 是 AppSel 码加 NAD 块号,AN = 15 × 块号 + AppSel(6.2.1.7)。`GET /api/module/datapath` 每条通道带 `staged_nad_block`(`18h:128-135`)和 `active_nad_block`(`19h:144-151`),回复带 `nad_supported`;没有 NAD 的模块都是 `null`。`POST /api/module/datapath` 改了 AppSel 的通道块号写 0(下拉框列的是块 0 的基本 Application),没改的保留;可以显式给 `nad_block`(每条通道 0、原块号或 null),工具不会选用块 0 以外的其它 Application。用户说「面板写 App 1,模块却跑着别的」时先看 `active_nad_block`——非 0 就是 AN 15b+1。
+块号不为 0 的通道按它自己的 NAD 描述符分数据通路、写 DPIDX、判起始通道和媒体通道(`datapath_groups`、`lane_start_violations` 里的 `app_sel` 此时是 AN);v2.203.0 之前按同码的基本描述符算,会把块 1 的 8 通道应用的 DPIDX 改成 8 条单通道。
 `app_select` 每条通道必须是 0-15 的整数,条数不超过通道数,否则 400、什么都不写。
 
 ## 环回写入会读回

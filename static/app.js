@@ -3076,7 +3076,8 @@ async function loadDatapath() {
       .find(v => v.lane === lane.lane);
     const startNote = badStart
       ? `<div class="appsel-mismatch" title="${esc(
-          'This module advertises App ' + badStart.app_sel + ' for Data Paths '
+          'This module advertises ' + (badStart.app_sel > 15 ? 'AN ' : 'App ')
+          + badStart.app_sel + ' for Data Paths '
           + 'beginning on lane' + (badStart.allowed_starts.length > 1 ? 's ' : ' ')
           + badStart.allowed_starts.join(', ')
           + ' (HostLaneAssignmentOptions = 0b'
