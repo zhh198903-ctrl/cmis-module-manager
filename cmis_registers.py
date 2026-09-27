@@ -431,9 +431,9 @@ WRITE_ONLY_BLOCKS = (
 )
 
 # "Restriction: This byte must be written in a single-byte WRITE" - on every
-# Apply trigger, a restriction new in 5.4 (change list: "Apply* trigger
-# registers allow single byte WRITE only"). Only the Staged Control Set 0
-# pair was listed.
+# Apply trigger, a restriction new in Rev 5.0 (its change list: "Apply*
+# trigger registers allow single byte WRITE only"). Only the Staged Control
+# Set 0 pair was listed.
 SINGLE_BYTE_WRITE = (
     (0x10, 143, 'ApplyDPInit'), (0x10, 144, 'ApplyImmediate'),
     (0x10, 176, 'ApplyImmediateTx'), (0x10, 177, 'ApplyImmediateRx'),
@@ -3146,6 +3146,22 @@ def grid_channel_frequency_thz(code: int, n: int):
 GRID_CODES = {0: '3.125 GHz', 1: '6.25 GHz', 2: '12.5 GHz', 3: '25 GHz',
               4: '50 GHz', 5: '100 GHz', 6: '33 GHz', 7: '75 GHz',
               8: '150 GHz', 9: '300 GHz', 15: 'Not available'}
+
+
+def grid_code_on_module(code: int, major: int) -> int:
+    """12h:128-135.7-4 as a module of CMIS major revision `major` means it.
+
+    The Rev 5.0 change list: "Frequency grid encoding in field
+    (12h:128-135.7-4) has swapped the codes for 33GHz and 75 GHz". A CMIS
+    4.x module - many early tunable 400ZR modules are - holds 6 for 75 GHz
+    and 7 for 33 GHz. This tool works in the 5.x codes and translates at the
+    register, which Appendix G.3 asks of a host managing an older major
+    revision; the 04h:128 grid advertisements were not renumbered. The swap
+    is its own inverse, so one call serves reading and writing.
+    """
+    if major < 5 and code in (6, 7):
+        return 13 - code
+    return code
 
 
 # The pages CMIS 5.4 defines under a "Banked Page" heading: 10h-19h (section

@@ -509,7 +509,7 @@ Table 8-196:`EnableMediaLaneRedirection`(`6Dh:152` bit 0)为 0 时,
 ## 只写寄存器:读不回来,触发字节要单独写
 
 密码区 `00h:118-125`(WO/SC)、`10h:135-136`(AdaptiveInputEqStoreTx)、`10h:143/144`(ApplyDPInit / ApplyImmediate,WO)、`10h:176-179`、`10h:211-212`、`16h:176-177`(其余 Apply 触发字节)、`1Dh:160`、`60h:192-193`、`6Dh:160` 读出来都不是写进去的值;
-`POST /api/register/read` 的 `write_only` 列出读到的只写字节。所有 Apply 触发字节(`10h:143/144`、`10h:176-179`、`10h:211/212`、`16h:176/177`)必须单字节写(5.4 新限制),`POST /api/register/write` 夹在多字节里会 400。
+`POST /api/register/read` 的 `write_only` 列出读到的只写字节。所有 Apply 触发字节(`10h:143/144`、`10h:176-179`、`10h:211/212`、`16h:176/177`)必须单字节写(Rev 5.0 起的限制),`POST /api/register/write` 夹在多字节里会 400。
 
 ## 写只读寄存器:成功但无效果
 
@@ -761,6 +761,10 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 **这三种会直接报 400，不会默默给 Bank 0**：bank 超出模块的 Bank 数；
 在不分 Bank 的页上给了非 0 的 bank；在下半区（`0x00–0x7F`）给了 bank。
 从下半区开始、读过 `0x7F` 的读取例外：`bank` 管的是 `0x80` 之后那部分。
+
+## CMIS 版本(Lower 0x01)
+
+capabilities 里有 `cmis_major`。CMIS 4.x 模块的 `12h:128-135` 栅格代码 6/7 与 5.x 互换(Rev 5.0 修订记录):`/api/module/laser` 的 `grid_code` 和写入都用 5.x 代码,工具在寄存器处换算,自己直读 `12h:128` 时要自己换。Flag 汇总(Lower 4-7)和输出状态(11h:132-133)没有换算,4.x 模块上按 5.x 规则读。主版本号高于 5 的模块按附录 G.3 视为不可管理。
 
 ## 模块标识(Lower 0x00)
 

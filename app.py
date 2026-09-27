@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.185.0'
+__version__ = '2.186.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1151,6 +1151,9 @@ def _discover_capabilities() -> dict:
     try:
         rev = _read_lower(0x01, 1)[0]
         caps['cmis_revision'] = f'{(rev >> 4) & 0x0F}.{rev & 0x0F}'
+        # Appendix G.3: a host adapts to an older major revision, and a
+        # higher one "cannot be managed".
+        caps['cmis_major'] = (rev >> 4) & 0x0F
         # First, and from Lower Memory, which every module has: whether this
         # module has an Upper Memory to page into at all.
         #
@@ -1332,6 +1335,19 @@ def _discover_capabilities() -> dict:
         # optional advertisement would be worse than assuming the minimum.
         pass
     return caps
+
+
+def _cmis_major() -> int:
+    """Lower 1.7-4, read at connect. 5 where nothing has been read."""
+    return (_state.get('caps') or {}).get('cmis_major', 5)
+
+
+def _read_grid_bytes() -> list:
+    """12h:128-135 per media lane, the grid nibble in the 5.x codes this
+    tool works in - see cmis.grid_code_on_module for the Rev 5.0 swap."""
+    major = _cmis_major()
+    return [(cmis.grid_code_on_module(b >> 4, major) << 4) | (b & 0x0F)
+            for b in _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)]
 
 
 def _flat_memory() -> bool:
@@ -5261,7 +5277,7 @@ def api_laser_get():
                           if rel_supported else {})
 
         # Current state (Page 12h), bank by bank
-        grid_spacing = _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)
+        grid_spacing = _read_grid_bytes()
         channel_num  = _read_banked(*cmis.REG_CHANNEL_NUM_TX[:2], 2)
         fine_offset  = _read_banked(*cmis.REG_FINE_OFFSET_TX[:2], 2)
         current_freq = _read_banked_scalars(*cmis.REG_CURRENT_FREQ_TX[:2], 4)
@@ -5490,7 +5506,7 @@ def api_laser_set():
         # not in a transient state". Judged against what is there now, so the
         # page resending an unchanged channel is not a change of channel.
         dp_of = _media_lane_dp_states()
-        grid_now = _read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)
+        grid_now = _read_grid_bytes()
         ch_now_raw = _read_banked(*cmis.REG_CHANNEL_NUM_TX[:2], 2)
         for ldata in lanes:
             if not isinstance(ldata, dict):
@@ -5596,12 +5612,13 @@ def api_laser_set():
                 keep = (_read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)[lane]
                         & 0x0E)
                 plan.append((bank, cmis.REG_GRID_SPACING_TX[1] + slot,
-                             bytes([(gc << 4) | keep | fine_en])))
+                             bytes([(cmis.grid_code_on_module(
+                                 gc, _cmis_major()) << 4) | keep | fine_en])))
                 fields += 1
             if 'channel' in ldata:
                 ch = int(ldata['channel'])
                 gc_now = (ldata.get('grid_code') if 'grid_code' in ldata
-                          else (_read_banked(*cmis.REG_GRID_SPACING_TX[:2], 1)[lane] >> 4) & 0x0F)
+                          else (_read_grid_bytes()[lane] >> 4) & 0x0F)
                 allowed = ch_ranges.get(int(gc_now))
                 if allowed and not (allowed[0] <= ch <= allowed[1]):
                     return _err(

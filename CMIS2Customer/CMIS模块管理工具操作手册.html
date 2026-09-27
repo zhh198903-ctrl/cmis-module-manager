@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.185.0<br>
+      <b>版本</b>　2.186.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.185.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.185.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.186.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.186.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1118,7 +1118,7 @@
       <thead><tr><th>字段</th><th>说明</th><th>Page / Addr</th></tr></thead>
       <tbody>
         <tr><td>Module Type</td><td class="label">SFF-8024 Identifier，按 SFF-8024 Rev 4.14 Table 4-1 命名（如 18h QSFP-DD、19h OSFP、1Eh QSFP+ or later with CMIS、21h OSFP-XD with CMIS）；27h–7Fh 为 Reserved，80h–FFh 为 Vendor specific。如果这个标识在 Table 4-1 里写明用的是别的管理接口（SFF-8472、SFF-8636/8436、SFP-DD 管理接口），这一行标 ▲ 并注明「not a CMIS module」——规范 8.2.1:模块被识别为 CMIS 模块之后,其余字段才能按 CMIS 解读</td><td><code>Lower / 0x00</code></td></tr>
-        <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.3 模块完全兼容</td><td><code>Lower / 0x01</code></td></tr>
+        <tr><td>CMIS Revision</td><td class="label">模块自报的 CMIS 规范版本（<code>0x53</code>=5.3、<code>0x54</code>=5.4）。上半字节=主版本，下半字节=次版本。本工具按 5.4 解码，5.x 模块兼容（附录 G.3）。4.x 模块标 ▲：<code>12h:128–135</code> 的 33/75 GHz 栅格代码已按版本换算，Flag 汇总和输出状态仍按 5.x 读；主版本号高于 5 的模块标 ▲「可能无法管理」</td><td><code>Lower / 0x01</code></td></tr>
         <tr><td>Memory Model</td><td class="label">Paged（支持多页）/ Flat（只有 Page 00h）。Flat 模块上 Monitoring、DataPath Config、Diagnostics 三个标签页的内容大多不适用，页面顶部会用一行说明原因（DataPath Config 仍显示 Supported Applications）</td><td><code>Lower / 0x02[7]</code></td></tr>
         <tr><td>Reconfiguration</td><td class="label">模块支持哪几种重配置流程（SteppedConfigOnly + AutoCommissioning）。<b>regular</b> 对应 <code>ApplyDPInit</code>，<b>hot</b> 对应 <code>ApplyImmediate</code>；模块不支持哪一个，对应的写入就会被<b>默默忽略</b></td><td><code>Lower / 0x02[6],[1:0]</code></td></tr>
         <tr><td>MCI Max Speed</td><td class="label">模块支持的管理总线最高速率（本工具只走 I2C，按 I2C 一列解：0=400 kHz、1=1 MHz、2=3.4 MHz）。3–15 是保留值，工具直接显示编号而不自己编一个速率出来</td><td><code>Lower / 0x02[5:2]</code></td></tr>
@@ -1734,6 +1734,14 @@
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
 
+  <h3>CMIS 4.x 模块:33/75 GHz 栅格代码按模块版本换算,版本差异在 CMIS Revision 行说明</h3>
+  <p>CMIS Rev 5.0 的修订记录:「Frequency grid encoding in field (12h:128-135.7-4) has swapped the codes for 33GHz and 75 GHz」。也就是说,声明 CMIS 4.x 的模块(不少早期可调谐 400ZR 模块就是)在 <code>12h:128–135</code> 里用 6 表示 75 GHz、7 表示 33 GHz,和 5.x 正好相反。附录 G.3:模块主版本号不高于主机时,主机可以通过适配旧版本来管理它;主版本号更高的模块「可能不按主机的预期工作,因此无法管理」。</p>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠</span>
+    <span>工具以前一律按 5.x 编码读写栅格:在 CMIS 4.x 模块上,75 GHz 栅格会被显示成 33 GHz,由此算出的频率也是错的;在 Laser Tuning 里选 75 GHz 写下去,模块收到的是 33 GHz。CMIS Revision 这一行也从不说明版本差异。</span>
+  </div>
+  <p>现在:工具内部仍用 5.x 代码,只在读写 <code>12h:128–135</code> 时按模块的主版本号换算(6、7 互换);<code>04h:128</code> 的栅格支持位没有改过编号,不需要换算。CMIS Revision 行对 4.x 模块标 ▲,写明哪些已换算、哪些仍按 5.x 读(Lower 4–7 的 Flag 汇总在 5.0 前是按 Bank 和通道,11h:132–133 的输出状态是 5.0 才加的);对主版本号高于 5 的模块标 ▲ 并引用附录 G.3。另外更正:v2.182.0 的说明把「Apply 触发字节只能单字节写」写成了 CMIS 5.4 的新限制,它其实是 Rev 5.0 引入的。</p>
+
   <h3>Module Type:标识符按 SFF-8024 的原表命名,非 CMIS 模块会被标出</h3>
   <p>Lower 0x00 的模块标识由 SFF-8024 Table 4-1 定义。CMIS 8.2.1:主机要拿它对照一张支持的标识列表,<b>模块被识别为 CMIS 模块之后</b>,其余字段才能按 CMIS 解读。</p>
   <div class="callout callout-warn">
@@ -1768,7 +1776,7 @@
   <p>现在:平坦内存模块不再读 Page 01h,这三行显示「no Page 01h」(扩展的 Application 描述符 01h:223–250 同样不读);Cable Length、Link Length、Far End Breakout 按模块是不是线缆组件判断,值和模块类型矛盾时标 ▲ 并说明;演示用有源光缆改为链路长度全 0、远端分支代码 2(整根线缆接一个 8 通道远端模块)。</p>
 
   <h3>Raw Registers:所有 Apply 触发字节都按只写、单字节处理</h3>
-  <p>CMIS 5.4 修订记录:「Apply* 触发寄存器只允许单字节 WRITE(新限制)」;这些字节在各自的寄存器表里都是 WO(只写)。</p>
+  <p>CMIS Rev 5.0 修订记录(v2.182.0 的说明误写为 5.4,本版更正):「Apply* 触发寄存器只允许单字节 WRITE(新限制)」;这些字节在各自的寄存器表里都是 WO(只写)。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span>工具以前只认 Staged Control Set 0 的两个触发字节 <code>10h:143/144</code>(这正是 Page 10h 概览表列出的那两个)。另外八个 Apply 触发字节——单向触发 <code>10h:176/177</code>、Staged Control Set 1 的 <code>10h:178/179</code> 与 <code>10h:211/212</code>、Network Path 的 <code>16h:176/177</code>——可以夹在多字节写入里发出去,读到时也不标「write-only」。同样漏掉的只写字节还有 <code>10h:135–136</code> AdaptiveInputEqStoreTx(存储位置)和 <code>1Dh:160</code> CommitRedirection。</span>
@@ -4669,7 +4677,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
         不会进入上页，而是落在 <code>Lower 0x00</code> 起；途中写到的 <code>0x7F</code> 还会改掉页选择。从 <code>0x7F</code> 开始写两个字节也一样。
         工具直接拒绝，提示 <code>would run past 0x7F</code>，要求你<b>拆成两次写</b></li>
-    <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范 5.4 规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
+    <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范（Rev 5.0 起）规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
   </ul>
   <div class="callout callout-danger">
     <span class="callout-icon">✕</span>
@@ -4923,7 +4931,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.185.0<br>
+    CMIS Module Manager 操作手册 v2.186.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

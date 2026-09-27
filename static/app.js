@@ -739,7 +739,7 @@ async function loadInfo() {
   const rows = [
     ['Module Type',     moduleTypeCell(d),                                                        'Lower', '0x00',        'SFF-8024 Identifier (Table 8-5), named per SFF-8024 Table 4-1'],
     ['Module ID',       `0x${(d.module_id||0).toString(16).toUpperCase().padStart(2,'0')}`,      'Lower', '0x00',        'Identifier byte (raw hex)'],
-    ['CMIS Revision',   d.cmis_revision,                                                          'Lower', '0x01',        'Upper nibble=major, lower=minor (0x53=5.3)'],
+    ['CMIS Revision',   revisionCell(d.cmis_revision, c.cmis_major),                              'Lower', '0x01',        'Upper nibble=major, lower=minor (0x53=5.3). Appendix G.3: a host adapts to an older major revision; a higher one cannot be managed'],
     // A flat module has no Upper Memory to page into, so none of the Page
     // 01h advertisements exist on it. Saying so here is the difference
     // between a panel that looks half-read and one that is complete.
@@ -1332,6 +1332,31 @@ function laneCountPair(a) {
 // been recognized as a CMIS module". Where Table 4-1 names another
 // management interface for this identifier, every row below is a CMIS
 // reading of a memory map that is not CMIS.
+// Appendix G.3: "If a module reports the same or a smaller CMIS major
+// revision number than the host, the module can be managed (in principle,
+// possibly depending on the host dynamically adapting to an older version)";
+// a higher one "may not behave as per host expectations and therefore cannot
+// be managed". Rev 5.0's change list is where a 4.x module parts company
+// with what this tool reads, and the row said nothing either way.
+function revisionCell(text, major) {
+  const shown = esc(String(text || ''));
+  if (major == null || major === 5 || major === 0) return shown;
+  const why = major < 5
+    ? 'Rev 5.0 changed encodings this tool reads. The 33 and 75 GHz grid '
+      + 'codes of 12h:128-135 were swapped, and are translated for this '
+      + 'module. Not adapted: the Flags summary (Lower 4-7) meant bank and '
+      + 'lane before 5.0 and is read as bank and page, and OutputStatus '
+      + '(11h:132-133) was added in 5.0 and is read as if present.'
+    : 'Appendix G.3: a module reporting a higher major revision than the '
+      + 'host "may not behave as per host expectations and therefore cannot '
+      + 'be managed". This tool implements CMIS 5.';
+  return shown + ' <span class="flag-warn" title="' + esc(why) + '">\u25b2</span> '
+    + '<span class="reg-meta">' + (major < 5
+      ? 'older than CMIS 5.0 - grid codes translated, Flags summary and '
+        + 'output status read by 5.x rules'
+      : 'newer major revision than this tool - it may not be manageable') + '</span>';
+}
+
 function moduleTypeCell(d) {
   const name = String(d.module_type || '');
   if (!d.other_management) return name;

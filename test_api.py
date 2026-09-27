@@ -37272,7 +37272,7 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
 
 
 class TestEveryApplyTriggerIsWriteOnly(CMISTestCase):
-    """CMIS 5.4's change list: "Apply* trigger registers allow single byte
+    """The Rev 5.0 change list: "Apply* trigger registers allow single byte
     WRITE only (new restriction)", and every one is typed WO. The tool knew
     the Staged Control Set 0 pair, 10h:143-144 - the two the Page 10h
     overview names - and not the unidirectional 10h:176-177, the Staged
@@ -37880,6 +37880,123 @@ class TestTheIdentifierNamesAreSFF8024s(CMISTestCase):
         self.assertIn('按 SFF-8024 Rev 4.14 Table 4-1 命名', s7)
         self.assertIn('「not a CMIS module」', s7)
         self.assertNotIn('CMIS-Compliant）', s7)
+
+
+class TestACmis4ModulesGridCodesAreTranslated(CMISTestCase):
+    """The Rev 5.0 change list: "Frequency grid encoding in field
+    (12h:128-135.7-4) has swapped the codes for 33GHz and 75 GHz". A CMIS
+    4.x module holds 6 for 75 GHz and 7 for 33 GHz, and the tool read and
+    wrote the 5.x codes whatever the module's revision - a 75 GHz lane shown
+    as 33 GHz with the frequency worked out on the wrong grid, and a 75 GHz
+    request written as 33 GHz. Appendix G.3 has a host adapt to an older
+    major revision; the CMIS Revision row said nothing either way."""
+
+    def _connect(self, major=None):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_coherent_zr', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        if major is not None:
+            _state['caps']['cmis_major'] = major
+        deactivated(self.client)
+
+    def _laser(self):
+        return self.assertOk(self.client.get('/api/module/laser'))['data']
+
+    def _register_nibble(self, lane=1):
+        page = _state['backend']._registers[0x12]
+        return page[0x80 + lane - 1] >> 4
+
+    def test_the_translation(self):
+        import cmis_registers as c
+        self.assertEqual([c.grid_code_on_module(x, 4) for x in range(10)],
+                         [0, 1, 2, 3, 4, 5, 7, 6, 8, 9])
+        self.assertEqual([c.grid_code_on_module(x, 5) for x in range(10)],
+                         list(range(10)))
+        self.assertEqual(c.grid_code_on_module(6, 6), 6)
+        self.assertEqual(c.grid_code_on_module(15, 4), 15)
+
+    def test_the_revision_is_kept_at_connect(self):
+        self._connect()
+        self.assertEqual(_state['caps']['cmis_major'],
+                         _state['backend']._registers[None][0x01] >> 4)
+
+    def test_a_cmis4_lane_on_75ghz_reads_as_75ghz(self):
+        self._connect(major=4)
+        app_module._set_page(0x12)
+        _state['backend'].poke_bytes(0x80, bytes([0x60]))   # 6 = 75 GHz on 4.x
+        app_module._invalidate_page()
+        lane = self._laser()['lanes'][0]
+        self.assertEqual(lane['grid_code'], 7)
+        self.assertEqual(lane['grid'], '75 GHz')
+
+    def test_a_cmis5_lane_is_read_as_it_is(self):
+        self._connect()
+        app_module._set_page(0x12)
+        _state['backend'].poke_bytes(0x80, bytes([0x60]))
+        app_module._invalidate_page()
+        self.assertEqual(self._laser()['lanes'][0]['grid_code'], 6)
+
+    def test_75ghz_is_written_as_the_module_means_it(self):
+        self._connect(major=4)
+        d = self._laser()
+        self.assertIn('75 GHz', d['grids_supported'])
+        rv = self.client.post('/api/module/laser', data=json.dumps(
+            {'lanes': [{'lane': 1, 'grid_code': 7, 'channel': 0}]}),
+            content_type='application/json')
+        self.assertOk(rv)
+        self.assertEqual(self._register_nibble(), 6)
+        self.assertEqual(self._laser()['lanes'][0]['grid_code'], 7)
+
+    def test_a_cmis5_module_is_written_unchanged(self):
+        self._connect()
+        self.assertOk(self.client.post('/api/module/laser', data=json.dumps(
+            {'lanes': [{'lane': 1, 'grid_code': 7, 'channel': 0}]}),
+            content_type='application/json'))
+        self.assertEqual(self._register_nibble(), 7)
+
+    def _node(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function revisionCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_revision_row(self):
+        self.assertEqual(self._node("revisionCell('5.3', 5)"), '5.3')
+        self.assertEqual(self._node("revisionCell('5.4', undefined)"), '5.4')
+        # 00h is no revision at all, not an old one
+        self.assertEqual(self._node("revisionCell('0.0', 0)"), '0.0')
+        old = self._node("revisionCell('4.0', 4)")
+        self.assertIn('older than CMIS 5.0 - grid codes translated', old)
+        self.assertIn('Flags summary (Lower 4-7)', old)
+        new = self._node("revisionCell('6.0', 6)")
+        self.assertIn('newer major revision than this tool', new)
+        self.assertIn('cannot be managed', new)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js'), encoding='utf-8') as f:
+            self.assertIn("revisionCell(d.cmis_revision, c.cmis_major)", f.read())
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        self.assertIn('<h3>CMIS 4.x 模块:33/75 GHz 栅格代码按模块版本换算', man)
+        self.assertIn('33/75 GHz 栅格代码已按版本换算', man)
+        self.assertNotIn('CMIS 5.4 修订记录:「Apply*', man)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
