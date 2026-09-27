@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.199.0<br>
+      <b>版本</b>　2.200.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.199.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.199.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.200.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.200.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1544,7 +1544,7 @@
     规范写得很清楚：<br>
     一、数据通道正处在<b>过渡状态</b>（<code>DPInit</code> / <code>DPDeinit</code> /
     <code>DPTxTurnOn</code> / <code>DPTxTurnOff</code>）时收到的 Apply，
-    模块<b>直接忽略</b>（这条针对支持免中断重配置的模块）；<br>
+    模块<b>直接忽略</b>（这条针对支持免中断重配置的模块——常规或热流程<b>任一</b>支持即算，只支持常规流程的模块同样适用）；<br>
     二、<b>ApplyImmediate</b> 在 <code>DPInitialized</code> /
     <code>DPActivated</code> <b>之外的任何状态</b>都会被忽略。<br>
     以前工具只挡住了第二条里「模块根本不支持免中断重配置」那半边，
@@ -1556,9 +1556,9 @@
     现在这两种情况都会被<b>拒绝</b>，并明确写出<b>是哪条通道、当前在哪个状态</b>，
     例如「Lane 1 (Deactivated) 不在这两个状态里，请改用 Apply」。
     仍然允许的是：<b>停通道和 Apply 写在同一次请求里</b>
-    （这正是规范规定的释放序列），以及在
+    （工具按规范的顺序写：停下的等到 DPDeactivated 再 Apply，放开的先 Apply 再放开），以及在
     <code>DPDeactivated</code> 上用 <b>Apply</b>（规范推荐的正是这个用法）。
-    只支持分步重配置的模块行为不变。<br>
+    两种免中断流程都不支持的模块（<code>Lower 02h</code> AutoCommissioning = 00b）不做这项拒绝。<br>
     这类拒绝信息现在会在界面上<b>停留 12 秒</b>——原来的 3 秒不够把通道号读完。</span>
   </div>
 
@@ -1784,6 +1784,12 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>停下再换应用:DP Deinit 与 Apply 按规范顺序写入,被拒绝的通道保持停下;过渡状态中的 Apply 一律拒绝</h3>
+  <p>规范 6.2.4:「<b>支持免中断重配置流程时</b>……模块会悄悄忽略在过渡状态(DPInit、DPDeinit、DPTxTurnOn、DPTxTurnOff)中收到的请求」,附录 E 的图 E-19 也这样标注——两种流程(常规 ApplyDPInit、热 ApplyImmediate)<b>任一</b>支持即适用。工具此前只看模块是否支持<b>热</b>重配置,所以只支持常规流程的模块(<code>Lower 02h</code>:SteppedConfigOnly = 1、AutoCommissioning = 01b,演示模块 DR8 就是)在过渡状态里点 Apply,会被发出去、被模块丢掉,工具却回报成功。演示模块也没有丢弃这种触发,所以一直没被发现。</p>
+  <p>现在只要模块支持任一流程,过渡状态中的 Apply 都会被拒绝(409)并写明是哪条通道;两种都不支持时 ApplyDPInit 只做写入(规范 Table 6-4,任何状态都接受),不拒绝。演示模块现在也按 6.2.4 在这种情况下丢弃触发。</p>
+  <p>同一次提交里既改 DP Deinit、又点 Apply 时,工具以前<b>先写 DPDeinit、紧接着写 Apply 触发</b>,触发总是落在 DPDeinit 或 DPInit 这两个过渡状态里。规范第 80 页:Apply 只能在所选通道处于<b>稳定</b>状态时置位;Table 6-3:对 DPDeactivated 的数据通道做 ApplyDPInit,是把暂存配置拷贝进 Active Control Set,放开后 DPInit 按 <b>Active Control Set</b> 投入运行。于是在支持免中断流程的模块上,这个触发被丢掉,放开的通道按<b>原来的</b> Application 起来——规范 6.2.4.3 唯一允许的换宽度流程(停下 → 换应用 → 放开)做不成。演示模块此前把「放开 DPDeinit」当成一次 Apply,按暂存区的配置启动并报告 ConfigSuccess,所以演示里看不出来。</p>
+  <p>现在的顺序:<b>要停下的通道</b>先写 DPDeinit,等它们到 DPDeactivated(按模块声明的 DPTxTurnOff + DPDeinit 时长,<code>01h:143-144</code>、<code>01h:168</code>)再发 Apply;到时还没停下就不发 Apply,返回 504 并写明是哪条通道。<b>要放开的通道</b>保持按住,先发 Apply,等 Config Status 不再是 ConfigInProgress 才放开;新配置被拒绝(Table 8-101 任一拒绝码)的通道<b>保持停下</b>,界面提示是哪几条——放开它只会按原来的 Application 起来。接口回复新增 <code>kept_deinit</code>。演示模块放开 DPDeinit 时现在按 Active Control Set 启动,不再为此报告新的 Config Status。</p>
 
   <h3>Module Info:只做分支(breakout)的模块,通道数不再少算</h3>
   <p>Application 描述符的 HostLaneAssignmentOptions 列出这个应用<b>可以从哪几条主机通道起始</b>,每个起点都是一条可以并排运行的数据通道——规范附录 C-1 的例子:2 条通道的 100GAUI-2 起点为 <code>55h</code>(1、3、5、7),就是「四个并行的 100GBASE-DR 收发器」。工具计算 Host Lanes / Media Lanes 时每个应用只算了最低的那个起点,所以一个<b>只广告</b> 4×100G-DR 的模块显示 2 / 1,而不是 8 / 4。现在每个起点都算一个实例,重叠的不重复计算。括号里的明细也改了:应用之间是「二选一」,不再用「+」连接,改用「·」;有多个起点的应用标出实例数,例如 <code>AppSel#2: 2H/1M ×4</code>。</p>
@@ -3465,13 +3471,15 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     规范 6.2.4.3 规定，改变一条数据通道的<b>宽度</b>只能在 DPDeactivated 下进行，
     所以换应用是两步：先勾 <b>DP Deinit</b> + Apply 把通道停下，
     再选新的 Application、取消勾选、Apply。<br>
-    第二步是一次 Apply 同时带着<b>新配置</b>和<b>释放</b>，而工具写寄存器的顺序是
-    <b>先写 DPDeinit、后写 AppSelect</b>——释放的那一刻数据通道就开始重启，
-    模块按当时暂存区里的内容去承载，也就是<b>旧的那个 Application</b>。
-    于是通道原样起来，Config Status 还报 ConfigSuccess：
+    第二步是一次 Apply 同时带着<b>新配置</b>和<b>释放</b>。释放的那一刻数据通道就开始重启（DPInit），
+    而 DPInit 投入的是 <b>Active Control Set</b>——暂存区的内容只有经过 Apply 才会进去（Table 6-3）。
+    工具以前先写 DPDeinit、紧接着写 Apply 触发，触发落在 DPInit 这个过渡状态里，
+    支持免中断流程的模块会悄悄丢掉它（6.2.4），通道按<b>旧的那个 Application</b> 起来：
     <b>规范唯一允许的换应用流程，恰好是工具做不成的那个</b>。<br>
-    现在暂存区（AppSelect、两个极性掩码、Tx Disable）一律<b>先于</b> DPDeinit 写入，
-    释放时模块看到的是你要的新配置。</span>
+    现在同一次提交里：暂存区（AppSelect、两个极性掩码、Tx Disable）先写；
+    要放开的通道<b>保持按住</b>，先发 Apply、等 Config Status 出结果再放开，
+    新配置被拒绝的通道保持停下并提示是哪几条；
+    要停下的通道先写 DPDeinit，等到 DPDeactivated 再发 Apply。</span>
   </div>
 
   <div class="callout callout-note">
@@ -5072,7 +5080,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.199.0<br>
+    CMIS Module Manager 操作手册 v2.200.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

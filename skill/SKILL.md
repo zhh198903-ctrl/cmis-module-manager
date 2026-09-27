@@ -164,9 +164,15 @@ DataPath 面板的下拉框每项都写明了，例如 `App 2 — 400GBASE-DR4 4
 5. **连点了两次 Apply 吗** —— 上一次还在 `ConfigInProgress` 时到达的新命令，
    按规范（6.2.4.2）被模块**静默丢弃**（不给任何反馈）。工具现在会直接回 **409**，
    点名哪几条通道还在进行中，并且不写触发位。等结果出来再点。
-   这条**对所有模块都成立**（不像过渡态那条只针对支持热重配的模块），
+   这条**对所有模块都成立**（不像过渡态那条只针对支持免中断重配置——常规或热，任一——的模块），
    且**按数据通路**判断：另一个端口正在重配不妨碍这个端口；
    上一条被拒绝（`ConfigRejected*`）也不算进行中，可以立即重来。
+6. **同一次请求里既改 DP Deinit 又 Apply** —— 工具按 6.2.4.3 的顺序写：
+   要停下的通道先写 DPDeinit，等到 DPDeactivated 再发 Apply（到时没停下回 **504**，不发 Apply）；
+   要放开的通道先保持按住、发 Apply、等 Config Status 出结果再放开。
+   新配置被拒绝的通道**保持 DP Deinit**，回复的 `kept_deinit` 列出它们——
+   这时放开只会按原来的 Application 起来（DPInit 投入的是 Active Control Set，Table 6-3）。
+   v2.200.0 之前是先写 DPDeinit、紧跟着写触发，触发落在过渡状态里被模块丢掉，换应用做不成。
 
 ## 排查：读数看着不对
 
@@ -701,6 +707,7 @@ Eq. 6-12:DPDeactivateS 含 DPTxDisableT 和 DPTxForceSquelchT,对数据通道的
 运行中的数据通道任一路 OutputDisableTx / OutputSquelchForceTx 置位,整条经 DPTxTurnOff 到 DPInitialized;清掉后经 DPTxTurnOn 回 DPActivated。
 `POST /api/module/datapath` 和 `POST /api/module/squelch` 的回复带 `tx_takes_down`(被这次写入带下来的 `host_lanes` / `media_lanes`)。
 用户说「关了一路 Tx,整条通道都变成 Initialized」是规范行为,不是故障;Initialized 下其余通道的 Tx 仍在发(Table 6-18)。
+这段 DPTxTurnOff / DPTxTurnOn 是过渡状态:模块支持免中断重配置(常规或热,任一)时,过渡状态中的 Apply 会被模块悄悄丢掉(6.2.4),所以 `POST /api/module/datapath` 此时带 `apply` 会 409;等状态稳定(看 Monitoring 的 DataPath State)再 Apply。
 
 ## 低功耗下配置数据通道
 

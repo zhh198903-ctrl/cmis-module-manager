@@ -3761,6 +3761,7 @@ async function applyDatapath(immediate) {
   });
 
   txTakesDownNote(res);
+  keptDeinitNote(res);
   if (res.status !== 'ok') {
     // A refusal that names which lane is in which state is the whole answer,
     // and three seconds is not long enough to read it. The refusals worth
@@ -4937,6 +4938,17 @@ async function applySquelch() {
   }, loadSquelch);
   txTakesDownNote(res);
   return res;
+}
+
+// A released Data Path initialises from its Active Control Set whatever the
+// Apply said, so where the module refused the new configuration the server
+// keeps the lanes held rather than bring them back up on the old one.
+function keptDeinitNote(res) {
+  const kept = (res && res.status === 'ok' && res.data.kept_deinit) || [];
+  if (!kept.length) return;
+  toast(`Lane ${kept.join(', ')}: the module refused the new configuration `
+        + '(ConfigStatus), so DP Deinit stays set - released, the Data Path '
+        + 'would come back up on the Application it had before', 'warning', 10000);
 }
 
 // Eq. 6-12: one disabled or force-squelched media lane takes its whole Data

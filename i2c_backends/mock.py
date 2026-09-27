@@ -941,15 +941,21 @@ class _ConfigCommand:
     on its own clock. One slot for the whole module made a trigger for an idle
     port wait behind a busy one, and then dropped it.
     """
-    __slots__ = ('time', 'mask', 'hot', 'provision_only', 'result', 'staged')
+    __slots__ = ('time', 'mask', 'hot', 'provision_only', 'result', 'staged',
+                 'release')
 
-    def __init__(self, started, mask, hot, provision_only, result, staged):
+    def __init__(self, started, mask, hot, provision_only, result, staged,
+                 release=False):
         self.time = started
         self.mask = mask                      # lanes this command selected
         self.hot = hot                        # ApplyImmediate rather than DPInit
         self.provision_only = provision_only  # Table 6-4: no commissioning
         self.result = result                  # per-lane ConfigStatus nibble
         self.staged = staged                  # Staged set as the trigger saw it
+        # A DPDeinit release rather than a configuration command: the walk
+        # through DPInit commissions the Active Control Set, and there is no
+        # command whose result ConfigStatus would report.
+        self.release = release
 
 
 class MockBackend(I2CInterface):
@@ -2417,6 +2423,8 @@ class MockBackend(I2CInterface):
         """Step (4): copy the staged set that passed into the Active Control
         Set and report the result. Shared by both Apply triggers - only the
         Data Path transitions differ between them."""
+        if cmd.release:
+            return                           # nothing staged, nothing to report
         for i in range(8):
             if ((cmd.mask >> i) & 1) and cmd.result[i] == 0x1:
                 self._registers[0x11][0xCE + i] = cmd.staged[i]
@@ -2446,6 +2454,7 @@ class MockBackend(I2CInterface):
         # silently. Only those Data Paths: a trigger that also names an idle
         # one still runs there.
         mask = self._drop_busy_data_paths(mask)
+        mask = self._drop_transient_data_paths(mask)
         if not mask:
             return
         # Outside ModuleReady every Data Path is DPDeactivated (6.3.2.5.4),
@@ -2491,6 +2500,23 @@ class MockBackend(I2CInterface):
             self._registers[0x11][a] = (
                 (self._registers[0x11].get(a, 0) & ~(0x0F << shift))
                 | (0x0C << shift))          # ConfigInProgress
+
+    def _drop_transient_data_paths(self, mask: int) -> int:
+        """6.2.4, Silent Rejection: where an intervention-free procedure is
+        supported "the module silently ignores requests received while still
+        being in a transient state" (DPInit, DPDeinit, DPTxTurnOn,
+        DPTxTurnOff) - for every lane of the Data Path the trigger names.
+        Without either procedure ApplyDPInit only provisions, in any state
+        (Table 6-4), so nothing is dropped."""
+        if not (self._regular_reconfig() or self._hot_reconfig()):
+            return mask
+        for lanes, _code, _appsel in self._staged_datapaths():
+            if any(lane < len(self._dp_lane_states)
+                   and self._dp_lane_states[lane] in (0x2, 0x3, 0x5, 0x6)
+                   for lane in lanes):
+                for lane in lanes:
+                    mask &= ~(1 << lane)
+        return mask
 
     def _drop_busy_data_paths(self, mask: int) -> int:
         """The trigger bits left once every Data Path with a busy lane is out.
@@ -3920,11 +3946,17 @@ class MockBackend(I2CInterface):
             # single slot this replaced did for the whole module.
             self._commands = [c for c in self._commands
                               if not (c.mask & released)]
+            # DPInit commissions what the Active Control Set holds (Table
+            # 6-3: the Staged set reaches it only through an Apply, which
+            # "copies content to Active Control Set"). This took the Staged
+            # set, validated it and reported ConfigStatus for it - a release
+            # behaving as an ApplyDPInit, so a host that released first and
+            # applied second came up on the new Application here and on the
+            # old one on a real module.
             self._commands.append(_ConfigCommand(
-                time.time(), released, False, False,
-                self._validate_staged_appsel(released, subset_ok=True),
-                [self._registers[0x10].get(0x91 + i, 0x10)
-                 for i in range(8)]))
+                time.time(), released, False, False, [0x1] * 8,
+                [self._registers[0x11].get(0xCE + i, 0x10)
+                 for i in range(8)], release=True))
 
     def _default_app_select(self):
         """An AppSel code per host lane that the descriptors actually allow.

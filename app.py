@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.199.0'
+__version__ = '2.200.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1380,6 +1380,56 @@ def _flat_memory() -> bool:
     Application Descriptor means a different thing on each kind of module."""
     config = (_state.get('caps') or {}).get('config') or {}
     return config.get('memory_model') == 'Flat'
+
+
+def _lanes_of(masks: list) -> set:
+    """0-based lanes set in a list of per-Bank lane masks."""
+    return {b * 8 + i for b, m in enumerate(masks) for i in range(8)
+            if (m >> i) & 1}
+
+
+def _advertised_seconds(*keys) -> float:
+    """The sum of the module's advertised maximum state durations (01h:144,
+    168; Table 8-49), bounded so an unbounded one does not hold a request
+    open."""
+    durations = (_state.get('caps') or {}).get('durations') or {}
+    total = 0.0
+    for key in keys:
+        limit = (durations.get(key) or {}).get('max_seconds')
+        total += 5.0 if limit is None else limit
+    return min(total + 0.5, 5.0)
+
+
+def _await_dp_states(lanes: set, wanted: tuple) -> set:
+    """Poll 11h:128-131 until every lane is in one of `wanted`; the lanes
+    that are not when the advertised time has passed."""
+    deadline = time.time() + _advertised_seconds('dp_tx_turn_off', 'dp_deinit')
+    while True:
+        states = []
+        for _bank, raw in _read_banks(*cmis.REG_DP_STATE):
+            states += cmis.parse_dp_states(raw)
+        late = {i for i in lanes if i < len(states) and states[i] not in wanted}
+        if not late or time.time() >= deadline:
+            return late
+        # A polling cadence; the bound is the deadline above.
+        time.sleep(0.02)
+
+
+def _await_config_done(lanes: set) -> list:
+    """Poll ConfigStatus (11h:202-205) until no lane is ConfigInProgress;
+    the codes last read. Chapter 10 gives no time for a Provision, so the
+    DPInit advertisement, which covers the same validation and more, bounds
+    it."""
+    deadline = time.time() + _advertised_seconds('dp_init')
+    while True:
+        codes = []
+        for _bank, raw in _read_banks(*cmis.REG_CONFIG_STATUS):
+            codes += cmis.parse_config_status_codes(raw)
+        if (not any(i < len(codes) and codes[i] == cmis.CONFIG_IN_PROGRESS
+                    for i in lanes) or time.time() >= deadline):
+            return codes
+        # A polling cadence; the bound is the deadline above.
+        time.sleep(0.02)
 
 
 def _lane_starts(mask: int) -> list:
@@ -3523,8 +3573,8 @@ def api_datapath_set():
                        _mask_now(cmis.REG_TX_POL_FLIP), banks)
         rx_pol = _keep(body, 'rx_polarity_flip_mask',
                        _mask_now(cmis.REG_RX_POL_FLIP), banks)
-        dp_deinit = _keep(body, 'dp_deinit_mask',
-                          _mask_now(cmis.REG_DP_DEINIT), banks)
+        deinit_now = _mask_now(cmis.REG_DP_DEINIT)
+        dp_deinit = _keep(body, 'dp_deinit_mask', deinit_now, banks)
         apply = bool(body.get('apply', False))
         apply_now = bool(body.get('apply_immediate', False))
 
@@ -3673,6 +3723,7 @@ def api_datapath_set():
         # disable and squelch take effect on the write. Only a changed staged
         # configuration needs an Apply at all.
         applied = []
+        need = set()
         if apply and apply_now:
             return _err('Choose one Apply trigger: ApplyDPInit re-initialises '
                         'the Data Path, ApplyImmediate commits without it', 400)
@@ -3700,8 +3751,17 @@ def api_datapath_set():
             # on believing the Data Path is carrying the new configuration.
             # None (reserved AutoCommissioning 11b) is unknown, so the rule
             # for a module that may have the procedures is kept.
-            hot = (_state.get('caps') or {}).get('config', {}).get(
-                'hot_reconfig', False) is not False
+            #
+            # 6.2.4: "When intervention-free reconfiguration procedures are
+            # supported ... the module silently ignores requests received
+            # while still being in a transient state" - either procedure.
+            # This asked about hot alone, so a module with only the regular
+            # one (Lower 02h, SteppedConfigOnly with AutoCommissioning 01b)
+            # had an Apply into a transient Data Path reported as applied.
+            _cfg = (_state.get('caps') or {}).get('config', {})
+            intervention_free = (
+                _cfg.get('hot_reconfig', False) is not False
+                or _cfg.get('regular_reconfig', False) is not False)
 
             def _named(idxs):
                 return ', '.join('%d (%s)' % (i + 1, dp_states_before[i])
@@ -3727,7 +3787,7 @@ def api_datapath_set():
                     'report success and change nothing. Wait for the '
                     'previous command to finish'
                     % ', '.join(str(i + 1) for i in busy), 409)
-            if hot:
+            if intervention_free:
                 stuck = sorted(i for i in need
                                if i < len(dp_states_before)
                                and cmis.dp_state_is_transient(
@@ -3774,15 +3834,19 @@ def api_datapath_set():
             if app_select[group[0]]:
                 for lane in group:
                     dpidx[lane] = group[0]
+        # 6.2.4.3's order, and page 80's rule that an Apply bit may be set
+        # "only when the selected lane indicates a stable and steady DPSM
+        # state": a Data Path being taken down is Applied once it has reached
+        # DPDeactivated, and one being released is Applied while it is still
+        # there - DPInit then commissions the Active Control Set the Apply
+        # filled (Table 6-3). Written the other way round, DPDeinit first and
+        # the trigger straight after, every Apply landed in DPDeinit or DPInit,
+        # a module with an intervention-free procedure dropped it silently, and
+        # a released path came up on the Application it had before.
+        going_down = [dp_deinit[b] & ~deinit_now[b] for b in range(banks)]
+        releasing = [deinit_now[b] & ~dp_deinit[b] for b in range(banks)]
         for bank in range(banks):
             _set_page(0x10, bank)
-            # The Staged Control Set goes down before DPDeinit, not after.
-            # Releasing a deinit hold restarts the Data Path, and the module
-            # commissions whatever is staged at that moment - so writing 128
-            # first brought the path back up on the *previous* Application and
-            # reported ConfigSuccess for it. That is the second half of the
-            # only sequence 6.2.4.3 allows for a width change, so the one
-            # procedure the standard mandates was the one that did not work.
             # 129-130 are contiguous: InputPolarityFlipTx then OutputDisableTx
             _bus_write(cmis.REG_TX_POL_FLIP[1],
                                           bytes([tx_pol[bank], tx_disable[bank]]))
@@ -3793,8 +3857,22 @@ def api_datapath_set():
                 cmis.pack_dpconfig(app_select[bank * 8:bank * 8 + 8],
                                    dpidx[bank * 8:bank * 8 + 8],
                                    prev_explicit[bank * 8:bank * 8 + 8]))
+            # The lanes going down now; the ones being released stay held
+            # until their Apply has been taken.
             _bus_write(cmis.REG_DP_DEINIT[1],
-                                          bytes([dp_deinit[bank]]))
+                       bytes([deinit_now[bank] | going_down[bank]]))
+
+        triggered = (apply or apply_now) and bool(need)
+        down_lanes = _lanes_of(going_down) & set(need or ())
+        if triggered and down_lanes and not held_until_ready:
+            late = _await_dp_states(down_lanes, ('Deactivated',))
+            if late:
+                return _err('DPDeinit is written, but lane %s did not reach '
+                            'DPDeactivated within the time this module '
+                            'advertises (01h:143-144, 168), so the Apply was '
+                            'not sent: in a transient state it would be '
+                            'ignored. Apply again once the Data Path is down'
+                            % ', '.join(str(i + 1) for i in sorted(late)), 504)
 
         if apply or apply_now:
             if need:
@@ -3818,6 +3896,26 @@ def api_datapath_set():
                 # reconfiguration - so there is no number to be short of.
                 time.sleep(0.1)
 
+        kept_deinit = []
+        if any(releasing):
+            up_lanes = _lanes_of(releasing) & set(need or ())
+            final = list(dp_deinit)
+            if triggered and up_lanes:
+                # The Provision has to have filled the Active Control Set
+                # before DPInit reads it.
+                codes = _await_config_done(up_lanes)
+                # A released Data Path initialises from the Active Control
+                # Set whatever the Apply said, so one whose new configuration
+                # was refused would come back up on the Application it had.
+                # Held instead, and said.
+                for i in sorted(up_lanes):
+                    if i < len(codes) and codes[i] in cmis.CONFIG_STATUS_REJECTED:
+                        final[i // 8] |= 1 << (i % 8)
+                        kept_deinit.append(i + 1)
+            for bank in range(banks):
+                _set_page(0x10, bank)
+                _bus_write(cmis.REG_DP_DEINIT[1], bytes([final[bank]]))
+
         return _ok({'message': (
                         'Written in ModuleLowPwr. An Apply here provisions the '
                         'Active Control Set only (Table 6-3), and DPDeinit is '
@@ -3828,6 +3926,7 @@ def api_datapath_set():
                     'applied_lanes': applied,
                     'apply_immediate': bool(apply_now),
                     'held_until_ready': held_until_ready,
+                    'kept_deinit': kept_deinit,
                     'tx_takes_down': takes_down})
     except _LaneMaskError as e:
         return _err(str(e), 400)

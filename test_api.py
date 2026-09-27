@@ -106,21 +106,31 @@ def settled(client, timeout=5.0):
 
     8.13.3 then runs an Apply as acceptance, validation, execution and result
     feedback, and the DPSM reaches DPDeactivated well before that finishes.
-    Polling makes ConfigStatus the later of the two every time: measured
-    across dr8, both coherent profiles and 1600g_dr8, the transient states
-    clear at 0.06-0.10 s and ConfigInProgress at 0.42-0.47 s. So waiting on
-    ConfigStatus subsumes the transient wait here, and a second condition
-    that can never be the binding one would only look like it was doing
-    something. The spec rule itself is enforced by the endpoint, not by this.
+    Both conditions: ConfigStatus used to be the later of the two, while a
+    release was written before its Apply. Now the endpoint applies first and
+    releases after the Provision has finished (6.2.4.3), so the walk through
+    DPInit comes after ConfigInProgress has cleared, and waiting on
+    ConfigStatus alone returned with the lanes still in DPInit. The spec
+    rule itself is enforced by the endpoint, not by this.
     """
+    # And the same answer twice: DPInitialized is a steady state, but a path
+    # coming up passes through it for a moment on its way to DPActivated.
     deadline = time.time() + timeout
+    last = None
     while time.time() < deadline:
         rv = client.get('/api/module/monitoring')
         if rv.status_code == 200:
             lanes = json.loads(rv.data)['data']['lanes']
-            if all(l.get('config_status_code') != 0xC for l in lanes):
-                return
-        time.sleep(0.1)
+            now = [l.get('datapath_state') for l in lanes]
+            if all(l.get('config_status_code') != 0xC
+                   and l.get('datapath_state_kind') != 'transient'
+                   for l in lanes):
+                if now == last:
+                    return
+                last = now
+            else:
+                last = None
+        time.sleep(0.2)
 
 
 
@@ -3387,8 +3397,20 @@ class TestTheApplyProtocolRunsOnTheModulesOwnClock(CMISTestCase):
         # From DPDeactivated both commands would be accepted on their own, so
         # what is being tested is the readiness check and not the width rule.
         deactivated(self.client)
-        self._stage_and_apply([2] * 8)
-        self._stage_and_apply([1] * 8)        # arrives while still in progress
+        self.assertOk(self.client.post(
+            '/api/module/datapath',
+            data=json.dumps({'app_select': [2] * 8, 'apply': True}),
+            content_type='application/json'))
+        # The tool itself refuses an Apply during ConfigInProgress now, so
+        # the second one goes to the module directly.
+        lanes = self.assertOk(
+            self.client.get('/api/module/monitoring'))['data']['lanes']
+        self.assertIn(0xC, [l['config_status_code'] for l in lanes])
+        backend = _state['backend']
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x91, bytes([0x10] * 8))
+        backend.write_bytes(0x8F, bytes([0xFF]))   # arrives while in progress
+        app_module._invalidate_page()
         time.sleep(1.2)
         self.assertEqual(self._active(), [2] * 8,
                          'a command sent during ConfigInProgress took effect')
@@ -13737,14 +13759,21 @@ class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
         self.assertOk(self._post(app_select=[1] * 8, dp_deinit_mask=0x00,
                                  apply=True))
 
-    def test_a_stepped_only_module_keeps_its_behaviour(self):
+    def test_a_module_with_neither_procedure_keeps_its_behaviour(self):
         """The transient rule is stated for modules that support
         intervention-free reconfiguration; inventing it elsewhere would
-        refuse writes the spec does not say are discarded."""
+        refuse writes the spec does not say are discarded. The regular
+        procedure counts - SteppedConfigOnly with AutoCommissioning 01b is
+        one - so only AutoCommissioning 00b leaves the rule out."""
         self._connect('mock_1600g_dr8')
-        caps = self.assertOk(
-            self.client.get('/api/module/capabilities'))['data']
-        self.assertFalse(caps['config']['hot_reconfig'])
+        backend = app_module._state['backend']
+        raw = backend._registers[None].get(0x02, 0)
+        backend.poke_bytes(0x02, bytes([(raw & ~0x43) | 0x40]))
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+        cfg = app_module._state['caps']['config']
+        self.assertEqual((cfg['regular_reconfig'], cfg['hot_reconfig']),
+                         (False, False))
         self._make_transient()
         self.assertOk(self._post(apply=True))
 
@@ -28181,11 +28210,15 @@ class TestAnApplyWhileTheLastIsRunning(CMISTestCase):
     def test_a_rejected_command_does_not_block_the_next_one(self):
         """A rejection is a finished command. Treating every code but
         ConfigSuccess as busy would lock the operator out of the one thing
-        they need after a rejection: fixing it and applying again."""
+        they need after a rejection: fixing it and applying again.
+
+        Lanes made unused while their Data Path still runs (6.2.4.3). With
+        DPDeinit in the same request this once ended in a rejection too, but
+        only because the Apply landed before the path was down."""
         import cmis_registers as c
         self._connect('mock_fr4x2')
         self.assertOk(self._apply(app_select=[0, 0, 0, 0, 2, 2, 2, 2],
-                                  dp_deinit_mask=0x0F))
+                                  dp_deinit_mask=0x00))
         deadline = time.time() + 6
         while 0xC in self._config() and time.time() < deadline:
             time.sleep(0.1)
@@ -39600,6 +39633,291 @@ class TestEveryStartLaneIsAnInstance(CMISTestCase):
         self.assertEqual((d['host_lanes'], d['media_lanes']), (8, 8))
         self.assertIn('×2', d['lanes_detail'])
         self.assertNotIn(' + ', d['lanes_detail'])
+
+
+class TestAnApplyIntoATransientIsRefusedWhenEitherProcedureIsSupported(CMISTestCase):
+    """6.2.4: "When intervention-free reconfiguration procedures are
+    supported, hosts are advised not to invoke an Apply trigger on the lanes
+    of a Data Path in a transient state (DPInit, DPDeinit, DPTxTurnOn, or
+    DPTxTurnOff), as the module silently ignores requests received while
+    still being in a transient state" - and Appendix E's Figure E-19 notes
+    the same. Either procedure: the tool asked only whether the hot one
+    (ApplyImmediate) was supported, so on a module with only the regular one
+    - Lower 02h SteppedConfigOnly with AutoCommissioning 01b, like the DR8
+    demo - an Apply into a transient Data Path was sent, dropped by the
+    module, and reported as applied. The mock did not drop it either, so
+    nothing noticed. With neither procedure ApplyDPInit only provisions, in
+    any state (Table 6-4), and nothing is refused."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        app_module._state['backend'].TX_TURN_S = 5.0   # hold the transient
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _set_lower_2(self, stepped, auto):
+        backend = app_module._state['backend']
+        raw = backend._registers[None].get(0x02, 0)
+        backend.poke_bytes(0x02, bytes([(raw & ~0x43) | (stepped << 6) | auto]))
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+        return app_module._state['caps']['config']
+
+    def _into_tx_turn_off(self):
+        self.assertOk(self._post(tx_disable_mask=0x01))
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        return [l['datapath_state'] for l in mon['lanes']][:8]
+
+    def test_the_dr8_demo_has_only_the_regular_procedure(self):
+        self._connect()
+        cfg = app_module._state['caps']['config']
+        self.assertEqual((cfg['regular_reconfig'], cfg['hot_reconfig']),
+                         (True, False))
+
+    def test_a_regular_only_module_refuses_it(self):
+        self._connect()
+        self.assertIn('TxTurnOff', self._into_tx_turn_off())
+        rv = self._post(apply=True)
+        self.assertErr(rv, 409)
+        self.assertIn('silently ignores an Apply aimed at a Data',
+                      json.loads(rv.data)['message'])
+
+    def test_a_hot_only_module_refuses_it_too(self):
+        self._connect()
+        cfg = self._set_lower_2(1, 0b10)
+        self.assertEqual((cfg['regular_reconfig'], cfg['hot_reconfig']),
+                         (False, True))
+        self._into_tx_turn_off()
+        self.assertErr(self._post(apply=True), 409)
+
+    def test_a_module_with_neither_only_provisions_and_takes_it(self):
+        self._connect()
+        cfg = self._set_lower_2(1, 0b00)
+        self.assertEqual((cfg['regular_reconfig'], cfg['hot_reconfig']),
+                         (False, False))
+        self._into_tx_turn_off()
+        self.assertOk(self._post(apply=True))
+
+    # ---- the mock does what the module does ------------------------------------
+
+    def _trigger_during_turn_off(self):
+        self._into_tx_turn_off()
+        backend = app_module._state['backend']
+        backend._commands.clear()
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x8F, bytes([0xFF]))       # ApplyDPInit, all lanes
+        app_module._invalidate_page()
+        return backend._commands
+
+    def test_the_mock_drops_it_when_a_procedure_is_supported(self):
+        self._connect()
+        self.assertEqual(self._trigger_during_turn_off(), [])
+
+    def test_the_mock_takes_it_when_neither_is(self):
+        self._connect()
+        self._set_lower_2(1, 0b00)
+        self.assertEqual(len(self._trigger_during_turn_off()), 1)
+
+
+class TestTheStepwiseProcedureRunsInItsOrder(CMISTestCase):
+    """Page 80: an Apply bit may be set "only when the selected lane indicates
+    a stable and steady DPSM state"; Table 6-3: ApplyDPInit on a
+    DPDeactivated Data Path copies the Staged set into the Active Control
+    Set, and DPInit commissions the Active Control Set. 6.2.4.3 recommends
+    ApplyDPInit "only for Data Paths in DPDeactivated state".
+
+    One request carrying DPDeinit and Apply wrote DPDeinit first and the
+    trigger straight after, so the trigger always landed in DPDeinit or
+    DPInit. A module with an intervention-free procedure drops it there, and
+    a released path came up on the Application it had before. The mock
+    treated a DPDeinit release as an ApplyDPInit of the Staged set, which is
+    why that never showed."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _post(self, **body):
+        return self.client.post('/api/module/datapath', data=json.dumps(body),
+                                content_type='application/json')
+
+    def _spy(self):
+        """(address, value, DP states of lanes 1-8 at that moment) for every
+        Page 10h write from here on."""
+        backend = app_module._state['backend']
+        seen = []
+        orig = backend.write_bytes
+
+        def spy(addr, data):
+            if backend._current_page == 0x10 and addr in (0x80, 0x8F):
+                backend._update_state_machine()
+                seen.append((addr, data[0], list(backend._dp_lane_states)))
+            return orig(addr, data)
+        backend.write_bytes = spy
+        self.addCleanup(setattr, backend, 'write_bytes', orig)
+        return seen
+
+    def _active(self):
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        return [l['active_app_select'] for l in dp['lanes']]
+
+    def test_a_release_is_applied_first_and_released_after(self):
+        self._connect()
+        deactivated(self.client)
+        seen = self._spy()
+        self.assertOk(self._post(dp_deinit_mask=0x00, apply=True))
+        order = [(a, v) for a, v, _s in seen]
+        self.assertEqual(order[0], (0x80, 0xFF), 'still held while applied')
+        self.assertEqual(order[1][0], 0x8F, 'the Apply')
+        self.assertEqual(order[-1], (0x80, 0x00), 'released last')
+        trigger_states = seen[1][2]
+        self.assertEqual(set(trigger_states), {0x1},
+                         'the Apply landed in DPDeactivated')
+
+    def test_a_path_taken_down_is_applied_once_it_is_down(self):
+        self._connect()
+        seen = self._spy()
+        self.assertOk(self._post(dp_deinit_mask=0xFF, apply=True))
+        order = [a for a, _v, _s in seen]
+        self.assertEqual(order[:2], [0x80, 0x8F])
+        self.assertEqual(set(seen[1][2]), {0x1},
+                         'the Apply waited for DPDeactivated')
+
+    def test_a_width_change_comes_up_on_the_new_application(self):
+        """The procedure 6.2.4.3 mandates for a width change, through the
+        tool, on a module with only the regular procedure."""
+        self._connect()
+        before = self._active()
+        deactivated(self.client)
+        new = [2, 2, 2, 2, 2, 2, 2, 2] if before[0] != 2 else [1] * 8
+        self.assertOk(self._post(app_select=new, dp_deinit_mask=0x00,
+                                 apply=True))
+        settled(self.client)
+        self.assertEqual(self._active(), new)
+        mon = self.assertOk(self.client.get('/api/module/monitoring'))['data']
+        self.assertTrue(all(l['datapath_state'] in ('Activated', 'Initialized')
+                            for l in mon['lanes']), mon['lanes'])
+
+    def test_a_refused_configuration_keeps_its_lanes_held(self):
+        self._connect()
+        deactivated(self.client)
+        d = self.assertOk(self._post(app_select=[15] * 8, dp_deinit_mask=0x00,
+                                     apply=True))['data']
+        self.assertEqual(d['kept_deinit'], list(range(1, 9)))
+        dp = self.assertOk(self.client.get('/api/module/datapath'))['data']
+        self.assertEqual(dp['dp_deinit_mask'], 0xFF)
+
+    def test_an_accepted_release_keeps_nothing(self):
+        self._connect()
+        deactivated(self.client)
+        d = self.assertOk(self._post(dp_deinit_mask=0x00, apply=True))['data']
+        self.assertEqual(d['kept_deinit'], [])
+
+    def test_a_path_that_does_not_come_down_in_time_is_not_applied(self):
+        self._connect()
+        orig = app_module._await_dp_states
+        app_module._await_dp_states = lambda lanes, wanted: {0}
+        try:
+            seen = self._spy()
+            rv = self._post(dp_deinit_mask=0xFF, apply=True)
+        finally:
+            app_module._await_dp_states = orig
+        self.assertEqual(rv.status_code, 504)
+        self.assertIn('did not reach DPDeactivated', rv.get_json()['message'])
+        self.assertNotIn(0x8F, [a for a, _v, _s in seen])
+
+    # ---- the mock -------------------------------------------------------------
+
+    def test_a_release_commissions_the_active_set_not_the_staged_one(self):
+        """Staged changed, no Apply, released: the path comes up on what the
+        Active Control Set held, and ConfigStatus says nothing new."""
+        self._connect()
+        deactivated(self.client)
+        before = self._active()
+        backend = app_module._state['backend']
+        status_before = [backend._registers[0x11].get(0xCA + i, 0) for i in range(4)]
+        app_module._set_page(0x10, 0)
+        other = 0x20 if (before[0] != 2) else 0x10
+        backend.write_bytes(0x91, bytes([other] * 8))    # staged only
+        backend.write_bytes(0x80, bytes([0x00]))           # release
+        app_module._invalidate_page()
+        settled(self.client)
+        time.sleep(0.7)
+        self.assertEqual(self._active(), before)
+        self.assertEqual(
+            [backend._registers[0x11].get(0xCA + i, 0) for i in range(4)],
+            status_before)
+
+    def test_every_rejection_keeps_the_lanes_held(self):
+        """Table 8-101's rejections all leave the Active Control Set as it
+        was, not just an unknown AppSel."""
+        self._connect()
+        deactivated(self.client)
+        backend = app_module._state['backend']
+        backend._validate_staged_appsel = lambda mask, subset_ok=False: [0x5] * 8
+        d = self.assertOk(self._post(dp_deinit_mask=0x00, apply=True))['data']
+        self.assertEqual(d['kept_deinit'], list(range(1, 9)))
+
+    def test_a_bare_release_reports_no_new_result(self):
+        """After a refusal the lanes are held; releasing them by hand brings
+        the old Application back up and leaves the refusal on show."""
+        self._connect()
+        before = self._active()
+        deactivated(self.client)
+        self.assertOk(self._post(app_select=[15] * 8, dp_deinit_mask=0x00,
+                                 apply=True))
+        backend = app_module._state['backend']
+        refused = [backend._registers[0x11].get(0xCA + i, 0) for i in range(4)]
+        self.assertEqual(refused, [0x33] * 4)
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x80, bytes([0x00]))
+        app_module._invalidate_page()
+        settled(self.client)
+        time.sleep(0.7)
+        self.assertEqual(
+            [backend._registers[0x11].get(0xCA + i, 0) for i in range(4)],
+            refused)
+        self.assertEqual(self._active(), before)
+
+    def test_a_release_brings_the_active_sets_thresholds(self):
+        """8.5: thresholds follow the Application commissioned, and a release
+        commissions the Active Control Set - not an Application that is only
+        staged. The ZR demo has thresholds of its own for AppSel 2."""
+        self._connect('mock_coherent_zr')
+        thr = lambda: self.assertOk(
+            self.client.get('/api/module/thresholds'))['data']
+        built = thr()['tx_power_high_alarm_dbm']
+        deactivated(self.client)
+        backend = app_module._state['backend']
+        app_module._set_page(0x10, 0)
+        backend.write_bytes(0x91, bytes([0x20] * 4))     # staged only
+        backend.write_bytes(0x80, bytes([0x00]))           # release
+        app_module._invalidate_page()
+        settled(self.client)
+        time.sleep(0.7)
+        self.assertEqual(thr()['tx_power_high_alarm_dbm'], built)
+
+    # ---- the page -------------------------------------------------------------
+
+    def test_the_page_says_which_lanes_stay_held(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        start = js.index('async function applyDatapath(immediate) {')
+        body = js[start:js.index('\n}\n', start)]
+        self.assertIn('  keptDeinitNote(res);', body)
+        note = js[js.index('function keptDeinitNote(res) {'):]
+        note = note[:note.index('\n}\n')]
+        self.assertIn('res.data.kept_deinit', note)
+        self.assertIn('DP Deinit stays set', note)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
