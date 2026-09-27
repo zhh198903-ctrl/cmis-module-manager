@@ -41055,6 +41055,74 @@ vm.runInThisContext('AppState.connected = true; AppState.lanes = '
             self.assertEqual('tbl-datapath' in res['writes'], not flat, name)
             self.assertIn('tbl-apps', res['writes'], name)
 
+    def test_every_tab_in_the_states_that_change_what_it_draws(self):
+        """Much of what the panels print only appears in some states: a
+        refused configuration, low power, a fault, engines running, Flags
+        latched, a command still in progress. Each is driven through the
+        API, as the operator would, and every tab opened in it."""
+        def post(url, body):
+            return self.client.post(url, data=json.dumps(body),
+                                    content_type='application/json')
+
+        def down():
+            lanes = app_module._state['lanes']
+            post('/api/module/datapath',
+                 {'dp_deinit_mask': (1 << lanes) - 1, 'apply': True})
+            settled(self.client)
+
+        def low_power():
+            post('/api/module/control', {'action': 'low_power'})
+
+        def refused():
+            down()
+            post('/api/module/datapath',
+                 {'app_select': [15] * app_module._state['lanes'],
+                  'dp_deinit_mask': 0, 'apply': True})
+
+        def engines():
+            post('/api/module/prbs', {k: {'enable_mask': 1} for k in
+                                      ('host_gen', 'media_gen', 'host_chk',
+                                       'media_chk')})
+            post('/api/module/loopback', {'media_side_output': 1})
+            post('/api/module/squelch', {'tx_squelch_force': 1})
+
+        def fault(backend=None):
+            b = app_module._state['backend']
+            raw = b._registers[None].get(3, 0)
+            b.poke_bytes(3, bytes([(raw & ~0x0E) | (0b101 << 1)]))
+            app_module._invalidate_page()
+
+        def latched():
+            b = app_module._state['backend']
+            for a in range(0x87, 0x99):
+                b._registers[0x11][a] = 0xFF
+            app_module._invalidate_page()
+
+        def in_progress():
+            down()
+            cur = [l['app_select'] for l in self.client.get(
+                '/api/module/datapath').get_json()['data']['lanes']]
+            post('/api/module/datapath',
+                 {'app_select': [2 if x != 2 else 1 for x in cur],
+                  'apply': True})
+
+        def retuning():
+            down()
+            post('/api/module/laser', {'lanes': [{'lane': 1, 'channel': 3}]})
+
+        cases = [(m, s) for m in ('mock_dr8', 'mock_coherent_zr', 'mock_24lane')
+                 for s in (low_power, refused, engines, fault, latched,
+                           in_progress)]
+        cases += [('mock_coherent_zr', retuning), ('mock_zr16', retuning)]
+        for backend, state in cases:
+            res = self._render(backend, lambda _b, s=state: s(),
+                               tabs=self.TABS)
+            label = '%s / %s' % (backend, state.__name__)
+            self.assertEqual(res['errors'], [], label)
+            self.assertEqual([t for t in res['toasts'] if t[0] == 'error'],
+                             [], label)
+            self.assertEqual(self._leaks(res['writes']), [], label)
+
     def test_the_leak_scan_sees_one(self):
         self.assertEqual(self._leaks({'x': '<td>undefined dBm</td>'}),
                          [('x', 'undefined')])
