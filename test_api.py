@@ -39200,6 +39200,52 @@ def cmis_timing(name):
     return c.TIMING_SECONDS[name]
 
 
+class TestCode00hIsNamedNotUnknown(CMISTestCase):
+    """SFF-8024 Rev 4.14 names 00h "Undefined" in every interface ID table
+    (Tables 4-5 to 4-10) and "Unknown or unspecified" in the connector table
+    (4-3). The tool had no entry for 00h in the interface tables, so it read
+    "Unknown (0x00)" - which the manual defines as a code newer than the
+    tool's tables, i.e. a claim that the module used something this tool
+    does not know. The connector was plain "Unknown"."""
+
+    def test_every_interface_table_names_00h(self):
+        import cmis_registers as c
+        for table in (c.HOST_INTERFACE_IDS, c.MEDIA_INTERFACE_IDS_MMF,
+                      c.MEDIA_INTERFACE_IDS_SMF,
+                      c.MEDIA_INTERFACE_IDS_PASSIVE_COPPER,
+                      c.MEDIA_INTERFACE_IDS_ACTIVE_CABLE,
+                      c.MEDIA_INTERFACE_IDS_BASE_T):
+            self.assertEqual(table[0x00], 'Undefined')
+
+    def test_the_names_the_panels_show(self):
+        import cmis_registers as c
+        self.assertEqual(c.host_interface_name(0x00), 'Undefined')
+        for media_type in (0x01, 0x02, 0x03, 0x04, 0x05):
+            self.assertEqual(c.media_interface_name(0x00, media_type),
+                             'Undefined', media_type)
+        # A code the tables really lack is still said to be one.
+        self.assertEqual(c.host_interface_name(0xEE), 'Unknown (0xEE)')
+        self.assertEqual(c.media_interface_name(0xEE, 0x02), 'Unknown (0xEE)')
+
+    def test_the_connector_00h_is_table_4_3s(self):
+        import cmis_registers as c
+        self.assertEqual(c.CONNECTOR_TYPES[0x00], 'Unknown or unspecified')
+        self.assertEqual(c.connector_type_name(0x00), 'Unknown or unspecified')
+        self.assertEqual(c.MODULE_ID_NAMES[0x00], 'Unknown or unspecified')
+
+    def test_the_applications_reply_names_00h(self):
+        """What Supported Applications shows for a descriptor with media ID
+        00h."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        app_module._state['backend'].poke_bytes(0x57, bytes([0x00]))
+        apps = self.assertOk(self.client.get('/api/module/applications'))[
+            'data']['applications']
+        self.assertEqual(apps[0]['media_if_name'], 'Undefined')
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 

@@ -1158,7 +1158,7 @@ def parse_config_status_codes(data: bytes) -> list:
 
 # SFF-8024 Table 4-3 — Connector Type
 CONNECTOR_TYPES = {
-    0x00: "Unknown",
+    0x00: "Unknown or unspecified",   # Table 4-3
     0x01: "SC",
     0x02: "FC Style 1",
     0x03: "FC Style 2",
@@ -4211,6 +4211,10 @@ def parse_media_lane_switching(advert: int, redirection: bytes,
 # far has GID 0, and a non-zero one can only be advertised through a Normalized
 # Application Descriptor, which this tool does not read.
 HOST_INTERFACE_IDS = {
+    # 00h is not a gap: every one of these tables names it. Left out, it read
+    # "Unknown (0x00)" - the words this tool keeps for a code newer than
+    # its tables.
+    0x00: 'Undefined',
     0x01: '1000BASE-CX',
     0x02: 'XAUI',
     0x03: 'XFI',
@@ -4331,6 +4335,7 @@ HOST_INTERFACE_IDS = {
 }
 
 MEDIA_INTERFACE_IDS_MMF = {
+    0x00: 'Undefined',
     0x01: '10GBASE-SW',
     0x02: '10GBASE-SR',
     0x03: '25GBASE-SR',
@@ -4370,6 +4375,7 @@ MEDIA_INTERFACE_IDS_MMF = {
 }
 
 MEDIA_INTERFACE_IDS_SMF = {
+    0x00: 'Undefined',
     0x01: '10GBASE-LW',
     0x02: '10GBASE-EW',
     0x03: '10G-ZW',
@@ -4518,6 +4524,7 @@ MEDIA_INTERFACE_IDS_SMF = {
 # by the host electrical interface code ("Details for the cable assembly
 # interface are defined using the host electrical interface codes").
 MEDIA_INTERFACE_IDS_PASSIVE_COPPER = {
+    0x00: 'Undefined',
     0x01: 'Copper cable',
     0xBF: 'Passive Loopback module',
     0xC0: 'Linear active copper loopback module',
@@ -4526,6 +4533,7 @@ MEDIA_INTERFACE_IDS_PASSIVE_COPPER = {
 # Table 4-9, media type 04h: limiting and retimed active cable assemblies -
 # active optical as much as active copper - and active loopback modules.
 MEDIA_INTERFACE_IDS_ACTIVE_CABLE = {
+    0x00: 'Undefined',
     0x01: 'Active Cable assembly with BER < 10^-12',
     0x02: 'Active Cable assembly with BER < 5x10^-5',
     0x03: 'Active Cable assembly with BER < 2.6x10^-4',
@@ -4535,6 +4543,7 @@ MEDIA_INTERFACE_IDS_ACTIVE_CABLE = {
 
 # Table 4-10, media type 05h.
 MEDIA_INTERFACE_IDS_BASE_T = {
+    0x00: 'Undefined',
     0x01: '1000BASE-T',
     0x02: '2.5GBASE-T',
     0x03: '5GBASE-T',

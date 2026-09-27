@@ -625,7 +625,7 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 
 ## 接口名称按媒介类型查 SFF-8024
 
-`/api/module/applications` 的 `media_if_name` 按 Lower 85 的 Media Type 选 SFF-8024 表:01h MMF(4-6)、02h SMF(4-7)、03h 无源 / 线性有源铜缆(4-8,01h = Copper cable)、04h 有源线缆(4-9,按 BER 等级)、05h BASE-T(4-10)。其它媒介类型返回 `Unknown (0x.., media type 0x.. has no SFF-8024 table)`。名称按 SFF-8024 Rev 4.14 核对过,去掉了「(Clause N)」之类的出处后缀。
+`/api/module/applications` 的 `media_if_name` 按 Lower 85 的 Media Type 选 SFF-8024 表:01h MMF(4-6)、02h SMF(4-7)、03h 无源 / 线性有源铜缆(4-8,01h = Copper cable)、04h 有源线缆(4-9,按 BER 等级)、05h BASE-T(4-10)。其它媒介类型返回 `Unknown (0x.., media type 0x.. has no SFF-8024 table)`。名称按 SFF-8024 Rev 4.14 核对过,去掉了「(Clause N)」之类的出处后缀。`00h` 在每张接口表里都是 `Undefined`(SFF-8024 定义的编码);`Unknown (0x..)` 只表示比工具的表更新的编码。
 扁平内存模块的 `host_interface_gid` 取描述符第 4 字节,`media_lane_assign_mask` 为 `null`(没有 Page 01h)。
 
 ## 只有前游标的模块,前游标在后游标字节里

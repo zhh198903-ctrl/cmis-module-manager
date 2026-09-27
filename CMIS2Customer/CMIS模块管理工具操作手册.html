@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.193.0<br>
+      <b>版本</b>　2.194.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.193.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.193.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.194.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.194.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>接口编码 00h 显示 Undefined,不再显示 Unknown</h3>
+  <p>SFF-8024 Rev 4.14 的主机接口表和五张媒体接口表(Table 4-5 至 4-10)都给 <code>00h</code> 起了名字:<b>Undefined</b>;连接器表(4-3)的 <code>00h</code> 是 <b>Unknown or unspecified</b>。工具的表里没有 <code>00h</code>,Supported Applications 于是显示 <code>Unknown (0x00)</code>——而手册里 Unknown 的含义是「比工具的编码表更新的编号」,等于说模块用了工具不认识的编码。现在按 SFF-8024 显示;连接器 <code>00h</code> 也改为 Unknown or unspecified。</p>
 
   <h3>Raw Registers:发出 CDB 命令后等模块处理完;CDB 页的 Bank 是 CDB 实例</h3>
   <p>规范 Table 10-4:写到 <code>9Fh:129</code> 发出 CDB 命令后,模块可以拒绝一切访问——前台模式(<code>01h:163.5</code> 为 0)一直到命令执行完(最长为模块声明的忙时间,上限 tCDBF 4960 ms),后台模式在接收命令期间(tCDBC 80 ms)。工具在任何写入之后只重试 tWRITE(10 ms),所以在处理稍久的模块上,Raw Registers 写完 CDB 命令头后的回读会失败。</p>
@@ -4229,7 +4232,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
       <thead><tr><th>列</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td>AppSel</td><td class="label">应用码序号(1–15),写入 DataPath 配置表时使用</td></tr>
-        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M、0x71 = PCIe 5.0)。<b>CMIS 本身不定义这些编码</b>,只存编号并指向 SFF-8024(本工具按 Rev 4.14 解名称)。比编码表更新的编号显示 <code>Unknown (0x..)</code>,不留空;<code>0xBE</code> 显示 <code>See NAD (0xBE)</code>(真实编号在 Normalized Application Descriptor 里)</td></tr>
+        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M、0x71 = PCIe 5.0)。<b>CMIS 本身不定义这些编码</b>,只存编号并指向 SFF-8024(本工具按 Rev 4.14 解名称)。比编码表更新的编号显示 <code>Unknown (0x..)</code>(<code>00h</code> 是 SFF-8024 定义的 <code>Undefined</code>,不算未知),不留空;<code>0xBE</code> 显示 <code>See NAD (0xBE)</code>(真实编号在 Normalized Application Descriptor 里)</td></tr>
         <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID,按 Media Type(Lower 85)查 SFF-8024 的对应表:MMF(4-6)、SMF(4-7)、无源 / 线性有源铜缆(4-8)、有源线缆(4-9)、BASE-T(4-10)</td></tr>
         <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
         <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）;扁平内存模块上这个字节是 HostInterfaceGID</td></tr>
@@ -5051,7 +5054,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.193.0<br>
+    CMIS Module Manager 操作手册 v2.194.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
