@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.198.0'
+__version__ = '2.199.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1382,6 +1382,12 @@ def _flat_memory() -> bool:
     return config.get('memory_model') == 'Flat'
 
 
+def _lane_starts(mask: int) -> list:
+    """The host lanes (0-based) an Application may begin on, from its
+    HostLaneAssignmentOptions bitmap; lane 1 where the module gave none."""
+    return [i for i in range(8) if (mask >> i) & 1] or [0]
+
+
 def _compute_module_capacity(apps: list) -> tuple:
     """Compute maximum concurrent host/media lanes across all Application Descriptors.
 
@@ -1399,14 +1405,15 @@ def _compute_module_capacity(apps: list) -> tuple:
         # the HostInterfaceGID and says nothing about where an Application may
         # start.
         mask = a.get('host_lane_assign_mask') or 0
-        if mask == 0:
-            start = 0
-        else:
-            start = (mask & -mask).bit_length() - 1   # lowest set bit position
         h = a.get('host_lanes', 0) or 0
         m = a.get('media_lanes', 0) or 0
-        end = start + max(h, 1)
-        parsed.append((start, end, h, m))
+        # Every permissible first lane is an instance the module can run side
+        # by side with the others: 55h on a two-lane Application is four
+        # Data Paths (Appendix C-1, "four integrated parallel 100GBASE-DR
+        # transceivers"). Only the lowest was counted, so a module
+        # advertising nothing but the breakout read as two host lanes.
+        for start in _lane_starts(mask):
+            parsed.append((start, start + max(h, 1), h, m))
 
     # Greedy: pick biggest non-overlapping apps first
     parsed.sort(key=lambda x: -x[2])
@@ -1425,7 +1432,10 @@ def _compute_module_capacity(apps: list) -> tuple:
 
 def _format_lanes_detail(apps: list, host_total: int, media_total: int) -> str:
     """Format a friendly lane breakdown string for display."""
-    if len(apps) <= 1:
+    # One Application needs no breakdown - unless it runs several instances,
+    # which is what the capacity beside it is made of.
+    if not apps or (len(apps) == 1 and len(_lane_starts(
+            apps[0].get('host_lane_assign_mask') or 0)) == 1):
         return ''
     # The text rather than the number: an Application whose width the module
     # left to its interface ID reads "0H/0M" otherwise, which is the one thing
@@ -1434,11 +1444,18 @@ def _format_lanes_detail(apps: list, host_total: int, media_total: int) -> str:
     def part(text, letter):
         return f'{text}{letter}' if text.isdigit() else f'{letter}={text}'
 
+    # Alternatives, not a sum - " + " read as one. An Application that may
+    # start on several lanes says how many instances fit.
+    def times(a):
+        n = len(_lane_starts(a.get('host_lane_assign_mask') or 0))
+        return f' ×{n}' if n > 1 else ''
+
     parts = [f"AppSel#{a['app_sel']}: "
              f"{part(str(a.get('host_lanes_text', a['host_lanes'])), 'H')}"
              f"/{part(str(a.get('media_lanes_text', a['media_lanes'])), 'M')}"
+             f"{times(a)}"
              for a in apps]
-    return ' + '.join(parts)
+    return ' · '.join(parts)
 
 
 # ---------------------------------------------------------------------------

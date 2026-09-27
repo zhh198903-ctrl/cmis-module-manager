@@ -780,6 +780,10 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 
 `GET /api/module/monitoring` 的 `media_lane_map` 是每条媒体通道的 Tx/Rx 波长和光纤(`wavelength_code` / `fiber_code` 是原始半字节,0 = 未知)。`media_lane_map_problems` 非空时映射按规范 8.14.8 无效(保留编码 9-15,或波长编号不是从 1 连续编;按整个模块算),不要把其中的波长当事实。
 
+## 模块能同时跑多少通道
+
+`GET /api/module/info` 的 `host_lanes` / `media_lanes` 是一个通道组内最多同时在用的通道数:每个 Application 的 HostLaneAssignmentOptions 里每个起点算一个实例,互不重叠的相加(附录 C-1:2 通道、起点 55h = 四个并行实例)。`lanes_detail` 用「·」分隔各 Application(它们是二选一),多起点的标 `×n`。
+
 ## 线缆组件和平坦内存模块
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。

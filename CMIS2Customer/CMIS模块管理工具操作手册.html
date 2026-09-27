@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.198.0<br>
+      <b>版本</b>　2.199.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.198.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.198.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.199.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.199.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1196,7 +1196,7 @@
         <tr><td>Password Result</td><td class="label">密码输入或修改的结果是否会报在 PasswordCmdResult(Lower 42)(PasswordEntryResultSupported,Table 8-62)</td><td><code>01h / 0xFB[3:2]</code></td></tr>
         <tr><td>Full Page Read</td><td class="label">一次 READ 能否读满 128 字节(FullPageReadSupported,Table 8-62);不支持时最多 8 字节(规范 5.2.2.1)。后面注明本工具按多大的块读</td><td><code>01h / 0xFB[1:0]</code></td></tr>
         <tr><td>Extra Pages</td><td class="label">模块声明了哪些附加页:0Ch / 0Dh / 60h / 61h / 62h(Table 8-58);都没有时显示 none advertised</td><td><code>01h / 0xAD–0xAE</code></td></tr>
-        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4</td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4。一个应用若可以从多条通道起始(HostLaneAssignmentOptions 有多个位),<b>每个起点算一个实例</b>:只广告 4×100G-DR(2 条通道,起点 1、3、5、7)的模块是 8 条主机通道、4 条媒体通道。括号里的明细用「·」分隔各应用(它们是二选一,不是相加),多起点的应用标出实例数,如 <code>2H/1M ×4</code></td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
         <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行。平坦内存模块没有 Page 01h，显示 "no Page 01h on a flat memory module"</td><td><code>01h / 0x80–0x81</code></td></tr>
@@ -1784,6 +1784,10 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Module Info:只做分支(breakout)的模块,通道数不再少算</h3>
+  <p>Application 描述符的 HostLaneAssignmentOptions 列出这个应用<b>可以从哪几条主机通道起始</b>,每个起点都是一条可以并排运行的数据通道——规范附录 C-1 的例子:2 条通道的 100GAUI-2 起点为 <code>55h</code>(1、3、5、7),就是「四个并行的 100GBASE-DR 收发器」。工具计算 Host Lanes / Media Lanes 时每个应用只算了最低的那个起点,所以一个<b>只广告</b> 4×100G-DR 的模块显示 2 / 1,而不是 8 / 4。现在每个起点都算一个实例,重叠的不重复计算。括号里的明细也改了:应用之间是「二选一」,不再用「+」连接,改用「·」;有多个起点的应用标出实例数,例如 <code>AppSel#2: 2H/1M ×4</code>。</p>
+  <p>演示模块里有源光缆(<code>mock_aoc</code>)的第一个应用是 4 条通道、可从 1 或 5 起始,现在显示 8 / 8(原来 4 / 4);其它演示模块数值不变。附录 C 的四个例子(C-1 至 C-4)已按原表写成回归测试。</p>
 
   <h3>PRBS:先写码型、最后写使能;门控中途停下的计数标为可能无效</h3>
   <p>规范附录 F.1 / F.2 给出启动码型发生器 / 检测器的推荐顺序:先配码型和选项(<code>13h:145-151</code>、<code>161-167</code> 等),<b>最后</b>写使能(<code>13h:144</code> / <code>160</code>)。规范 5.2.5.2 又说多字节 WRITE 一般不是原子的。工具此前把每个引擎的 8 个字节一次写入、使能字节在最前,模块可能先按旧码型启动——检测器会按旧码型开始计数。现在先写码型与选项,再单独写使能字节。</p>
@@ -5068,7 +5072,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.198.0<br>
+    CMIS Module Manager 操作手册 v2.199.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

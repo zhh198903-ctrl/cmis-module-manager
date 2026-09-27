@@ -39529,6 +39529,79 @@ class TestAHeldCountUnderAGateMayBeUndefined(CMISTestCase):
                           path)
 
 
+class TestEveryStartLaneIsAnInstance(CMISTestCase):
+    """HostLaneAssignmentOptions names every host lane an Application may
+    begin on, and each is a Data Path the module can run beside the others:
+    Appendix C-1's 55h on 100GAUI-2 is "four integrated parallel
+    100GBASE-DR transceivers". The Module Info lane capacity counted only
+    the lowest start, so a module advertising nothing but a breakout read as
+    two host lanes and one media lane. Its breakdown also joined alternative
+    Applications with " + ", which reads as a sum.
+
+    The fixtures are Appendix C's own tables (OIF-CMIS-05.4 pages 426-429)."""
+
+    def _apps(self, media_type, descs, media=b''):
+        import cmis_registers as c
+        raw = b''.join(bytes(d) for d in descs) + bytes([0xFF, 0, 0, 0])
+        raw += bytes(32 - len(raw))
+        return c.parse_application_descriptors(raw, media_type, b'',
+                                               bytes(media), False)
+
+    def _capacity(self, *a, **k):
+        apps = self._apps(*a, **k)
+        host, media = app_module._compute_module_capacity(apps)
+        return host, media, app_module._format_lanes_detail(apps, host, media)
+
+    def test_table_c1_dr4_with_four_parallel_dr(self):
+        host, media, detail = self._capacity(
+            0x02, [(0x11, 0x1C, 0x84, 0x01), (0x0D, 0x14, 0x21, 0x55)],
+            [0x01, 0x0F])
+        self.assertEqual((host, media), (8, 4))
+        self.assertEqual(detail, 'AppSel#1: 8H/4M · AppSel#2: 2H/1M ×4')
+
+    def test_table_c2_a_fixed_sr8(self):
+        self.assertEqual(self._capacity(0x01, [(0x11, 0x10, 0x88, 0x01)]),
+                         (8, 8, ''))
+
+    def test_table_c4_an_aoc_that_is_also_two(self):
+        host, media, detail = self._capacity(
+            0x04, [(0x11, 0x03, 0x88, 0x01), (0x0F, 0x03, 0x44, 0x11)])
+        self.assertEqual((host, media), (8, 8))
+        self.assertIn('4H/4M ×2', detail)
+
+    def test_a_module_that_advertises_only_the_breakout(self):
+        """The case that went wrong: C-1 without its 400G Application."""
+        host, media, detail = self._capacity(0x02, [(0x0D, 0x14, 0x21, 0x55)])
+        self.assertEqual((host, media), (8, 4))
+        self.assertEqual(detail, 'AppSel#1: 2H/1M ×4')
+        self.assertEqual(self._capacity(0x01, [(0x0F, 0x0E, 0x44, 0x11)])[:2],
+                         (8, 8))
+
+    def test_instances_that_would_overlap_do_not_add(self):
+        """A 4-lane Application allowed to start on lanes 1, 2, 3 and 5:
+        1-4 and 5-8 fit together, 2-5 and 3-6 do not."""
+        self.assertEqual(self._capacity(0x02, [(0x11, 0x1D, 0x44, 0x17)])[:2],
+                         (8, 8))
+        self.assertEqual(self._capacity(0x02, [(0x11, 0x1D, 0x44, 0x03)])[:2],
+                         (4, 4))
+
+    def test_the_starts_are_the_mask_bits(self):
+        self.assertEqual(app_module._lane_starts(0x55), [0, 2, 4, 6])
+        self.assertEqual(app_module._lane_starts(0x80), [7])
+        self.assertEqual(app_module._lane_starts(0), [0])
+
+    def test_a_demo_breakout_cable_now_reads_as_two(self):
+        """mock_aoc advertises 4 host lanes starting on 1 or 5."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_aoc', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual((d['host_lanes'], d['media_lanes']), (8, 8))
+        self.assertIn('×2', d['lanes_detail'])
+        self.assertNotIn(' + ', d['lanes_detail'])
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
