@@ -19358,6 +19358,7 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
         '8-196': 'Media Lane Switching (Page 6Dh)',
         '8-19': 'LowPowerRestrictions Byte',
         '8-17': 'Miscellaneous Status Information (Lower Memory)',
+        '8-14': 'Fields of a CdbStatus register',
     }
 
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
@@ -29683,10 +29684,9 @@ class TestAWriteCarriesEightBytes(CMISTestCase):
         self.assertEqual([s for s in seen if s[0] == 0x9F], [])
 
     def test_only_a_long_write_through_byte_129_is_held_back(self):
-        """No profile models Page 9Fh, so these go on to the page check and
-        fail there - which is the point: it is not the CDB rule stopping
-        them. Past byte 129, eight bytes or fewer, or in lower memory (which
-        no page select reaches), a write is split (or not) like any other."""
+        """None of these is stopped by the CDB rule: past byte 129, eight
+        bytes or fewer, or in lower memory (which no page select reaches), a
+        write is split (or not) like any other."""
         self._connect()
         for address, n in ((0x90, 16), (0x80, 8), (0x82, 12), (0x10, 9)):
             rv = self._post('/api/register/write', {
@@ -37199,7 +37199,8 @@ class TestAReadPastLowerMemoryIsTwoReads(CMISTestCase):
                   '{page:null,first:127,last:127,holds:"E"},'
                   '{page:17,first:128,last:128,holds:"B"},'
                   '{page:17,first:134,last:153,holds:"F"}]}};'
-                  r'eval(s.match(/function _rawWhere\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  r'eval(s.match(/const CDB_PAGE = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function _rawWhere\([\s\S]*?\r?\n}\r?\n/)[0]'
                   r' + s.match(/function _clearOnReadOverlap\([\s\S]*?\r?\n}\r?\n/)[0]'
                   r' + s.match(/function _corWhere\([\s\S]*?\r?\n}\r?\n/)[0]'
                   ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
@@ -38937,6 +38938,266 @@ class TestAnInvalidLaneMappingIsSaidToBe(CMISTestCase):
         with open(os.path.join(here, 'templates', 'index.html'),
                   encoding='utf-8') as f:
             self.assertIn('id="mon-lane-map-invalid"', f.read())
+
+
+class TestACdbCommandIsWaitedFor(CMISTestCase):
+    """Table 10-4: after a WRITE that sends a CDB command, a module may reject
+    every ACCESS - until the command completes in foreground mode (7.2.5.1,
+    at most the advertised busy time, tCDBF 4960 ms), or while it captures
+    the command in background mode (tCDBC 80 ms). The hold-off retry waited
+    only tWRITE (10 ms) after any WRITE, so on a module that took longer the
+    Raw Registers read-back of the header it had just sent failed.
+
+    No demo module had Page 9Fh, so nothing sent a CDB command at all. The
+    CDB profiles now have it, one Bank per instance, and carry out CMD 0000h
+    (Query Status); any other CMDID fails as unknown."""
+
+    def _connect(self, backend='mock_dr8'):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+
+    def _write(self, page, address, data, bank=0):
+        return self.client.post(
+            '/api/register/write',
+            data=json.dumps({'page': page, 'address': address, 'data': data,
+                             'bank': bank}),
+            content_type='application/json')
+
+    def _read(self, page, address, length):
+        return self.client.post(
+            '/api/register/read',
+            data=json.dumps({'page': page, 'address': address, 'length': length}),
+            content_type='application/json')
+
+    def _foreground(self):
+        """Clear CdbBackgroundModeSupported (01h:163.5) and read it again."""
+        app_module._set_page(0x01, 0)
+        backend = app_module._state['backend']
+        byte = backend.read_bytes(0xA3, 1)[0]
+        backend.poke_bytes(0xA3, bytes([byte & ~0x20]))
+        app_module._invalidate_page()
+        app_module._state['caps'] = app_module._discover_capabilities()
+
+    def _wait_done(self):
+        backend = app_module._state['backend']
+        deadline = time.monotonic() + 1.0
+        while backend._cdb_running and time.monotonic() < deadline:
+            time.sleep(0.005)
+            try:
+                backend._held_off()
+            except IOError:
+                pass
+
+    def _js(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'static', 'app.js'), encoding='utf-8') as f:
+            return f.read().replace('\r\n', '\n')
+
+    # ---- the mock ----------------------------------------------------------------
+
+    def test_a_cdb_module_has_page_9fh_and_others_do_not(self):
+        self._connect('mock_dr8')
+        self.assertIn(0x9F, app_module._state['backend']._registers)
+        self._connect('mock_sr8')
+        self.assertNotIn(0x9F, app_module._state['backend']._registers)
+
+    def test_a_background_module_holds_off_only_while_capturing(self):
+        self._connect()
+        backend = app_module._state['backend']
+        app_module._set_page(0x9F, 0)
+        backend.write_bytes(0x80, bytes([0x00, 0x00]))
+        with self.assertRaises(IOError):
+            backend.read_bytes(0x25, 1)
+        self.assertGreater(backend.CDB_CAPTURE_S, cmis_timing('tWRITE'))
+        time.sleep(backend.CDB_CAPTURE_S + 0.005)
+        self.assertEqual(backend.read_bytes(0x25, 1)[0] & 0x80, 0x80,
+                         'captured, still busy')
+        self._wait_done()
+        self.assertEqual(backend.read_bytes(0x25, 1)[0], 0x01)
+        self.assertEqual(backend.read_bytes(0x08, 1)[0] & 0x40, 0x40,
+                         'CdbCmdCompleteFlag1')
+
+    def test_an_unknown_cmdid_fails(self):
+        self._connect()
+        backend = app_module._state['backend']
+        app_module._set_page(0x9F, 0)
+        backend.write_bytes(0x80, bytes([0x00, 0x41]))
+        self._wait_done()
+        self.assertEqual(backend._registers[None][0x25], 0x41,
+                         'FAILED, CMDID unknown (Table 8-14)')
+
+    def test_a_bank_without_a_cdb_instance_sends_nothing(self):
+        """mock_dr8 has one instance: Bank 1 of Page 9Fh is not a CDB."""
+        self._connect()
+        backend = app_module._state['backend']
+        app_module._set_page(0x9F, 1)
+        backend.write_bytes(0x80, bytes([0x00, 0x00]))
+        app_module._invalidate_page()
+        self.assertIsNone(backend._cdb_running)
+        self.assertEqual(backend._registers[None].get(0x26, 0), 0)
+
+    def test_a_write_that_does_not_reach_129_sends_nothing(self):
+        self._connect()
+        backend = app_module._state['backend']
+        app_module._set_page(0x9F, 0)
+        backend.write_bytes(0x82, bytes([1, 2, 3, 4]))
+        self.assertIsNone(backend._cdb_running)
+        backend.write_bytes(0x81, bytes([0]))
+        self.assertIsNotNone(backend._cdb_running)
+
+    # ---- the tool ----------------------------------------------------------------
+
+    def test_the_read_back_after_a_background_command_succeeds(self):
+        self._connect()
+        d = self.assertOk(self._write(0x9F, 0x80, [0x00, 0x00]))['data']
+        self.assertEqual(d['cdb'], {'mode': 'background', 'hold_off_ms': 80})
+        back = self.assertOk(self._read(0x9F, 0x80, 2))['data']
+        self.assertEqual(back['data'], [0x00, 0x00])
+
+    def test_a_foreground_command_is_waited_for_to_the_end(self):
+        self._connect()
+        self._foreground()
+        caps = app_module._state['caps']['cdb']
+        d = self.assertOk(self._write(0x9F, 0x80, [0x00, 0x00]))['data']
+        self.assertEqual(d['cdb']['mode'], 'foreground')
+        self.assertEqual(d['cdb']['hold_off_ms'],
+                         max(caps['max_busy_ms'], caps['max_busy_ms_alt']))
+        # The module rejects everything until the command is done; the next
+        # read is the page's own read-back, and it gets the result.
+        status = self.assertOk(self._read(0, 37, 1))['data']['data'][0]
+        self.assertEqual(status, 0x01)
+
+    def test_the_window_never_passes_tcdbf(self):
+        self._connect()
+        self._foreground()
+        cdb = app_module._state['caps']['cdb']
+        cdb['max_busy_ms'], cdb['max_busy_ms_alt'] = 9000, 30
+        d = self.assertOk(self._write(0x9F, 0x80, [0x00, 0x00]))['data']
+        self.assertEqual(d['cdb']['hold_off_ms'], 4960)
+
+    def test_without_the_wider_window_the_read_back_fails(self):
+        """What the page met before: only tWRITE after the WRITE."""
+        self._connect()
+        orig = app_module._cdb_hold_off
+        app_module._cdb_hold_off = lambda *a: None
+        try:
+            self.assertOk(self._write(0x9F, 0x80, [0x00, 0x00]))
+            resp = self._read(0x9F, 0x80, 2)
+        finally:
+            app_module._cdb_hold_off = orig
+        self.assertNotEqual(resp.status_code, 200)
+
+    def test_only_a_write_reaching_129_opens_the_window(self):
+        self._connect()
+        for address, data in ((0x82, [1, 2]), (0x90, [0])):
+            d = self.assertOk(self._write(0x9F, address, data))['data']
+            self.assertNotIn('cdb', d)
+        d = self.assertOk(self._write(0x10, 0x81, [0]))['data']
+        self.assertNotIn('cdb', d, 'not Page 9Fh')
+
+    def test_a_module_without_cdb_opens_no_window(self):
+        import cmis_registers as c
+        self._connect('mock_sr8')
+        app_module._state['holdoff_until'] = 0.0
+        self.assertIsNone(app_module._cdb_hold_off(0x9F, 0x80, 2, 0))
+        self.assertEqual(app_module._state['holdoff_until'], 0.0)
+        self._connect()
+        self.assertIsNone(app_module._cdb_hold_off(0x9F, 0x80, 2, 1),
+                          'one instance: Bank 1 has no CDB')
+        self.assertIsNotNone(app_module._cdb_hold_off(0x9F, 0x81, 1, 0))
+        self.assertEqual(c.TIMING_SECONDS['tCDBF'], 4.960)
+        self.assertEqual(c.TIMING_SECONDS['tCDBC'], 0.080)
+
+    # ---- a Bank on a CDB page is an instance ---------------------------------------
+
+    def test_the_cdb_pages(self):
+        import cmis_registers as c
+        for page in (0x9F, 0xA0, 0xA7, 0xAF):
+            self.assertTrue(c.is_cdb_page(page), hex(page))
+        for page in (0x9E, 0xB0, 0x10, 0x00, 0x6D):
+            self.assertFalse(c.is_cdb_page(page), hex(page))
+
+    def test_the_bank_limit_on_a_cdb_page_is_the_instance_count(self):
+        """7.2: "the pages of CDB instance 2 reside in Bank 1". An 8-lane
+        module with two instances has a Bank 1 there; its lane count does
+        not decide it."""
+        self._connect()                                   # 8 lanes, 1 CDB
+        ctx = app_module.app.app_context()
+        ctx.push()
+        self.addCleanup(ctx.pop)
+        err = app_module._check_bank(0x9F, 0x80, 1)
+        self.assertIsNotNone(err)
+        self.assertIn('CDB instance', err[0].get_json()['message'])
+        self.assertIsNotNone(app_module._check_bank(0xA3, 0x80, 1))
+        app_module._state['caps']['cdb']['instances'] = 2
+        self.assertIsNone(app_module._check_bank(0x9F, 0x80, 1))
+        self.assertIsNotNone(app_module._check_bank(0x9F, 0x80, 2))
+        app_module._state['caps']['cdb']['instances'] = 3   # Reserved
+        self.assertIsNotNone(app_module._check_bank(0x9F, 0x80, 2),
+                             'CMIS specifies at most two instances')
+
+    def test_a_wide_module_without_cdb_has_no_cdb_bank(self):
+        self._connect('mock_1600g_16lane')
+        ctx = app_module.app.app_context()
+        ctx.push()
+        self.addCleanup(ctx.pop)
+        self.assertEqual(app_module._state['caps']['banks_supported'], 2)
+        self.assertIsNone(app_module._check_bank(0x11, 0x80, 1))
+        self.assertIsNotNone(app_module._check_bank(0x9F, 0x80, 1))
+
+    def _where(self, *args):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = (
+            'const fs=require("fs");'
+            'const s=fs.readFileSync(process.argv[1],"utf8");'
+            'const pick=(re)=>{const m=s.match(re);'
+            'if(!m)throw new Error("missing "+re);return m[0];};'
+            'eval(pick(/const CDB_PAGE = [\\s\\S]*?;\\r?\\n/)'
+            '+pick(/function _rawWhere\\([\\s\\S]*?\\r?\\n}\\r?\\n/));'
+            'process.stdout.write(JSON.stringify(_rawWhere(...'
+            + json.dumps(list(args)) + ')));')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_dump_names_the_instance_not_lanes(self):
+        self.assertEqual(self._where(0x9F, 1, True, False, True),
+                         'Page 0x9F Bank 1 · CDB instance 2')
+        self.assertEqual(self._where(0xA0, 0, True, False, True),
+                         'Page 0xA0 Bank 0 · CDB instance 1')
+        self.assertEqual(self._where(0x11, 1, True, False, True),
+                         'Page 0x11 Bank 1 · lanes 9-16')
+
+    def test_the_bank_note_counts_instances_on_a_cdb_page(self):
+        js = self._js()
+        i = js.index('function _rawBankNote(')
+        body = js[i:js.index('\n}\n', i)]
+        self.assertIn('if (CDB_PAGE(page)) {', body)
+        self.assertIn('((AppState.caps || {}).cdb || {}).instances', body)
+        self.assertIn('bank b is CDB instance b+1', body)
+
+    def test_the_dump_says_a_command_was_sent(self):
+        js = self._js()
+        i = js.index('async function rawWrite(')
+        body = js[i:js.index('\nfunction formatHexDump', i)]
+        self.assertIn('        + (res.data.cdb\n', body)
+        self.assertIn('CDB command sent (9Fh:129)', body)
+        self.assertIn('${res.data.cdb.hold_off_ms} ms', body)
+
+
+def cmis_timing(name):
+    import cmis_registers as c
+    return c.TIMING_SECONDS[name]
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

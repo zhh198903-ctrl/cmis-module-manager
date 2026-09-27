@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.192.0'
+__version__ = '2.193.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -5905,6 +5905,17 @@ def _check_bank(page: int, address: int, bank: int):
     if not cmis.is_banked_page(page):
         return _err('Page 0x%02X is not a Banked Page, so it has only one '
                     'bank' % page, 400)
+    if cmis.is_cdb_page(page):
+        # The lane count says nothing here: an eight-lane module may have two
+        # CDB instances, and a sixteen-lane one only one.
+        instances = min(((_state.get('caps') or {}).get('cdb') or {})
+                        .get('instances', 0), 2)
+        if bank >= instances:
+            return _err('Page 0x%02X is a CDB page, and its Bank is the CDB '
+                        'instance (7.2: instance 1 in Bank 0, instance 2 in '
+                        'Bank 1). This module has %d (01h:163.7-6), so bank '
+                        '%d is not one' % (page, instances, bank), 400)
+        return None
     banks = (_state.get('caps') or {}).get('banks_supported', 1)
     if not (0 <= bank < banks):
         return _err('This module has %d bank%s (01h:142.1-0), so bank %d does '
@@ -6078,6 +6089,7 @@ def api_register_write():
         if address >= 0x80:
             _set_page(page, bank)
         writes = _write_chunked(address, data)
+        cdb = _cdb_hold_off(page, address, len(data), bank)
         # A raw write may land on the PageMapping register itself, or on the
         # control byte that resets the module - either moves the selected page
         # out from under us.
@@ -6098,9 +6110,37 @@ def api_register_write():
                 'entry_advertised': features.get('password_entry'),
                 'result': _password_result() if with_result else None,
             }} if password else {}),
+            **({'cdb': cdb} if cdb else {}),
         })
     except Exception as e:
         return _err(str(e), 500)
+
+
+def _cdb_hold_off(page: int, address: int, length: int, bank: int):
+    """A WRITE reaching 9Fh:129 sends a CDB command (7.2.3), and Table 10-4
+    lets the module reject every ACCESS afterwards: until the command
+    completes in foreground mode (7.2.5.1) - at most the busy time it
+    advertises, never past tCDBF - or while it captures it in background
+    mode, tCDBC. Retrying only for tWRITE, the page's own read-back of the
+    header failed on any module that took longer.
+
+    Table 8-55 reads two ways on which busy field applies, so the longer of
+    the two is waited for: it bounds a retry, and a module that answers
+    sooner ends it sooner."""
+    cdb = (_state.get('caps') or {}).get('cdb') or {}
+    if (page != 0x9F or not address <= 129 < address + length
+            or bank >= cdb.get('instances', 0)):
+        return None
+    if cdb.get('background_mode'):
+        mode, window = 'background', cmis.TIMING_SECONDS['tCDBC']
+    else:
+        mode = 'foreground'
+        window = min(max(cdb.get('max_busy_ms') or 0,
+                         cdb.get('max_busy_ms_alt') or 0) / 1000.0,
+                     cmis.TIMING_SECONDS['tCDBF'])
+    _state['holdoff_until'] = max(_state.get('holdoff_until', 0.0),
+                                  time.monotonic() + window)
+    return {'mode': mode, 'hold_off_ms': round(window * 1000)}
 
 
 def _password_result() -> dict:

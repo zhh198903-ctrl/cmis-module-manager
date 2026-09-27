@@ -997,6 +997,10 @@ class MockBackend(I2CInterface):
         self._module_password = self.PROFILE.get('module_password', 0x8BADF00D)
         self._password_host_ok = False     # may the Host Password be changed
         self._password_result_final = None  # Lower 42 after "in progress"
+        # A CDB command under way: (completes at, instance bank, result), and
+        # until when every ACCESS is rejected because of it.
+        self._cdb_running = None
+        self._cdb_busy_until = 0.0
         self._commands = []               # _ConfigCommand, one per Data Path
         self._dp_deinit_mask = 0x00       # 10h:128, one bit per host lane
         self._page_redirects = []         # PageSelects that named a missing page
@@ -1409,6 +1413,13 @@ class MockBackend(I2CInterface):
         p01[0xFB] = p.get('misc_features_251',
                           0xAA if p.get('cmis_rev', 0x53) >= 0x53 else 0x00)
         regs[0x01] = p01
+        # Page 9Fh, one Bank per CDB instance (7.2): the message header and
+        # LPL of the command a host sends. Absent on a module without CDB.
+        instances = (p01.get(0xA3, 0) >> 6) & 0x03
+        if instances in (1, 2):
+            regs[0x9F] = {}
+            if instances == 2:
+                regs[(0x9F, 1)] = {}
 
         # ==== Page 02h — Thresholds ====
         # Optical power limits come from the profile when it knows the PMD it is
@@ -2888,6 +2899,42 @@ class MockBackend(I2CInterface):
             lower[0x04 + bank] = byte_val
 
     # ------------------------------------------------------------------
+    # CMD 0000h, Query Status, is the one command this mock carries out; any
+    # other CMDID fails as unknown (Table 8-14, FAILED 01h). Seconds it takes,
+    # and the capture hold-off of background mode - kept above tWRITE so a
+    # host that only waits that long is caught.
+    CDB_BUSY_S = 0.025
+    CDB_CAPTURE_S = 0.030
+
+    def _cdb_trigger(self, bank):
+        """7.2.3: a WRITE that reaches 9Fh:129 sends the command in this
+        Bank's CDB instance. 7.2.5.1: in foreground mode (01h:163.5 clear)
+        "the module rejects any register ACCESS until a currently executing
+        CDB command execution has completed"; in background mode it may hold
+        off "only shortly until the CDB command is captured" (Table 8-55).
+        CdbStatus reads IN PROGRESS until the result, then the command's
+        completion Flag latches (Lower 8.6 for instance 1, 8.7 for 2)."""
+        adv = self._registers.get(0x01, {}).get(0xA3, 0)
+        if bank >= ((adv >> 6) & 0x03):
+            return
+        page = self._registers.get((0x9F, bank)) if bank else self._registers[0x9F]
+        cmdid = (page.get(128, 0) << 8) | page.get(129, 0)
+        now = time.perf_counter()
+        # Background: captured first, then carried out while the host reads on.
+        held = self.CDB_CAPTURE_S if adv & 0x20 else 0.0
+        self._cdb_running = (now + held + self.CDB_BUSY_S, bank,
+                             0x01 if cmdid == 0x0000 else 0x41)
+        self._registers[None][0x25 + bank] = 0x81      # captured, busy
+        self._cdb_busy_until = now + (held or self.CDB_BUSY_S)
+
+    def _cdb_settle(self):
+        if self._cdb_running and time.perf_counter() >= self._cdb_running[0]:
+            _done, bank, result = self._cdb_running
+            lower = self._registers[None]
+            lower[0x25 + bank] = result
+            lower[0x08] = lower.get(0x08, 0) | (0x40 << bank)
+            self._cdb_running = None
+
     def _password_write(self, register, value):
         """8.2.14, for a size-matched four-byte WRITE - anything else to
         118-125 is not the access the module has to act on, and is dropped.
@@ -4247,6 +4294,10 @@ class MockBackend(I2CInterface):
         if time.perf_counter() < self._holdoff_until:
             raise IOError('NACK: the module is completing the last WRITE '
                           '(ACCESS hold-off, Table 10-4)')
+        if time.perf_counter() < self._cdb_busy_until:
+            raise IOError('NACK: the module is processing a CDB command '
+                          '(7.2.5.1, tCDBF/tCDBC in Table 10-4)')
+        self._cdb_settle()
         if time.perf_counter() < self._mgmt_init_until:
             raise IOError('NACK: the module is still in MgmtInit after a '
                           'reset (tMgmtInit, Table 10-2)')
@@ -4355,6 +4406,8 @@ class MockBackend(I2CInterface):
                         page_dict[register + i] = (
                             0 if self._write_only(self._current_page,
                                                   register + i) else b)
+            if self._current_page == 0x9F and register <= 129 < register + len(data):
+                self._cdb_trigger(self._current_bank)
             for p13, before in engines:
                 self._engines_changed(p13, before)
             if len(engines) == 1:           # under broadcast every Bank has it

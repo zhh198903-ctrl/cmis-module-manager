@@ -851,7 +851,7 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 后六个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
 **主机软件该处理的分支，用这几个 mock 就能全部走到。**
 
-## 裸寄存器读写的四条注意
+## 裸寄存器读写的五条注意
 
 1. **页切换有时序** —— 写完页选择寄存器要等 **10 ms**（规范的 tBPC）。睡不够会
    读到上一页的内容，表现为间歇性数据错乱。走 API 的 `register/read` 已经处理好了；
@@ -868,6 +868,10 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
    等过 tWRITE 仍是）返回 409。成功时回复带 `password.result`（Lower 42 的 PasswordCmdResult，
    模块没声明 01h:251.3-2 时为 `null`）。出厂 host 密码 `0000 1011h`；演示模块的 module 密码 `8BADF00D`。
    只写字节（`write_only`）读回是 0，不要拿读回值判断写没写进去。
+5. **CDB 页的 Bank 是 CDB 实例**（7.2）—— `9Fh`、`A0h-AFh` 的 bank 0 = 实例 1、bank 1 = 实例 2，上限是
+   `01h:163.7-6` 的实例数，与通道 bank 数无关。写到 `9Fh:129` 会发出 CDB 命令；回复带
+   `cdb: {mode, hold_off_ms}`：前台模式下模块在命令执行完之前拒绝一切访问，工具会在这段时间内重试，
+   别自己在这段时间里判定「模块掉线」。
 
 ## 授权与来源
 

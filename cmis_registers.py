@@ -358,6 +358,11 @@ TIMING_SECONDS = {
     # memory (tWR), which Page 03h, the user EEPROM, is (8.7).
     'tWRITE': 0.010,
     'tWRITENV': 0.080,
+    # Table 10-4 as well: after a WRITE that sends a CDB command, the hold-off
+    # of foreground processing (at most the advertised busy time, which
+    # cannot exceed this) and of capturing it in background mode.
+    'tCDBF': 4.960,
+    'tCDBC': 0.080,
     # Table 10-2: from "Reset release until the START condition of a READ
     # retrieving the default register value". A SoftwareReset is that release
     # too - "the same as asserting the Reset hardware signal ... followed by
@@ -3267,6 +3272,14 @@ _BANKED_PAGES = (tuple(range(0x10, 0x60)) + (0x60, 0x61, 0x62, 0x6D, 0x9F)
 def is_banked_page(page: int) -> bool:
     """True if this page is one CMIS defines as Banked."""
     return page in _BANKED_PAGES
+
+
+def is_cdb_page(page: int) -> bool:
+    """Page 9Fh and the EPL pages A0h-AFh, whose Bank is not a group of
+    lanes but a CDB instance: "the CDB related pages of CDB instance 1
+    reside in Bank 0 and the pages of CDB instance 2 reside in Bank 1"
+    (7.2)."""
+    return page == 0x9F or 0xA0 <= page <= 0xAF
 
 
 def is_new_in_5_4(field: str) -> bool:

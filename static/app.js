@@ -4189,13 +4189,21 @@ function _renderReadLimit(max) {
 const BANKED_PAGE = p =>
   (p >= 0x10 && p <= 0x5F) || p === 0x60 || p === 0x61 || p === 0x62
   || p === 0x6D || p === 0x9F || (p >= 0xA0 && p <= 0xAF);
+// 7.2: on the CDB pages a Bank is a CDB instance, not eight lanes.
+const CDB_PAGE = p => p === 0x9F || (p >= 0xA0 && p <= 0xAF);
 
 function _rawBankNote() {
   const el = document.getElementById('raw-bank-note');
   if (!el) return;
   const page = parseHexOrDec(document.getElementById('raw-page').value);
   const banks = Math.ceil(AppState.lanes / 8);
-  if (!BANKED_PAGE(page)) {
+  if (CDB_PAGE(page)) {
+    const n = ((AppState.caps || {}).cdb || {}).instances || 0;
+    el.innerHTML = (n ? `CDB page · this module has <b>${Math.min(n, 2)} CDB `
+                        + `instance${n > 1 ? 's' : ''}</b> `
+                      : 'CDB page · this module has no CDB ')
+      + '<span class="reg-meta">01h:163.7-6 · bank b is CDB instance b+1</span>';
+  } else if (!BANKED_PAGE(page)) {
     el.innerHTML = `Page 0x${page.toString(16).toUpperCase().padStart(2, '0')}`
       + ' is not banked <span class="reg-meta">bank must be 0</span>';
   } else if (banks <= 1) {
@@ -4210,6 +4218,7 @@ function _rawBankNote() {
 function _rawWhere(page, bank, banked, lower, upper) {
   const hex = `0x${page.toString(16).toUpperCase().padStart(2, '0')}`;
   const paged = !banked ? `Page ${hex}`
+    : CDB_PAGE(page) ? `Page ${hex} Bank ${bank} · CDB instance ${bank + 1}`
     : `Page ${hex} Bank ${bank} · lanes ${bank * 8 + 1}-${bank * 8 + 8}`;
   // Below 0x80 is Lower Memory whatever page is named, and it was labelled
   // with the page field - a dump of Lower 0-3 read "Page 0x11".
@@ -4355,6 +4364,12 @@ async function rawWrite() {
                 ? ` - and password entry is ${pw.entry_advertised} (01h:251.5-4)`
                 : '')
              + '\n'
+           : '')
+        + (res.data.cdb
+           ? `CDB command sent (9Fh:129), ${res.data.cdb.mode} processing: the `
+             + `module may reject every access for up to ${res.data.cdb.hold_off_ms} ms `
+             + '(Table 10-4), and the read-back below waited for it. Completion '
+             + 'shows as CDB Command Complete on Module Info\n'
            : '')
         + `read back:\n${formatHexDump(got, address)}`;
       if (pwResult) {

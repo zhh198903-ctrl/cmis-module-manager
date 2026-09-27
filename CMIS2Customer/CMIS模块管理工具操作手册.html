@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.192.0<br>
+      <b>版本</b>　2.193.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.192.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.192.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.193.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.193.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,12 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>Raw Registers:发出 CDB 命令后等模块处理完;CDB 页的 Bank 是 CDB 实例</h3>
+  <p>规范 Table 10-4:写到 <code>9Fh:129</code> 发出 CDB 命令后,模块可以拒绝一切访问——前台模式(<code>01h:163.5</code> 为 0)一直到命令执行完(最长为模块声明的忙时间,上限 tCDBF 4960 ms),后台模式在接收命令期间(tCDBC 80 ms)。工具在任何写入之后只重试 tWRITE(10 ms),所以在处理稍久的模块上,Raw Registers 写完 CDB 命令头后的回读会失败。</p>
+  <p>现在写到 <code>9Fh:129</code> 之后,工具按模块的模式把重试窗口放宽到对应时间(前台取 Table 8-55 两种读法里较长的忙时间),结果区写明「CDB command sent (9Fh:129)」、处理模式和等待上限;命令完成显示在 Module Info 的 CDB Command Complete。</p>
+  <p>规范 7.2:「CDB 实例 1 的相关页在 Bank 0,实例 2 的在 Bank 1」。<code>9Fh</code> 和 <code>A0h–AFh</code> 上的 Bank 是 <b>CDB 实例</b>,不是 8 条通道一组。工具此前按通道 Bank 数判断能不能选、结果区也写成「lanes 1-8」——8 通道、两个 CDB 实例的模块选不到实例 2,16 通道、一个实例的模块却能选到并不存在的 Bank 1。现在这些页按 <code>01h:163.7-6</code> 的实例数判断,结果区写成 <code>Bank 0 · CDB instance 1</code>,Bank 输入框下的提示也写明实例数。</p>
+  <p>演示模块:支持 CDB 的演示模块现在有 Page 9Fh,执行 CMD 0000h(Query Status),其它命令号按「CMDID unknown」失败;按模块的模式在处理 / 接收期间拒绝访问,完成后更新 CdbStatus(<code>Lower 37</code>)并置 CDB 完成标志。</p>
 
   <h3>Monitoring:违反规范约束的通道-波长映射会被标出</h3>
   <p>规范 8.14.8:波分应用里<b>最短的波长编号为 1</b>,其余从短到长<b>连续编号</b>;「违反这些约束的 Table 8-107 映射是无效的」。编码 1001b–1111b 是保留值。工具此前把 <code>11h:240–255</code> 的任何映射都当事实写在 Lane 号下面,保留编码则和「未知」画法一样。</p>
@@ -4697,7 +4703,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <pre>0x80: A1 B2 C3 D4 E5 F6 01 02  ........
 0x88: 03 04 05 06 07 08 09 0A  ........</pre>
   <p>格式：<code>地址: 十六进制字节&ensp;&ensp;ASCII（不可打印字符显示为 .）</code></p>
-  <p>Dump 上方第一行写明这些字节来自哪里：<code>Lower Memory</code>（地址 &lt; <code>0x80</code>，不分页，与 Page 字段无关）、<code>Page 0x11</code>，或分 Bank 的页上的 <code>Page 0x11 Bank 1 · lanes 9-16</code>。</p>
+  <p>Dump 上方第一行写明这些字节来自哪里：<code>Lower Memory</code>（地址 &lt; <code>0x80</code>，不分页，与 Page 字段无关）、<code>Page 0x11</code>，或分 Bank 的页上的 <code>Page 0x11 Bank 1 · lanes 9-16</code>。CDB 页(<code>9Fh</code>、<code>A0h–AFh</code>)上的 Bank 是 CDB 实例,写作 <code>Page 0x9F Bank 0 · CDB instance 1</code>,可选的 Bank 数是模块的 CDB 实例数(<code>01h:163.7-6</code>)。</p>
   <div class="callout callout-note">
     <span class="callout-icon">ℹ</span>
     <span><b>跨过 0x7F 的读取会分成两次读。</b>规范 B.1.2 规定字节地址在自己那块 128 字节里回绕：Lower Memory 读到 127 之后回到 0，<b>不会</b>接着读进上页。
@@ -4780,6 +4786,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
         时,工具最多等 tWRITE(10 ms),仍未出结果就拒绝这次密码写入(409),因为规范要求主机在结果出来之前不要使用密码寄存器</li>
     <li><b>夹带 Apply 触发字节的多字节写</b>：<code>10h:143/144</code>、<code>10h:176–179</code>、<code>10h:211/212</code>、<code>16h:176/177</code> 这些 Apply 触发字节，规范（Rev 5.0 起）规定「必须用单字节 WRITE 写入」。一次多字节写入里包含其中任何一个，就提示 <code>must be written in a single-byte WRITE</code>，要求你把它单独写</li>
   </ul>
+  <h4>发 CDB 命令</h4>
+  <p>写到 <code>9Fh:129</code> 就会发出 CDB 命令(规范 7.2.3)。之后模块可能拒绝一切访问:前台模式直到命令执行完,后台模式在接收命令期间(规范 Table 10-4)。工具这时会按模块声明的时间继续重试,回读因此可能要等一会儿;结果区写明<code>CDB command sent (9Fh:129)</code>、处理模式和最长等待时间。命令结果在 <code>Lower 37</code>(实例 1)/<code>38</code>(实例 2),完成时 Module Info 的 CDB Command Complete 会亮。</p>
+
   <h4>写密码</h4>
   <p>规范 8.2.14 的密码是 32 位大端数。<code>0000 0000h–7FFF FFFFh</code> 是 host 密码(出厂默认 <code>0000 1011h</code>,主机可改),
      <code>8000 0000h</code> 以上是 module 密码(厂商定义,主机不能改)。在 Raw Registers 里:</p>
@@ -5042,7 +5051,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.192.0<br>
+    CMIS Module Manager 操作手册 v2.193.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
