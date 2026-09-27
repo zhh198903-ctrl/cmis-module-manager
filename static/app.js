@@ -737,7 +737,7 @@ async function loadInfo() {
 
   // [field, value, page, address, cmis_definition]
   const rows = [
-    ['Module Type',     d.module_type,                                                            'Lower', '0x00',        'SFF-8024 Identifier (Table 8-5)'],
+    ['Module Type',     moduleTypeCell(d),                                                        'Lower', '0x00',        'SFF-8024 Identifier (Table 8-5), named per SFF-8024 Table 4-1'],
     ['Module ID',       `0x${(d.module_id||0).toString(16).toUpperCase().padStart(2,'0')}`,      'Lower', '0x00',        'Identifier byte (raw hex)'],
     ['CMIS Revision',   d.cmis_revision,                                                          'Lower', '0x01',        'Upper nibble=major, lower=minor (0x53=5.3)'],
     // A flat module has no Upper Memory to page into, so none of the Page
@@ -1325,6 +1325,22 @@ function laneCountPair(a) {
     return /^\d+$/.test(t) ? t + letter : letter + '=' + t;
   };
   return part('host', 'H') + '/' + part('media', 'M');
+}
+
+// CMIS 8.2.1: hosts "test against a list of supported SFF 8024 module type
+// identifiers", and the other fields "can be interpreted once the module has
+// been recognized as a CMIS module". Where Table 4-1 names another
+// management interface for this identifier, every row below is a CMIS
+// reading of a memory map that is not CMIS.
+function moduleTypeCell(d) {
+  const name = String(d.module_type || '');
+  if (!d.other_management) return name;
+  return name + ' <span class="flag-warn" title="' + esc('SFF-8024 Table '
+      + '4-1 gives this identifier the ' + d.other_management + ' management '
+      + 'interface. CMIS 8.2.1: the other fields can be interpreted once the '
+      + 'module has been recognized as a CMIS module.') + '">\u25b2</span> '
+    + '<span class="reg-meta">not a CMIS module - managed by '
+    + esc(d.other_management) + ', so the rows below are not its values</span>';
 }
 
 function memoryModelCell(d) {

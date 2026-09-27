@@ -762,6 +762,10 @@ Application 和 Data Path 寄存器按名义通道编号,所以工具各面板�
 在不分 Bank 的页上给了非 0 的 bank；在下半区（`0x00–0x7F`）给了 bank。
 从下半区开始、读过 `0x7F` 的读取例外：`bank` 管的是 `0x80` 之后那部分。
 
+## 模块标识(Lower 0x00)
+
+`GET /api/module/info` 的 `module_type` 按 SFF-8024 Rev 4.14 Table 4-1 命名(1Eh 是「QSFP+ or later with CMIS」,不是 QSFP-DD;QSFP-DD 是 18h)。`other_management` 非空时(02h/03h SFF-8472、0Dh/11h SFF-8636、1Ah SFP-DD MIS),这不是 CMIS 模块,其余字段都是按 CMIS 解读的别的内存映射(CMIS 8.2.1)。
+
 ## 线缆组件和平坦内存模块
 
 `GET /api/module/info` 和连接时的 capabilities 都带 `cable_assembly`(Media Type 03h/04h,8.3.8)。线缆上三处读法相反:`00h:202` 是线缆长度(光模块写 0)、`00h:211` FarEndConfiguration 描述远端(代码 0 是「可拆卸介质」)、`01h:132-137` 光纤链路长度必须全 0(8.4.2,有源光缆的长度报在 00h:202)。

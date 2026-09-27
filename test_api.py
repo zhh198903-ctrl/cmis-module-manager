@@ -5968,12 +5968,13 @@ class TestModuleInfo(CMISTestCase):
         self.assertIn('media_lanes', d)
 
     def test_info_module_id_qsfpdd(self):
-        """Mock registers QSFP-DD (0x1E)."""
+        """Mock registers 0x1E - which SFF-8024 Table 4-1 calls "QSFP+ or
+        later with CMIS", not QSFP-DD (that is 18h)."""
         self.connect()
         rv = self.client.get('/api/module/info')
         body = self.assertOk(rv)
         self.assertEqual(body['data']['module_id'], 0x1E)
-        self.assertIn('QSFP-DD', body['data']['module_type'])
+        self.assertEqual(body['data']['module_type'], 'QSFP+ or later with CMIS')
 
     def test_info_cmis_revision(self):
         """CMIS revision should be '5.3' in mock_dr8."""
@@ -6670,12 +6671,12 @@ class TestCmisRegisters(unittest.TestCase):
 
     def test_module_id_name_known(self):
         from cmis_registers import module_id_name
-        self.assertEqual(module_id_name(0x1E), "QSFP-DD CMIS")
+        self.assertEqual(module_id_name(0x1E), 'QSFP+ or later with CMIS')
 
     def test_module_id_name_unknown(self):
         from cmis_registers import module_id_name
-        result = module_id_name(0xFF)
-        self.assertIn('Unknown', result)
+        # SFF-8024 Table 4-1: 80h-FFh are Vendor Specific, not unknown
+        self.assertEqual(module_id_name(0xFF), 'Vendor specific (0xFF)')
 
     def test_cmis_revision_str(self):
         from cmis_registers import cmis_revision_str
@@ -19360,11 +19361,11 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
     # type, fiber face type and heatsink type are SFF-8024, and so are the
     # copper, active cable and BASE-T media interface codes (4-8 to 4-10,
-    # checked against Rev 4.14); the launch power and receive sensitivity
-    # windows the coherent and 1.6T profiles are built from are IEEE 802.3
-    # clause 180 and 185.
-    VERIFIED_OTHER = frozenset(['4-3', '4-8', '4-9', '4-10', '4-12', '4-13',
-                                '180-7', '180-8', '185-5', '185-6'])
+    # checked against Rev 4.14) and the Identifier Values (4-1, Rev 4.14 page
+    # 17); the launch power and receive sensitivity windows the coherent and
+    # 1.6T profiles are built from are IEEE 802.3 clause 180 and 185.
+    VERIFIED_OTHER = frozenset(['4-1', '4-3', '4-8', '4-9', '4-10', '4-12',
+                                '4-13', '180-7', '180-8', '185-5', '185-6'])
 
     # test_api.py is scanned too. It was left out at first, and a citation
     # added to a test in the very next round was wrong - Table 8-102 for the
@@ -20018,11 +20019,14 @@ class TestUnknownIsSaidOnlyWhereTheToolDoesNotKnow(CMISTestCase):
         self.assertIn('deprecated', c.media_if_tech_name(0x0F))
 
     def test_unknown_survives_where_the_tool_holds_no_table(self):
-        """The point is not to delete the word. These three are SFF-8024
-        tables this tool does not carry, and Unknown is the true answer."""
+        """The point is not to delete the word. These were SFF-8024 tables
+        this tool did not carry in full; now that it does (Rev 4.14, Tables
+        4-1 and 4-3), 0xEE is vendor specific in both, and Unknown is only
+        the name of code 00h."""
         import cmis_registers as c
-        self.assertIn('Unknown', c.connector_type_name(0xEE))
-        self.assertIn('Unknown', c.module_id_name(0xEE))
+        self.assertEqual(c.connector_type_name(0xEE), 'Vendor specific (0xEE)')
+        self.assertEqual(c.module_id_name(0xEE), 'Vendor specific (0xEE)')
+        self.assertEqual(c.module_id_name(0x00), 'Unknown or unspecified')
 
     def test_the_panel_prints_the_raw_code_once(self):
         """The Media Interface row appends the raw code so the reader can take
@@ -37750,6 +37754,132 @@ class TestAFlatModulesTabsSayWhyRatherThanFail(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             man = f.read()
         self.assertIn('<h3>平坦内存模块:三个标签页说明原因,不再逐项报错</h3>', man)
+
+
+class TestTheIdentifierNamesAreSFF8024s(CMISTestCase):
+    """Lower 0x00 is named by SFF-8024 Table 4-1, and the tool's list was
+    guessed: 1Fh OSFP (SFP-DD), 20h x4 MiniLink (SFP+ with CMIS), 22h
+    QSFP-DD (OIF-ELSFP), 23h QSFP56 and 24h OSFP-XD (CDFP), 25h
+    CMIS-Compliant (CDFP x16), 1Eh "QSFP-DD" (QSFP+ or later); 21h and 26h
+    missing, reserved and vendor codes "Unknown". Connector types had the
+    same gap. And CMIS 8.2.1 has a host recognise a CMIS module by this byte
+    before reading the rest as CMIS - a module Table 4-1 gives another
+    management interface was decoded without a word."""
+
+    def _pdf_table_4_1(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'docs', 'standards', 'SFF-8024.pdf')
+        if not os.path.exists(path):
+            self.skipTest('SFF-8024 is not in this checkout')
+        import fitz
+        text = fitz.open(path)[16].get_text()
+        body = text[text.index('Table 4-1 Identifier Values'):
+                    text.index('27h-7Fh')]
+        rows = re.findall(r'\n([0-9A-F]{2})h *\n(.+?)(?= *\n[0-9A-F]{2}h|\s*$)',
+                          body + '\n', re.S)
+        return {int(code, 16): ' '.join(desc.split()) for code, desc in rows}
+
+    def test_every_name_is_the_tables(self):
+        import cmis_registers as c
+        table = self._pdf_table_4_1()
+        self.assertEqual(sorted(table), list(range(0x27)))
+        for code, desc in table.items():
+            want = re.sub(r'Common Management [Ii]nterface Specification '
+                          r'\(CMIS\)', 'CMIS', desc)
+            want = re.sub(r' \(SFF-8436, SFF-8635.*$| \(SFF-8665 et al\.\).*$',
+                          '', want)
+            want = re.sub(r' \d$', '', want).strip()   # footnote markers
+            self.assertEqual(c.module_id_name(code), want, hex(code))
+
+    def test_the_ones_that_were_wrong(self):
+        import cmis_registers as c
+        for code, name in ((0x1E, 'QSFP+ or later with CMIS'),
+                           (0x1F, 'SFP-DD Double Density 2X Pluggable '
+                                  'Transceiver with CMIS'),
+                           (0x20, 'SFP+ and later with CMIS'),
+                           (0x21, 'OSFP-XD with CMIS'),
+                           (0x22, 'OIF-ELSFP with CMIS'),
+                           (0x23, 'CDFP (x4 PCIe) SFF-TA-1032 with CMIS'),
+                           (0x24, 'CDFP (x8 PCIe) SFF-TA-1032 with CMIS'),
+                           (0x25, 'CDFP (x16 PCIe) SFF-TA-1032 with CMIS'),
+                           (0x26, 'XPO')):
+            self.assertEqual(c.module_id_name(code), name, hex(code))
+        self.assertEqual(c.module_id_name(0x27), 'Reserved (0x27)')
+        self.assertEqual(c.module_id_name(0x7F), 'Reserved (0x7F)')
+        self.assertEqual(c.module_id_name(0x80), 'Vendor specific (0x80)')
+
+    def test_connector_ranges(self):
+        import cmis_registers as c
+        self.assertEqual(c.connector_type_name(0x0E), 'Reserved (0x0E)')
+        self.assertEqual(c.connector_type_name(0x1F), 'Reserved (0x1F)')
+        self.assertEqual(c.connector_type_name(0x29), 'Reserved (0x29)')
+        self.assertEqual(c.connector_type_name(0x7F), 'Reserved (0x7F)')
+        self.assertEqual(c.connector_type_name(0x80), 'Vendor specific (0x80)')
+        self.assertEqual(c.connector_type_name(0x28), 'MPO 1×16')
+
+    def test_which_identifiers_name_another_interface(self):
+        import cmis_registers as c
+        self.assertEqual(sorted(c.OTHER_MANAGEMENT), [0x02, 0x03, 0x0D, 0x11, 0x1A])
+        for code in c.OTHER_MANAGEMENT:
+            self.assertNotIn('CMIS', c.module_id_name(code))
+        for code in (0x18, 0x19, 0x1E, 0x21, 0x22):
+            self.assertNotIn(code, c.OTHER_MANAGEMENT)
+
+    def _info_with_identifier(self, ident):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_dr8', 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        _state['backend'].poke_bytes(0x00, bytes([ident]))
+        return self.assertOk(self.client.get('/api/module/info'))['data']
+
+    def test_the_reply_says_when_it_is_not_cmis(self):
+        d = self._info_with_identifier(0x11)
+        self.assertEqual(d['other_management'], 'SFF-8636')
+        self.assertEqual(d['module_type'],
+                         'QSFP28 or later with SFF-8636 management interface')
+        d = self._info_with_identifier(0x1E)
+        self.assertIsNone(d['other_management'])
+
+    def _node(self, expr):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        script = ('const fs=require("fs");'
+                  'const s=fs.readFileSync(process.argv[1],"utf8");'
+                  r'eval(s.match(/const esc = [\s\S]*?;\r?\n/)[0]'
+                  r' + s.match(/function moduleTypeCell\([\s\S]*?\r?\n}\r?\n/)[0]'
+                  ' + "process.stdout.write(JSON.stringify(' + expr + '));");')
+        out = subprocess.run([node, '-e', script, src], capture_output=True,
+                             text=True, encoding='utf-8')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_the_row_says_so(self):
+        plain = self._node("moduleTypeCell({module_type: 'QSFP+ or later with CMIS', "
+                           "other_management: null})")
+        self.assertEqual(plain, 'QSFP+ or later with CMIS')
+        warned = self._node("moduleTypeCell({module_type: 'QSFP28', "
+                            "other_management: 'SFF-8636'})")
+        self.assertIn('not a CMIS module - managed by SFF-8636', warned)
+        self.assertIn('8.2.1', warned)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'static', 'app.js'), encoding='utf-8') as f:
+            self.assertIn("['Module Type',     moduleTypeCell(d),", f.read())
+
+    def test_the_manual_says_so(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s7 = man[man.index('id="s7"'):man.index('id="s8"')]
+        self.assertIn('按 SFF-8024 Rev 4.14 Table 4-1 命名', s7)
+        self.assertIn('「not a CMIS module」', s7)
+        self.assertNotIn('CMIS-Compliant）', s7)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

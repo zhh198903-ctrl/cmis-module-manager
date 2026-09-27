@@ -1056,7 +1056,7 @@ class MockBackend(I2CInterface):
 
         # ==== Lower Memory ====
         lower = {}
-        lower[0x00] = 0x1E                  # QSFP-DD CMIS
+        lower[0x00] = 0x1E                  # QSFP+ or later with CMIS (SFF-8024 Table 4-1)
         lower[0x01] = p.get('cmis_rev', 0x53)   # 0x54 = CMIS 5.4
         # [7] MemoryModel, [6] SteppedConfigOnly, [5:2] MciMaxSpeed,
         # [1:0] AutoCommissioning. 0x00 is the legacy default that claims

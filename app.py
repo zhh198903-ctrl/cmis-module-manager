@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.184.0'
+__version__ = '2.185.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -1611,6 +1611,10 @@ def api_module_info():
         return _ok({
             'module_id': ident_raw[0],
             'module_type': cmis.module_id_name(ident_raw[0]),
+            # 8.2.1: a module is read as CMIS once its identifier says so.
+            # Where SFF-8024 names another management interface, the
+            # rest of this reply decodes a different memory map.
+            'other_management': cmis.OTHER_MANAGEMENT.get(ident_raw[0]),
             'cmis_revision': cmis.cmis_revision_str(cmis_rev_raw[0]),
             'memory_model': 'Flat' if (mem_model_raw[0] >> 7) & 1 else 'Paged',
             'config_capabilities': cmis.parse_config_capabilities(

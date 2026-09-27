@@ -831,22 +831,67 @@ REG_DIAG_DATA        = (0x14, 0xC0, 64)  # selector-dependent
 # Lookup tables
 # ---------------------------------------------------------------------------
 
+# SFF-8024 Rev 4.14 Table 4-1, Identifier Values, as the table words them -
+# "Common Management Interface Specification (CMIS)" shortened to CMIS, and
+# the lists of hardware specifications after 0Dh and 11h left out.
+# The list this replaced was guessed rather than copied: 1Fh called OSFP
+# (it is SFP-DD), 20h x4 MiniLink (SFP+ with CMIS), 22h QSFP-DD (OIF-ELSFP),
+# 23h QSFP56 and 24h OSFP-XD (both CDFP), and 1Eh "QSFP-DD" where the table
+# says "QSFP+ or later" - the first row of Module Info, wrong for most of
+# the CMIS identifiers there are.
 MODULE_ID_NAMES = {
-    0x03: "SFP/SFP+/SFP28",
-    0x0B: "DWDM-SFP/SFP+",
-    0x0C: "QSFP",
-    0x0D: "QSFP+",
-    0x11: "QSFP28",
-    0x18: "QSFP-DD",
-    0x19: "OSFP",
-    0x1B: "DSFP",
-    0x1E: "QSFP-DD CMIS",
-    0x1F: "OSFP CMIS",
-    0x20: "x4 MiniLink",
-    0x22: "QSFP-DD CMIS",
-    0x23: "QSFP56",
-    0x24: "OSFP-XD",
-    0x25: "CMIS-Compliant",
+    0x00: 'Unknown or unspecified',
+    0x01: 'GBIC',
+    0x02: 'Module/connector soldered to motherboard (using SFF-8472)',
+    0x03: 'SFP/SFP+/SFP28 and later with SFF-8472 management interface',
+    0x04: '300 pin XBI',
+    0x05: 'XENPAK',
+    0x06: 'XFP',
+    0x07: 'XFF',
+    0x08: 'XFP-E',
+    0x09: 'XPAK',
+    0x0A: 'X2',
+    0x0B: 'DWDM-SFP/SFP+ (not using SFF-8472)',
+    0x0C: 'QSFP (INF-8438)',
+    0x0D: 'QSFP+ or later with SFF-8636 or SFF-8436 management interface',
+    0x0E: 'CXP or later',
+    0x0F: 'Shielded Mini Multilane HD 4X',
+    0x10: 'Shielded Mini Multilane HD 8X',
+    0x11: 'QSFP28 or later with SFF-8636 management interface',
+    0x12: 'CXP2 (aka CXP28) or later',
+    0x13: 'CDFP (Style 1/Style2) INF-TA-1003',
+    0x14: 'Shielded Mini Multilane HD 4X Fanout Cable',
+    0x15: 'Shielded Mini Multilane HD 8X Fanout Cable',
+    0x16: 'CDFP (Style 3) INF-TA-1003',
+    0x17: 'microQSFP',
+    0x18: 'QSFP-DD Double Density 8X Pluggable Transceiver',
+    0x19: 'OSFP 8X Pluggable Transceiver',
+    0x1A: 'SFP-DD Double Density 2X Pluggable Transceiver with SFP-DD '
+          'Management Interface Specification',
+    0x1B: 'DSFP Dual Small Form Factor Pluggable Transceiver',
+    0x1C: 'x4 MiniLink/OcuLink',
+    0x1D: 'x8 MiniLink',
+    0x1E: 'QSFP+ or later with CMIS',
+    0x1F: 'SFP-DD Double Density 2X Pluggable Transceiver with CMIS',
+    0x20: 'SFP+ and later with CMIS',
+    0x21: 'OSFP-XD with CMIS',
+    0x22: 'OIF-ELSFP with CMIS',
+    0x23: 'CDFP (x4 PCIe) SFF-TA-1032 with CMIS',
+    0x24: 'CDFP (x8 PCIe) SFF-TA-1032 with CMIS',
+    0x25: 'CDFP (x16 PCIe) SFF-TA-1032 with CMIS',
+    0x26: 'XPO',
+}
+
+# CMIS 8.2.1: the identifier "implicitly contains information about the
+# management protocol", "hosts will have to test against a list of
+# supported SFF 8024 module type identifiers", and the other fields "can be
+# interpreted once the module has been recognized as a CMIS module". Where
+# Table 4-1's own words name another management interface, a CMIS reading
+# of the rest of the memory map is a reading of something else.
+OTHER_MANAGEMENT = {
+    0x02: 'SFF-8472', 0x03: 'SFF-8472',
+    0x0D: 'SFF-8636 or SFF-8436', 0x11: 'SFF-8636',
+    0x1A: 'the SFP-DD Management Interface Specification',
 }
 
 # Table 8-7: Module State (3-bit field in bits[3:1] of byte 0x03)
@@ -1538,7 +1583,12 @@ def parse_cable_length(byte_202: int) -> dict:
 
 
 def connector_type_name(code: int) -> str:
-    return CONNECTOR_TYPES.get(code, f"Unknown(0x{code:02X})")
+    """SFF-8024 Table 4-3 names the rest of the byte too: 0Eh-1Fh and
+    29h-7Fh Reserved, 80h-FFh Vendor specific."""
+    if code in CONNECTOR_TYPES:
+        return CONNECTOR_TYPES[code]
+    return ('Vendor specific (0x%02X)' if code >= 0x80
+            else 'Reserved (0x%02X)') % code
 
 
 def media_if_tech_name(code: int) -> str:
@@ -1573,7 +1623,12 @@ def media_type_name(code: int) -> str:
 
 
 def module_id_name(mid: int) -> str:
-    return MODULE_ID_NAMES.get(mid, f"Unknown (0x{mid:02X})")
+    """Table 4-1 names every value: 27h-7Fh Reserved, 80h-FFh Vendor
+    Specific. None of them is unknown."""
+    if mid in MODULE_ID_NAMES:
+        return MODULE_ID_NAMES[mid]
+    return ('Vendor specific (0x%02X)' if mid >= 0x80
+            else 'Reserved (0x%02X)') % mid
 
 
 def cmis_revision_str(rev: int) -> str:
