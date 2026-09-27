@@ -19347,10 +19347,12 @@ class TestEveryCitedTableNumberHasBeenChecked(CMISTestCase):
     }
 
     # Not CMIS tables, and correctly cited as belonging elsewhere: connector
-    # type, fiber face type and heatsink type are SFF-8024; the launch power
-    # and receive sensitivity windows the coherent and 1.6T profiles are built
-    # from are IEEE 802.3 clause 180 and 185.
-    VERIFIED_OTHER = frozenset(['4-3', '4-12', '4-13',
+    # type, fiber face type and heatsink type are SFF-8024, and so are the
+    # copper, active cable and BASE-T media interface codes (4-8 to 4-10,
+    # checked against Rev 4.14); the launch power and receive sensitivity
+    # windows the coherent and 1.6T profiles are built from are IEEE 802.3
+    # clause 180 and 185.
+    VERIFIED_OTHER = frozenset(['4-3', '4-8', '4-9', '4-10', '4-12', '4-13',
                                 '180-7', '180-8', '185-5', '185-6'])
 
     # test_api.py is scanned too. It was left out at first, and a citation
@@ -20081,7 +20083,10 @@ class TestTheLaneCountNibblesHoldMoreThanCounts(CMISTestCase):
         """One descriptor with the given lane-count nibbles."""
         import cmis_registers as c
         desc = bytes([0x1C, 0x1C, (host_nibble << 4) | media_nibble, 0x01])
-        return c.parse_application_descriptors(desc + b'\xff' * 4, b'', 0x02)
+        # By keyword: positionally the media type is the second argument, and
+        # passing b'' there only worked while any type but MMF meant SMF.
+        return c.parse_application_descriptors(desc + b'\xff' * 4,
+                                               media_type=0x02)
 
     def test_an_ordinary_width_is_unchanged(self):
         a = self._apps(4, 4)[0]
@@ -36562,6 +36567,120 @@ class TestAPreCursorOnlyModuleUsesThePostBytes(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             man = f.read()
         self.assertIn('<b>Rx EQ Pre</b> 一列读的就是这几个字节', man)
+
+
+class TestTheInterfaceNamesAreSFF8024s(CMISTestCase):
+    """The Supported Applications table names each code from SFF-8024, and
+    the tables had been lifted from the PDF with multi-line cells cut: names
+    stopped mid-word ("400G-FR4 MSA spec2/400GBASE-", "OTL3.4 (ITU-T
+    G.709/Y.1331"), distinct codes read the same (0x43-0x45, three FEC
+    variants of 50GBASE-CR2), SMF 0x65-0x6B were numbers and 0x68 on was
+    shifted, bit rates and footnote marks were glued on, and whole families
+    were missing. And every media type but MMF was looked up as SMF, so an
+    active optical cable was named 400GBASE-DR4. Checked against SFF-8024
+    Rev 4.14; copper, active cable and BASE-T have their own tables (4-8 to
+    4-10)."""
+
+    def _tables(self):
+        import cmis_registers as c
+        return {'host': c.HOST_INTERFACE_IDS,
+                'mmf': c.MEDIA_INTERFACE_IDS_MMF,
+                'smf': c.MEDIA_INTERFACE_IDS_SMF,
+                'copper': c.MEDIA_INTERFACE_IDS_PASSIVE_COPPER,
+                'active': c.MEDIA_INTERFACE_IDS_ACTIVE_CABLE,
+                'baset': c.MEDIA_INTERFACE_IDS_BASE_T}
+
+    def test_no_name_is_cut(self):
+        for table, names in self._tables().items():
+            for code, name in names.items():
+                where = '%s 0x%02X %r' % (table, code, name)
+                self.assertEqual(name.count('('), name.count(')'), where)
+                self.assertFalse(name.rstrip().endswith(('-', ',', '/', '(')), where)
+                self.assertNotRegex(name, r'\)\d', where)          # footnote mark
+                self.assertNotRegex(name, r'\d+\.\d{4,}', where)   # a bit rate
+                self.assertNotRegex(name, r'^\d+$', where)
+                self.assertNotRegex(name, r'^[a-z]+$', where)      # 'codes'
+                self.assertGreater(len(name), 2, where)
+
+    def test_distinct_codes_have_distinct_names(self):
+        for table, names in self._tables().items():
+            seen = {}
+            for code, name in names.items():
+                seen.setdefault(name, []).append(code)
+            dups = {n: c for n, c in seen.items() if len(c) > 1}
+            # SFF-8024 itself names 70h-73h "PCIe"; the rest of the row differs.
+            if table == 'host':
+                dups.pop('PCIe', None)
+            self.assertEqual(dups, {}, table)
+
+    def test_the_names_that_were_wrong(self):
+        import cmis_registers as c
+        host, smf, mmf = (c.HOST_INTERFACE_IDS, c.MEDIA_INTERFACE_IDS_SMF,
+                          c.MEDIA_INTERFACE_IDS_MMF)
+        self.assertEqual(smf[0x1D], '400G-FR4 MSA spec2/400GBASE-FR4')
+        self.assertEqual(smf[0x15], '100G-FR MSA spec2/100GBASE-FR1')
+        self.assertEqual(smf[0x65], 'FLEXO-4-DO-QPSK/FOIC4.4-DO')
+        self.assertEqual(smf[0x68], 'FLEXO-8e-DPO-16QAM/FOIC8e.8-DPO')
+        self.assertEqual(smf[0x52], 'FOIC2.8-DO')
+        self.assertEqual(smf[0x26], '128GFC-CWDM4')
+        self.assertEqual(mmf[0x21], '800G-VR4.2')
+        self.assertEqual(mmf[0x24], '1.6T-SR8.2')
+        self.assertEqual(host[0x2C], 'IB SDR')
+        self.assertEqual(host[0x0B], 'CAUI-4 C2M')
+        self.assertIn('no FEC', host[0x45])
+        self.assertIn('Fire code', host[0x44])
+        self.assertEqual([host[k] for k in (0x2A, 0x4A)],
+                         ['128GFC (FC-PI-6P)', '128GFC (FC-PI-8)'])
+        for code in (0x25, 0x30, 0x31, 0x32, 0x34):
+            self.assertIn(code, host)
+        self.assertNotIn(0xBF, smf, 'Passive Loopback is Table 4-8, not SMF')
+
+    def test_each_media_type_has_its_table(self):
+        import cmis_registers as c
+        f = c.media_interface_name
+        self.assertEqual(f(0x01, 0x03), 'Copper cable')
+        self.assertEqual(f(0xBF, 0x03), 'Passive Loopback module')
+        self.assertEqual(f(0x03, 0x04), 'Active Cable assembly with BER < 2.6x10^-4')
+        self.assertEqual(f(0xBF, 0x04), 'Active Loopback module')
+        self.assertEqual(f(0x04, 0x05), '10GBASE-T')
+        self.assertEqual(f(0x1C, 0x04), 'Unknown (0x1C)', 'not 400GBASE-DR4')
+        self.assertEqual(f(0x1C, 0x02), '400GBASE-DR4')
+        self.assertEqual(f(0x12, 0x01), '800GBASE-SR8')
+        self.assertIn('media type 0x00 has no SFF-8024 table', f(0x01, 0x00))
+        self.assertEqual(f(0xBE, 0x03), 'See NAD (0xBE)')
+
+    # ---- the cable demos ---------------------------------------------------------------------
+    def _apps(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return self.assertOk(
+            self.client.get('/api/module/applications'))['data']['applications']
+
+    def test_the_cable_demos_name_their_media(self):
+        aoc = self._apps('mock_aoc')
+        self.assertEqual({a['media_if_name'] for a in aoc},
+                         {'Active Cable assembly with BER < 2.6x10^-4'})
+        dac = self._apps('mock_flat_dac')
+        self.assertEqual({a['media_if_name'] for a in dac}, {'Copper cable'})
+        self.assertEqual({a['host_interface_gid'] for a in dac}, {0})
+
+    def test_a_flat_module_reads_no_page_01h_for_its_masks(self):
+        dac = self._apps('mock_flat_dac')
+        self.assertEqual({a['media_lane_assign_mask'] for a in dac}, {None})
+        self.assertEqual(_state['media_lane_assign'], b'')
+
+    def test_the_manual_table(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            man = f.read()
+        s92 = man[man.index('<h3>9.2 Supported Applications'):man.index('<h3>9.3 ')]
+        self.assertIn('0x4F = 400GAUI-4-S C2M', s92)
+        self.assertNotIn('0x4F=200GAUI-2-S', s92)
+        self.assertIn('BASE-T(4-10)', s92)
+        self.assertIn('<tr><td>Media Lane Assign</td>', s92)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):

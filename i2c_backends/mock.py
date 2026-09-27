@@ -551,9 +551,13 @@ _AOC_400G = dict(
     # the two are told apart. Until now that path had no module behind it.
     # Two Applications of differing width, like every other shipped
     # profile: 400G across four lanes, and a 100G quarter of the same cable.
+    # Media type 04h reads its Media Interface IDs from SFF-8024 Table 4-9,
+    # not the SMF table: 03h is "Active Cable assembly with BER < 2.6x10^-4",
+    # the class a PAM4 link with host FEC is built to. It carried the SMF
+    # codes for 400GBASE-DR4 and 100GBASE-DR, and was named after them.
     app_descriptors=[
-        (0x4F, 0x1C, 0x44, 0x11),   # AppSel 1: 400GAUI-4-S C2M -> 400GBASE-DR4
-        (0x4B, 0x1A, 0x11, 0x0F),   # AppSel 2: 100GAUI-1 -> 100GBASE-DR
+        (0x4F, 0x03, 0x44, 0x11),   # AppSel 1: 400GAUI-4-S C2M, 4 lanes
+        (0x4B, 0x03, 0x11, 0x0F),   # AppSel 2: 100GAUI-1-S C2M, 1 lane
     ],
     # 00h:210 (Table 8-36): four media lanes, so 5-8 are not there. A cable
     # with four fibres that advertises eight contradicts itself, and lets a
@@ -620,6 +624,16 @@ _FLAT_DAC = dict(
     # of saying a characteristic is not available rather than zero loss.
     cu_attenuation=(5, 6, 9, 14, 0),
     flat_memory=True,
+    # SFF-8024 Table 4-8 for media type 03h: 01h "Copper cable" - the
+    # cable's interface is the host code. The DR8 profile's SMF codes came
+    # along with the rest of it, and named a copper cable 800GBASE-DR8. Its
+    # host lane assignment bytes came too, and on a flat module the fourth
+    # byte is HostInterfaceGID - so the codes read as GIDs 1 and 17, tables
+    # other than SFF-8024's. GID 0 is the SFF-8024 table.
+    app_descriptors=[
+        (0x51, 0x01, 0x88, 0x00),   # AppSel 1: 800GAUI-8 S C2M, 8 lanes
+        (0x4F, 0x01, 0x44, 0x00),   # AppSel 2: 400GAUI-4-S C2M, 4 lanes
+    ],
 )
 
 

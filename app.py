@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.176.0'
+__version__ = '2.177.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -3231,6 +3231,11 @@ def _media_lane_assignments():
     cached = _state.get('media_lane_assign')
     if cached is not None:
         return cached
+    # The docstring's own point, which the read ignored: on a flat module
+    # the "Page 01h" read returned Upper Page 00h's bytes as the masks.
+    if _flat_memory():
+        _state['media_lane_assign'] = b''
+        return b''
     try:
         raw = _read_upper(*cmis.REG_MEDIA_LANE_ASSIGN)
     except Exception:

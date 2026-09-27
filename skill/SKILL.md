@@ -611,6 +611,11 @@ Table 8-128 ~ 8-130:检测器使能(`13h:160` 主机侧、`13h:168` 媒体侧)�
 `13h:177.7` StartStopIsGlobal 在任一 Bank 置位(且不是门控 + 全局定时器)时,检测器使能改一个 Bank 就改所有 Bank(Table 8-127),`POST /api/module/prbs` 对各 Bank 不一致的 `host_chk` / `media_chk` 使能回 400,每个 Bank 发同一个掩码即可;发生器不受影响。
 检测器刚启用、还没锁上时会置一次 PatternCheckerLOL(闩锁,演示模块也是),`host_chk_lol_seen` 里会留下;要判断测量期间有没有失锁,等锁上后 `POST /api/module/flags/clear` 再看。
 
+## 接口名称按媒介类型查 SFF-8024
+
+`/api/module/applications` 的 `media_if_name` 按 Lower 85 的 Media Type 选 SFF-8024 表:01h MMF(4-6)、02h SMF(4-7)、03h 无源 / 线性有源铜缆(4-8,01h = Copper cable)、04h 有源线缆(4-9,按 BER 等级)、05h BASE-T(4-10)。其它媒介类型返回 `Unknown (0x.., media type 0x.. has no SFF-8024 table)`。名称按 SFF-8024 Rev 4.14 核对过,去掉了「(Clause N)」之类的出处后缀。
+扁平内存模块的 `host_interface_gid` 取描述符第 4 字节,`media_lane_assign_mask` 为 `null`(没有 Page 01h)。
+
 ## 只有前游标的模块,前游标在后游标字节里
 
 `01h:162.4-3` 为 01b(只支持前游标)时,规范 6.2.5.2 规定这个单一设置放在后游标字段(`10h:166-169`,生效值 `11h:227-230`),前游标字段(`10h:162-165`)被模块忽略。`GET /api/module/datapath` 的 `signal_integrity.rx_eq_pre_cursor` 和 `signal_integrity_active.rx_eq_pre_cursor` 在这种模块上就是从后游标字节读的;自己用 `register/write` 写前游标目标时也要写后游标字节。

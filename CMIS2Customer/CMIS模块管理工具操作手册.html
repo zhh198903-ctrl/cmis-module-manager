@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.176.0<br>
+      <b>版本</b>　2.177.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.176.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.176.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.177.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.177.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1733,6 +1733,16 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>接口名称按 SFF-8024 补全,按媒介类型查表</h3>
+  <p>Supported Applications 表里的 Host / Media Interface 名称来自 SFF-8024 的代码表。对照 SFF-8024 Rev 4.14 逐条核对后发现:</p>
+  <ul>
+    <li>一批名称<b>被截断</b>,例如 <code>400G-FR4 MSA spec2/400GBASE-</code>、<code>400G CR8 (Ethernet Technology</code>、各 OTL / FOIC 代码;其中几组<b>不同代码显示成同一个名字</b>——0x43/0x44/0x45 是 50GBASE-CR2 的三种 FEC,0x41/0x42 是 CAUI-4 有无 FEC。</li>
+    <li>SMF 表 0x65–0x6B 显示成 <code>03</code>、<code>12</code> 这样的数字,0x68 起错位;几项名字后面粘着速率数字;0x2C 显示成 <code>codes</code>(应为 IB SDR)。</li>
+    <li>缺了 Fibre Channel、IB EDR/HDR/NDR、E.99、128GFC-CWDM4、FOIC1.4-DO 等代码,显示为 Unknown。</li>
+    <li><b>媒介类型只分 MMF 和「其它」</b>:无源铜缆、有源线缆、BASE-T 模块的媒体侧代码都被当成 SMF 代码查,于是有源光缆演示模块显示成 400GBASE-DR4。SFF-8024 给这三类各有一张表(4-8、4-9、4-10)。</li>
+  </ul>
+  <p>现在这些名称按 SFF-8024 Rev 4.14 更正,补上缺的代码,媒体侧按 Media Type 选表;有源光缆演示模块显示「Active Cable assembly with BER &lt; 2.6x10^-4」,铜缆演示模块显示「Copper cable」。另外,扁平内存模块不再去读并不存在的 Page 01h 的媒体侧起始位图(以前读回的是 Page 00h 的字节)。</p>
 
   <h3>只声明前游标控制的模块:Rx EQ Pre 读对字节</h3>
   <p>规范 6.2.5.2:模块只支持一个输出均衡设置时(<code>01h:162.4-3</code> 为 01b「只有前游标」或 10b「只有后游标」),这个设置<b>都放在后游标字段</b>(OutputEqPostCursorTargetRx),<b>前游标字段被忽略</b>;Table 8-84 也写明前游标字段「只在两者都支持时使用」。</p>
@@ -4033,16 +4043,17 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <h3>9.2 Supported Applications（支持的应用码）</h3>
-  <p>读取 Lower Memory 0x56–0x75 的 Application Descriptor 表（最多 8 组），列出模块广告的 Host/Media Interface ID 组合。</p>
+  <p>读取 Application Descriptor 表(最多 15 组:前 8 组在 Lower Memory <code>0x56–0x75</code>,后 7 组在 <code>01h:223–250</code>),列出模块广告的 Host/Media Interface ID 组合。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>列</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>AppSel</td><td class="label">应用码序号（1–8），写入 DataPath 配置表时使用</td></tr>
-        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID（如 0x4F=200GAUI-2-S、0x4D=100GAUI-2）</td></tr>
-        <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID（取决于 Media Type）</td></tr>
+        <tr><td>AppSel</td><td class="label">应用码序号(1–15),写入 DataPath 配置表时使用</td></tr>
+        <tr><td>Host Interface ID</td><td class="label">SFF-8024 主机侧接口 ID(Table 4-5,如 0x4F = 400GAUI-4-S C2M、0x51 = 800GAUI-8 S C2M)</td></tr>
+        <tr><td>Media Interface ID</td><td class="label">媒体侧接口 ID,按 Media Type(Lower 85)查 SFF-8024 的对应表:MMF(4-6)、SMF(4-7)、无源 / 线性有源铜缆(4-8)、有源线缆(4-9)、BASE-T(4-10)</td></tr>
         <tr><td>Host Lanes / Media Lanes</td><td class="label">该应用需要的主机侧 / 媒体侧 lane 数</td></tr>
-        <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）</td></tr>
+        <tr><td>Host Lane Assign</td><td class="label">8-bit 位图，指示该应用可以从哪些主机 lane 起始（bit 0 = lane 1）;扁平内存模块上这个字节是 HostInterfaceGID</td></tr>
+        <tr><td>Media Lane Assign</td><td class="label"><code>01h:176–190</code> 的位图,该应用的媒体侧可以从哪些 lane 起始;扁平内存模块没有 Page 01h,不显示</td></tr>
       </tbody>
     </table>
   </div>
@@ -4825,7 +4836,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.176.0<br>
+    CMIS Module Manager 操作手册 v2.177.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
