@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.203.0<br>
+      <b>版本</b>　2.204.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.203.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.203.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.204.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.204.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1784,6 +1784,15 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>写入接口:类型或范围不对的值一律拒绝(400),不再被截断、猜真假或补零</h3>
+  <p>对每个写入接口的每个字段逐一送入错误类型和越界的值,发现三类问题:</p>
+  <ul>
+    <li><b>按真假猜开关</b>:<code>low_pwr</code>、<code>software_reset</code>、<code>allow_lp_hw</code>、<code>bank_broadcast</code>、<code>squelch_method</code>、DataPath 的 <code>apply</code> / <code>apply_immediate</code>、媒体通道切换的 <code>enable</code> / <code>commit</code> 以前按真假判断——<code>"x"</code>、<code>-1</code>、<code>[0]</code> 都算「开」,其中一个就是<b>模块软复位</b>。现在只接受 <code>true</code> / <code>false</code>。<code>action</code> 写错(例如 <code>"rest"</code>)以前什么都不做却回报成功,现在 400,并列出 reset、low_power、high_power。</li>
+    <li><b>截断</b>:通道掩码里的 <code>true</code>、<code>1.5</code> 被当成 1;PRBS 码型 300 被写成 12、-1 写成 15;裸寄存器写的数据 -1 写成 FFh、1FFh 也写成 FFh;页号 / 地址 / Bank 的 <code>true</code>、<code>1.5</code> 被当成 1。现在掩码必须是整数(或每个 Bank 一个字节的整数列表),码型是 0–15 的整数,数据字节是 00h–FFh,页号、地址、Bank 是整数。掩码或 PRBS 小节给了字符串、<code>null</code> 以前得到 500,现在也是 400。</li>
+    <li><b>补零</b>:<code>app_select</code> 和 PRBS 的 <code>patterns</code> 以前接受比通道数短的列表,缺的通道被写成 0——前者是「不承载应用」,后者是 PRBS31Q。现在必须每条通道一项(与媒体通道切换的 <code>redirection</code> 一致)。裸寄存器写不给页号或地址时,以前默认从 Lower 第 0 字节写起,会一路写过 26–36 的模块控制字节;现在必须写明。</li>
+  </ul>
+  <p>所有拒绝都发生在写入任何寄存器之前。界面本来就只发送合规的值,日常操作不受影响;受影响的是脚本和直接调用接口的程序。</p>
 
   <h3>NAD 块号不为 0 的通道:数据通路按它自己的描述符划分,不再被改成单通道</h3>
   <p>上一版起,AppSel 没变的通道保留它的 NAD 块号。但工具把通道分成数据通路(写 DPIDX、按整条数据通路 DP Deinit、决定 Apply 哪几条通道)时,仍按<b>基本描述符</b>里同一个 AppSel 的宽度来算——块 b 里的 Application 是 AN = 15b + AppSel,宽度、起始通道、媒体通道都是它自己的(Table 8-173)。实测:块 1 里一个 8 通道的 Application,只点一下极性翻转,暂存的 DPIDX 就被改写成 8 条单通道数据通路(<code>0x30、0x32 … 0x3E</code>),下一次 Apply 模块会回 ConfigRejectedInvalidDataPath;面板把这 8 条通道一条条分开显示,起始通道按错的位图判断,也算不出媒体通道。</p>
@@ -5101,7 +5110,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.203.0<br>
+    CMIS Module Manager 操作手册 v2.204.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

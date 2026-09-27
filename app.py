@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.203.0'
+__version__ = '2.204.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -836,6 +836,23 @@ class _LaneMaskError(ValueError):
     """A lane mask naming lanes the module does not have."""
 
 
+def _is_whole(value) -> bool:
+    """An integer as JSON carries one. Not true or false, which Python
+    counts as 1 and 0, and not 1.5, which int() rounds down: both went down
+    to the module as a bit or a byte nobody wrote."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _require_bools(body: dict, keys) -> object:
+    """A switch is true or false. Anything else was taken by its
+    truthiness, so "no", -1 and [0] all turned a control on - and one of the
+    controls is a module reset."""
+    for key in keys:
+        if key in body and not isinstance(body[key], bool):
+            return _err('%s is true or false, not %r' % (key, body[key]), 400)
+    return None
+
+
 def _masks_per_bank(value, banks: int) -> list:
     """One mask byte per bank, from either a number or a list of bytes.
 
@@ -851,8 +868,8 @@ def _masks_per_bank(value, banks: int) -> list:
     number does. A bit past the last bank is refused rather than dropped.
     """
     if isinstance(value, (list, tuple)):
-        vals = [int(v) for v in value]
-        if any(v < 0 or v > 0xFF for v in vals):
+        vals = list(value)
+        if any(not _is_whole(v) or v < 0 or v > 0xFF for v in vals):
             raise _LaneMaskError('A mask list is one byte per bank of eight '
                                  'lanes; %r is not' % (value,))
         if any(vals[banks:]):
@@ -860,7 +877,11 @@ def _masks_per_bank(value, banks: int) -> list:
                                  'module has %d banks of eight'
                                  % (banks * 8, banks))
     else:
-        v = int(value)
+        if not _is_whole(value):
+            raise _LaneMaskError('A mask is a whole number over every lane, '
+                                 'or a list of one byte per bank; %r is not'
+                                 % (value,))
+        v = value
         if v < 0 or v >> (8 * banks):
             raise _LaneMaskError('Mask 0x%X names lanes past lane %d; this '
                                  'module has %d banks of eight'
@@ -2519,9 +2540,17 @@ def api_media_lane_switching():
     bad = _reject_unknown(body, ('redirection', 'enable', 'commit'))
     if bad:
         return bad
+    bad = _require_bools(body, ('enable', 'commit'))
+    if bad:
+        return bad
     mapping = body.get('redirection') or []
+    if 'redirection' in body and not (
+            isinstance(body['redirection'], list)
+            and all(_is_whole(v) for v in body['redirection'])):
+        return _err('redirection is a list of media lane numbers, one per '
+                    'lane; %r is not' % (body['redirection'],), 400)
     enable = body.get('enable')
-    commit = bool(body.get('commit', False))
+    commit = body.get('commit', False)
     banks = (_state['lanes'] + 7) // 8
     try:
         # Table 8-196: with EnableMediaLaneRedirection clear "commit command
@@ -2555,7 +2584,7 @@ def api_media_lane_switching():
             # accepted a sixteen lane request, wrote half of it and answered
             # ok - the panel then showed a switch configuration for lanes 9
             # and up that the module had never been asked for.
-            targets = [int(v) for v in mapping]
+            targets = list(mapping)
             if len(targets) != _state['lanes']:
                 # A short list is ambiguous - it could mean "only the first
                 # group" or "I forgot the rest" - and guessing is what this
@@ -3317,7 +3346,17 @@ def api_module_control_set():
                                      'bank_broadcast'))
         if bad:
             return bad
+        bad = _require_bools(body, ('low_pwr', 'software_reset', 'allow_lp_hw',
+                                    'squelch_method', 'bank_broadcast'))
+        if bad:
+            return bad
         action = body.get('action', '')
+        # An action this handler does not know fell through to the field
+        # write, which with no fields rewrites byte 26 unchanged and answers
+        # ok: a misspelt "reset" reported success and reset nothing.
+        if action not in ('', 'reset', 'low_power', 'high_power'):
+            return _err('action is reset, low_power or high_power, not %r'
+                        % (action,), 400)
         # 01h:155.5-4 (Table 8-51): only 11b means "Host controls the method
         # for Tx output squelching". At 01b or 10b the module squelches one
         # way and the bit is not a choice - writing it leaves the panel
@@ -3657,6 +3696,9 @@ def api_datapath_set():
                                      'apply_immediate', 'nad_block'))
         if bad:
             return bad
+        bad = _require_bools(body, ('apply', 'apply_immediate'))
+        if bad:
+            return bad
 
         def _mask_now(reg):
             page, addr, _ = reg
@@ -3745,11 +3787,14 @@ def api_datapath_set():
         # AppSelCode is DPConfigLane bits 7-4 (Table 8-81): packing took the
         # low four bits of whatever came, so 99 was staged as AppSel 3 and
         # reported written.
+        # One per lane, not at most one: the Staged Control Set is written
+        # whole, so a short list staged AppSel 0 - no Application - on every
+        # lane it left out.
         if (not isinstance(app_select, list)
-                or len(app_select) > _state['lanes']
-                or any(isinstance(v, bool) or not isinstance(v, int)
-                       or not 0 <= v <= 15 for v in app_select)):
-            return _err('app_select is one AppSel code per lane (at most %d), '
+                or len(app_select) != _state['lanes']
+                or any(not _is_whole(v) or not 0 <= v <= 15
+                       for v in app_select)):
+            return _err('app_select is one AppSel code per lane (%d), '
                         'each 0-15: DPConfigLane bits 7-4, Table 8-81'
                         % _state['lanes'], 400)
         host_lanes_by_app = {}
@@ -3791,9 +3836,8 @@ def api_datapath_set():
             for i in range(_state['lanes']):
                 want = asked[i] if asked is not None else None
                 if want is None:
-                    same = (i >= len(app_select) or (
-                        i < len(prev_app_select)
-                        and prev_app_select[i] == app_select[i]))
+                    same = (i < len(prev_app_select)
+                            and prev_app_select[i] == app_select[i])
                     nad_block.append(nad_now[i] if same else 0)
                 elif (isinstance(want, int) and not isinstance(want, bool)
                         and want in (0, nad_now[i])):
@@ -5196,10 +5240,25 @@ def api_prbs_set():
         if bad:
             return bad
         for _key in ('host_gen', 'media_gen', 'host_chk', 'media_chk'):
+            if _key in body and not isinstance(body[_key], dict):
+                return _err('%s is an object of %s, not %r'
+                            % (_key, ', '.join(_PRBS_FIELDS), body[_key]), 400)
             bad = _reject_unknown(body.get(_key) or {}, _PRBS_FIELDS,
                                   where='in %s, ' % _key)
             if bad:
                 return bad
+            # Table 8-115's Pattern IDs are four bits, and the pattern bytes
+            # are written whole: packing took the low nibble of anything
+            # (300 went down as 12), and a short list set PRBS31Q - pattern 0
+            # - on every lane it left out.
+            section = body.get(_key) or {}
+            pats = section.get('patterns')
+            if 'patterns' in section and not (
+                    isinstance(pats, list) and len(pats) == _state['lanes']
+                    and all(_is_whole(p) and 0 <= p <= 15 for p in pats)):
+                return _err('%s.patterns is one Pattern ID per lane (%d), each '
+                            '0-15 (Table 8-115); %r is not'
+                            % (_key, _state['lanes'], pats), 400)
         banks = (_state['lanes'] + 7) // 8
         caps = _diag_caps()
         pattern_caps = caps['patterns']
@@ -5278,7 +5337,7 @@ def api_prbs_set():
                                'Pre' if is_gen else 'Post'),
                             400)
             for lane, pat in enumerate(section.get('patterns', []) or []):
-                if int(pat) not in supported and any(enabled):
+                if pat not in supported and any(enabled):
                     return _err(
                         'Lane %d: this module\'s %s does not support pattern '
                         '%d (%s). It advertises %s in 13h:%d-%d'
@@ -6164,6 +6223,9 @@ def _as_int(value, what):
     into a 400. Letting int() raise instead produced a 500, which is what a
     failed I2C transfer looks like.
     """
+    # true and 1.5 are not addresses: int() made them page 1 and 1.
+    if isinstance(value, (bool, float)):
+        raise ValueError('%s must be a whole number, got %r' % (what, value))
     try:
         return int(value, 0) if isinstance(value, str) else int(value)
     except (TypeError, ValueError):
@@ -6296,8 +6358,13 @@ def api_register_write():
     try:
         body = request.get_json(silent=True) or {}
         try:
-            page = _as_int(body.get('page', 0), 'Page')
-            address = _as_int(body.get('address', 0), 'Address')
+            # Defaulting both to 0 sent a write that named neither across
+            # Lower Memory from byte 0 - through the Module Global Controls
+            # at 26-36.
+            if 'page' not in body or 'address' not in body:
+                raise ValueError('A write names its page and address')
+            page = _as_int(body['page'], 'Page')
+            address = _as_int(body['address'], 'Address')
             bank = _as_int(body.get('bank', 0), 'Bank')
             data_list = body.get('data', [])
             if not data_list:
@@ -6305,9 +6372,18 @@ def api_register_write():
             if isinstance(data_list, str):
                 # A string of bytes has always meant space-separated hex, with
                 # no 0x prefixes, so it keeps being read that way.
-                data = bytes(int(h, 16) & 0xFF for h in data_list.split())
+                values = [int(h, 16) for h in data_list.split()]
+            elif isinstance(data_list, list):
+                values = [_as_int(b, 'Data byte') for b in data_list]
             else:
-                data = bytes(_as_int(b, 'Data byte') & 0xFF for b in data_list)
+                raise ValueError('data is a list of bytes or a string of hex '
+                                 'bytes, not %r' % (data_list,))
+            # Masked to eight bits, -1 went down as FFh and 1FFh as FFh too.
+            bad_bytes = [v for v in values if not 0 <= v <= 0xFF]
+            if bad_bytes:
+                raise ValueError('Data bytes are 00h-FFh; %s is not'
+                                 % ', '.join(str(v) for v in bad_bytes))
+            data = bytes(values)
         except ValueError as e:
             return _err(str(e))
 

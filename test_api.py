@@ -6483,15 +6483,15 @@ class TestRegisterWrite(CMISTestCase):
         body = self.assertOk(rv)
         self.assertEqual(body['data']['bytes_written'], 3)
 
-    def test_register_write_byte_clamping(self):
-        """Values > 255 should be clamped via & 0xFF."""
+    def test_register_write_refuses_a_value_past_ffh(self):
+        """A value past FFh is not a byte. Masking it to 0xFF wrote FFh for
+        1FFh and for -1 alike, and answered ok."""
         self.connect()
         rv = self.client.post('/api/register/write',
                               data=json.dumps({'page': 0x10, 'address': 0x81, 'data': [0x1FF]}),
                               content_type='application/json')
-        # Should succeed (0x1FF & 0xFF = 0xFF)
-        body = self.assertOk(rv)
-        self.assertEqual(body['data']['bytes_written'], 1)
+        self.assertErr(rv, 400)
+        self.assertEqual(_state['backend']._registers[0x10].get(0x81, 0), 0)
 
     def test_register_write_lower_page(self):
         """Write to lower page address (< 0x80) should not set page."""
@@ -40286,11 +40286,17 @@ class TestTheNadBlockGoesWithTheApplication(CMISTestCase):
         self.assertOk(self._post(app_select=[1] * 24,
                                  nad_block=[1] * 8 + [None] * 16))
 
-    def test_a_short_app_select_keeps_the_rest(self):
+    def test_a_short_app_select_is_refused(self):
+        """The Staged Control Set is written whole, so a short list staged
+        no Application on every lane it left out."""
         backend = self._connect()
         self._stage_block(backend, 1)
-        d = self.assertOk(self._post(app_select=[1, 1]))['data']
-        self.assertEqual(d['nad_block'][:8], [1] * 8)
+        before = [backend._registers[0x10].get(0x91 + i) for i in range(8)]
+        self.assertErr(self._post(app_select=[1, 1]), 400)
+        self.assertEqual([backend._registers[0x10].get(0x91 + i)
+                          for i in range(8)], before)
+        self.assertEqual([backend._registers[0x18][0x80 + i]
+                          for i in range(8)], [1] * 8)
 
     def test_a_module_without_nads_refuses_a_block(self):
         self._connect('mock_dr8')
@@ -40575,6 +40581,196 @@ class TestALaneInAnotherBlockIsSizedByItsOwnDescriptor(CMISTestCase):
         with open(path, encoding='utf-8') as f:
             js = f.read()
         self.assertIn("(badStart.app_sel > 15 ? 'AN ' : 'App ')", js)
+
+
+class TestJunkInputIsRefusedNotTruncated(CMISTestCase):
+    """Every field of every write endpoint, given a value of the wrong type
+    or range, is refused with a 400 before anything is written.
+
+    Swept with junk, the endpoints answered in three ways they should not
+    have. Masks, switches and codes went through int() or bool(): true and
+    1.5 became bit 1, "x" and -1 turned a switch on - LowPwr, a module
+    SoftwareReset, media lane redirection, an Apply - and PRBS pattern 300
+    went down as 12. A string or null in a mask was a 500. And lists shorter
+    than the lanes were padded: app_select staged no Application, and PRBS
+    patterns PRBS31Q, on every lane left out. A raw write naming no address
+    went across Lower Memory from byte 0, and data -1 was written as FFh."""
+
+    JUNK = ['x', 1.5, None, {'a': 1}, ['x'], [1.5]]
+
+    FIELDS = (
+        ('mock_dr8', '/api/module/datapath',
+         ('tx_disable_mask', 'tx_polarity_flip_mask', 'rx_polarity_flip_mask',
+          'app_select', 'dp_deinit_mask', 'apply', 'apply_immediate')),
+        ('mock_24lane', '/api/module/datapath', ('nad_block',)),
+        ('mock_dr8', '/api/module/squelch',
+         ('tx_squelch_disable', 'tx_squelch_force', 'rx_output_disable',
+          'rx_squelch_disable')),
+        ('mock_dr8', '/api/module/loopback',
+         ('media_side_output', 'media_side_input', 'host_side_output',
+          'host_side_input')),
+        ('mock_dr8', '/api/module/control',
+         ('action', 'low_pwr', 'software_reset', 'allow_lp_hw',
+          'squelch_method', 'bank_broadcast')),
+        ('mock_coherent_zr', '/api/module/media_lane_switching',
+         ('redirection', 'enable', 'commit')),
+        ('mock_dr8', '/api/module/prbs',
+         ('host_gen', 'media_gen', 'host_chk', 'media_chk')),
+    )
+
+    def _connect(self, backend):
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': backend, 'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        return app_module._state['backend']
+
+    def _post(self, url, body):
+        return self.client.post(url, data=json.dumps(body),
+                                content_type='application/json')
+
+    @staticmethod
+    def _controls(backend):
+        """The bytes a host writes: Lower 26-36, Page 10h, 13h:144 on."""
+        out = {}
+        for key, regs in backend._registers.items():
+            page = key[0] if isinstance(key, tuple) else key
+            for addr, v in regs.items():
+                if ((page is None and 26 <= addr <= 36) or page == 0x10
+                        or (page == 0x13 and addr >= 144)
+                        or (page in (0x18, 0x6D) and addr >= 128)):
+                    out[(key, addr)] = v
+        return out
+
+    def test_every_field_refuses_junk_and_writes_nothing(self):
+        for backend_name, url, keys in self.FIELDS:
+            for key in keys:
+                for junk in self.JUNK:
+                    backend = self._connect(backend_name)
+                    before = self._controls(backend)
+                    rv = self._post(url, {key: junk})
+                    self.assertEqual(rv.status_code, 400, '%s %s=%r: %s'
+                                     % (url, key, junk, rv.data[:120]))
+                    self.assertEqual(self._controls(backend), before,
+                                     '%s %s=%r wrote' % (url, key, junk))
+
+    def test_a_prbs_field_refuses_junk(self):
+        for field in ('enable_mask', 'invert_mask', 'byte_swap_mask',
+                      'fec_mask', 'patterns'):
+            for junk in self.JUNK + [True]:
+                backend = self._connect('mock_dr8')
+                before = self._controls(backend)
+                rv = self._post('/api/module/prbs', {'host_gen': {field: junk}})
+                self.assertEqual(rv.status_code, 400,
+                                 '%s=%r: %s' % (field, junk, rv.data[:120]))
+                self.assertEqual(self._controls(backend), before)
+
+    # ---- the cases that did damage -------------------------------------------
+
+    def test_a_switch_is_true_or_false(self):
+        backend = self._connect('mock_dr8')
+        byte26 = backend._registers[None][26]
+        for body in ({'software_reset': 'yes'}, {'low_pwr': 1},
+                     {'allow_lp_hw': []}, {'low_pwr': 'false'}):
+            rv = self._post('/api/module/control', body)
+            self.assertErr(rv, 400)
+            self.assertIn('true or false', json.loads(rv.data)['message'])
+        self.assertEqual(backend._registers[None][26], byte26)
+        # And true still is one.
+        self.assertOk(self._post('/api/module/control', {'low_pwr': True}))
+
+    def test_an_unknown_action_is_refused(self):
+        self._connect('mock_dr8')
+        rv = self._post('/api/module/control', {'action': 'rest'})
+        self.assertErr(rv, 400)
+        self.assertIn('reset, low_power or high_power',
+                      json.loads(rv.data)['message'])
+
+    def test_apply_is_true_or_false(self):
+        backend = self._connect('mock_dr8')
+        backend._commands.clear()
+        for junk in ('x', 1, [0]):
+            self.assertErr(self._post('/api/module/datapath',
+                                      {'apply': junk}), 400)
+        self.assertEqual(backend._commands, [])
+
+    def test_a_mask_takes_whole_numbers_only(self):
+        self._connect('mock_dr8')
+        for junk in (True, 1.5, [True], [1.5]):
+            self.assertErr(self._post('/api/module/squelch',
+                                      {'tx_squelch_force': junk}), 400)
+        self.assertOk(self._post('/api/module/squelch',
+                                 {'tx_squelch_force': 0}))
+
+    def test_a_pattern_is_four_bits_and_one_per_lane(self):
+        backend = self._connect('mock_dr8')
+        before = [backend._registers[0x13].get(148 + i) for i in range(4)]
+        for pats in ([300] * 8, [-1] * 8, [True] * 8, [1] * 7, [1] * 9):
+            self.assertErr(self._post('/api/module/prbs',
+                                      {'host_gen': {'patterns': pats}}), 400)
+        self.assertEqual([backend._registers[0x13].get(148 + i)
+                          for i in range(4)], before)
+
+    def test_a_redirection_is_lane_numbers(self):
+        self._connect('mock_coherent_zr')
+        for junk in ('x', 5, [True] * 8, [1.5] * 8,
+                     [True] + [0] * 7, [1.0] + [0] * 7):
+            self.assertErr(self._post('/api/module/media_lane_switching',
+                                      {'redirection': junk}), 400)
+        # The mapping the last two stand for is one this module takes.
+        self.assertOk(self._post('/api/module/media_lane_switching',
+                                 {'redirection': [1] + [0] * 7}))
+
+    # ---- raw registers ---------------------------------------------------------
+
+    def test_a_raw_write_names_its_page_and_address(self):
+        backend = self._connect('mock_dr8')
+        before = self._controls(backend)
+        for body in ({'data': [0] * 16}, {'page': 0x10, 'data': [0]},
+                     {'address': 0x81, 'data': [0]}):
+            rv = self._post('/api/register/write', body)
+            self.assertErr(rv, 400)
+            self.assertIn('page and address', json.loads(rv.data)['message'])
+        self.assertEqual(self._controls(backend), before)
+
+    def test_a_data_byte_is_00h_to_ffh(self):
+        backend = self._connect('mock_dr8')
+        for data in ([-1], [256], [0x1FF], 'zz 01', '1FF', 5, [True], [1.5]):
+            rv = self._post('/api/register/write',
+                            {'page': 0x10, 'address': 0x81, 'data': data})
+            self.assertErr(rv, 400)
+        for data in ([-1], [256], '1FF'):
+            rv = self._post('/api/register/write',
+                            {'page': 0x10, 'address': 0x81, 'data': data})
+            self.assertIn('Data bytes are 00h-FFh',
+                          json.loads(rv.data)['message'])
+        self.assertEqual(backend._registers[0x10].get(0x81, 0), 0)
+        self.assertOk(self._post('/api/register/write',
+                                 {'page': 0x10, 'address': 0x81, 'data': [1]}))
+        self.assertEqual(backend._registers[0x10][0x81], 1)
+
+    def test_an_address_is_a_whole_number(self):
+        self._connect('mock_dr8')
+        for field in ('page', 'address', 'bank'):
+            for junk in (True, 1.5):
+                body = {'page': 0x10, 'address': 0x81, 'data': [0], field: junk}
+                self.assertErr(self._post('/api/register/write', body), 400)
+                body = {'page': 0x10, 'address': 0x81, 'length': 1,
+                        field: junk}
+                self.assertErr(self._post('/api/register/read', body), 400)
+        body = {'page': 0x10, 'address': 0x81, 'length': True}
+        self.assertErr(self._post('/api/register/read', body), 400)
+
+    def test_the_page_sends_well_formed_values(self):
+        """The panels send whole lists and real booleans already; this
+        pins the two that decide it."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            js = f.read()
+        self.assertIn("const body = { enable: document.getElementById("
+                      "'mls-enable').checked, commit };", js)
+        self.assertIn('patterns.push(sel ? parseInt(sel.value, 10) : 0);', js)
 
 
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
