@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.209.0<br>
+      <b>版本</b>　2.210.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -830,8 +830,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.209.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.209.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.210.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.210.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1196,7 +1196,7 @@
         <tr><td>Password Result</td><td class="label">密码输入或修改的结果是否会报在 PasswordCmdResult(Lower 42)(PasswordEntryResultSupported,Table 8-62)</td><td><code>01h / 0xFB[3:2]</code></td></tr>
         <tr><td>Full Page Read</td><td class="label">一次 READ 能否读满 128 字节(FullPageReadSupported,Table 8-62);不支持时最多 8 字节(规范 5.2.2.1)。后面注明本工具按多大的块读</td><td><code>01h / 0xFB[1:0]</code></td></tr>
         <tr><td>Extra Pages</td><td class="label">模块声明了哪些附加页:0Ch / 0Dh / 60h / 61h / 62h(Table 8-58);都没有时显示 none advertised</td><td><code>01h / 0xAD–0xAE</code></td></tr>
-        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4。一个应用若可以从多条通道起始(HostLaneAssignmentOptions 有多个位),<b>每个起点算一个实例</b>:只广告 4×100G-DR(2 条通道,起点 1、3、5、7)的模块是 8 条主机通道、4 条媒体通道。括号里的明细用「·」分隔各应用(它们是二选一,不是相加),多起点的应用标出实例数,如 <code>2H/1M ×4</code>。NP 应用(<code>16h:248–249</code>)的起点是 Host Path,共用网络通路:媒体通道按网络通路(MediaLaneAssignmentOptions 的每个起点)只算一次,明细写成 <code>AppSel#3 (NP): 1H ×8 → 1M ×2</code></td><td><code>Lower / 0x56+</code></td></tr>
+        <tr><td>Host Lanes</td><td class="label">主机侧最大并发 lane 数（<b>指一个通道组内</b>；CMIS 限定单个 Application 最多 8 条通道，见 5.4 §6.4.1）。模块<b>物理</b>通道总数见 <b>Module Lanes</b> 行——16 通道模块这两处分别显示 8 和 16，并不矛盾。遍历全部 Application Descriptor，把主机 lane 区间<b>互不重叠</b>的应用相加（不是取最大值）——例如 2×400G-FR4 两个应用各占 4 条不重叠的 lane，结果是 8 而不是 4。一个应用若可以从多条通道起始(HostLaneAssignmentOptions 有多个位),<b>每个起点算一个实例</b>:只广告 4×100G-DR(2 条通道,起点 1、3、5、7)的模块是 8 条主机通道、4 条媒体通道。括号里的明细逐个列出各应用,用「·」分隔——它们可能互斥(同一组通道二选一),也可能像 2×400G 那样占不同通道、同时运行;前面的数字已按互不重叠的实例算好。多起点的应用标出实例数,如 <code>2H/1M ×4</code>。NP 应用(<code>16h:248–249</code>)的起点是 Host Path,共用网络通路:媒体通道按网络通路(MediaLaneAssignmentOptions 的每个起点)只算一次,明细写成 <code>AppSel#3 (NP): 1H ×8 → 1M ×2</code></td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>Media Lanes</td><td class="label">媒体侧最大并发 lane 数（与 Host Lanes 同一套非重叠相加规则）</td><td><code>Lower / 0x56+</code></td></tr>
         <tr><td>FW Revision</td><td class="label">激活固件 主版本.次版本</td><td><code>Lower / 0x27–0x28</code></td></tr>
         <tr><td>Inactive FW</td><td class="label">备份固件的 主版本.次版本（Table 8-44）。模块内部常带两份固件，升级后想确认新镜像到底落在哪一份，看的就是这一行。平坦内存模块没有 Page 01h，显示 "no Page 01h on a flat memory module"</td><td><code>01h / 0x80–0x81</code></td></tr>
@@ -1785,6 +1785,9 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>手册:常见问题 Q3 / Q5 / Q7 和通道数明细的说法按实际更正</h3>
+  <p>第 13 章的几条回答写得早,没跟着工具变:Q3 说 Backend 下拉只列 4 个演示模块、没有 USB 适配器——实际总是列出全部 12 个演示模块和 6 种适配器,找不到的适配器置灰并标 <code>(unavailable)</code>;Q5 写的是 −inf dBm,页面显示的是 −∞ dBm;Q7 说只有 <code>mock_coherent_zr</code> 可调谐、并按 Media Interface Technology 判断——<code>mock_zr16</code> 也可调谐,工具按 <code>01h:155.6</code> 判断,卡片显示的是 <code>Non-tunable module</code>。另外,Module Info 的 Host Lanes 一行说明细里用「·」分隔的应用「是二选一,不是相加」,而 2×400G 这类模块的两个应用占不同通道、同时运行,前面的 8 正是二者之和;现已改为如实说明两种情况。新增测试把这几条回答和工具实际的后端列表、可调谐判断、页面文字逐条对照。只改文档,工具行为不变。</p>
 
   <h3>手册:裸寄存器写入的拒绝清单按实际补全</h3>
   <p>第 11 章说裸寄存器写入「会被拒绝的只有五种」,并列了五条;v2.204.0 又加了几种(缺页号或地址、数据字节超出 00h–FFh、页号/地址/Bank 不是整数),清单没跟上,Page 9Fh 上包含字节 129 的长写和 Bank 不对这两种也只在别处提过。现在这一节不再报数目,完整列出每一种拒绝和对应的提示文字;另在「Apply 只重启你改过的那条数据通道」一节补上第三种被模块忽略、工具也会拒绝的情况:上一次配置命令仍在 ConfigInProgress。只改文档,工具行为不变。</p>
@@ -4911,8 +4914,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <div class="faq-item">
-    <div class="faq-q"><span class="tag">Q3</span>Backend 下拉菜单只显示 <code>mock_coherent/dr8/sr8/fr4x2</code>，没有 <code>ch341/ch347/ftdi</code></div>
-    <div class="faq-reason">可能原因及对应解决方法：</div>
+    <div class="faq-q"><span class="tag">Q3</span>Backend 下拉菜单里 <code>ch341 / ch347 / ftdi</code> 等适配器是灰的，后面写着 <code>(unavailable)</code></div>
+    <div class="faq-reason">下拉菜单总是列出全部后端：12 种 <code>mock_*</code> 演示模块，以及 <code>ch341</code>、<code>ch347</code>、<code>ftdi</code>、<code>ftd2xx</code>、<code>cp2112</code>、<code>mcp2221</code> 六种 USB 适配器。工具找不到某种适配器（或它需要的驱动 / DLL）时，那一项置灰并标 <code>(unavailable)</code>，不能选。可能原因及对应解决方法：</div>
     <div class="faq-solve">
       <ul style="margin-top:6px;">
         <li><b>USB 适配器未插入</b> → 插入适配器后点击 <b>↻ Refresh Backends</b> 重新扫描。</li>
@@ -4930,8 +4933,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <div class="faq-item">
-    <div class="faq-q"><span class="tag">Q5</span>Monitoring 功率显示 −inf dBm 或全为 0</div>
-    <div class="faq-reason">原因：模块处于低功耗状态，或无光纤输入（Rx 功率为 0 时 dBm = −∞）。</div>
+    <div class="faq-q"><span class="tag">Q5</span>Monitoring 功率显示 −∞ dBm 或全为 0</div>
+    <div class="faq-reason">原因：模块处于低功耗状态（发射关闭，Tx 功率读数为 0），或无光纤输入。0 µW 没有对应的 dBm 值，所以显示为 −∞ dBm，而不是某个很小的读数；模块声明支持 NA 值（<code>0Ch:192.7</code>）时，没有有效采样的通道会写明 no valid sample。</div>
     <div class="faq-solve">解决：检查 Module Info 中 Module State 是否为 <code>ModuleReady</code>；检查光纤连接。</div>
   </div>
 
@@ -4942,9 +4945,9 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
 
   <div class="faq-item">
-    <div class="faq-q"><span class="tag">Q7</span>为什么 <code>mock_dr8/sr8/fr4x2</code> 的 Laser Tuning 卡片显示"非可调谐模块"？</div>
-    <div class="faq-reason">原因：这些 profile 模拟的是固定波长激光器（EML / VCSEL），Media Interface Technology ≠ C-band/L-band tunable。</div>
-    <div class="faq-solve">正常现象。只有 <code>mock_coherent_zr</code>（Media Interface Tech = 0x10 C-band tunable）支持 Laser Tuning 功能。真实模块的 Page 04h GridSupported 寄存器若为 0，说明不支持调谐。</div>
+    <div class="faq-q"><span class="tag">Q7</span>为什么 <code>mock_dr8/sr8/fr4x2</code> 等的 Laser Tuning 卡片显示 <code>Non-tunable module</code>？</div>
+    <div class="faq-reason">原因：这些 profile 模拟的是固定波长激光器（EML / VCSEL），<code>01h:155.6</code>（TransmitterTunable，Table 8-51）为 0，所以没有 Page 04h / 12h 可读，Apply 也是灰的。</div>
+    <div class="faq-solve">正常现象。演示模块里 <code>mock_coherent_zr</code> 和 16 通道的 <code>mock_zr16</code> 声明可调谐，可以用 Laser Tuning。真实模块同样以 <code>01h:155.6</code> 为准。</div>
   </div>
 
   <div class="faq-item">
@@ -5140,7 +5143,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.209.0<br>
+    CMIS Module Manager 操作手册 v2.210.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>

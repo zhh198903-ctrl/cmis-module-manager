@@ -41361,6 +41361,83 @@ class TestALaneControlAloneRestartsNothing(CMISTestCase):
                          manual)
 
 
+class TestTheFaqMatchesTheTool(CMISTestCase):
+    """Chapter 13's answers were written once and left: Q3 said the Backend
+    menu lists four mocks and no USB adapters (it lists all twelve and all
+    six adapters, the missing ones greyed), Q7 said only mock_coherent_zr
+    is tunable (mock_zr16 is too) and decided it by Media Interface
+    Technology (the tool reads 01h:155.6), and Module Info said the "·" in
+    its lane breakdown means the Applications are alternatives, "not added"
+    - on a 2x400G the eight is exactly their sum. Each answer is checked
+    against what it describes."""
+
+    def _manual(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _faq(self, tag):
+        man = self._manual()
+        start = man.index('<span class="tag">%s</span>' % tag)
+        return man[start:man.index('</div>\n  </div>', start)]
+
+    def _js(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'static', 'app.js')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_q3_names_every_backend_the_menu_lists(self):
+        names = [b['name'] for b in self.assertOk(
+            self.client.get('/api/backends'))['data']]
+        mocks = paged_mock_backends() + flat_mock_backends()
+        adapters = [n for n in names if n not in mocks]
+        q3 = self._faq('Q3')
+        self.assertIn('%d 种 <code>mock_*</code>' % len(mocks), q3)
+        for name in adapters:
+            self.assertIn('<code>%s</code>' % name, q3)
+        self.assertIn("' (unavailable)'", self._js())
+        self.assertIn('(unavailable)', q3)
+
+    def test_q7_names_every_tunable_demo(self):
+        tunable = []
+        for name in paged_mock_backends():
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            caps = self.assertOk(
+                self.client.get('/api/module/capabilities'))['data']
+            if (caps.get('controls') or {}).get('transmitter_tunable'):
+                tunable.append(name)
+        self.assertEqual(sorted(tunable), ['mock_coherent_zr', 'mock_zr16'])
+        q7 = self._faq('Q7')
+        for name in tunable:
+            self.assertIn('<code>%s</code>' % name, q7)
+        self.assertIn('01h:155.6', q7)
+        self.assertIn('Non-tunable module', self._js())
+        self.assertIn('Non-tunable module', q7)
+
+    def test_q5_shows_what_the_page_prints_for_no_power(self):
+        self.assertIn("'\\u2212\\u221e dBm'", self._js())
+        self.assertIn('−∞ dBm', self._faq('Q5'))
+        self.assertNotIn('−inf', self._faq('Q5'))
+
+    def test_the_lane_breakdown_is_not_called_alternatives_only(self):
+        """mock_fr4x2 runs its two Applications side by side, and the
+        capacity beside the breakdown is their sum."""
+        self.assertOk(self.client.post(
+            '/api/connect',
+            data=json.dumps({'backend': 'mock_fr4x2', 'bus': 0,
+                             'address': 80}),
+            content_type='application/json'))
+        d = self.assertOk(self.client.get('/api/module/info'))['data']
+        self.assertEqual((d['host_lanes'], d['media_lanes']), (8, 8))
+        self.assertIn(' · ', d['lanes_detail'])
+        self.assertNotIn('它们是二选一,不是相加', self._manual())
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
