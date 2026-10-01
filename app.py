@@ -1,7 +1,7 @@
 """Flask REST API for CMIS optical module management."""
 # Single source of truth for the version shown in the UI, /api/version, the
 # console banner and the operation manual footer. Bump this, not the copies.
-__version__ = '2.210.0'
+__version__ = '2.211.0'
 # The CMIS revision this build decodes. The page footer and /api/version both
 # read it, so the two cannot drift apart the way they did through 5.4.
 _CMIS_REVISION = '5.4'
@@ -127,11 +127,10 @@ def _monitor_present(key: str) -> bool:
     red. Reporting them was the tool inventing a fault the module never
     claimed, which is the same mistake the Aux monitors already avoid.
 
-    Unknown until the advertisement has been read: with no capabilities at all
-    nothing is hidden, because hiding every reading would be the worse error.
+    An unknown advertisement cannot authorize a reading or control.
     """
     mons = (_state.get('caps') or {}).get('monitors') or {}
-    return mons.get(key, True) if mons else True
+    return mons.get(key, False)
 
 
 # 8.14.1: "Monitors with associated alarm and/or warning thresholds have
@@ -199,6 +198,15 @@ def _require_connected():
     """Return error response if not connected, else None."""
     if not _state['connected'] or _state['backend'] is None:
         return _err("Not connected to any module", 503)
+    if _state.get('capabilities_stale'):
+        try:
+            caps = _discover_capabilities()
+            _state['caps'] = caps
+            _state['lanes'] = caps['max_lanes']
+            _state['capabilities_stale'] = False
+        except Exception as e:
+            return _err('Capability rediscovery after restart failed: %s' % e,
+                        503)
     return None
 
 
@@ -225,7 +233,7 @@ def _require_diagnostics(what: str):
     Every demo module implements these pages, which is why the standing sweep
     over "every mock, every endpoint, no page redirects" has never caught it.
     """
-    if not (_state.get('caps') or {}).get('diagnostic_pages_supported', True):
+    if not (_state.get('caps') or {}).get('diagnostic_pages_supported', False):
         return _err(
             '%s lives on Pages 13h-14h, which this module does not advertise '
             '(01h:142.5 is clear). A module clears the page select rather '
@@ -581,10 +589,8 @@ def _set_page(page: int, bank: int = 0):
     same page repeatedly - a thresholds refresh alone re-selected page 02h
     twenty times - so skip the write when both are already known.
 
-    Ten milliseconds is the worst case, not this module's case:
-    MaxDurationBPC (01h:169.3-0) scales it down by 2^i, so a module that
-    advertises 3 is held off for 1.25 ms and the tool was waiting eight times
-    longer than it said it needed on every page change.
+    The tool retains a conservative ten-millisecond minimum even when the
+    module advertises a shorter MaxDurationBPC interval.
 
     Bank first, then page, always both: the module holds off acting on
     BankSelect until PageSelect is written (CMIS 8.2.15), so writing only the
@@ -598,18 +604,15 @@ def _set_page(page: int, bank: int = 0):
     error anywhere - it silently leaves Page 00h mapped, and every read after
     it returns the vendor block decoded as whatever was expected.
 
-    The specification puts the answer in a register, so it is read: once per
-    page per connection, because what a module supports does not change while
-    it is plugged in.
+    The specification puts the answer in a register, so it is read: once per Bank/Page combination, and invalidated after a restart.
     """
     if _state['page'] == page and _state['bank'] == bank:
         return
     _state['page'] = None  # unknown while the writes are in flight
     _state['bank'] = None
     _bus_write(cmis.REG_BANK_SELECT[1], bytes([bank, page]))
-    time.sleep(_state.get('bpc_sleep')
-               or cmis.TIMING_SECONDS['tBPC'])
-    if page and page not in _state['pages_ok']:
+    time.sleep(max(0.010, _state.get('bpc_sleep') or cmis.TIMING_SECONDS['tBPC']))
+    if page and (bank, page) not in _state['pages_ok']:
         got = _bus_read(cmis.REG_PAGE_SELECT[1], 1)
         if len(got) == 1 and got[0] != page:
             raise IOError(
@@ -618,7 +621,7 @@ def _set_page(page: int, bank: int = 0):
                 'rather than refuse, so reading on would have returned Page '
                 '00h - the vendor block - decoded as Page %02Xh'
                 % (page, got[0], page))
-        _state['pages_ok'].add(page)
+        _state['pages_ok'].add((bank, page))
     _state['page'] = page
     _state['bank'] = bank
 
@@ -638,7 +641,104 @@ def _checked(raw: bytes, where: str, length: int) -> bytes:
 
 
 def _bus_read(addr: int, length: int) -> bytes:
-    return _retry_rejected(_state['backend'].read_bytes, addr, length)
+    raw = _retry_rejected(_state['backend'].read_bytes, addr, length)
+    # Preserve every returned COR byte even if the adapter then reports a
+    # short transfer or a later Mask/state read fails (8.1.4.2).
+    _retain_cor(addr, raw[:length])
+    location = ('Lower:0x%02X' % addr if addr < 128 else
+                'Bank %s %02Xh:0x%02X' % (_state.get('bank'),
+                                         _state.get('page') or 0, addr))
+    return _checked(raw, location, length)
+
+
+_LANE_COR_NAMES = (
+    'dp_state_changed', 'tx_fault', 'tx_los', 'tx_cdr_lol',
+    'tx_adaptive_eq_fail', 'tx_power_high_alarm', 'tx_power_low_alarm',
+    'tx_power_high_warn', 'tx_power_low_warn', 'tx_bias_high_alarm',
+    'tx_bias_low_alarm', 'tx_bias_high_warn', 'tx_bias_low_warn',
+    'rx_los', 'rx_cdr_lol', 'rx_power_high_alarm', 'rx_power_low_alarm',
+    'rx_power_high_warn', 'rx_power_low_warn', 'rx_output_changed')
+_DIAG_COR_NAMES = {
+    134: 'host_gate_done', 135: 'media_gate_done',
+    136: 'host_gen_lol', 137: 'media_gen_lol',
+    138: 'host_prbs_lol', 139: 'media_prbs_lol'}
+
+
+def _retain_cor(addr: int, raw: bytes) -> None:
+    """Journal COR bytes at the bus boundary, before any subsequent ACCESS."""
+    page, bank = _state.get('page'), _state.get('bank') or 0
+    history = _state['flag_history']
+    for offset, value in enumerate(raw):
+        address = addr + offset
+        names = []
+        if address < 128:
+            if not 8 <= address <= 13:
+                continue
+            block = bytearray(6)
+            block[address - 8] = value
+            names = [(name, 'module') for name, on in
+                     cmis.parse_module_monitor_flags(block).items()
+                     if on and _monitor_present(_MODULE_FLAG_MONITOR[name])]
+            if address == 8:
+                names += [(name, 'module') for name, on in
+                          cmis.parse_module_firmware_flags(value).items() if on
+                          and (name != 'abnormal_fw_flag' or
+                               _state.get('caps', {}).get('abnormal_fw_indication'))]
+                names += [(name, 'module') for name, on in
+                          cmis.parse_cdb_complete_flags(value,
+                              (_state.get('caps', {}).get('cdb') or {}).get(
+                                  'instances', 0)).items() if on]
+                if value & 1:
+                    names.append(('module_state_changed', 'module'))
+            event_page, event_bank = None, None
+        elif page == 0x11 and 134 <= address <= 153:
+            name = _LANE_COR_NAMES[address - 134]
+            supported = (_state.get('caps', {}).get('flags_supported') or {}).get(name, True)
+            if name in _THRESHOLD_FLAG_MONITOR:
+                supported = _monitor_present(_THRESHOLD_FLAG_MONITOR[name])
+            names = [(name, bank * 8 + bit + 1) for bit in range(8)
+                     if value & (1 << bit) and supported
+                     and (cmis.LANE_FLAG_SIDE.get(name) != 'media'
+                          or _media_lane_present(bank * 8 + bit + 1))]
+            event_page, event_bank = page, bank
+        elif page == 0x14 and (address == 132 or address in _DIAG_COR_NAMES):
+            names = ([('reference_clock_lost', 'module')] if value & 0x80
+                     else []) if address == 132 else [
+                (_DIAG_COR_NAMES[address], bank * 8 + bit + 1)
+                for bit in range(8) if value & (1 << bit)]
+            event_page, event_bank = page, bank
+        elif page == 0x12 and 231 <= address <= 238:
+            names = [(name, 'tuning_%d' % (bank * 8 + address - 230))
+                     for name, on in cmis.parse_tuning_flags(value).items()
+                     if on and name != 'tuning_complete']
+            event_page, event_bank = page, bank
+        else:
+            continue
+        if not value:
+            continue
+        now = time.time()
+        journal = _state.setdefault('cor_history', {})
+        key = (event_bank, event_page, address)
+        event = journal.setdefault(key, {
+            'bank': event_bank, 'page': event_page, 'address': address,
+            'bits_seen': 0, 'first_seen': now})
+        event['bits_seen'] |= value
+        event['last_seen'] = now
+        for name, owner in names:
+            history.setdefault(owner, set()).add(name)
+        if _state['flag_history_since'] is None:
+            _state['flag_history_since'] = now
+
+
+def _module_restarted() -> None:
+    """Invalidate discovery after SoftwareReset or scratchpad restart evidence."""
+    _invalidate_page()
+    _forget_verified_pages()
+    _state['max_read'] = 8
+    _state['bpc_sleep'] = 0.010
+    _state['media_lane_assign'] = None
+    _state['dp_state_since'] = {}
+    _state['capabilities_stale'] = True
 
 
 def _bus_write(addr: int, data: bytes) -> None:
@@ -652,8 +752,12 @@ def _bus_write(addr: int, data: bytes) -> None:
     """
     _retry_rejected(_state['backend'].write_bytes, addr, data)
     nv = addr >= 0x80 and _state.get('page') == 0x03
-    _state['holdoff_until'] = time.monotonic() + cmis.TIMING_SECONDS[
+    _state['holdoff_until'] = time.perf_counter() + cmis.TIMING_SECONDS[
         'tWRITENV' if nv else 'tWRITE']
+    if addr <= 26 < addr + len(data) and data[26 - addr] & 0x08:
+        _state['holdoff_until'] = (time.perf_counter()
+                                   + cmis.TIMING_SECONDS['tMgmtInit'])
+        _module_restarted()
 
 
 def _retry_rejected(access, *args):
@@ -668,7 +772,7 @@ def _retry_rejected(access, *args):
     patience setting.
     """
     while True:
-        started = time.monotonic()
+        started = time.perf_counter()
         try:
             return access(*args)
         except (IOError, OSError):
@@ -697,11 +801,12 @@ def _read_chunked(addr: int, length: int) -> bytes:
     """
     limit = _state.get('max_read') or 8
     if length <= limit:
-        return _bus_read(addr, length)
+        return _checked(_bus_read(addr, length), 'address %d' % addr, length)
     out = bytearray()
     while len(out) < length:
         n = min(limit, length - len(out))
-        out += _bus_read(addr + len(out), n)
+        position = addr + len(out)
+        out += _checked(_bus_read(position, n), 'address %d' % position, n)
     return bytes(out)
 
 
@@ -717,7 +822,8 @@ def _read_scalars(addr: int, length: int, size: int) -> bytes:
     read as part of a block can come back with its high byte from one sample
     and its low byte from the next, 256 counts off, looking like a reading.
     """
-    return b''.join(_bus_read(addr + pos, size)
+    return b''.join(_checked(_bus_read(addr + pos, size),
+                             'scalar address %d' % (addr + pos), size)
                     for pos in range(0, length, size))
 
 
@@ -1231,6 +1337,9 @@ def _discover_capabilities() -> dict:
         # Appendix G.3: a host adapts to an older major revision, and a
         # higher one "cannot be managed".
         caps['cmis_major'] = (rev >> 4) & 0x0F
+        if caps['cmis_major'] > 5:
+            raise ValueError('CMIS %s cannot be managed by this CMIS 5.x host '
+                             '(Appendix G.3)' % caps['cmis_revision'])
         # First, and from Lower Memory, which every module has: whether this
         # module has an Upper Memory to page into at all.
         #
@@ -1411,11 +1520,8 @@ def _discover_capabilities() -> dict:
         # checking earlier would gate on a capability block that is not
         # filled in yet and quietly skip every page but 00h.
         caps['page_checksums'] = _verify_page_checksums(caps)
-    except Exception:
-        # A module that cannot answer the capability block is still usable at
-        # the default eight lanes; failing the whole connection over an
-        # optional advertisement would be worse than assuming the minimum.
-        pass
+    except Exception as e:
+        raise IOError('Capability discovery failed: %s' % e) from e
     return caps
 
 
@@ -1481,10 +1587,9 @@ def _await_dp_states(lanes: set, wanted: tuple) -> set:
 
 
 def _await_config_done(lanes: set) -> list:
-    """Poll ConfigStatus (11h:202-205) until no lane is ConfigInProgress;
-    the codes last read. Chapter 10 gives no time for a Provision, so the
-    DPInit advertisement, which covers the same validation and more, bounds
-    it."""
+    """Poll ConfigStatus within the tool's wait budget. CMIS Chapter 10
+    does not specify a Provision timeout; reaching this budget is not success.
+    """
     deadline = time.time() + _advertised_seconds('dp_init')
     while True:
         codes = []
@@ -1650,7 +1755,7 @@ def api_connect():
     # strings of 0xFF - which is a whole module the interface invented.
     # All-zero is the same situation with the bus held low.
     try:
-        probe = backend.read_bytes(0x00, 3)
+        probe = _checked(backend.read_bytes(0x00, 3), 'Lower 0-2 probe', 3)
     except Exception as e:
         try:
             backend.disconnect()
@@ -1694,7 +1799,22 @@ def api_connect():
     _state['address'] = address
     _invalidate_page()
     _forget_verified_pages()
-    caps = _discover_capabilities()
+    _state['cor_history'] = {}
+    _state['capabilities_stale'] = False
+    try:
+        caps = _discover_capabilities()
+    except Exception as e:
+        try:
+            backend.disconnect()
+        except Exception:
+            pass
+        finally:
+            _state['backend'] = None
+            _state['connected'] = False
+            _state['caps'] = {}
+            _invalidate_page()
+            _forget_verified_pages()
+        return _err(str(e), 502)
     _state['lanes'] = caps.get('max_lanes', 8)
     _state['caps'] = caps
     return _ok({'backend': backend_name, 'bus': bus, 'address': address,
@@ -1888,7 +2008,7 @@ def _restart_watch() -> dict:
     caps = _state.get('caps') or {}
     adv = (caps.get('features') or {}).get('scratch_pad')
     if caps.get('flat_memory') or not caps.get('diagnostic_pages_supported',
-                                                  True):
+                                                  False):
         return {'state': 'unsupported', 'restarted': False}
     if adv != 'supported':
         return {'state': 'unknown' if adv == 'unknown' else 'unsupported',
@@ -1908,6 +2028,8 @@ def _restart_watch() -> dict:
     _set_page(0x13, 0)
     _bus_write(cmis.REG_HOST_SCRATCHPAD[1], mark)
     _state['scratch_mark'] = mark
+    if restarted:
+        _module_restarted()
     return {'state': 'armed', 'restarted': restarted}
 
 
@@ -2137,7 +2259,10 @@ def api_module_status():
             # coloured temperature by 60 and 70 written into the page, which
             # is neither this nor the module's own alarm thresholds.
             'limits': _state['caps'].get('limits', {}),
-            'wavelength': _state['caps'].get('wavelength', {}),
+            'wavelength': dict(cmis.parse_wavelength_info(
+                _read_upper(*cmis.REG_WAVELENGTH)),
+                multi_wavelength=(_state['caps'].get('wavelength') or {}).get(
+                    'multi_wavelength', False)),
             'page_checksums': _state['caps'].get('page_checksums', []),
             **temp_alarms,
         })
@@ -3433,7 +3558,7 @@ def api_module_control_set():
         # manageable again - up to tMgmtInit (Table 10-2) - it may refuse
         # every access. The first read after a reset was a failure.
         if val & 0x08:
-            _state['holdoff_until'] = (time.monotonic()
+            _state['holdoff_until'] = (time.perf_counter()
                                        + cmis.TIMING_SECONDS['tMgmtInit'])
         time.sleep(0.05)
         # A reset restarts the module, which restores PageMapping to its
@@ -4132,9 +4257,14 @@ def api_datapath_set():
                 # was refused would come back up on the Application it had.
                 # Held instead, and said.
                 for i in sorted(up_lanes):
-                    if i < len(codes) and codes[i] in cmis.CONFIG_STATUS_REJECTED:
-                        final[i // 8] |= 1 << (i % 8)
-                        kept_deinit.append(i + 1)
+                    if i >= len(codes) or codes[i] != 0x01:
+                        # A Data Path is released as a whole. One lane with
+                        # Undefined, InProgress or a rejection holds its peers.
+                        for peer in sorted(up_lanes):
+                            if peer // 8 == i // 8 and dpidx[peer] == dpidx[i]:
+                                final[peer // 8] |= 1 << (peer % 8)
+                                if peer + 1 not in kept_deinit:
+                                    kept_deinit.append(peer + 1)
             for bank in range(banks):
                 _set_page(0x10, bank)
                 _bus_write(cmis.REG_DP_DEINIT[1], bytes([final[bank]]))
@@ -4150,6 +4280,7 @@ def api_datapath_set():
                     'apply_immediate': bool(apply_now),
                     'held_until_ready': held_until_ready,
                     'kept_deinit': kept_deinit,
+                    'configuration_complete': not bool(kept_deinit),
                     'nad_block': nad_block,
                     'tx_takes_down': takes_down})
     except _LaneMaskError as e:
@@ -4354,7 +4485,8 @@ def api_module_flags():
                     # behind it had been turned off.
                     'masks': masks,
                     'supported': supported_flags,
-                    'history_since': _state['flag_history_since']})
+                    'history_since': _state['flag_history_since'],
+                    'cor_events': list(_state.get('cor_history', {}).values())})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -4374,6 +4506,7 @@ def api_clear_flag_history():
     if err:
         return err
     _state['flag_history'] = {}
+    _state['cor_history'] = {}
     _state['flag_history_since'] = time.time()
     return _ok({'history_since': _state['flag_history_since']})
 
@@ -4893,7 +5026,7 @@ def _measurement_window() -> dict:
 
     def window(c):
         return (c['measurement_time_code'], c['auto_restart_gating'],
-                c['update_period_s'])
+                c['update_period_s'], c['reset_error_information'])
     return {
         'capabilities': caps,
         'controls': controls,
@@ -4901,6 +5034,8 @@ def _measurement_window() -> dict:
         'banks_that_differ': [b for b, c in enumerate(per_bank)
                               if b and window(c) != window(controls)],
         'start_stop_scope': _start_stop_anywhere(caps, per_bank),
+        **({'model': _state['backend'].diagnostic_model()}
+           if hasattr(_state['backend'], 'diagnostic_model') else {}),
     }
 
 
@@ -5038,57 +5173,46 @@ def api_prbs_get():
         # generating PRBS31 while the module reported it had lost lock, and
         # the errors that followed looked like a link fault rather than a
         # source that was never transmitting properly.
-        try:
-            # One bit per lane, so one byte per bank of eight. Reading only
-            # bank 0 gave every lane past the eighth the flag belonging to
-            # the lane eight below it - lane 16's loss of lock was invisible
-            # and lane 9 showed lane 1's.
-            def _flag_banks(reg):
-                return [raw[0] for _b, raw in _read_banks(*reg)]
-            host_lol_banks = _flag_banks(cmis.REG_HOST_PRBS_LOL)
-            media_lol_banks = _flag_banks(cmis.REG_MEDIA_PRBS_LOL)
-            host_gen_lol_banks = _flag_banks(cmis.REG_HOST_GEN_LOL)
-            media_gen_lol_banks = _flag_banks(cmis.REG_MEDIA_GEN_LOL)
-            host_gate_banks = _flag_banks(cmis.REG_HOST_GATE_DONE)
-            media_gate_banks = _flag_banks(cmis.REG_MEDIA_GATE_DONE)
-            # 132.7, module-wide rather than per lane.
-            ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
-            # 13h:206-213, the Masks for every Flag above. 8.1.4.2: "While a
-            # Flag is set, an Interrupt request is generated unless an
-            # associated Mask bit is set" - and Table 8-133 states the
-            # default in one line, "The default value for all Mask bits on
-            # this page is 1 (masked)". So on a module nobody has configured,
-            # a checker that loses lock raises a Flag the host is never told
-            # about, and this panel could not say so.
-            diag_mask_banks = [raw for _b, raw in
-                               _read_banks(*cmis.REG_DIAG_FLAG_MASKS)]
-            # Whether that matters here is a question about 13h:176 and 178:
-            # a generator on the internal clock and a checker on a recovered
-            # clock do not stop working because the reference clock went away.
-            # Per bank (Table 8-127 is on banked Page 13h): lanes 9-16 may
-            # be clocked differently from lanes 1-8, and a reference clock
-            # loss matters to an engine in any bank that uses it.
-            clk_banks = [raw for _b, raw in _read_banks(*cmis.REG_CLOCK_MEAS)]
-            clk = clk_banks[0]
-            clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
-            clock_sources_banks = [cmis.parse_clock_sources(c[0], c[2])
-                                   for c in clk_banks]
-            # The checker enables below are start/stop controls in the sense
-            # of Table 8-127, so 177.7 decides whether ticking one in this
-            # Bank starts the same lane in every other.
-            start_stop_scope = _start_stop_anywhere(
-                _diag_caps()['measurement'],
-                [cmis.parse_measurement_controls(c[1]) for c in clk_banks])
-        except Exception:
-            _z = [0] * banks
-            host_lol_banks = media_lol_banks = list(_z)
-            host_gen_lol_banks = media_gen_lol_banks = list(_z)
-            host_gate_banks = media_gate_banks = list(_z)
-            diag_mask_banks = []
-            ref_clock_lost = False
-            clock_sources = {}
-            clock_sources_banks = []
-            start_stop_scope = None
+        # One bit per lane, so one byte per bank of eight. Reading only
+        # bank 0 gave every lane past the eighth the flag belonging to
+        # the lane eight below it - lane 16's loss of lock was invisible
+        # and lane 9 showed lane 1's.
+        def _flag_banks(reg):
+            return [raw[0] for _b, raw in _read_banks(*reg)]
+        host_lol_banks = _flag_banks(cmis.REG_HOST_PRBS_LOL)
+        media_lol_banks = _flag_banks(cmis.REG_MEDIA_PRBS_LOL)
+        host_gen_lol_banks = _flag_banks(cmis.REG_HOST_GEN_LOL)
+        media_gen_lol_banks = _flag_banks(cmis.REG_MEDIA_GEN_LOL)
+        host_gate_banks = _flag_banks(cmis.REG_HOST_GATE_DONE)
+        media_gate_banks = _flag_banks(cmis.REG_MEDIA_GATE_DONE)
+        # 132.7, module-wide rather than per lane.
+        ref_clock_lost = bool(_read_upper(*cmis.REG_REF_CLOCK_LOL)[0] & 0x80)
+        # 13h:206-213, the Masks for every Flag above. 8.1.4.2: "While a
+        # Flag is set, an Interrupt request is generated unless an
+        # associated Mask bit is set" - and Table 8-133 states the
+        # default in one line, "The default value for all Mask bits on
+        # this page is 1 (masked)". So on a module nobody has configured,
+        # a checker that loses lock raises a Flag the host is never told
+        # about, and this panel could not say so.
+        diag_mask_banks = [raw for _b, raw in
+                           _read_banks(*cmis.REG_DIAG_FLAG_MASKS)]
+        # Whether that matters here is a question about 13h:176 and 178:
+        # a generator on the internal clock and a checker on a recovered
+        # clock do not stop working because the reference clock went away.
+        # Per bank (Table 8-127 is on banked Page 13h): lanes 9-16 may
+        # be clocked differently from lanes 1-8, and a reference clock
+        # loss matters to an engine in any bank that uses it.
+        clk_banks = [raw for _b, raw in _read_banks(*cmis.REG_CLOCK_MEAS)]
+        clk = clk_banks[0]
+        clock_sources = cmis.parse_clock_sources(clk[0], clk[2])
+        clock_sources_banks = [cmis.parse_clock_sources(c[0], c[2])
+                               for c in clk_banks]
+        # The checker enables below are start/stop controls in the sense
+        # of Table 8-127, so 177.7 decides whether ticking one in this
+        # Bank starts the same lane in every other.
+        start_stop_scope = _start_stop_anywhere(
+            _diag_caps()['measurement'],
+            [cmis.parse_measurement_controls(c[1]) for c in clk_banks])
         # Latched and cleared by the read that just happened, so a checker that
         # slipped for a moment mid-run leaves nothing behind unless this does.
         history = _state['flag_history']
@@ -6454,7 +6578,16 @@ def api_register_write():
                         'CDB command (7.2.3) - so this cannot be split for '
                         'you. Write the rest of the header first, then the '
                         'part with byte 129, each in %d bytes or fewer'
-                        % (MAX_WRITE, MAX_WRITE))
+                         % (MAX_WRITE, MAX_WRITE))
+
+        cdb_caps = (_state.get('caps') or {}).get('cdb') or {}
+        if (page == 0x9F and address >= 128
+                and address <= 129 < address + len(data)
+                and not cdb_caps.get('trigger_on_stop', False)
+                and not (len(data) in (1, 2) and address + len(data) == 130)):
+            return _err('CdbCommandTriggerMethod=0 requires a one/two-byte '
+                        'WRITE ending at 9Fh:129 (8.34.1). Write parameters '
+                        'first, then CMDID.', 400)
 
         # ApplyDPInit and ApplyImmediate: "This byte must be written in a
         # single-byte WRITE". A raw write that sweeps across one of them in
@@ -6536,7 +6669,7 @@ def _cdb_hold_off(page: int, address: int, length: int, bank: int):
                          cdb.get('max_busy_ms_alt') or 0) / 1000.0,
                      cmis.TIMING_SECONDS['tCDBF'])
     _state['holdoff_until'] = max(_state.get('holdoff_until', 0.0),
-                                  time.monotonic() + window)
+                                  time.perf_counter() + window)
     return {'mode': mode, 'hold_off_ms': round(window * 1000)}
 
 
@@ -6549,11 +6682,11 @@ def _password_result() -> dict:
     asked again until that period has passed, and reported as it stands if
     it is still the answer then.
     """
-    deadline = time.monotonic() + cmis.TIMING_SECONDS['tWRITE']
+    deadline = time.perf_counter() + cmis.TIMING_SECONDS['tWRITE']
     while True:
         result = cmis.parse_password_result(
             _read_lower(*cmis.REG_PASSWORD_RESULT[1:])[0])
-        if not result['in_progress'] or time.monotonic() >= deadline:
+        if not result['in_progress'] or time.perf_counter() >= deadline:
             return result
         time.sleep(0.001)
 

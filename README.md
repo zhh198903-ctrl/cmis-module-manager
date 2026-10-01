@@ -30,7 +30,7 @@ A browser-based management tool for CMIS-compliant optical modules (QSFP-DD 800G
 - **DataPath control 数据通道配置** — AppSel provisioning, DataPath state machine, output/squelch controls
 - **Diagnostics 诊断** — loopback, PRBS generator/checker, BER, SNR, error counters
 - **Laser tuning 激光器调谐** — grid/channel selection and fine tuning for tunable (coherent) modules
-- **10 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_coherent_zr` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane` / `mock_24lane` / `mock_zr16` / `mock_fewmon`, full demo without any hardware. Two profiles are modelled on IEEE P802.3dj/D3.1: `mock_1600g_dr8` on Clause 180 (1.6TBASE-DR8) and `mock_coherent` on Clause 185 (800GBASE-LR1, the datacenter coherent-lite PMD). `mock_coherent_zr` is the tunable C-band module, which is where laser tuning is demonstrated. `mock_24lane` has 24 lanes across three banks - the smallest lane count the legacy field cannot spell, so it is the only profile that exercises the CMIS 5.4 escape at `01h:142.1-0 = 11b`. `mock_zr16` is tunable and sixteen lanes wide, so it is the only profile with a second bank of Page 12h - the tuning page is banked by media lane, eight to a bank. `mock_fewmon` implements only some of the monitors CMIS makes optional (`01h:159-160`), so an absent monitor reads zero and the tool has to say "not implemented" rather than report it as a measurement.
+- **12 built-in mock modules 内置模拟模块** — `mock_coherent` / `mock_coherent_zr` / `mock_dr8` / `mock_sr8` / `mock_fr4x2` / `mock_1600g_dr8` / `mock_1600g_16lane` / `mock_24lane` / `mock_zr16` / `mock_fewmon` / `mock_aoc` / `mock_flat_dac`, full demo without any hardware. Two profiles are modelled on IEEE P802.3dj/D3.1: `mock_1600g_dr8` on Clause 180 (1.6TBASE-DR8) and `mock_coherent` on Clause 185 (800GBASE-LR1, the datacenter coherent-lite PMD). `mock_coherent_zr` advertises 800ZR-A/B (OIF-800ZR-01.0), DP-16QAM and a 150 GHz default grid, for laser tuning demonstrations. `mock_1600g_16lane` demonstrates 16×100G / two independent 800G Applications across two Banks; it does not advertise a 1.6TAUI-16 interface. `mock_24lane` has 24 lanes across three banks - the smallest lane count the legacy field cannot spell, so it is the only profile that exercises the CMIS 5.4 escape at `01h:142.1-0 = 11b`. `mock_zr16` is tunable and sixteen lanes wide, so it is the only profile with a second bank of Page 12h - the tuning page is banked by media lane, eight to a bank. `mock_fewmon` implements only some of the monitors CMIS makes optional (`01h:159-160`), so an absent monitor reads zero and the tool has to say "not implemented" rather than report it as a measurement.
 
 ## Supported hardware / 支持的硬件
 
@@ -68,7 +68,7 @@ Then open **http://127.0.0.1:5000** in your browser (the default port — change
 python test_api.py
 ```
 
-2973 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
+3008 end-to-end API tests run against the Flask test client with the mock backend — no hardware required.
 
 ## Building a standalone EXE / 构建独立 EXE
 
@@ -103,6 +103,8 @@ CMIS2Customer/          Distribution package content (manual + assets)
 
 - The OIF CMIS 5.4 specification, SFF-8024 and IEEE P802.3dj are **not** included in this repository. Get CMIS from the [OIF website](https://www.oiforum.com/technical-work/implementation-agreements-ias/), SFF-8024 from [SNIA](https://www.snia.org/technology-communities/sff/specifications), and 802.3dj from the [IEEE 802.3 task force](https://www.ieee802.org/3/dj/).
 - Vendor names appearing in the mock profiles are simulated demo data and do not imply any affiliation.
+
+Mock diagnostic counters are synthetic management fixtures. Their bitstream rate follows the active Application, Host/Media direction and checker position; pre/post-decoder error fixtures are independent and do not implement an FEC decoder. The GUI reports the measurement plane and rate. IEEE P802.3dj references remain limited to draft D3.1; BLER/histogram methods, D3.3 differences and real PHY conformance are not validated. LR1 optical supervision assumes ETCC ≤ 1 dB. Additional ZR tuning grids and thresholds are management test fixtures, not an assertion that every setting implements an OIF optical application.
 
 ## License
 

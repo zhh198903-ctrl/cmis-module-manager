@@ -11,7 +11,7 @@ and application descriptors. Seven subclasses register different profiles:
   - mock_sr8             : 800GBASE-SR8 (8×100G PAM4, OM4 100m, VCSEL 850nm)
   - mock_fr4x2           : 2× 400GBASE-FR4 (CWDM4, SMF 2km, EML 1310nm)
   - mock_1600g_dr8       : 1.6TBASE-DR8 (IEEE P802.3dj Clause 180)
-  - mock_1600g_16lane    : 1.6T over 16 host lanes (1.6TAUI-16 C2M)
+  - mock_1600g_16lane    : 16×100G / two 800G Applications (multi-bank management fixture)
 
 Dynamic behavior (state machine, ApplyDataPath, Reset, LowPwr, TxDisable,
 PRBS LOL, BER/SNR, counters, laser tuning) is shared across all profiles.
@@ -146,6 +146,9 @@ _COHERENT_800G = {
     'power_class_bits':    0x80,             # Class 5
     'max_power_0_25w':     0x34,             # 52 x 0.25 = 13.0 W (demo: dj says nothing about module power)
     'tunable':             False,
+    'wavelength_nm':       (1311.0, 0.110),  # actual demo range inside 185-5
+    'media_pre_ber':       2.0e-2,  # synthetic decoder-input fixture, not 174A BER
+    'media_post_ber':      1.2e-4,  # synthetic Inner FEC output fixture
     # Per-lane nominal optical values, both inside their Clause 185 windows
     'tx_power_uw_nom':     158,              # -8.0 dBm
     'rx_power_uw_nom':     63,               # -12.0 dBm
@@ -194,7 +197,7 @@ _ZR_800G = {
     'aux_values':         (-38.0, 45.0, 1.8),
     # One optical carrier: media lanes 2-8 are not there (00h:210).
     'media_lane_unsupported': 0xFE,
-    'display':         '800G Coherent tunable (C-band DWDM, ZR-class)',
+    'display':         '800ZR-A/B tunable management demo (DP-16QAM, OIF-800ZR-01.0)',
     'config_caps_02':  0x00,  # retuned under traffic, so hot reconfiguration matters
     # Biased past the 131 mA that x1 scaling can express, so 160.4-3 says x2.
     'monitors_160':    0x0F,
@@ -218,16 +221,26 @@ _ZR_800G = {
     'power_class_bits':    0x80,             # Class 5
     'max_power_0_25w':     0x40,             # 64 x 0.25 = 16.0 W
     'tunable':             True,
-    'tx_power_uw_nom':     1000,             # 0 dBm
-    'rx_power_uw_nom':     158,              # -8 dBm
+    'tx_power_uw_nom':     158,              # -8 dBm, 800ZR-A default
+    'rx_power_uw_nom':     251,              # -6 dBm, within IA -9..0
     'tx_bias_ma_nom':      180.0,
     'temperature_c_nom':   62.0,
     'base_ber':            1.0e-9,
     'snr_db_nom':          18.0,
     'app_descriptors': [
-        (0x51, 0x48, 0x81, 0x01),            # AppSel 1: 800GAUI-8 S C2M -> ZR200-OFEC-QPSK (8H/1M)
-        (0x4F, 0x41, 0x41, 0x01),            # AppSel 2: 400GAUI-4-S C2M -> 200GBASE-ER4 (4H/1M)
+        (0x51, 0x6C, 0x81, 0x01),            # 800GAUI-8 -> 800ZR-A
+        (0x51, 0x6D, 0x81, 0x01),            # 800GAUI-8 -> 800ZR-B
     ],
+    'wavelength_nm':       (1551.95, 0.030),
+    'initial_grid_code':  8,                # 150 GHz; n=0 -> 193.175 THz
+    'initial_power_dbm':  -8.0,
+    'programmable_power_dbm': (-12.0, -1.0), # IA 6.1.218 A/B ranges
+    'media_pre_ber':       1.0e-2,
+    'media_post_ber':      1.0e-16,          # synthetic; no OFEC decoding
+    'power_thresholds_dbm': {
+        'tx': (0.0, -13.0, -0.5, -12.5),   # supervision demo choices
+        'rx': (0.0, -9.0, -0.5, -8.5),
+    },
     'link_lengths': {},                      # no cable length advertised
     'cmis_rev':            0x54,
     'pages_ext_173':       0b10000000,       # Page 0Ch
@@ -242,7 +255,7 @@ _ZR_800G = {
     # power, and the method is the module's, not the host's.
     'controls_155':        0x2F,
     # 04h:129.5, the 300 GHz grid CMIS 5.4 added, alongside fine tuning.
-    'grid_sup_129':        0xA0,
+    'grid_sup_129':        0xE0,
     # 12h:216-217, U4 halves of a dB: +2.0/+1.5 dB and -2.0/-1.5 dB.
     'rel_thr_offsets_216': (0x32, 0x32),
     # Lanes 1-4 were left switched to relative supervision by whoever
@@ -258,7 +271,7 @@ _ZR_800G = {
     # (demo values: the point is only that they differ), put in force when a
     # Data Path commissioned with it reaches DPInitialized.
     'app_power_thresholds_dbm': {
-        2: {'tx': (3.0, -5.0, 2.0, -4.0), 'rx': (-1.0, -14.0, -2.0, -13.0)},
+        2: {'tx': (-5.0, -13.0, -5.5, -12.5), 'rx': (0.0, -9.0, -0.5, -8.5)},
     },
 }
 
@@ -354,13 +367,9 @@ _DR8_800G = {
 # power class, case temperature and the CMIS SNR diagnostic are demo values
 # chosen to look plausible, not limits read out of a spec.
 #
-# The sixteen-lane profile's 802.3dj anchor is its host interface only:
-# 1.6TAUI-16 C2M lives in Annex 120G, the 100 Gb/s per lane C2M annex. Its
-# optics run at 100G per lane, so they are 802.3df PMDs rather than Clause 180
-# ones, and its thresholds stay at the generic mock values. It also cannot
-# advertise 0x55 1.6TAUI-16-S C2M as an Application, wide as it is: CMIS 5.4
-# caps one Application at eight lanes, so a 16-lane host interface can only
-# appear as two eight-lane instances.
+# The sixteen-lane fixture has two independent 800GAUI-8/800GBASE-DR8
+# Applications. Their optics use 802.3df's 100G/lane PMD; combining two
+# Banks does not advertise a single IEEE 1.6TAUI-16 service interface.
 _DR8_1600G = {
     'display':         '1.6TBASE-DR8 (8 × 106.25 GBd PAM4, SMF 500m, 802.3dj)',
     'vendor_name':     b"OPENCMIS DEMO   ",
@@ -376,6 +385,7 @@ _DR8_1600G = {
     'power_class_bits':    0xE0,             # Class 8 (111b << 5)
     'max_power_0_25w':     0x68,             # 104 × 0.25 = 26.0 W
     'tunable':             False,
+    'wavelength_nm':       (1311.0, 6.5),  # dj D3.1 Table 180-7
     'tx_power_uw_nom':     1585,             # +2.0 dBm, inside Table 180-7
     'rx_power_uw_nom':     631,              # -2.0 dBm, inside Table 180-8
     'tx_bias_ma_nom':      85.0,
@@ -423,7 +433,7 @@ _DR8_1600G = {
 }
 
 _XD16_1600G = {
-    'display':         '1.6T 16×100G host (1.6TAUI-16 C2M, two banks)',
+    'display':         '16×100G / 2×800G multi-bank management demo',
     'config_caps_02':  0x45,  # stepped only, regular; 1 MHz MCI
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-1600G-XD16 ",
@@ -804,7 +814,7 @@ _SR8_800G = {
     'vendor_name':     b"OPENCMIS DEMO   ",
     'vendor_pn':       b"DEMO-SR8-800GQDD",
     # 850 nm VCSEL, matching this profile's media interface technology.
-    'wavelength_nm':   (850.0, 10.0),
+    'wavelength_nm':   (850.0, 6.0),  # chosen demo range 844..856 within SR Tx limits
     'vendor_sn':       b"DEMO000000003   ",
     'vendor_rev':      b"C1",
     'vendor_oui':      (0x00, 0x00, 0x00),     # Unprogrammed OUI - simulated module
@@ -962,11 +972,11 @@ class _ConfigCommand:
 
 
 class MockBackend(I2CInterface):
-    """Profile-driven CMIS 5.3 optical module simulator.
+    """Profile-driven CMIS 5.x optical module simulator.
 
     Subclasses set `PROFILE = <profile dict>` at class level. The default
     PROFILE is 800G coherent tunable, but this class is NOT registered directly.
-    Subclasses below register 4 specific profiles.
+    The backend registry exposes twelve management profiles.
     """
 
     PROFILE = _COHERENT_800G  # default (overridden by subclasses)
@@ -1277,7 +1287,7 @@ class MockBackend(I2CInterface):
         # 0.005 nm. Zero was every profile's answer, which reads as the field
         # not being provided, so the Media Interface Technology code was all
         # the panel had and that names a band rather than a wavelength.
-        wl_nm, wl_tol_nm = p.get('wavelength_nm', (0.0, 0.0))
+        wl_nm, wl_tol_nm = p.get('wavelength_nm', (1310.0, 6.5))
         wl = int(round(wl_nm / 0.05))
         wl_tol = int(round(wl_tol_nm / 0.005))
         # 175 (Table 8-59): banks of Normalized Application Descriptors on
@@ -1481,6 +1491,10 @@ class MockBackend(I2CInterface):
             # Both now span the ±4000 GHz the 50 and 100 GHz grids do.
             p04[0x9E] = 0xFF; p04[0x9F] = 0x61    # -159: 193.1 - 3.975 THz
             p04[0xA0] = 0x00; p04[0xA1] = 0x9F    # +159: 193.1 + 3.975 THz
+            if p.get('grid_sup_129', 0x80) & 0x40:
+                # 800ZR Table 22: n=-72..114, in multiples of six.
+                p04[0xA2], p04[0xA3] = 0xFF, 0xB8
+                p04[0xA4], p04[0xA5] = 0x00, 0x72
             # 04h:166-169 continues the channel range table with grid code 9.
             if p.get('grid_sup_129', 0x80) & 0x20:
                 p04[0xA6] = 0xFE; p04[0xA7] = 0xE0    # -288: 189.3875 THz
@@ -1496,9 +1510,10 @@ class MockBackend(I2CInterface):
             # the thresholds to.
             p04[0xC4] = p.get('rel_thr_cap_196', 0x00)
             # Programmable output power range
-            v = struct.pack(">h", -1000)
+            power_min, power_max = p.get('programmable_power_dbm', (-10.0, 3.0))
+            v = struct.pack(">h", round(power_min * 100))
             p04[0xC6] = v[0]; p04[0xC7] = v[1]
-            v = struct.pack(">h", 300)
+            v = struct.pack(">h", round(power_max * 100))
             p04[0xC8] = v[0]; p04[0xC9] = v[1]
             regs[0x04] = p04
 
@@ -1586,18 +1601,21 @@ class MockBackend(I2CInterface):
         # ==== Page 12h — Laser Tuning Control/Status (ONLY for tunable) ====
         if p['tunable']:
             p12 = {}
-            for i in range(8): p12[0x80 + i] = 0x50    # 100 GHz grid per lane
+            initial_grid = p.get('initial_grid_code', 5)
+            for i in range(8): p12[0x80 + i] = initial_grid << 4
             for i in range(16): p12[0x88 + i] = 0x00   # channel = 0
             for i in range(16): p12[0x98 + i] = 0x00   # fine offset = 0
             # CurrentLaserFrequency U32 = 193100000 (193.1 THz × 10^6 kHz)
-            freq_u32 = 193_100_000
+            freq_u32 = 193_175_000 if initial_grid == 8 else 193_100_000
             for i in range(8):
                 a = 0xA8 + i * 4
                 p12[a] = (freq_u32 >> 24) & 0xFF
                 p12[a + 1] = (freq_u32 >> 16) & 0xFF
                 p12[a + 2] = (freq_u32 >> 8) & 0xFF
                 p12[a + 3] = freq_u32 & 0xFF
-            for i in range(16): p12[0xC8 + i] = 0x00   # target power = 0
+            initial_power = struct.pack('>h', round(p.get('initial_power_dbm', 0) * 100))
+            for i in range(8):
+                p12[0xC8 + i * 2], p12[0xC9 + i * 2] = initial_power
             # 12h:216-217 (Table 8-109): the relative supervision offsets, not
             # per lane - 7.5.3 takes the view that a meaningful monitoring
             # window is a property of the optics, not of the lane.
@@ -2792,10 +2810,6 @@ class MockBackend(I2CInterface):
         # bank 0's selector and fill bank 0's window for the whole module,
         # which made a host that selected only in bank 0 look correct: lanes 9
         # and up got the values bank 0 had just been asked for.
-        now_t = time.time()
-        dt = (now_t - self._last_counter_time
-              if self._last_counter_time > 0 else 0.0)
-        self._last_counter_time = now_t
         for lane_base, p14 in self._banked_page_dicts(0x14):
             sel = p14.get(0x80, 0)
             p13 = self._page13_of(lane_base)
@@ -2814,8 +2828,6 @@ class MockBackend(I2CInterface):
             # counters stop counting"). It used to tick only while a counter
             # window was selected, so lanes 1-4 and 5-8 counted different
             # lengths of the same second.
-            if not gate['frozen']:
-                self._count_errors(lane_base, p13, dt)
             # 11h-15h are the last completed gate, "stable for Gating
             # Period"; 01h-05h the running count - unless 13h:129.4
             # PeriodicUpdatesSupported is clear, when "real time error
@@ -2908,6 +2920,15 @@ class MockBackend(I2CInterface):
                     p12[a + 2] = (freq_mhz >> 8) & 0xFF
                     p12[a + 3] = freq_mhz & 0xFF
                     p12[0xDE + lane] = 0x00
+            # Table 8-46: a tunable single carrier reports its actual
+            # nominal wavelength, not a zero or the whole C-band range.
+            p12 = self._registers[0x12]
+            freq = int.from_bytes(bytes(p12.get(168 + i, 0) for i in range(4)), 'big')
+            if freq:
+                wl = round((299792458.0 / freq * 1000.0) / 0.05)
+                p01 = self._registers[0x01]
+                p01[138], p01[139] = (wl >> 8) & 0xFF, wl & 0xFF
+                p01[255] = sum(p01.get(a, 0) for a in range(128, 255)) & 0xFF
 
         # Last, because it depends on every Flag the refresh has just raised.
         # The specification defines the line in one sentence: Interrupt "is
@@ -3680,14 +3701,14 @@ class MockBackend(I2CInterface):
     def _gate_of(self, lane_base: int) -> dict:
         # 'counts' is the last completed gate: (side, lane) -> (errors, bits).
         return self._gates.setdefault(lane_base, {
-            'start': time.time(), 'frozen': False, 'counts': {}})
+            'start': time.time(), 'last': time.time(),
+            'frozen': False, 'counts': {}})
 
     # 13h:144, 152, 160, 168 (Tables 8-119, 8-121, 8-123, 8-125): one enable
     # bit per lane for each pattern engine.
     _ENGINE_ENABLES = {0x90: 'hg', 0x98: 'mg', 0xA0: 'hc', 0xA8: 'mc'}
     _LOL_FLAG = {'hg': 0x88, 'mg': 0x89, 'hc': 0x8A, 'mc': 0x8B}
     _LOCK_S = 0.3                   # how long an engine takes to lock
-    _LANE_BITS_PER_S = int(100e9)   # the rate the demo counts bits at
 
     def _raise_lol(self, bank: int, engine: str, li: int) -> None:
         p14 = (self._registers.get(0x14) if bank == 0
@@ -3776,6 +3797,7 @@ class MockBackend(I2CInterface):
         # A held ResetErrorInformation keeps the gate stopped (Table 8-127).
         if started and not self._page13_of(lane_base).get(0xB1, 0) & 0x20:
             gate['start'], gate['frozen'] = time.time(), False
+            gate['last'] = gate['start']
 
     def _checking(self, lane_base: int, p13: dict = None):
         """(side, absolute lane) of every enabled checker in a bank."""
@@ -3786,13 +3808,81 @@ class MockBackend(I2CInterface):
                 if (on >> li) & 1 and lane_base + li < self._counter_lanes:
                     yield side, lane_base + li
 
-    def _count_errors(self, lane_base: int, p13: dict, dt: float) -> None:
-        bits = int(self._LANE_BITS_PER_S * dt)
-        ber = self._ber_now(lane_base)
+    def _counter_stream(self, side: str, lane: int) -> dict:
+        bank, li = divmod(lane, 8)
+        p11 = self._registers.get(0x11 if not bank else (0x11, bank), {})
+        appsel = (p11.get(206 + li, 0x10) >> 4) & 0x0F
+        apps = self._profile['app_descriptors']
+        desc = apps[appsel - 1] if 1 <= appsel <= len(apps) else (0, 0, 0, 0)
+        host_id, media_id, widths, _ = desc
+        # Payload rates are explicit properties of the synthetic test stream.
+        # They do not imply a real decoder or an IEEE error measurement method.
+        payload = {0x4B: 100e9, 0x4D: 100e9, 0x4F: 100e9,
+                   0x51: 100e9, 0x82: 200e9, 0x83: 200e9, 0xBE: 100e9}.get(host_id)
+        if payload is None and host_id:
+            raise ValueError('No diagnostic bitstream model for Host ID %02Xh' % host_id)
+        payload = payload or 0
+        physical = payload * 1.0625
+        post_rate = payload
+        plane = 'synthetic decoded payload stream'
+        if side == 'media':
+            if media_id == 0x7C:
+                physical, post_rate = 8 * 123.636363636e9, 850e9
+                plane = 'synthetic Inner FEC output (before outer FEC)'
+            elif media_id in (0x6C, 0x6D, 0x6E):
+                physical, post_rate = 945626804824, 805649152794
+                plane = 'synthetic OFEC output including PAD/CRC'
+            elif widths & 0x0F:
+                physical *= (widths >> 4) / (widths & 0x0F)
+                post_rate *= (widths >> 4) / (widths & 0x0F)
+        p13 = self._page13_of(bank * 8)
+        post = bool(p13.get(0xA3 if side == 'host' else 0xAB, 0) & (1 << li))
+        return {'appsel': appsel, 'host_id': host_id, 'media_id': media_id,
+                'post_fec': post, 'bits_per_s': post_rate if post else physical,
+                'plane': plane if post else 'synthetic encoded line stream'}
+
+    def _ber_parameters(self, side: str, lane: int):
+        stream = self._counter_stream(side, lane)
+        post = stream['post_fec']
+        default = self._profile['base_ber'] * (0.001 if post else 1.0)
+        base = self._profile.get(side + ('_post_ber' if post else '_pre_ber'), default)
+        bank = lane // 8
+        return (base, 0.20 if side == 'host' else 0.25,
+                30.0 if side == 'host' else 35.0,
+                lane * math.pi / 4 + bank * 8 * 0.37)
+
+    def diagnostic_model(self) -> dict:
+        return {
+            'synthetic': True,
+            'notice': 'Synthetic management demo: independent pre/post decoder fixtures; '
+                      'no FEC decoding, IEEE BLER/histogram or PHY compliance verdict.',
+            'reference': ('IEEE P802.3dj/D3.1 Clauses 180/185; OIF-800ZR-01.0 '
+                          'Table 20; SFF-8024 Rev 4.14'),
+            'assumptions': 'LR1 power supervision uses ETCC <= 1 dB. '
+                           'Parallel post-decoder fixtures use payload-rate test streams.',
+            'streams': [dict(lane=lane + 1, side=side,
+                             **self._counter_stream(side, lane))
+                        for lane in range(self._counter_lanes)
+                        for side in ('host', 'media')],
+        }
+
+    def _count_errors(self, lane_base: int, p13: dict, dt: float,
+                      start: float = None) -> None:
+        if dt <= 0:
+            return
+        start = time.time() - dt if start is None else start
+        t0 = start - self._start_time
         for side, lane in self._checking(lane_base, p13):
-            c = self._counts.setdefault((side, lane), [0.0, 0])
-            c[0] += bits * ber[lane - lane_base][side == 'media']
-            c[1] += bits
+            rate = self._counter_stream(side, lane)['bits_per_s']
+            base, amplitude, period, phase = self._ber_parameters(side, lane)
+            omega = 2 * math.pi / period
+            # Integrate the synthetic waveform so polling cannot change errors.
+            integral = base * (dt + amplitude / omega * (
+                math.cos(omega * t0 + phase)
+                - math.cos(omega * (t0 + dt) + phase)))
+            c = self._counts.setdefault((side, lane), [0.0, 0.0])
+            c[0] += rate * integral
+            c[1] += rate * dt
 
     def _snapshot_gate(self, lane_base: int, gate: dict) -> None:
         """Copy the enabled checkers' running error information into the
@@ -3807,39 +3897,40 @@ class MockBackend(I2CInterface):
         for key in self._checking(lane_base):
             self._counts[key] = [0.0, 0]
         gate['start'], gate['frozen'] = time.time(), False
+        gate['last'] = gate['start']
 
     def _advance_gate(self, lane_base: int, p13: dict) -> dict:
-        """A gated measurement (13h:177.3-1 non-zero, 13h:129.7-6 GatingSupport)
-        ends when its time is up. Tables 8-129/8-130: the results of that
-        gate go to Selectors 11h-15h; with AutoRestartGating (13h:177.4,
-        advertised 13h:129.2) "The current error information will reset, and
-        the gate timer will be reset to 0 and restart", otherwise "the error
-        counters stop counting". The mock ignored the gate altogether: the
-        counters ran on for ever and 11h-15h showed the running figures.
-        """
+        """Accumulate to absolute gate boundaries before freezing/restarting."""
         gate = self._gate_of(lane_base)
+        now = time.time()
+        cursor = max(gate.get('last', gate['start']), gate['start'])
+        gate['last'] = now
+        if gate['frozen']:
+            return gate
         b177, caps = p13.get(0xB1, 0), p13.get(0x81, 0)
         seconds = self._GATE_SECONDS.get((b177 >> 1) & 0x07)
-        # A held ResetErrorInformation has frozen it already (_gate_control).
-        if not seconds or not (caps >> 6) & 0x03 or gate['frozen']:
-            return gate
-        if time.time() - gate['start'] < seconds:
-            return gate
-        self._snapshot_gate(lane_base, gate)
-        # Table 8-138, PatternCheckGatingCompleteFlag: "When gating is
-        # complete, this bit will be set" - per lane, for the checkers that
-        # were running (13h:160 host, 13h:168 media). Latched, cleared by the
-        # read (_COR_BYTES); the mock never set it, so a gated result had no
-        # signal that it was ready.
-        p14 = (self._registers.get(0x14) if lane_base == 0
-               else self._registers.get((0x14, lane_base // 8)))
-        if p14 is not None:
-            p14[0x86] = p14.get(0x86, 0) | p13.get(0xA0, 0)
-            p14[0x87] = p14.get(0x87, 0) | p13.get(0xA8, 0)
-        if b177 & 0x10 and caps & 0x04:
-            self._restart_counting(lane_base, gate)
-        else:
-            gate['frozen'] = True
+        if not (caps >> 6) & 0x03:
+            seconds = None
+        while cursor < now:
+            boundary = gate['start'] + seconds if seconds else now
+            end = min(now, boundary)
+            self._count_errors(lane_base, p13, end - cursor, cursor)
+            cursor = end
+            if seconds is None or end < boundary:
+                break
+            self._snapshot_gate(lane_base, gate)
+            p14 = self._registers.get(0x14 if not lane_base
+                                      else (0x14, lane_base // 8))
+            if p14 is not None:
+                p14[0x86] = p14.get(0x86, 0) | p13.get(0xA0, 0)
+                p14[0x87] = p14.get(0x87, 0) | p13.get(0xA8, 0)
+            if b177 & 0x10 and caps & 0x04:
+                for key in self._checking(lane_base):
+                    self._counts[key] = [0.0, 0.0]
+                gate['start'] = boundary
+            else:
+                gate['frozen'] = True
+                break
         return gate
 
     def _gate_control(self, lane_base: int, old: int, new: int) -> None:
@@ -3859,20 +3950,14 @@ class MockBackend(I2CInterface):
             self._restart_counting(lane_base, gate)
 
     def _ber_now(self, lane_base: int):
-        """The running BER per lane of a bank, (host, media).
-
-        lane * pi/4 comes back to where it started every eight lanes, which
-        is exactly the period that makes bank 1 a copy of bank 0 - and a
-        reader taking bank 0's window for every bank indistinguishable from
-        a correct one. The bank term is zero for bank 0."""
         t = time.time() - self._start_time
-        base_ber = self._profile['base_ber']
         out = []
         for li in range(8):
-            phase = (lane_base + li) * math.pi / 4 + lane_base * 0.37
-            out.append((
-                base_ber * (1.0 + 0.20 * math.sin(2 * math.pi * t / 30.0 + phase)),
-                base_ber * (1.0 + 0.25 * math.sin(2 * math.pi * t / 35.0 + phase))))
+            row = []
+            for side in ('host', 'media'):
+                base, amplitude, period, phase = self._ber_parameters(side, lane_base + li)
+                row.append(base * (1 + amplitude * math.sin(2 * math.pi * t / period + phase)))
+            out.append(tuple(row))
         return out
 
     def _power_up_data_paths(self) -> None:
@@ -4434,6 +4519,7 @@ class MockBackend(I2CInterface):
             raise IOError('WRITE of %d bytes at 0x%02X rejected: a WRITE '
                           'carries at most 8 bytes (5.2.2.2)'
                           % (len(data), register))
+        self._update_dynamic_values()
         data = self._intercept_write(register, data)
         if register < 0x80:
             page_dict = self._registers.setdefault(None, {})
@@ -4472,7 +4558,9 @@ class MockBackend(I2CInterface):
                         page_dict[register + i] = (
                             0 if self._write_only(self._current_page,
                                                   register + i) else b)
-            if self._current_page == 0x9F and register <= 129 < register + len(data):
+            if (self._current_page == 0x9F and register <= 129 < register + len(data)
+                    and (self._registers[0x01].get(165, 0) & 0x80
+                         or (len(data) in (1, 2) and register + len(data) == 130))):
                 self._cdb_trigger(self._current_bank)
             for p13, before in engines:
                 self._engines_changed(p13, before)

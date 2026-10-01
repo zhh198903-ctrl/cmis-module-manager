@@ -865,7 +865,7 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 
 ## 没有硬件时
 
-内置 10 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
+内置 12 个 mock，`connect` 时把 `backend` 换成下面任一个即可，不接适配器也能跑通全流程：
 
 | backend | 模拟的模块 |
 |---|---|
@@ -875,12 +875,14 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 | `mock_coherent` | 800GBASE-LR1 相干 lite（DP-16QAM，SMF 10km，802.3dj） |
 | `mock_coherent_zr` | 800G 相干可调谐（C 波段 DWDM，ZR 级）—— 偏置 180 mA、声明 ×2 刻度 |
 | `mock_1600g_dr8` | 1.6TBASE-DR8（8 × 106.25 GBd PAM4，SMF 500m，802.3dj） |
-| `mock_1600g_16lane` | 1.6T 16×100G 主机侧（1.6TAUI-16 C2M，两个 bank） |
+| `mock_1600g_16lane` | 16×100G / 2×800G 独立应用（两个 Bank 管理演示） |
 | `mock_24lane` | 24 通道 / 三个 bank —— 走 CMIS 5.4 的通道数逃逸路径 |
 | `mock_zr16` | 16 通道可调谐 —— Page 12h 有第二个 bank（调谐页按介质通道分 bank，每 bank 8 条）|
 | `mock_fewmon` | 只实现部分监控项（`01h:159-160`）—— 没有电压/发送光功率/偏置电流 |
+| `mock_aoc` | 400G 有源光缆，20 m —— 介质不可分离，有线缆长度和传播时延（`01h:148-149`）|
+| `mock_flat_dac` | 3 m 无源铜缆 DAC，**平坦内存** —— 只有 Lower 和 Page 00h，读分页的接口会说明不适用 |
 
-后六个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块。
+后八个是专门用来试边界的：能力较弱的模块、需要刻度倍数的模块、跨 bank 的宽模块、线缆组件和平坦内存。
 **主机软件该处理的分支，用这几个 mock 就能全部走到。**
 
 ## 裸寄存器读写的五条注意
@@ -901,7 +903,8 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
    模块没声明 01h:251.3-2 时为 `null`）。出厂 host 密码 `0000 1011h`；演示模块的 module 密码 `8BADF00D`。
    只写字节（`write_only`）读回是 0，不要拿读回值判断写没写进去。
 5. **CDB 页的 Bank 是 CDB 实例**（7.2）—— `9Fh`、`A0h-AFh` 的 bank 0 = 实例 1、bank 1 = 实例 2，上限是
-   `01h:163.7-6` 的实例数，与通道 bank 数无关。写到 `9Fh:129` 会发出 CDB 命令；回复带
+   `01h:163.7-6` 的实例数，与通道 bank 数无关。触发格式取决于 `01h:165.7`：方法 0 只接受结束于
+   `9Fh:129` 的一/二字节 WRITE；方法 1 接受包含该字节的多字节 WRITE（最多八字节）。先写参数，再按广告触发命令；回复带
    `cdb: {mode, hold_off_ms}`：前台模式下模块在命令执行完之前拒绝一切访问，工具会在这段时间内重试，
    别自己在这段时间里判定「模块掉线」。
 
@@ -910,3 +913,5 @@ capabilities 里:`module_subtype_name`(Lower 60,SFF-8024 Table 4-11,按 Identifi
 MIT 开源，免费，可商用。
 源码与发布：`https://github.com/zhh198903-ctrl/cmis-module-manager`
 下载站：`http://106.14.76.130`（右下角对话框可以直接问作者）
+
+Mock 诊断说明：当前应用、Host/Media 和 Checker 的 FEC 位置决定合成测试比特流的速率。解码前/后分别为独立演示夹具，不运行 FEC 解码算法；API measurement.model 返回测量面、速率和假设。不能据此推断 IEEE PHY、BLER 或最新 dj 草案合规。ZR profile 广告 800ZR-A/B、DP-16QAM，默认 150 GHz；额外调谐栅格属于管理测试夹具。

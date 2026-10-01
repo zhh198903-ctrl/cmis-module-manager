@@ -164,6 +164,48 @@ function toast(message, type = 'info', durationMs = 3000) {
 }
 
 // ---------------------------------------------------------------------------
+// Numbers typed by the operator
+// ---------------------------------------------------------------------------
+// A typo has to come back as an error, not as another number. parseInt stops
+// at the first character it does not know, so "10h" - how CMIS writes Page
+// 10h - read as decimal 10, "0x1G" as 1 and "CX" as 0Ch, and the server,
+// which refuses junk, only ever saw the tidy result.
+
+// Hex as 0x50 or 50h, decimal as 80; NaN for anything else.
+function parseHexOrDec(s) {
+  s = String(s ?? '').trim();
+  if (/^0x[0-9a-f]+$/i.test(s)) return parseInt(s.slice(2), 16);
+  if (/^[0-9a-f]+h$/i.test(s)) return parseInt(s.slice(0, -1), 16);
+  if (/^[0-9]+$/.test(s)) return parseInt(s, 10);
+  return NaN;
+}
+
+// What a number box holds, or NaN. A box holding text the browser cannot read
+// reports "" - the same as an empty one - and sets validity.badInput, so the
+// two are told apart there; `parseInt(..) || 0` made both a zero, and "1.5" a
+// one.
+function boxNumber(el, { empty = NaN, signed = false, real = false } = {}) {
+  if (!el || (el.validity && el.validity.badInput)) return NaN;
+  const s = String(el.value ?? '').trim();
+  if (s === '') return empty;
+  if (real) return Number.isFinite(Number(s)) ? Number(s) : NaN;
+  return (signed ? /^[+-]?[0-9]+$/ : /^[0-9]+$/).test(s) ? parseInt(s, 10) : NaN;
+}
+
+// Hex bytes separated by spaces or commas, each 1E, 0x1E or 1Eh. A token that
+// is none of these is returned in `bad` rather than parsed as far as it goes.
+function parseHexBytes(text) {
+  const tokens = String(text ?? '').split(/[\s,]+/).filter(Boolean);
+  const bad = tokens.filter(t => !/^(0x)?[0-9a-f]+$/i.test(t)
+                                 && !/^[0-9a-f]+h$/i.test(t));
+  return {
+    bad,
+    bytes: bad.length ? [] : tokens.map(
+      t => parseInt(t.replace(/^0x/i, '').replace(/h$/i, ''), 16)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Display preferences
 // ---------------------------------------------------------------------------
 // Everything lands on <html>: the post-update screen replaces document.body
@@ -310,7 +352,7 @@ async function applyPort(input, msg) {
     msg.textContent = text;
     msg.classList.toggle('is-error', !!isError);
   };
-  const port = parseInt(String(input.value).trim(), 10);
+  const port = boxNumber(input);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
     say('Enter a whole number from 1024 to 65535.', true);
     input.focus();
@@ -420,13 +462,15 @@ async function loadBackends() {
 
 async function connectModule() {
   const backend = document.getElementById('sel-backend').value;
-  const bus     = parseInt(document.getElementById('inp-bus').value, 10) || 0;
+  const bus     = boxNumber(document.getElementById('inp-bus'), { empty: 0 });
   const addrStr = document.getElementById('inp-address').value.trim() || '0x50';
-  const address = addrStr.startsWith('0x') || addrStr.startsWith('0X')
-    ? parseInt(addrStr, 16)
-    : parseInt(addrStr, 10);
+  const address = parseHexOrDec(addrStr);
+  if (Number.isNaN(bus)) {
+    toast('Invalid bus: a whole number, 0 for the first adapter', 'error');
+    return;
+  }
   if (Number.isNaN(address)) {
-    toast(`Invalid I2C address: ${addrStr}`, 'error');
+    toast(`Invalid I2C address: ${addrStr} - write 0x50, 50h or 80`, 'error');
     return;
   }
 
@@ -2044,8 +2088,13 @@ function renderFirmwareLoads(fl) {
 
 async function resetAcqCounters() {
   const raw = document.getElementById('acq-reset-lanes').value.trim();
-  const lanes = raw.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AppState.lanes);
-  if (!lanes.length) { toast('Enter the lanes to reset, e.g. 1,3,9', 'error'); return; }
+  const tokens = raw.split(/[\s,]+/).filter(Boolean);
+  if (!tokens.length) { toast('Enter the lanes to reset, e.g. 1,3,9', 'error'); return; }
+  // Every lane goes to the server, which names the ones this module lacks.
+  // Dropped here, "1,3,99" reset lanes 1 and 3 and reported success.
+  const bad = tokens.filter(t => !/^[0-9]+$/.test(t));
+  if (bad.length) { toast(`Not a lane number: ${bad.join(', ')}`, 'error'); return; }
+  const lanes = tokens.map(t => parseInt(t, 10));
   const r = await apiPost('/api/module/acq_counters/reset', { lanes, side: 'both' });
   toast(r.status === 'ok' ? `Counters reset on lane ${lanes.join(', ')}`
                           : `Reset failed: ${r.message}`,
@@ -2073,7 +2122,14 @@ function mlsResultCell(l) {
 async function applyMls(commit) {
   const raw = document.getElementById('mls-mapping').value.trim();
   const body = { enable: document.getElementById('mls-enable').checked, commit };
-  if (raw) body.redirection = raw.split(/[\s,]+/).map(Number);
+  if (raw) {
+    // Number("") is 0, a target 7.9.3 gives lanes the module lacks: a stray
+    // comma was a lane mapped to nothing.
+    const tokens = raw.split(/[\s,]+/).filter(Boolean);
+    const bad = tokens.filter(t => !/^[0-9]+$/.test(t));
+    if (bad.length) { toast(`Not a media lane number: ${bad.join(', ')}`, 'error'); return; }
+    body.redirection = tokens.map(t => parseInt(t, 10));
+  }
   if (commit && !confirm('Commit the media lane redirection? Lanes whose target '
                          + 'changes will drop traffic.')) return;
   const r = await apiPost('/api/module/media_lane_switching', body);
@@ -4213,11 +4269,6 @@ async function loadSnr() {
 // Raw Register tab
 // ---------------------------------------------------------------------------
 
-function parseHexOrDec(s) {
-  s = (s || '').trim();
-  if (s.startsWith('0x') || s.startsWith('0X')) return parseInt(s, 16);
-  return parseInt(s, 10);
-}
 
 // Section 5.2.2.1 puts Nmax at 8 unless the module advertises full page read
 // (01h:251.1-0). The length box has always gone to 128, which is the limit
@@ -4250,7 +4301,9 @@ function _rawBankNote() {
   if (!el) return;
   const page = parseHexOrDec(document.getElementById('raw-page').value);
   const banks = Math.ceil(AppState.lanes / 8);
-  if (CDB_PAGE(page)) {
+  if (Number.isNaN(page) || page > 0xFF) {
+    el.innerHTML = 'Not a page yet <span class="reg-meta">0x11, 11h or 17</span>';
+  } else if (CDB_PAGE(page)) {
     const n = ((AppState.caps || {}).cdb || {}).instances || 0;
     el.innerHTML = (n ? `CDB page · this module has <b>${Math.min(n, 2)} CDB `
                         + `instance${n > 1 ? 's' : ''}</b> `
@@ -4309,11 +4362,23 @@ function _corWhere(b, page) {
   return where + (b.first === b.last ? b.first : `${b.first}-${b.last}`);
 }
 
+// Said here, where the message can name the box, rather than sent as a number
+// the operator did not type.
+function _rawFieldsBad(fields) {
+  const bad = Object.keys(fields).filter(k => Number.isNaN(fields[k]));
+  return bad.length
+    ? `Not a number: ${bad.join(', ')}. Page and Address take 0x11, 11h or `
+      + 'decimal 17; Length and Bank are whole decimal numbers'
+    : '';
+}
+
 async function rawRead() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
-  const length  = parseInt(document.getElementById('raw-length').value, 10) || 1;
-  const bank    = parseInt(document.getElementById('raw-bank').value, 10) || 0;
+  const length  = boxNumber(document.getElementById('raw-length'));
+  const bank    = boxNumber(document.getElementById('raw-bank'), { empty: 0 });
+  const bad = _rawFieldsBad({ Page: page, Address: address, Length: length, Bank: bank });
+  if (bad) { toast(bad, 'error', 6000); return; }
 
   const cor = _clearOnReadOverlap(page, address, length);
   if (cor.length && !confirm(
@@ -4364,13 +4429,19 @@ async function rawRead() {
 async function rawWrite() {
   const page    = parseHexOrDec(document.getElementById('raw-page').value);
   const address = parseHexOrDec(document.getElementById('raw-address').value);
-  const bank    = parseInt(document.getElementById('raw-bank').value, 10) || 0;
+  const bank    = boxNumber(document.getElementById('raw-bank'), { empty: 0 });
   const dataStr = document.getElementById('raw-data').value.trim();
 
+  const bad = _rawFieldsBad({ Page: page, Address: address, Bank: bank });
+  if (bad) { toast(bad, 'error', 6000); return; }
   if (!dataStr) { toast('Enter data bytes (space-separated hex)', 'error'); return; }
 
-  const data = dataStr.split(/\s+/).map(h => parseInt(h, 16)).filter(v => !isNaN(v));
-  if (!data.length) { toast('Invalid hex data', 'error'); return; }
+  const parsed = parseHexBytes(dataStr);
+  if (parsed.bad.length) {
+    toast(`Invalid hex data: ${parsed.bad.join(' ')} - nothing was written`, 'error', 6000);
+    return;
+  }
+  const data = parsed.bytes;
 
   const res = await apiPost('/api/register/write', { page, address, data, bank });
   const dumpEl = document.getElementById('hex-dump');
@@ -4998,9 +5069,9 @@ async function applySquelch() {
 function keptDeinitNote(res) {
   const kept = (res && res.status === 'ok' && res.data.kept_deinit) || [];
   if (!kept.length) return;
-  toast(`Lane ${kept.join(', ')}: the module refused the new configuration `
-        + '(ConfigStatus), so DP Deinit stays set - released, the Data Path '
-        + 'would come back up on the Application it had before', 'warning', 10000);
+  toast(`Lane ${kept.join(', ')}: ConfigSuccess has not been confirmed for `
+        + 'the complete Data Path (pending, undefined or rejected). '
+        + 'DP Deinit stays set; refresh ConfigStatus before trying to release it.', 'warning', 10000);
 }
 
 // Eq. 6-12: one disabled or force-squelched media lane takes its whole Data
@@ -5288,7 +5359,9 @@ function _renderPrbsTable(tbodyId, block, lolMask, base, side, lolSeen, supporte
     const tSw  = tip('SwapSymbolBits', 2, swM(b), i,
                      sw ? 'Symbol bit order swapped' : 'Normal symbol bit order');
     const tFec = tip(fecName, 3, fecM(b), i,
-                     fec ? 'Applied at the FEC-coded side' : 'Applied at the raw side');
+                     isChecker
+                       ? (fec ? 'After internal FEC decoder' : 'Before internal FEC decoder')
+                       : (fec ? 'Before internal FEC encoder' : 'After internal FEC encoder'));
 
     return `<tr>
       <td>L${i+1}</td>
@@ -5581,7 +5654,20 @@ function _renderMeasurementWindow(elId, data) {
   if (!m.controls) { el.innerHTML = ''; return; }
   const reg = (a) => `<span class="reg-meta">${a}</span>`;
   const parts = [];
-  if (caps.gating_support === 0) {
+  if (m.model) {
+    parts.push(`<b>Mock</b>: ${esc(m.model.notice)}`);
+    const streams = m.model.streams || [];
+    for (const side of ['host', 'media']) {
+      const first = streams.find(s => s.side === side && s.lane === 1);
+      if (first) parts.push(`${side} lane 1: ${esc(first.plane)}, `
+        + `${first.bits_per_s / 1e9} Gb/s test bits`);
+    }
+  }
+  if (ctl.reset_error_information) {
+    parts.push('<b>Frozen by ResetErrorInformation</b> '
+      + reg('13h:177.5 = 1') + ': counters and timer are held until cleared');
+  }
+  else if (caps.gating_support === 0) {
     parts.push('<b>Ungated</b> \u2014 this module does not gate a measurement '
       + reg('13h:129.7-6') + ', so the window is however long you leave the '
       + 'checkers running');
@@ -5636,6 +5722,7 @@ function _renderMeasurementWindow(elId, data) {
     parts.push(`<b>Bank ${b}</b> (lanes ${8 * b + 1}-${8 * b + 8}) is set `
       + `differently: ${what}`
       + (c.auto_restart_gating ? ', restarting automatically' : '')
+      + (c.reset_error_information ? ', frozen by ResetErrorInformation' : '')
       + `, updated every ${c.update_period_s} s ` + reg('13h:177, Bank ' + b));
   }
   // Table 8-137: Selectors 11h-15h hold the most recently completed gate,
@@ -6012,24 +6099,38 @@ async function loadLaser() {
 
 async function applyLaser() {
   const lanes = [];
+  const unread = [];
   for (let i = 1; i <= AppState.lanes; i++) {
     const gridSel = document.getElementById(`laser-grid-${i}`);
     const chInput = document.getElementById(`laser-ch-${i}`);
     const ftInput = document.getElementById(`laser-ft-${i}`);
     const pwrInput = document.getElementById(`laser-pwr-${i}`);
     if (!gridSel) continue;
-    const fineOffset = parseFloat(ftInput.value);
+    // A cleared box was channel 0 and 0 dBm - a real channel and a real
+    // power, sent to every lane on the page. Only the fine offset reads an
+    // empty box as none.
+    const channel = boxNumber(chInput, { signed: true });
+    const fineOffset = boxNumber(ftInput, { real: true, empty: 0 });
+    const power = boxNumber(pwrInput, { real: true });
+    const bad = [[channel, 'channel'], [power, 'target power'],
+                 [ftInput.disabled ? 0 : fineOffset, 'fine offset']]
+      .filter(([v]) => Number.isNaN(v)).map(([, name]) => name);
+    if (bad.length) { unread.push(`lane ${i} ${bad.join(', ')}`); continue; }
     lanes.push({
       lane: i,
       grid_code: parseInt(gridSel.value, 10),
-      channel: parseInt(chInput.value, 10) || 0,
+      channel,
       // A disabled box is a control the module does not have.
       ...(ftInput.disabled ? {} : {
-        fine_tuning_enabled: !Number.isNaN(fineOffset) && fineOffset !== 0,
-        fine_offset_ghz: Number.isNaN(fineOffset) ? 0 : fineOffset,
+        fine_tuning_enabled: fineOffset !== 0,
+        fine_offset_ghz: fineOffset,
       }),
-      target_power_dbm: parseFloat(pwrInput.value) || 0,
+      target_power_dbm: power,
     });
+  }
+  if (unread.length) {
+    toast(`Nothing applied - not a number: ${unread.join('; ')}`, 'error', 9000);
+    return;
   }
   const res = await apiPost('/api/module/laser', { lanes });
   if (res.status === 'ok') {

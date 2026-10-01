@@ -246,6 +246,39 @@ class CMISTestCase(unittest.TestCase):
 # 1. GET /api/backends
 # ============================================================
 
+class TunableManagementFixtureCase(CMISTestCase):
+    """Independent vendor management fixture for varied-width and grid tests.
+
+    These inputs exercise CMIS management behavior, not the twelve shipping
+    profiles' optical operating points. The shipping 800ZR-A/B defaults are
+    checked independently by TestAuditMockMeasurement and the GUI sweep.
+    """
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        factory = app_module.create_backend
+        def fixture_backend(name):
+            b = factory(name)
+            if name in ('mock_coherent_zr', 'mock_zr16'):
+                profile = dict(b.PROFILE,
+                    display='Independent tunable management fixture',
+                    initial_grid_code=5, initial_power_dbm=0,
+                    programmable_power_dbm=(-10, 3), grid_sup_129=0xA0,
+                    tx_power_uw_nom=1000, rx_power_uw_nom=158,
+                    power_thresholds_dbm={},
+                    app_descriptors=[(0x51, 0x6C, 0x81, 1),
+                                     (0x4F, 0x4D, 0x41, 1)],
+                    app_power_thresholds_dbm={2: {
+                        'tx': (3, -5, 2, -4), 'rx': (-1, -14, -2, -13)}})
+                return type('IndependentTunableFixture', (type(b),),
+                            {'PROFILE': profile,
+                             'BACKEND_NAME': name})()
+            return b
+        self.fixture_patch = patch.object(app_module, 'create_backend', side_effect=fixture_backend)
+        self.fixture_patch.start()
+        self.addCleanup(self.fixture_patch.stop)
+
+
 class TestVersion(CMISTestCase):
 
     def test_version_endpoint(self):
@@ -3025,7 +3058,7 @@ class TestTheDiagnosticsPanelOffersWhatTheModuleHas(CMISTestCase):
                       'the note element is never filled in')
 
 
-class TestATuningRequestTheLaserCannotServe(CMISTestCase):
+class TestATuningRequestTheLaserCannotServe(TunableManagementFixtureCase):
     """CMIS 5.4 Table 8-109: the module answers a tuning request in the Page
     12h Flags - InvalidChannelNumberFlagTx, TargetOutputPowerOORFlagTx and the
     rest, all RO/COR. The register was in the map and nothing read it, so the
@@ -5505,7 +5538,7 @@ class TestPageSelection(CMISTestCase):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
         src = io.open(path, encoding='utf-8').read()
         body = src.split('def _set_page(')[1].split('\ndef ')[0]
-        self.assertIn("time.sleep(_state.get('bpc_sleep')", body,
+        self.assertIn("time.sleep(max(0.010", body,
                       'the page-change hold-off is not the advertised one')
         self.assertIn("or cmis.TIMING_SECONDS['tBPC'])", body,
                       'the fallback is not tBPC from the Chapter 10 table')
@@ -5579,7 +5612,8 @@ class TestPageSelection(CMISTestCase):
                          data=json.dumps({'action': 'reset'}),
                          content_type='application/json')
         pages = self._page_writes(lambda: self.client.get('/api/module/thresholds'))
-        self.assertEqual(pages, [0x02], 'cache survived a module reset')
+        self.assertEqual(pages[-1], 0x02, 'the requested page was not selected')
+        self.assertIn(0x01, pages, 'reset did not rediscover capabilities')
 
     def test_values_still_come_from_the_right_page(self):
         """End-to-end guard: caching must not cross-contaminate pages."""
@@ -7855,7 +7889,7 @@ class TestWhichThresholdsALaneIsJudgedBy(CMISTestCase):
             return f.read()
 
 
-class TestSupervisionRelativeToTheProgrammedPower(CMISTestCase):
+class TestSupervisionRelativeToTheProgrammedPower(TunableManagementFixtureCase):
     """7.5.3: a media lane can be supervised against thresholds relative to
     its own programmed Tx output power instead of the module-wide absolute
     ones on Page 02h. The capability is advertised at 04h:196.6, the offsets
@@ -9868,23 +9902,14 @@ class TestTheActiveSetAheadOfTheHardware(CMISTestCase):
 
     # ---- the fixture earns its keep ---------------------------------------
 
-    def test_no_shipped_profile_can_change_application_without_changing_width(self):
-        """Which is why this fixture exists. If a shipped profile ever grows a
-        same-width pair, this test says so and the fixture can go."""
-        from i2c_backends import mock
-        for name in dir(mock):
-            profile = getattr(mock, name)
-            if not (name.startswith('_') and isinstance(profile, dict)
-                    and 'app_descriptors' in profile):
-                continue
-            shapes = [((d[2] >> 4) & 0x0F, d[3])
-                      for d in profile['app_descriptors']]
-            for i in range(len(shapes)):
-                for j in range(i + 1, len(shapes)):
-                    self.assertFalse(
-                        shapes[i][0] == shapes[j][0]
-                        and shapes[i][1] & shapes[j][1],
-                        '%s can express a same-width reconfiguration' % name)
+    def test_shipped_profiles_include_a_same_width_power_application(self):
+        """800ZR-A/B uses the same host width; power-class changes need not resize it."""
+        from i2c_backends.mock import _ZR_800G
+        apps = _ZR_800G['app_descriptors']
+        self.assertEqual([d[0] for d in apps], [0x51, 0x51])
+        self.assertEqual([d[1] for d in apps], [0x6C, 0x6D])
+        self.assertEqual([d[2] for d in apps], [0x81, 0x81])
+
 
     # ---- Table 6-3: copy and cycle ----------------------------------------
 
@@ -11281,7 +11306,7 @@ class TestTheWindowTheseNumbersCover(CMISTestCase):
             m = self._window(endpoint)
             self.assertEqual(sorted(m), ['banks_that_differ', 'capabilities',
                                          'controls', 'controls_banks',
-                                         'start_stop_scope'],
+                                         'model', 'start_stop_scope'],
                              '%s reports no window' % endpoint)
             self.assertEqual(sorted(m['controls']),
                              ['auto_restart_gating', 'custom_gate',
@@ -12047,7 +12072,7 @@ class TestHowLongTheModuleSaidItNeeds(CMISTestCase):
                         'the shortened hold-off is used before it is read')
         # The fallback is the ceiling Table 10-4 sets, named rather than
         # spelled: a literal here is a number nobody can trace back.
-        self.assertIn("time.sleep(_state.get('bpc_sleep')", src,
+        self.assertIn("time.sleep(max(0.010", src,
                       'the page hold-off no longer falls back at all')
         self.assertIn("or cmis.TIMING_SECONDS['tBPC'])", src,
                       'the fallback is a bare literal again')
@@ -13817,7 +13842,7 @@ class TestAnApplyTheModuleWouldHaveThrownAway(CMISTestCase):
                       'the Apply refusal is shown for the default 3 seconds')
 
 
-class TestTheHostConfiguresDataPathsInLowPower(CMISTestCase):
+class TestTheHostConfiguresDataPathsInLowPower(TunableManagementFixtureCase):
     """8.13.1: "The module evaluates this Byte only in Module State
     ModuleReady" - and in the same paragraph, "The host can prevent this
     auto-initialization behavior by setting all DPDeinit bits while the
@@ -15682,7 +15707,7 @@ class TestTheWindowsHidTransport(CMISTestCase):
             self.assertIn('driver', info['description'])
 
 
-class TestTuningAModuleWiderThanOneBank(CMISTestCase):
+class TestTuningAModuleWiderThanOneBank(TunableManagementFixtureCase):
     """Page 12h is banked by media lane: "Each Bank of Page 12h refers to 8
     media lanes" (CMIS 5.4, 8.15). The read side already walked every bank, so
     the tuning table offers a row per lane on a wide module - but the write
@@ -15818,14 +15843,13 @@ class TestTuningAModuleWiderThanOneBank(CMISTestCase):
         self.assertEqual(before[1]['channel'], after[1]['channel'])
 
 
-class TestTheMockKeepsItsTuningBanksApart(CMISTestCase):
+class TestTheMockKeepsItsTuningBanksApart(TunableManagementFixtureCase):
     """The mock has to model the banking for any of the above to mean
     anything: a mock that mirrors bank 1 into bank 0 makes a bank-blind host
     look correct."""
 
     def _backend(self):
-        from i2c_backends.mock import MockZR16LaneBackend
-        b = MockZR16LaneBackend()
+        b = app_module.create_backend('mock_zr16')
         b.connect(0, 0x50)
         return b
 
@@ -16244,7 +16268,7 @@ class TestAMonitorTheModuleDoesNotHave(CMISTestCase):
             self.assertIsNotNone(lane['tx_bias_ma'], name)
             self.assertIsNotNone(lane['tx_power_dbm'], name)
 
-    def test_nothing_is_hidden_when_the_advertisement_was_never_read(self):
+    def test_unconfirmed_monitors_are_not_reported_as_readings(self):
         """With no capabilities at all, hiding every reading would be the
         worse error - the tool would report a module with no monitors."""
         import app as app_module
@@ -16252,8 +16276,8 @@ class TestAMonitorTheModuleDoesNotHave(CMISTestCase):
         self._connect('mock_dr8')
         try:
             app_module._state['caps'] = {}
-            self.assertIsNotNone(self._status()['voltage_v'])
-            self.assertIsNotNone(self._monitoring()['lanes'][0]['tx_bias_ma'])
+            self.assertIsNone(self._status()['voltage_v'])
+            self.assertIsNone(self._monitoring()['lanes'][0]['tx_bias_ma'])
         finally:
             app_module._state['caps'] = saved
 
@@ -18848,7 +18872,7 @@ class TestAMediaLaneTheModuleDoesNotHave(CMISTestCase):
         self.assertIn('absentLane', body)
 
 
-class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
+class TestTheTuningTableFollowsMediaLanes(TunableManagementFixtureCase):
     """8.15 is explicit: "Each Bank of Page 12h refers to 8 media lanes", and
     every subject area in Table 8-108 is "an array with one ... per media
     lane" - grid spacing, channel offset, fine tuning, laser frequency,
@@ -18955,7 +18979,7 @@ class TestTheTuningTableFollowsMediaLanes(CMISTestCase):
         self.assertFalse(r['data']['tunable'])
 
 
-class TestPage62hThresholdsFollowMediaLanes(CMISTestCase):
+class TestPage62hThresholdsFollowMediaLanes(TunableManagementFixtureCase):
     """Table 8-192 describes 62h:128-191 as "Per-media-lane warning and alarm
     thresholds", and 8.32 titles the page "Lane Supervision Thresholds".
 
@@ -20937,18 +20961,13 @@ class TestTheDiagnosticPagesAreAdvertisedToo(CMISTestCase):
             self.client.get(ep)
         self.assertEqual(app_module._state['backend']._page_redirects, [])
 
-    def test_an_unreadable_capability_block_does_not_refuse(self):
-        """The default matters only when discovery failed, and this file has
-        a settled answer for that: "A module that cannot answer the capability
-        block is still usable at the default eight lanes; failing the whole
-        connection over an optional advertisement would be worse." Refusing
-        the diagnostics panels there would be the same mistake one layer up -
-        the module may well have the pages."""
+    def test_an_unknown_capability_does_not_authorize_access(self):
+        """Unknown advertisements cannot authorize optional page access."""
         import app as app_module
         self._connect()
         app_module._state['caps'].pop('diagnostic_pages_supported', None)
         for ep in self.ENDPOINTS:
-            self.assertEqual(self.client.get(ep).status_code, 200, ep)
+            self.assertEqual(self.client.get(ep).status_code, 409, ep)
 
     def test_the_other_optional_pages_keep_their_gates(self):
         """The precedent this follows. If one of those were removed the sweep
@@ -26420,7 +26439,7 @@ class TestWhereAnApplicationMayBegin(CMISTestCase):
                       'the marker is built and never placed in the row')
 
 
-class TestWhichMediaLanesADataPathUses(CMISTestCase):
+class TestWhichMediaLanesADataPathUses(TunableManagementFixtureCase):
     """The host picks host lanes. The media lanes follow from them, and 7.9.1
     makes the derivation fixed:
 
@@ -29242,7 +29261,7 @@ class TestAMediaSideEngineForALaneThatIsNotThere(CMISTestCase):
                       "table = 'Table 8-79')", body)
         self.assertIn("+ table +", body)
 
-class TestEveryBankedPageHearsTheBroadcast(CMISTestCase):
+class TestEveryBankedPageHearsTheBroadcast(TunableManagementFixtureCase):
     """Table 8-11: with BankBroadcastEnable (Lower 0x1A.7) set, "a WRITE to a
     control register (i.e. to a register with RW or WO access) in any bank of
     a lane-banked page is executed as a bank broadcast".
@@ -29934,7 +29953,7 @@ class TestAMonitorIsReadAtItsOwnSize(CMISTestCase):
         torn = int.from_bytes(bytes(data[:2]), 'big')
         self.assertGreaterEqual(abs(torn - whole), 120)
 
-class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
+class TestAWriteMayHoldOffTheNextAccess(TunableManagementFixtureCase):
     """Table 10-4: after a WRITE the module may reject every ACCESS for up to
     tWRITE (10 ms; tNACK on the I2C bus), and for up to tWRITENV (80 ms)
     after a write to non-volatile memory - the user EEPROM on Page 03h
@@ -30020,11 +30039,11 @@ class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
         """The window is Table 10-4's. Past it a NACK is a fault, and the
         retry must not turn into a hang."""
         self._connect('mock_dr8', holdoff=5.0)
-        started = time.monotonic()
+        started = time.perf_counter()
         body = self.assertErr(self._post('/api/module/squelch',
                                          {'tx_squelch_force': 0x00}), 500)
         self.assertIn('NACK', body['message'])
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, 1.0)
 
     def test_nothing_is_retried_without_a_write_before_it(self):
         """No hold-off is running, so a rejected READ is a real failure."""
@@ -30051,7 +30070,7 @@ class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
         try:
             for page, window in ((0x03, 0.080), (0x10, 0.010)):
                 _state['page'] = page
-                before = time.monotonic()
+                before = time.perf_counter()
                 app_module._bus_write(0x90, bytes([0]))
                 left = _state['holdoff_until'] - before
                 self.assertAlmostEqual(left, window, delta=0.005,
@@ -30067,7 +30086,7 @@ class TestAWriteMayHoldOffTheNextAccess(CMISTestCase):
         saved = _state['page']
         try:
             _state['page'] = 0x03
-            before = time.monotonic()
+            before = time.perf_counter()
             app_module._bus_write(0x1A, _state['backend'].read_bytes(0x1A, 1))
             self.assertAlmostEqual(_state['holdoff_until'] - before, 0.010,
                                    delta=0.005)
@@ -30305,9 +30324,9 @@ class TestAResetIsWaitedOutFromMgmtInit(CMISTestCase):
     def test_the_first_read_after_a_reset_waits_for_the_module(self):
         self._connect(mgmt_init=0.3)
         self._control({'action': 'reset'})
-        started = time.monotonic()
+        started = time.perf_counter()
         d = self.assertOk(self.client.get('/api/module/status'))['data']
-        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        self.assertGreaterEqual(time.perf_counter() - started, 0.2)
         self.assertIsNotNone(d['module_state'])
 
     def test_every_panel_reads_after_a_reset(self):
@@ -30325,20 +30344,20 @@ class TestAResetIsWaitedOutFromMgmtInit(CMISTestCase):
         c.TIMING_SECONDS['tMgmtInit'] = 0.2
         try:
             self._control({'action': 'reset'})
-            started = time.monotonic()
+            started = time.perf_counter()
             rv = self.client.get('/api/module/status')
         finally:
             c.TIMING_SECONDS['tMgmtInit'] = saved
         self.assertNotEqual(rv.status_code, 200)
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, 1.0)
 
     def test_only_a_reset_opens_the_long_window(self):
         self._connect()
         self._control({'action': 'low_power'})
-        left = _state['holdoff_until'] - time.monotonic()
+        left = _state['holdoff_until'] - time.perf_counter()
         self.assertLess(left, 0.05, 'a low power request is not a reset')
         self._control({'action': 'reset'})
-        left = _state['holdoff_until'] - time.monotonic()
+        left = _state['holdoff_until'] - time.perf_counter()
         self.assertGreater(left, 1.5)
 
     def test_the_constant_is_the_table_s(self):
@@ -30886,7 +30905,7 @@ class TestTheLaneNumbersMayBeNominal(CMISTestCase):
         self.assertIn('nominal', body)
         self.assertIn("show('card-hls', !!d.host_lane_switching);", js)
 
-class TestThresholdsFollowTheApplication(CMISTestCase):
+class TestThresholdsFollowTheApplication(TunableManagementFixtureCase):
     """Section 8.5: Page 02h's thresholds "can depend on the commissioned set
     of Applications and therefore may change (including the checksum)
     whenever a new Application is commissioned" - updated "when the relevant
@@ -32236,11 +32255,11 @@ class TestEachBankHasItsOwnPatternSettings(CMISTestCase):
         self.assertEqual(m['banks_that_differ'], [])
         self.assertEqual(len(m['controls_banks']), 2)
 
-    def test_a_reset_in_progress_is_not_a_different_window(self):
-        """ResetErrorInformation and StartStopIsGlobal are not the window."""
+    def test_a_reset_freeze_is_a_different_window(self):
+        """A held reset freezes counting and must be reported per Bank."""
         self._connect()
         self._bank1()[0xB1] = (self._bank1().get(0xB1, 0) | 0xA0)
-        self.assertEqual(self._window()['banks_that_differ'], [])
+        self.assertEqual(self._window()['banks_that_differ'], [1])
 
     def test_an_auto_restart_or_update_period_counts(self):
         self._connect()
@@ -32286,6 +32305,7 @@ class TestEachBankHasItsOwnPatternSettings(CMISTestCase):
             'const m=s.match(/function _renderMeasurementWindow\\([\\s\\S]*?\\r?\\n}\\r?\\n/);'
             'if(!m)throw new Error("missing");'
             'const el={innerHTML:""};global.document={getElementById:()=>el};'
+            r'eval(s.match(/const esc = [\s\S]*?\r?\n\r?\n/)[0].replace("const esc", "var esc"));'
             'eval(m[0]);_renderMeasurementWindow("x",' + json.dumps(data) + ');'
             'process.stdout.write(JSON.stringify(el.innerHTML));')
         out = subprocess.run([node, '-e', script, src], capture_output=True,
@@ -32318,7 +32338,7 @@ class TestEachBankHasItsOwnPatternSettings(CMISTestCase):
             "Object.keys(ROLE_LABEL).filter(k => cs[k] && cs[k].uses_reference)", js)
 
 
-class TestAnotherChannelOnlyWithTheDataPathDown(CMISTestCase):
+class TestAnotherChannelOnlyWithTheDataPathDown(TunableManagementFixtureCase):
     """Section 7.5.2: "When selecting another optical channel (grid spacing
     or channel number), the module must be in the DPDeactivated state.
     Attempts to change the optical channel ... while the corresponding Data
@@ -33872,7 +33892,7 @@ class TestThe54BadgeMarksOnlyWhat54Added(CMISTestCase):
         self.assertIn('这一页是 <b>CMIS 5.3</b> 引入的', sec)
 
 
-class TestFineTuningIsAnAdvertisedControl(CMISTestCase):
+class TestFineTuningIsAnAdvertisedControl(TunableManagementFixtureCase):
     """Table 8-109: FineTuningEnableTx (12h:128.0) and FineTuningOffsetTx
     (12h:152-167) are "RW Adv." with "Advertisement: 04h:129", and a CMIS
     5.4 bug fix says so outright: "Fine Tuning controls on Page 12h are
@@ -33978,7 +33998,7 @@ class TestFineTuningIsAnAdvertisedControl(CMISTestCase):
         self.assertIn('...(ftInput.disabled ? {} : {', js)
 
 
-class TestAGridIsOfferedWhereItIsAdvertised(CMISTestCase):
+class TestAGridIsOfferedWhereItIsAdvertised(TunableManagementFixtureCase):
     """Table 8-68: 04h:128 bit n is GridSupported for GridSpacingTx code n
     (3.125 to 75 GHz), 04h:129.6 the 150 GHz grid and 04h:129.5 the 300 GHz
     one; the channel ranges at 04h:130-169 are RO Rqd for every grid.
@@ -35976,7 +35996,7 @@ class TestTheManualListsEveryRuntimeRow(CMISTestCase):
         self.assertIn('ModuleFaultCause', s7)
 
 
-class TestTuningCompletesWhenTheLaserIsUp(CMISTestCase):
+class TestTuningCompletesWhenTheLaserIsUp(TunableManagementFixtureCase):
     """Table 6-21 makes TuningCompleteFlagTx N/A in DPDeactivated, DPInit and
     DPDeinit, and 6.3.4.2 says "the module shall not set that Flag" there -
     while 7.5.2 allows a new grid or channel only in DPDeactivated. The demo
@@ -39081,8 +39101,8 @@ class TestACdbCommandIsWaitedFor(CMISTestCase):
 
     def _wait_done(self):
         backend = app_module._state['backend']
-        deadline = time.monotonic() + 1.0
-        while backend._cdb_running and time.monotonic() < deadline:
+        deadline = time.perf_counter() + 1.0
+        while backend._cdb_running and time.perf_counter() < deadline:
             time.sleep(0.005)
             try:
                 backend._held_off()
@@ -40830,7 +40850,7 @@ class TestJunkInputIsRefusedNotTruncated(CMISTestCase):
         self.assertIn('patterns.push(sel ? parseInt(sel.value, 10) : 0);', js)
 
 
-class TestTheLaserAndConnectRefuseJunkToo(CMISTestCase):
+class TestTheLaserAndConnectRefuseJunkToo(TunableManagementFixtureCase):
     """The sweep behind the previous release reached the laser endpoint on a
     module that is not tunable, where every request is refused for that
     reason alone - so it said nothing about the fields. On the tunable demo
@@ -41438,6 +41458,431 @@ class TestTheFaqMatchesTheTool(CMISTestCase):
         self.assertNotIn('它们是二选一,不是相加', self._manual())
 
 
+class TestTypedNumbersAreReadOrRefused(CMISTestCase):
+    """The server has refused junk since v2.204.0, but the page parsed what
+    was typed before sending it, with parseInt: it stops at the first
+    character it does not know. "50h" - how CMIS writes the module's address
+    - connected to decimal 50, 32h; "10h" in the Raw page box read Page 0Ah;
+    Write Data "AA CX DD" wrote AA 0C DD and "12,34" wrote 12 alone; a
+    cleared Target Power box sent 0 dBm to every lane of the laser table;
+    "1,3,99" reset lanes 1 and 3 and said so. The server saw only the tidy
+    result, so none of it was refused.
+
+    app.js is loaded into Node, the boxes are filled as the operator would
+    fill them, and what the page then sends - or that it sends nothing - is
+    what is checked."""
+
+    HARNESS = r'''
+const fs = require('fs'), vm = require('vm');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const handler = {
+  get(t, p) {
+    if (p === Symbol.toPrimitive) return () => '';
+    if (p === Symbol.iterator) return function* () {};
+    if (p === 'then') return undefined;
+    return P;
+  },
+  apply() { return P; }, construct() { return P; }, set() { return true; },
+};
+const P = new Proxy(function () {}, handler);
+let fields = {};
+const element = id => {
+  const f = fields[id];
+  if (!f) return P;
+  return new Proxy(function () {}, {
+    get(t, p) {
+      if (p === 'value') return f.value;
+      if (p === 'disabled') return !!f.disabled;
+      if (p === 'checked') return !!f.checked;
+      if (p === 'validity') return { badInput: !!f.badInput };
+      if (p === 'textContent') return f.text || '';
+      return handler.get(t, p);
+    },
+    set(t, p, v) {
+      if (p === 'textContent') f.text = String(v);
+      if (p === 'innerHTML') f.html = String(v);
+      return true;
+    },
+    apply() { return P; },
+  });
+};
+global.document = new Proxy({}, {
+  get(t, p) { return p === 'getElementById' ? element : P; },
+});
+for (const n of ['window', 'localStorage', 'sessionStorage', 'navigator',
+                 'location', 'history', 'matchMedia', 'getComputedStyle',
+                 'alert', 'EventSource']) global[n] = P;
+global.confirm = () => true;
+for (const n of ['setInterval', 'clearInterval', 'setTimeout',
+                 'clearTimeout', 'requestAnimationFrame']) global[n] = () => 0;
+global.MutationObserver = function () { return P; };
+global.ResizeObserver = function () { return P; };
+let posts = [];
+global.fetch = async (path, opts) => {
+  if (opts && opts.method === 'POST') {
+    posts.push([String(path), JSON.parse(opts.body)]);
+  }
+  return { status: 200, json: async () => ({ status: 'error', message: 'stub' }) };
+};
+vm.runInThisContext(src);
+global.__toasts = [];
+vm.runInThisContext('toast = (m, type) => { __toasts.push([String(type), '
+                    + 'String(m)]); };');
+vm.runInThisContext('AppState.connected = true; AppState.caps = {};');
+(async () => {
+  const num = v => Number.isNaN(v) ? 'NaN' : v;
+  const out = {
+    parse: input.parse.map(s => num(vm.runInThisContext('parseHexOrDec')(s))),
+    bytes: input.bytes.map(s => vm.runInThisContext('parseHexBytes')(s)),
+    cases: [],
+  };
+  for (const c of input.cases) {
+    fields = c.fields; posts = []; __toasts.length = 0;
+    vm.runInThisContext('AppState.lanes = ' + (c.lanes || 8));
+    const args = (c.args || []).map(
+      a => typeof a === 'string' && a[0] === '#' ? element(a.slice(1)) : a);
+    await vm.runInThisContext(c.fn)(...args);
+    out.cases.push({ posts, toasts: __toasts.slice(), fields });
+  }
+  process.stdout.write(JSON.stringify(out));
+})().catch(e => { process.stderr.write(String(e && e.stack || e));
+                  process.exit(1); });
+'''
+
+    def _run(self, parse=(), bytes_=(), cases=()):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        out = subprocess.run(
+            [node, '-e', self.HARNESS, src],
+            input=json.dumps({'parse': list(parse), 'bytes': list(bytes_),
+                              'cases': list(cases)}),
+            capture_output=True, text=True, encoding='utf-8')
+        if out.returncode:
+            raise AssertionError(out.stderr[-800:])
+        return json.loads(out.stdout)
+
+    def _case(self, fn, fields, lanes=8, args=()):
+        res = self._run(cases=[{'fn': fn, 'fields': fields, 'lanes': lanes,
+                                'args': list(args)}])
+        return res['cases'][0]
+
+    def _errors(self, case):
+        return [m for t, m in case['toasts'] if t == 'error']
+
+    def test_a_register_number_is_hex_as_written_or_nothing(self):
+        typed = ['0x50', '50h', '80', '0X1f', '1Fh', '10h', ' 0x11 ',
+                 '0x1G', '5O', '', 'A0', '0x', 'h', '1.5', '-1', '0x50h']
+        got = self._run(parse=typed)['parse']
+        self.assertEqual(len(got), len(typed))
+        self.assertEqual(got, [80, 80, 80, 31, 31, 16, 17] + ['NaN'] * 9)
+
+    def test_hex_bytes_are_each_a_byte_or_the_write_is_refused(self):
+        typed = ['1E 50 00', '0x1E,50h  0', 'AA CX DD', '12,34', '0G']
+        got = self._run(bytes_=typed)['bytes']
+        self.assertEqual(got, [
+            {'bad': [], 'bytes': [0x1E, 0x50, 0x00]},
+            {'bad': [], 'bytes': [0x1E, 0x50, 0x00]},
+            {'bad': ['CX'], 'bytes': []},
+            {'bad': [], 'bytes': [0x12, 0x34]},
+            {'bad': ['0G'], 'bytes': []},
+        ])
+
+    def test_connect_reads_50h_as_the_module_address(self):
+        def fields(bus, addr, bad_bus=False):
+            return {'sel-backend': {'value': 'mock_dr8'},
+                    'inp-bus': {'value': bus, 'badInput': bad_bus},
+                    'inp-address': {'value': addr}}
+        ok = self._case('connectModule', fields('0', '50h'))
+        self.assertEqual(ok['posts'], [['/api/connect', {
+            'backend': 'mock_dr8', 'bus': 0, 'address': 0x50}]])
+        # And the server takes it as the module's address.
+        self.assertOk(self.client.post(
+            '/api/connect', data=json.dumps(ok['posts'][0][1]),
+            content_type='application/json'))
+        self.assertEqual(self._case('connectModule', fields('', '80'))['posts'],
+                         [['/api/connect', {'backend': 'mock_dr8', 'bus': 0,
+                                            'address': 80}]])
+        for bus, addr, bad_bus, word in (('0', '5O', False, '5O'),
+                                         ('0', '0x5G', False, '0x5G'),
+                                         ('', '0x50', True, 'bus'),
+                                         ('-1', '0x50', False, 'bus'),
+                                         ('1.5', '0x50', False, 'bus')):
+            case = self._case('connectModule', fields(bus, addr, bad_bus))
+            self.assertEqual(case['posts'], [], (bus, addr))
+            self.assertEqual(len(self._errors(case)), 1, (bus, addr))
+            self.assertIn(word, self._errors(case)[0])
+
+    def _raw(self, page='0x10', address='0x80', length='8', bank='0',
+             data='', bad_bank=False):
+        return {'raw-page': {'value': page}, 'raw-address': {'value': address},
+                'raw-length': {'value': length},
+                'raw-bank': {'value': bank, 'badInput': bad_bank},
+                'raw-data': {'value': data}}
+
+    def test_raw_write_writes_what_was_typed_or_nothing(self):
+        case = self._case('rawWrite', self._raw('10h', '80h', data='12,34'))
+        self.assertEqual(case['posts'][:1], [['/api/register/write', {
+            'page': 0x10, 'address': 0x80, 'data': [0x12, 0x34], 'bank': 0}]])
+        for fields, word in ((self._raw(data='AA CX DD'), 'CX'),
+                             (self._raw(page='0x1G', data='AA'), 'Page'),
+                             (self._raw(address='8O', data='AA'), 'Address'),
+                             (self._raw(bank='', bad_bank=True, data='AA'),
+                              'Bank')):
+            case = self._case('rawWrite', fields)
+            self.assertEqual(case['posts'], [], fields)
+            self.assertEqual(len(self._errors(case)), 1, fields)
+            self.assertIn(word, self._errors(case)[0])
+
+    def test_raw_read_asks_for_the_page_that_was_typed(self):
+        case = self._case('rawRead', self._raw('11h', '128', '8', ''))
+        self.assertEqual(case['posts'], [['/api/register/read', {
+            'page': 0x11, 'address': 128, 'length': 8, 'bank': 0}]])
+        for fields, word in ((self._raw(length=''), 'Length'),
+                             (self._raw(length='2.5'), 'Length'),
+                             (self._raw(page='1G'), 'Page'),
+                             (self._raw(address=''), 'Address')):
+            case = self._case('rawRead', fields)
+            self.assertEqual(case['posts'], [], fields)
+            self.assertEqual(len(self._errors(case)), 1, fields)
+            self.assertIn(word, self._errors(case)[0])
+
+    def test_the_bank_note_does_not_print_a_page_it_could_not_read(self):
+        for page, says in (('zz', 'Not a page yet'), ('10h', 'Banked page'),
+                           ('0x100', 'Not a page yet'), ('1', 'is not banked')):
+            case = self._case('_rawBankNote', {'raw-page': {'value': page},
+                                               'raw-bank-note': {}}, 16)
+            html = case['fields']['raw-bank-note'].get('html', '')
+            self.assertIn(says, html, page)
+            self.assertNotIn('NAN', html.upper().replace('BANKED', ''), page)
+
+    def _laser(self, *rows):
+        fields = {}
+        for lane, (ch, ft, pwr) in enumerate(rows, 1):
+            fields['laser-grid-%d' % lane] = {'value': '3'}
+            for key, box in (('ch', ch), ('ft', ft), ('pwr', pwr)):
+                box = box if isinstance(box, dict) else {'value': box}
+                fields['laser-%s-%d' % (key, lane)] = box
+        return fields
+
+    def test_an_empty_laser_box_is_not_channel_0_or_0_dbm(self):
+        case = self._case('applyLaser', self._laser(('-5', '', '1.5'),
+                                                    ('0', '0.5', '-2')), 2)
+        self.assertEqual(case['posts'], [['/api/module/laser', {'lanes': [
+            {'lane': 1, 'grid_code': 3, 'channel': -5,
+             'fine_tuning_enabled': False, 'fine_offset_ghz': 0,
+             'target_power_dbm': 1.5},
+            {'lane': 2, 'grid_code': 3, 'channel': 0,
+             'fine_tuning_enabled': True, 'fine_offset_ghz': 0.5,
+             'target_power_dbm': -2}]}]])
+        # A disabled fine box is a control the module lacks: never read.
+        case = self._case('applyLaser', self._laser(
+            ('7', {'value': '', 'badInput': True, 'disabled': True}, '0')), 1)
+        self.assertEqual(case['posts'], [['/api/module/laser', {'lanes': [
+            {'lane': 1, 'grid_code': 3, 'channel': 7, 'target_power_dbm': 0}]}]])
+        for rows, word in (((('0', '', '1'), ('0', '', '')), 'lane 2 target power'),
+                           ((('', '', '1'),), 'lane 1 channel'),
+                           ((('2.5', '', '1'),), 'lane 1 channel'),
+                           ((('0', '', '1.5x'),), 'lane 1 target power'),
+                           (((({'value': '', 'badInput': True}), '', '1'),),
+                            'lane 1 channel'),
+                           ((('0', {'value': '', 'badInput': True}, '1'),),
+                            'lane 1 fine offset')):
+            case = self._case('applyLaser', self._laser(*rows), len(rows))
+            self.assertEqual(case['posts'], [], rows)
+            self.assertEqual(len(self._errors(case)), 1, rows)
+            self.assertIn(word, self._errors(case)[0])
+
+    def test_every_lane_to_reset_reaches_the_server(self):
+        case = self._case('resetAcqCounters',
+                          {'acq-reset-lanes': {'value': '1, 3,99'}})
+        self.assertEqual(case['posts'], [['/api/module/acq_counters/reset',
+                                          {'lanes': [1, 3, 99],
+                                           'side': 'both'}]])
+        # Which refuses the lane the module lacks, rather than resetting the
+        # other two.
+        self.assertOk(self.client.post(
+            '/api/connect', data=json.dumps({'backend': 'mock_1600g_dr8',
+                                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        r = self.client.post('/api/module/acq_counters/reset',
+                             data=json.dumps(case['posts'][0][1]),
+                             content_type='application/json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('[99] out of range', r.get_json()['message'])
+        case = self._case('resetAcqCounters',
+                          {'acq-reset-lanes': {'value': '1,x'}})
+        self.assertEqual(case['posts'], [])
+        self.assertIn('x', self._errors(case)[0])
+
+    def test_a_stray_comma_is_not_a_media_lane(self):
+        fields = {'mls-mapping': {'value': '5,6,7,8,1,2,3,4,'},
+                  'mls-enable': {'checked': True}}
+        case = self._case('applyMls', fields, args=(False,))
+        self.assertEqual(case['posts'][:1], [['/api/module/media_lane_switching', {
+            'enable': True, 'commit': False,
+            'redirection': [5, 6, 7, 8, 1, 2, 3, 4]}]])
+        fields['mls-mapping'] = {'value': '5,6,x'}
+        case = self._case('applyMls', fields, args=(False,))
+        self.assertEqual(case['posts'], [])
+        self.assertIn('x', self._errors(case)[0])
+
+    def test_the_port_is_a_whole_number(self):
+        case = self._case('applyPort', {'set-port': {'value': '8080.5'},
+                                        'port-msg': {}},
+                          args=('#set-port', '#port-msg'))
+        self.assertEqual(case['posts'], [])
+        self.assertIn('whole number', case['fields']['port-msg']['text'])
+        case = self._case('applyPort', {'set-port': {'value': '8080'},
+                                        'port-msg': {}},
+                          args=('#set-port', '#port-msg'))
+        self.assertEqual(case['posts'], [['/api/settings/port', {'port': 8080}]])
+
+
+class TestTheManualListsWhatTheToolHas(CMISTestCase):
+    """Chapter 1's backend table and chapter 6.1 were written when there were
+    five demo modules and three adapters: flat_dac and three adapters were in
+    neither, and both - with chapter 10.7 - still said mock_coherent_zr is
+    the only tunable one and that tunable means Media Interface Technology
+    10h/11h. Chapter 5.5 listed SNR among the cards that keep their old
+    values when a read fails; SNR and Laser Tuning replace them with the
+    reason, while Module Info and the 5.4 pages, which do keep them, were
+    missing. Each list is checked against what it describes."""
+
+    def _manual(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'CMIS2Customer', 'CMIS模块管理工具操作手册.html')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def _between(self, start, end):
+        man = self._manual()
+        i = man.index(start)
+        return man[i:man.index(end, i)]
+
+    def _backends(self):
+        return [b['name'] for b in self.assertOk(
+            self.client.get('/api/backends'))['data']]
+
+    def test_chapter_1_and_6_name_every_backend(self):
+        names = self._backends()
+        self.assertEqual(len(names), 18)
+        table = self._between('支持的接口后端', '</table>')
+        ch6 = self._between('<h3>6.1 选择 Backend</h3>', '<h3>6.2')
+        for name in names:
+            self.assertIn('<code>%s</code>' % name, table, name)
+            self.assertIn('<code>%s</code>' % name, ch6, name)
+        # 6.1's table shows some demo modules and a sentence names the
+        # rest: between them, each one once.
+        import re
+        mocks = paged_mock_backends() + flat_mock_backends()
+        rows = re.findall(r'<td><code>(mock_\w+)</code></td>',
+                          ch6[:ch6.index('</table>')])
+        m = re.search(r'共有 (\d+) 种，其余 (\d+) 种（(.*?)）', ch6)
+        rest = re.findall(r'<code>(mock_\w+)</code>', m.group(3))
+        self.assertEqual(int(m.group(1)), len(mocks))
+        self.assertEqual(int(m.group(2)), len(rest))
+        self.assertEqual(sorted(rows + rest), sorted(mocks))
+
+    def test_the_skill_names_every_demo_module(self):
+        import re
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'skill', 'SKILL.md')
+        with open(path, encoding='utf-8') as f:
+            skill = f.read()
+        mocks = paged_mock_backends() + flat_mock_backends()
+        section = skill[skill.index('## 没有硬件时'):]
+        section = section[:section.index('\n## ', 3)]
+        self.assertIn('内置 %d 个 mock' % len(mocks), section)
+        rows = re.findall(r'^\| `(mock_\w+)` \|', section, re.M)
+        self.assertEqual(sorted(rows), sorted(mocks))
+
+    def test_every_tunable_demo_is_named_where_tuning_is_described(self):
+        tunable = []
+        for name in paged_mock_backends():
+            self.assertOk(self.client.post(
+                '/api/connect',
+                data=json.dumps({'backend': name, 'bus': 0, 'address': 80}),
+                content_type='application/json'))
+            caps = self.assertOk(
+                self.client.get('/api/module/capabilities'))['data']
+            if (caps.get('controls') or {}).get('transmitter_tunable'):
+                tunable.append(name)
+        self.assertEqual(sorted(tunable), ['mock_coherent_zr', 'mock_zr16'])
+        man = self._manual()
+        self.assertNotIn('唯一支持 Laser Tuning', man)
+        self.assertNotIn('仅 <code>mock_coherent_zr</code> 支持', man)
+        scope = self._between('<h3>10.7 Laser Tuning', '<h4>')
+        self.assertIn('01h:155.6', scope)
+        # The paragraph that names the laser technologies says they are not
+        # what decides it.
+        tech = scope[scope.rindex('<p>', 0, scope.index('0x10/0x11')):]
+        tech = tech[:tech.index('</p>')]
+        self.assertIn('01h:155.6', tech)
+        self.assertIn('不按它判断', tech)
+        self.assertNotIn('<p>适用于 C-band / L-band 可调谐激光器模块（Media', man)
+        for name in tunable:
+            self.assertIn('<code>%s</code>' % name, scope, name)
+            self.assertIn('<code>%s</code>' % name,
+                          self._between('<h3>6.1 选择 Backend</h3>', '<h3>6.2'))
+
+    # The card each loader fills, as chapter 5.5 names it.
+    CARDS = {'loadInfo': 'Module Info', 'loadExt54': '带 5.4 标记的卡片',
+             'loadDatapath': 'DataPath', 'loadModuleControl': 'Module Control',
+             'loadApplications': 'Applications', 'loadSnr': 'SNR',
+             'loadThresholds': 'Module Thresholds', 'loadSquelch': 'Squelch',
+             'loadLoopback': 'Loopback', 'loadPrbs': 'PRBS', 'loadBer': 'BER',
+             'loadCounters': 'Error/Bit Counters', 'loadLaser': 'Laser Tuning'}
+
+    def test_chapter_5_5_sorts_the_cards_as_they_behave(self):
+        """Every GET answered with an error, each loader run on its own on a
+        tunable module: a loader that raises an error toast leaves the card
+        as it was; one that writes "not available" replaces it."""
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not available')
+        self.assertOk(self.client.post(
+            '/api/connect', data=json.dumps({'backend': 'mock_coherent_zr',
+                                             'bus': 0, 'address': 80}),
+            content_type='application/json'))
+        caps = self.assertOk(self.client.get('/api/module/capabilities'))['data']
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'static', 'app.js')
+        keeps, replaces = [], []
+        for loader, card in self.CARDS.items():
+            out = subprocess.run(
+                [node, '-e', TestEveryPanelRendersOnEveryDemoModule.HARNESS, src],
+                input=json.dumps({'replies': {}, 'caps': caps, 'apps': [],
+                                  'lanes': app_module._state['lanes'],
+                                  'loaders': [loader], 'tabs': None}),
+                capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(out.returncode, 0, out.stderr[-600:])
+            res = json.loads(out.stdout)
+            self.assertEqual(res['errors'], [], loader)
+            if any(t == 'error' for t, _m in res['toasts']):
+                keeps.append(card)
+            elif any('not available' in html for html in res['writes'].values()):
+                replaces.append(card)
+            else:
+                self.fail('%s neither toasts nor says why' % loader)
+        self.assertEqual(sorted(replaces), ['Laser Tuning', 'SNR'])
+        para = self._between('<h3>5.5 ', '</p>')
+        listed = re.search(r'其余卡片——(.*?)——失败时', para, re.S).group(1)
+        listed = [c.strip() for c in listed.replace('\n', '').split('、')]
+        self.assertEqual(sorted(listed), sorted(keeps))
+        told = para[:para.index('其余卡片')]
+        for card in replaces:
+            self.assertIn(card, told)
+
+
 class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
     """The server used to listen on 127.0.0.1:5000 and nowhere else.
 
@@ -41891,6 +42336,10 @@ class TestTheLocalPortCanBeSeenAndChanged(CMISTestCase):
         self.assertIn('saved in C:/x/cmis_settings.json', saved)
 
 
+from test_audit_regressions import (TestAuditManagementSafety,
+                                    TestAuditMockMeasurement)
+
+
 if __name__ == '__main__':
     # A failure message quoting the Chinese manual otherwise kills the summary
     # with a UnicodeEncodeError on a GBK console - the failing test's own text
@@ -41915,3 +42364,4 @@ if __name__ == '__main__':
         print("\nERRORS:")
         for test, tb in result.errors:
             print(f"  {test}: {tb.splitlines()[-1]}")
+    sys.exit(0 if result.wasSuccessful() else 1)

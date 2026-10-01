@@ -355,7 +355,7 @@
   <div class="cover-text">
     <h1>CMIS 模块管理工具<br><span>操作手册</span></h1>
     <div class="cover-meta">
-      <b>版本</b>　2.210.0<br>
+      <b>版本</b>　2.211.0<br>
       <b>适用软件</b>　CMIS Module Manager<br>
       <b>更新日期</b>　2026-08-31<br>
       <b>适用平台</b>　Windows 10 / 11（64 位）
@@ -507,7 +507,7 @@
       <thead><tr><th>Backend</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td><code>mock_coherent</code></td><td class="label">模拟 <b>800GBASE-LR1</b> 数据中心 coherent lite（DP-16QAM, 单波长 O 波段, SMF 10km），光参数按 <b>IEEE P802.3dj/D3.1 第 185 章</b>建模，无需硬件</td></tr>
-        <tr><td><code>mock_coherent_zr</code></td><td class="label">模拟 800G 可调谐相干模块（C-band DWDM, ZR 类），<b>本工具唯一支持 Laser Tuning 的 profile</b></td></tr>
+        <tr><td><code>mock_coherent_zr</code></td><td class="label">模拟 800G 可调谐相干模块（C-band DWDM, ZR 类），支持 Laser Tuning（另一块可调谐的是 16 通道的 <code>mock_zr16</code>）</td></tr>
         <tr><td><code>mock_dr8</code></td><td class="label">模拟 800GBASE-DR8（8×100G PAM4, SMF 500m, EML 1310nm），无需硬件</td></tr>
         <tr><td><code>mock_sr8</code></td><td class="label">模拟 800GBASE-SR8（8×100G PAM4, OM4 100m, VCSEL 850nm），无需硬件</td></tr>
         <tr><td><code>mock_fr4x2</code></td><td class="label">模拟 2× 400GBASE-FR4（CWDM4 SMF 2km, EML 1310nm），无需硬件</td></tr>
@@ -530,9 +530,13 @@
             24 是<b>旧字段拼不出来</b>的通道数（旧字段只能表达 8 / 16 / 32），
             因此它是唯一会走 <b>CMIS 5.4 通道数逃逸路径</b>的 profile：
             <code>01h:142[1:0] = 11b</code> 时改读 <code>01h:174[4:0]</code></td></tr>
+        <tr><td><code>mock_flat_dac</code></td><td class="label">模拟一根 3 m <b>无源铜缆 DAC</b>，<b>平坦内存</b>（static memory）：只有 Lower Memory 和 Page 00h，没有 Page 01h 及以后的页。用来演示工具在没有分页的模块上哪些卡片不适用、哪些字段按线缆组件的含义读</td></tr>
         <tr><td><code>ch341</code></td><td class="label">通过 CH341 USB 转 I2C 适配器连接真实模块</td></tr>
         <tr><td><code>ch347</code></td><td class="label">通过 CH347 USB 转 I2C 适配器连接真实模块</td></tr>
-        <tr><td><code>ftdi</code></td><td class="label">通过 FTDI 系列芯片连接真实模块</td></tr>
+        <tr><td><code>ftdi</code></td><td class="label">通过 FTDI 系列芯片（FT232H / FT2232H）连接真实模块，走 pyftdi / libusb，需要用 Zadig 换成 WinUSB 驱动</td></tr>
+        <tr><td><code>ftd2xx</code></td><td class="label">同样是 FTDI 芯片，走 FTDI 官方 D2XX 驱动（<code>ftd2xx.dll</code>），不用换驱动</td></tr>
+        <tr><td><code>cp2112</code></td><td class="label">通过 Silicon Labs CP2112 USB 转 I2C 桥连接真实模块；HID 设备，不用装驱动</td></tr>
+        <tr><td><code>mcp2221</code></td><td class="label">通过 Microchip MCP2221 / MCP2221A USB 转 I2C 桥连接真实模块；HID 设备，不用装驱动</td></tr>
       </tbody>
     </table>
   </div>
@@ -830,8 +834,8 @@
   <ol class="steps">
     <li>找到发行包中的 <code>CMIS_Module_Manager.exe</code>，双击运行。</li>
     <li>Windows 可能弹出 SmartScreen 提示"Windows 已保护您的电脑"：点击 <b>更多信息</b> → <b>仍要运行</b>。</li>
-    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.210.0 starting on http://127.0.0.1:5000</pre>
-        其中 <code>v2.210.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
+    <li>弹出黑色控制台窗口，显示：<pre>CMIS Module Manager v2.211.0 starting on http://127.0.0.1:5000</pre>
+        其中 <code>v2.211.0</code> 即当前版本号，界面标题旁和左侧栏底部也会显示，便于确认版本。</li>
     <li>浏览器自动打开，显示工具主界面。</li>
   </ol>
   <div class="callout callout-warn">
@@ -1016,9 +1020,11 @@
   <p class="label">若想恢复出厂外观，打开显示设置点 <b>Reset to defaults</b> 即可。</p>
 
   <h3>5.5 读取失败时各卡片的表现（务必了解）</h3>
-  <p><b>只有 Monitoring 卡片会在读取失败时把数据置灰并显示过期横幅。</b>其余所有卡片——
-     Squelch、Loopback、PRBS、Module Thresholds、DataPath、BER、SNR、Error/Bit Counters、
-     Module Control、Applications——失败时的表现是：</p>
+  <p><b>只有 Monitoring 卡片会在读取失败时把数据置灰并显示过期横幅。</b>
+     SNR 和 Laser Tuning 两张卡片失败时把表格换成一行 <code>SNR not available</code> /
+     <code>Laser tuning not available</code> 加上原因，旧数值不会留下。其余卡片——
+     Module Info、带 5.4 标记的卡片、Squelch、Loopback、PRBS、Module Thresholds、DataPath、BER、
+     Error/Bit Counters、Module Control、Applications——失败时的表现是：</p>
   <ul>
     <li>右下角弹一条<b>红色提示，3 秒后自动消失</b>，之后没有任何痕迹</li>
     <li><b>卡片里的旧数值原样留着，没有任何标记</b>——看上去和读取成功完全一样</li>
@@ -1076,13 +1082,16 @@
       </tbody>
     </table>
   </div>
-  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.4 规范和实际产品特征构造。仅 <code>mock_coherent_zr</code> 支持 Laser Tuning 功能（<code>mock_coherent</code> 建模的 800GBASE-LR1 是固定载波，802.3dj 未给它定义调谐栅格）；<code>mock_1600g_16lane</code> 是一块 <b>16 通道、自报 CMIS 5.4</b> 的模块，用于演示多 Bank 与 5.4 新增字段。</p>
+  <p style="font-size:11px;color:var(--muted)">Mock 模块的所有 CMIS 寄存器值（Vendor Name、Connector、Media Interface Technology、Application Descriptors、Power Class 等）均按 CMIS 5.4 规范和实际产品特征构造。上表只列最常用的 5 种；下拉菜单里共有 12 种，其余 7 种（<code>mock_1600g_dr8</code>、<code>mock_1600g_16lane</code>、<code>mock_24lane</code>、<code>mock_zr16</code>、<code>mock_flat_dac</code>、<code>mock_aoc</code>、<code>mock_fewmon</code>）见第 1 章「支持的接口后端」表。支持 Laser Tuning 的是 <code>mock_coherent_zr</code> 和 16 通道的 <code>mock_zr16</code>（<code>mock_coherent</code> 建模的 800GBASE-LR1 是固定载波，802.3dj 未给它定义调谐栅格）；<code>mock_1600g_16lane</code> 是一块 <b>16 通道、自报 CMIS 5.4</b> 的模块，用于演示多 Bank 与 5.4 新增字段。</p>
 
   <h4>真实硬件接口</h4>
   <ul>
     <li><code>ch341</code> — CH341A USB-I2C 适配器</li>
     <li><code>ch347</code> — CH347 USB-I2C 适配器（更高速）</li>
-    <li><code>ftdi</code> — FTDI FT232H/FT2232H 系列</li>
+    <li><code>ftdi</code> — FTDI FT232H/FT2232H 系列（pyftdi，需 Zadig 换驱动）</li>
+    <li><code>ftd2xx</code> — 同一类 FTDI 芯片，用 FTDI 官方驱动</li>
+    <li><code>cp2112</code> — Silicon Labs CP2112（HID，免驱动）</li>
+    <li><code>mcp2221</code> — Microchip MCP2221 / MCP2221A（HID，免驱动）</li>
   </ul>
   <p>点击 <b>↻ Refresh Backends</b> 可重新扫描（插入 USB 适配器后刷新）。标注 <code>(unavailable)</code> 的选项表示驱动或硬件不可用。</p>
 
@@ -1091,8 +1100,8 @@
     <table>
       <thead><tr><th>字段</th><th>说明</th><th>典型值</th></tr></thead>
       <tbody>
-        <tr><td>Bus / Device Index</td><td class="label">USB 适配器编号，通常为 0</td><td><code>0</code></td></tr>
-        <tr><td>I2C Address</td><td class="label">光模块 I2C 地址，支持十六进制或十进制</td><td><code>0x50</code> 或 <code>80</code></td></tr>
+        <tr><td>Bus / Device Index</td><td class="label">USB 适配器编号，通常为 0；必须是整数，留空按 0</td><td><code>0</code></td></tr>
+        <tr><td>I2C Address</td><td class="label">光模块 I2C 地址（7 位，0–127）。十六进制写成 <code>0x50</code> 或规范的写法 <code>50h</code>，不带前后缀的按十进制。写不成数字的（如 <code>5O</code>）会被拒绝，不会截成别的地址</td><td><code>0x50</code>、<code>50h</code> 或 <code>80</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -1785,6 +1794,20 @@
     非制冷模块（内置的 DR8 / SR8 / FR4）本来就没有；
     两个相干演示模块是制冷的，三项都有。</span>
   </div>
+
+  <h3>输入框里的笔误不再被截成别的数</h3>
+  <p>页面以前用浏览器的 <code>parseInt</code> 读输入框：它读到第一个不认识的字符就停下，把前面那段当结果。服务端从 v2.204.0 起会拒绝格式不对的数据，可它收到的已经是截好的数，所以下面这些笔误一条都没被拦下：</p>
+  <ul>
+    <li><b>连接</b>：I2C Address 写成规范的 <code>50h</code>，被读成十进制 50，也就是 <code>0x32</code>——连到了另一个地址；Bus 写 <code>1.5</code> 当 1</li>
+    <li><b>Raw Registers</b>：Page 写 <code>10h</code> 读成 <code>0x0A</code> 页，<code>0x1G</code> 读成 1，Length 留空按 1；Write Data <code>AA CX DD</code> 写成 <code>AA 0C DD</code>，<code>12,34</code> 只写 <code>12</code></li>
+    <li><b>Laser Tuning</b>：清空的信道号框按信道 0、清空的目标功率框按 0 dBm，发给表里每一条通道</li>
+    <li><b>通道计数复位</b>（Page 60h）：<code>1,3,99</code> 悄悄跳过 99，只复位 1 和 3 并报告成功</li>
+    <li><b>端口</b>：<code>8080.5</code> 当 8080</li>
+  </ul>
+  <p>现在：<code>0x50</code> 和 <code>50h</code> 是十六进制，只有数字的是十进制，其余都算写错；Write Data 的每一项都必须是十六进制字节，空格或逗号分隔；数字框里必须是数字（Laser 的微调偏移留空表示不微调，Bus 和 Bank 留空按 0）。写错时提示会点出是哪一格，这一次什么都不发给模块。通道计数复位把所有通道号原样交给服务端，由它指出模块没有的那一条。Raw Registers 的 Bank 提示在页号还读不出时显示 <code>Not a page yet</code>，不再显示 <code>Page 0xNAN</code>。</p>
+
+  <h3>手册：后端列表、可调谐模块和读取失败时的卡片按实际更正</h3>
+  <p>第 1 章「支持的接口后端」表和 6.1 节写于只有 5 个演示模块、3 种适配器的时候：<code>mock_flat_dac</code> 和 <code>ftd2xx</code>、<code>cp2112</code>、<code>mcp2221</code> 两处都没有。两处连同 10.7 节还说只有 <code>mock_coherent_zr</code> 可调谐、可调谐看 Media Interface Technology——<code>mock_zr16</code> 也可调谐，工具按 <code>01h:155.6</code> 判断。5.5 节把 SNR 列在「读取失败时旧数值原样留着」的卡片里，实际上 SNR 和 Laser Tuning 会把表格换成一行失败原因；真正留着旧数值的 Module Info 和带 5.4 标记的卡片反而没列。现已逐条改正。新增测试让每张卡片的读取各失败一次，按它实际的表现核对 5.5 的名单，并把两处后端列表和可调谐模块跟工具实际的列表对照。</p>
 
   <h3>手册:常见问题 Q3 / Q5 / Q7 和通道数明细的说法按实际更正</h3>
   <p>第 13 章的几条回答写得早,没跟着工具变:Q3 说 Backend 下拉只列 4 个演示模块、没有 USB 适配器——实际总是列出全部 12 个演示模块和 6 种适配器,找不到的适配器置灰并标 <code>(unavailable)</code>;Q5 写的是 −inf dBm,页面显示的是 −∞ dBm;Q7 说只有 <code>mock_coherent_zr</code> 可调谐、并按 Media Interface Technology 判断——<code>mock_zr16</code> 也可调谐,工具按 <code>01h:155.6</code> 判断,卡片显示的是 <code>Non-tunable module</code>。另外,Module Info 的 Host Lanes 一行说明细里用「·」分隔的应用「是二选一,不是相加」,而 2×400G 这类模块的两个应用占不同通道、同时运行,前面的 8 正是二者之和;现已改为如实说明两种情况。新增测试把这几条回答和工具实际的后端列表、可调谐判断、页面文字逐条对照。只改文档,工具行为不变。</p>
@@ -4730,7 +4753,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     模块级绝对功率门限对它不再适用</b>，不要再拿 Module Thresholds 卡片的值去判断该通道。</span>
   </div>
   <p>表格的 <b>Status</b> 列依次判断:调谐中显示 <b>Tuning...</b>;数据通道处于 DPDeactivated / DPDeinit 时显示 <b>n/a</b>——Table 6-21 规定模块在这两个状态下不报告波长失锁,激光器也不一定开着;否则显示 <b>Locked</b> / <b>Unlocked</b>。<b>Tuning Flags</b> 列在没有标志时显示 <b>—</b>,TuningComplete 置位时显示 <b>Tuned</b>。在停下的数据通道上换栅格或信道,<b>Tuned</b> 要等数据通道重新起来才出现:TuningCompleteFlag 在 DPDeactivated、DPInit、DPDeinit 下是 N/A(Table 6-21),模块不得置位。</p>
-  <p>适用于 C-band / L-band 可调谐激光器模块（Media Interface Technology = 0x10/0x11）。</p>
+  <p>适用于声明发射端可调谐（<code>01h:155.6</code> = 1）的模块，典型是 C-band / L-band 可调谐激光器（Media Interface Technology = 0x10/0x11，但工具不按它判断）。演示模块里是 <code>mock_coherent_zr</code> 和 <code>mock_zr16</code>。Apply 前每个输入框都要是数字：信道号是整数，目标功率不能留空（以前空框按 0 dBm 发出去），微调偏移留空表示不微调；有一格不是数字就整张表都不写，提示指出是哪条通道的哪一格。</p>
   <p><b>Page 04h</b>（只读能力广告）：支持的 Grid 列表、通道范围、Fine Tuning 分辨率/范围、可编程输出功率范围。</p>
   <p><b>Page 12h</b>（读写控制）：</p>
   <div class="table-wrap">
@@ -4752,6 +4775,13 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <span>修改 Grid / Channel 需要 DataPath 处于 Deactivated 状态。Fine Tuning 和 Target Power 可在非瞬态状态下修改。</span>
   </div>
 
+  <h3>10.7a 本版规范审查修复与 Mock 诊断范围</h3>
+  <p>Apply 后仅在完整 Data Path 的所有相关通道明确返回 <b>ConfigSuccess</b> 时才释放 DP Deinit。尚在处理、未定义或拒绝的结果都会保持停用，并提示刷新 ConfigStatus。等待上限是工具策略，不是 CMIS 定义的 Provision 超时。</p>
+  <p>每次成功读到的 COR 告警字节都会立即保存在本次连接的历史中，即使随后读取 Mask、状态或下一分块失败。错误信息仍需处理，恢复刷新后可查看之前已采集的事件；清除历史会同时清除原始事件记录。</p>
+  <p>能力发现读取失败会拒绝连接，未知能力不授权控制；高于 CMIS 5 的主版本也会被拒绝。普通控制与 Raw Registers 的 SoftwareReset 使用相同的 MgmtInit 重试窗口，清除 Bank/Page 缓存；下次访问重新读取能力。发现模块自主重启后也会重新发现能力。</p>
+  <p>Mock 诊断为<b>合成的管理演示数据</b>。页面说明当前 Checker 测量位置和测试比特流速率；解码前/后使用独立夹具，<b>不运行 FEC 解码算法</b>。线路侧 1.6T DR8 每 lane 为 212.5 Gb/s，LR1 单媒体 carrier 约 989.091 Gb/s；解码后的计数依所声明的测试比特流而定。五秒门控统计完整五秒，结果不随刷新频率变化；自动重启保留最近结束周期，冻结时明确显示 ResetErrorInformation。</p>
+  <p>ZR profile 的应用为 800GAUI-8 → 800ZR-A/B（OIF-800ZR-01.0、DP-16QAM），默认 150 GHz / 193.175 THz，发射默认 -8 dBm。额外栅格、通道和监督阈值用于管理测试，不能据此宣称相应设置的光学合规。16 lane profile 为 <b>16×100G / 两个独立 800G 应用</b>，不广告 1.6TAUI-16。</p>
+  <p>LR1 波长广告为 1311.0 ± 0.110 nm；dj DR8 为 1311.0 ± 6.5 nm；SR8 演示广告为 850 ± 6 nm。可调单波长广告随实际名义频率更新。dj 参数依据仍为 <b>D3.1 草案</b>，LR1 光功率监督选用 ETCC ≤ 1 dB 的条件；工具未验证 BLER/直方图方法、D3.3 全文差异或实物 PHY 合规。</p>
   <h3>10.8 状态机模拟（Mock 模式特性）</h3>
   <p>Mock 后端完整模拟了 CMIS 状态机行为，方便无硬件演示：</p>
   <div class="table-wrap">
@@ -4778,8 +4808,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 
   <h3>11.1 读取寄存器</h3>
   <ol class="steps">
-    <li>填写 <b>Page</b>（如 <code>0x00</code>、<code>0x11</code>）</li>
-    <li>填写 <b>Address</b>（起始地址，如 <code>0x80</code>）</li>
+    <li>填写 <b>Page</b>（如 <code>0x00</code>、<code>0x11</code>，也可写规范的 <code>11h</code>；不带前后缀的按十进制）</li>
+    <li>填写 <b>Address</b>（起始地址，如 <code>0x80</code> 或 <code>80h</code>；只写 <code>80</code> 是十进制 80 = <code>0x50</code>）</li>
     <li>填写 <b>Length</b>（读取字节数，1–128）</li>
     <li>点击 <b>Read</b></li>
   </ol>
@@ -4799,7 +4829,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <h3>11.2 写入寄存器</h3>
   <ol class="steps">
     <li>填写 <b>Page</b> 和 <b>Address</b></li>
-    <li>在 <b>Write Data</b> 输入框填入字节（空格分隔十六进制，如 <code>1E 50 00</code>）</li>
+    <li>在 <b>Write Data</b> 输入框填入字节（十六进制，空格或逗号分隔，如 <code>1E 50 00</code>；每个字节也可写成 <code>0x1E</code> 或 <code>1Eh</code>）</li>
     <li>点击 <b>Write</b></li>
   </ol>
   <div class="callout callout-note">
@@ -4859,7 +4889,8 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   </div>
   <p>以下情况会<b>在写出去之前就被拒绝</b>，此时模块没有收到任何字节：</p>
   <ul>
-    <li><b>十六进制无效</b>：Write Data 里没有一个能解析的字节，提示 <code>Invalid hex data</code></li>
+    <li><b>十六进制无效</b>：Write Data 里<b>任何一项</b>不是十六进制字节（如 <code>CX</code>），提示 <code>Invalid hex data</code> 并列出是哪几项，一个字节都不写。以前只在一项都读不出时才拒绝：<code>AA CX DD</code> 会写成 <code>AA 0C DD</code>，<code>12,34</code> 只写 <code>12</code></li>
+    <li><b>页号、地址、长度、Bank 写不成数字</b>：提示 <code>Not a number</code> 并指出是哪一格。以前 <code>10h</code> 会被读成十进制 10（即 <code>0x0A</code> 页），<code>0x1G</code> 读成 1，空的 Length 按 1</li>
     <li><b>数值不合法</b>：数据字节不在 <code>00h–FFh</code>（例如 <code>1FF</code>），提示 <code>Data bytes are 00h-FFh</code>——以前会截成低 8 位照写；页号、地址、Bank 不是整数，或页号、地址超出 <code>0x00–0xFF</code>。直接调用接口时还必须写明页号和地址（<code>A write names its page and address</code>），界面总会带上</li>
     <li><b>越过页尾</b>：起始地址加字节数超过 <code>0x100</code>，提示 <code>Write would cross end of page</code></li>
     <li><b>越过 0x7F 的写</b>：规范 B.1.2 规定 Lower Memory 的字节地址到 127 之后回到 0，所以写过 <code>0x7F</code> 的字节
@@ -4874,6 +4905,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     <li><b>Bank 不对</b>：在 Lower Memory 或不分 Bank 的页上指定了 Bank，或 Bank 超出模块声明的数量（<code>01h:142.1-0</code>；CDB 页按 <code>01h:163.7-6</code> 的实例数）</li>
   </ul>
   <h4>发 CDB 命令</h4>
+  <p><b>CDB 触发格式按能力广告检查。</b><code>CdbCommandTriggerMethod=0</code> 时必须先写参数，再以结束于 <code>9Fh:129</code> 的一/二字节 WRITE 写 CMDID。方法 1 才允许不超过 8 字节、包含 129 的多字节 WRITE；不符合广告的方法会在写入前拒绝。</p>
   <p>写到 <code>9Fh:129</code> 就会发出 CDB 命令(规范 7.2.3)。之后模块可能拒绝一切访问:前台模式直到命令执行完,后台模式在接收命令期间(规范 Table 10-4)。工具这时会按模块声明的时间继续重试,回读因此可能要等一会儿;结果区写明<code>CDB command sent (9Fh:129)</code>、处理模式和最长等待时间。命令结果在 <code>Lower 37</code>(实例 1)/<code>38</code>(实例 2),完成时 Module Info 的 CDB Command Complete 会亮。</p>
 
   <h4>写密码</h4>
@@ -4941,7 +4973,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
   <div class="faq-item">
     <div class="faq-q"><span class="tag">Q6</span>Mock 模式的数据是真实的吗？</div>
     <div class="faq-reason"></div>
-    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 12 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（C-band 可调谐 ZR 类）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、两块 1.6T 模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），<code>mock_fewmon</code>（只实现部分监控项），以及 <code>mock_aoc</code>（400G 有源光缆，媒介不可分离）。</div>
+    <div class="faq-solve"><b>不是。</b>Mock 模式返回按 CMIS 5.4 规范构造的模拟数据（含动态波动和状态机响应），仅用于软件界面验证和培训演示，不反映真实模块状态。当前提供 12 种 profile：<code>mock_coherent</code>（800GBASE-LR1 数据中心 coherent lite）、<code>mock_coherent_zr</code>（800ZR-A/B 可调谐管理演示）、<code>mock_dr8</code>、<code>mock_sr8</code>、<code>mock_fr4x2</code>、1.6T DR8 与 16×100G / 2×800G 多 Bank 演示模块，<code>mock_24lane</code>（24 通道 / 三 Bank），<code>mock_zr16</code>（16 通道可调谐 / 两 Bank），<code>mock_fewmon</code>（只实现部分监控项），<code>mock_aoc</code>（400G 有源光缆，媒介不可分离）和 <code>mock_flat_dac</code>（Flat Memory 无源铜缆）。</div>
   </div>
 
   <div class="faq-item">
@@ -5001,7 +5033,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
     但该计数持续增长，说明接收端在反复失锁重锁——这种间歇性问题在瞬时读数里看不出来。</span>
   </div>
   <p>填入通道号（如 <code>1,3,9</code>）点<b>复位所选通道计数</b>即可清零，写的是
-     <code>60h:192–193</code>。</p>
+     <code>60h:192–193</code>。模块没有的通道号（如 8 通道模块上的 <code>9</code>）或不是数字的一项会让整个复位被拒绝并说明原因，不会跳过它、只复位其余通道。</p>
   <div class="callout callout-warn">
     <span class="callout-icon">⚠</span>
     <span><b>只提供通道计数器的复位，不提供数据通道（DP）计数器的复位。</b>
@@ -5143,7 +5175,7 @@ advertises for the 100 GHz grid (-40 to 40, 04h:150-153)</pre>
 <!-- ══════════════ FOOTER ══════════════ -->
 <footer>
   <div class="footer-text">
-    CMIS Module Manager 操作手册 v2.210.0<br>
+    CMIS Module Manager 操作手册 v2.211.0<br>
     如有技术问题，请联系技术支持并提供控制台窗口中的错误信息。<br>
     © 2026 · 本软件已在 GitHub 开源（MIT License）
   </div>
